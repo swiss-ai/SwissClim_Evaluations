@@ -14,7 +14,6 @@ def _crps_ensemble_fair(obs, fct):
 
 def crps_ensemble(obs, fct, name_prefix: str = "CRPS"):
     """Compute the CRPS for ensemble forecasts."""
-    # Compute the CRPS for each ensemble member
     res = xr.apply_ufunc(
         _crps_ensemble_fair,
         obs,
@@ -46,7 +45,7 @@ def _ens_mean_se(obs, fct):
     return (fct.mean(axis=-1) - obs)**2
 
 def ensemble_mean_se(obs, fct, name_prefix: str = "EnsembleMeanSquaredError"):
-    """Compute the ensemble mean root mean squared error."""
+    """Compute the ensemble mean squared error."""
     res = xr.apply_ufunc(
         _ens_mean_se,
         obs,
