@@ -12,6 +12,7 @@ dependencies = [
     "dask[distributed]>=2025.2.0",
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.1",
+    "opt-einsum>=3.4.0",
     "scipy>=1.15.2",
     "setuptools>=76.0.0",
     "tqdm>=4.67.1",
