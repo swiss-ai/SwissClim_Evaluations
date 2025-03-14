@@ -12,6 +12,10 @@ dependencies = [
     "dask[distributed]>=2025.2.0",
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.1",
+    "scipy>=1.15.2",
+    "setuptools>=76.0.0",
+    "tqdm>=4.67.1",
+    "weatherbenchx",
     "xarray>=2025.1.2",
     "zarr<3.0.0",
 ]
@@ -22,3 +26,7 @@ swissclim-evaluations = "swissclim_evaluations:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# git clone weatherbenchX and remove google cloud and apache bream dependencies
+[tool.uv.sources]
+weatherbenchx = { path = "../weatherbenchX" }
