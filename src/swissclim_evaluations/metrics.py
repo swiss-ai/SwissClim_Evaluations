@@ -42,20 +42,31 @@ def probability_integral_transform(obs, fct, name_prefix: str = "PIT"):
     return _add_metric_prefix(res, name_prefix)
 
 
-def _ssr(obs, fct):
-    ensemble_mean = fct.mean(axis=-1)
-    spread = np.var(fct, axis=-1)
-    rmse = (ensemble_mean - obs)**2
-    ssr = np.sqrt(spread / rmse)
-    return ssr
+def _ens_mean_se(obs, fct):
+    return (fct.mean(axis=-1) - obs)**2
 
-def spread_skill_ratio(obs, fct, name_prefix: str = "SSR"):
-    """Compute the spread skill ratio."""
+def ensemble_mean_se(obs, fct, name_prefix: str = "EnsembleMeanSquaredError"):
+    """Compute the ensemble mean root mean squared error."""
     res = xr.apply_ufunc(
-        _ssr,
+        _ens_mean_se,
         obs,
         fct,
         input_core_dims=[[], ["ensemble"]],
+        output_core_dims=[[]],
+        dask="parallelized",
+    )
+    return _add_metric_prefix(res, name_prefix)
+
+
+def _ens_std(fct):
+    return fct.std(axis=-1)
+
+def ensemble_std(fct, name_prefix: str = "EnsembleSTD"):
+    """Compute the ensemble standard deviation."""
+    res = xr.apply_ufunc(
+        _ens_std,
+        fct,
+        input_core_dims=[["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
     )
