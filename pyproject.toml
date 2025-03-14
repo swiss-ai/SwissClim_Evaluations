@@ -1,0 +1,28 @@
+[project]
+name = "swissclim-evaluations"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Francesco Zanetta", email = "zanetta.francesco@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "dask>=2024.8.0",
+    "ipykernel>=6.29.5",
+    "jinja2>=3.1.6",
+    "matplotlib>=3.10.1",
+    "setuptools>=76.0.0",
+    "setuptools-scm>=8.2.0",
+    "weatherbenchx",
+]
+
+[project.scripts]
+swissclim-evaluations = "swissclim_evaluations:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
