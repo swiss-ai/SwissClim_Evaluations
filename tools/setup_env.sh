@@ -1,8 +1,13 @@
 #!/bin/bash
 
-# NOTE
-# this setup script assumes the prgenv-gnu/24.11:v1 uenv on clariden is active
-
+# Check if already in uenv environment
+if uenv status | grep -q "there is no uenv loaded"; then
+    echo "Starting uenv with prgenv-gnu..."
+    uenv start prgenv-gnu/24.11:v1 --view=modules
+else
+    echo "✅ Already in uenv environment: $UENV_SESSION"
+fi
+# load required modules
 module load gcc
 module load cmake 
 
@@ -21,6 +26,17 @@ if [ ! -d ".venv" ]; then
 else
     echo "✅ Environment already created."
 fi
+
+# Clone weatherbenchX from GitHub to parent directory
+echo "Cloning weatherbenchX from GitHub..."
+cd ..
+if [ ! -d "weatherbenchX" ]; then
+    git clone https://github.com/google-research/weatherbenchX.git weatherbenchX
+    echo "weatherbenchX cloned successfully"
+else
+    echo "weatherbenchX directory already exists, skipping clone"
+fi
+cd SwissClim_Evaluations
 
 uv sync 
 
