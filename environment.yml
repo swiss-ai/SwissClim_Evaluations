@@ -1,0 +1,23 @@
+name: swissai-eval
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11 # fixed because of weatherbenchX
+  - cartopy
+  - numpy
+  - pandas
+  - xarray
+  - zarr<3
+  - tqdm
+  - dask
+  - bokeh
+  - matplotlib
+  - seaborn
+  - jupyter
+  - scipy
+  - scikit-learn
+  - pip
+  - pip:
+    - git+https://github.com/google-research/weatherbenchX.git
+    - -e .
