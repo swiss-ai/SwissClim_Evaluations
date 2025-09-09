@@ -1,12 +1,12 @@
 paths:
-  ml: "/iopsstor/scratch/cscs/sadamov/pyprojects_data/swissai/preds_20250219/aurora.zarr"
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_20250219_Jan2021_b.zarr"
   nwp: "/capstor/store/cscs/ERA5/weatherbench2_original"
   output_root: "output/verification_esfm"
 
 selection:
   levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
   temporal_resolution_hours: 1
-  datetimes: ["2021-01-01T12", "2021-02-01T06"]
+  datetimes: ["2021-01-01T12", "2021-01-05T06"]
   latitudes: [90.0, -89.75]
   longitudes: [0.0, 359.75]
   variables_2d: [
@@ -32,7 +32,7 @@ plotting:
   outputs: ["file", "cell-first"]
   save_plot_data: true
 
-chapters:
+modules:
   maps: true
   histograms: true
   wd_kde: true

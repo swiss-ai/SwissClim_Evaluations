@@ -24,7 +24,7 @@ Notes:
 - WeatherBench-X (WBX) is used for additional probabilistic metrics. The project is configured to source WBX locally (see `[tool.uv.sources]` in `pyproject.toml`). If you plan to run WBX modules, ensure `../weatherbenchX` exists. The UV and container scripts handle this automatically.
 - Cartopy is required for map plots and is included as a dependency.
 
-1. Create a minimal YAML config (e.g., `config/minimal.yaml`):
+1. Create a example_config YAML config (e.g., `config/example_config.yaml`):
 
 ```yaml
 paths:
@@ -67,36 +67,12 @@ metrics:
 1. Run modules using the module entry point:
 
 ```bash
-python -m swissclim_evaluations.cli --config config/minimal.yaml
+python -m swissclim_evaluations.cli --config config/example_config.yaml
 # Or select modules explicitly (preferred flag):
-python -m swissclim_evaluations.cli --config config/minimal.yaml --modules deterministic probabilistic
+python -m swissclim_evaluations.cli --config config/example_config.yaml --modules deterministic probabilistic
 ```
 
 Outputs are written under `paths.output_root`, one subfolder per module.
-
-## Quick start (Python)
-
-Compute CRPS and PIT on toy data:
-
-```python
-import numpy as np
-import xarray as xr
-from swissclim_evaluations.metrics.probabilistic import crps_ensemble, probability_integral_transform
-
-time = xr.cftime_range("2021-01-01", periods=4)
-lat = xr.DataArray(np.linspace(-60, 60, 8), dims=["latitude"])
-lon = xr.DataArray(np.linspace(0, 357.5, 16), dims=["longitude"])
-ens = xr.DataArray(np.arange(5), dims=["ensemble"])
-
-rng = np.random.default_rng(0)
-obs = xr.Dataset({"2m_temperature": ("time", rng.normal(size=time.size))}).assign_coords(time=time).expand_dims({"latitude": lat, "longitude": lon}).transpose("time","latitude","longitude")
-fct = xr.Dataset({"2m_temperature": (("time","ensemble"), rng.normal(size=(time.size, ens.size)))}).assign_coords(time=time, ensemble=ens).expand_dims({"latitude": lat, "longitude": lon}).transpose("time","ensemble","latitude","longitude")
-
-crps = crps_ensemble(obs["2m_temperature"], fct["2m_temperature"], ensemble_dim="ensemble")
-pit = probability_integral_transform(obs["2m_temperature"], fct["2m_temperature"], ensemble_dim="ensemble")
-print("CRPS mean:", float(crps.mean()))
-print("PIT mean:", float(pit.mean()))
-```
 
 ## Data requirements
 

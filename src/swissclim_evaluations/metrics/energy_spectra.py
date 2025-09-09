@@ -13,11 +13,16 @@ def calculate_energy_spectra(data: xr.DataArray):
     EARTH_RADIUS_KM = 6371.0
     wavenumber_list = []
 
-    var_data = (
-        data.transpose("latitude", "longitude", "time")
-        if "time" in data.dims
-        else data.transpose("latitude", "longitude")
-    )
+    # Prefer init_time over time for temporal axis handling
+    if "init_time" in data.dims:
+        var_data = data.transpose("latitude", "longitude", "init_time")
+        time_axis = -1
+    elif "time" in data.dims:
+        var_data = data.transpose("latitude", "longitude", "time")
+        time_axis = -1
+    else:
+        var_data = data.transpose("latitude", "longitude")
+        time_axis = None
     var_data = var_data.interpolate_na(dim="longitude")
     n_lon = var_data.longitude.size
 
@@ -33,9 +38,9 @@ def calculate_energy_spectra(data: xr.DataArray):
     average_wavenumber = np.average(np.array(wavenumber_list), axis=0)
 
     power_spectrum = np.abs(fft) ** 2
-    if "time" in data.dims:
+    if time_axis is not None:
         power_spectrum_mean = np.average(
-            power_spectrum.mean(axis=-1), axis=0, weights=cos_latitudes
+            power_spectrum.mean(axis=time_axis), axis=0, weights=cos_latitudes
         )
     else:
         power_spectrum_mean = np.average(
@@ -81,14 +86,12 @@ def _plot_energy_spectra(
     wavenumber_ml, spectrum_ml, _ = calculate_energy_spectra(var_data_ml)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.loglog(
-        wavenumber_ds, spectrum_ds, color="skyblue", label="Ground Truth - ERA5"
-    )
+    ax.loglog(wavenumber_ds, spectrum_ds, color="skyblue", label="Ground Truth")
     ax.loglog(
         wavenumber_ml,
         spectrum_ml,
         color="salmon",
-        label="Model Prediction - SwissAI",
+        label="Model Prediction",
     )
 
     k_min = min(wavenumber_ds.min(), wavenumber_ml.min())
@@ -203,6 +206,5 @@ def run(
     if variables_3d:
         df = pd.DataFrame(lsd_data, index=levels)
         df.index.name = "Height Level"
-        df["model_name"] = "esmf"
         section_output.mkdir(parents=True, exist_ok=True)
         df.to_csv(section_output / "lsd_metrics.csv")

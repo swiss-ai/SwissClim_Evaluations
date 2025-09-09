@@ -184,10 +184,8 @@ def _iter_time_chunks(
             lead_chunk,
         ):
             idx = {"init_time": init_chunk_vals, "lead_time": lead_chunk_vals}
-            yield (
-                ds.sel(valid_time=ds_ml.sel(**idx).valid_time).load(),
-                ds_ml.sel(**idx).load(),
-            )
+            # Assumes CLI aligned ds and ds_ml by init_time/lead_time intersection already.
+            yield (ds.sel(**idx).load(), ds_ml.sel(**idx).load())
     elif "time" in ds_ml.dims:
         yield ds, ds_ml
     else:

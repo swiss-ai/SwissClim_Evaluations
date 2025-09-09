@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.scripts]
-swissclim-evaluations = "swissclim_evaluations:main"
+swissclim-evaluations = "swissclim_evaluations.cli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -54,7 +54,7 @@ def run(
                 density=True,
                 alpha=0.5,
                 color="skyblue",
-                label="Ground Truth - ERA5",
+                label="Ground Truth",
             )
             counts_ml, bins_ml, _ = axs[j, 1].hist(
                 data_ds_ml,
@@ -62,7 +62,7 @@ def run(
                 density=True,
                 alpha=0.5,
                 color="salmon",
-                label="Model Prediction - SwissAI",
+                label="Model Prediction",
             )
             axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
             axs[j, 1].legend()
@@ -98,7 +98,7 @@ def run(
                 density=True,
                 alpha=0.5,
                 color="skyblue",
-                label="Ground Truth - ERA5",
+                label="Ground Truth",
             )
             counts_ml, bins_ml, _ = axs[j, 0].hist(
                 data_ds_ml,
@@ -106,7 +106,7 @@ def run(
                 density=True,
                 alpha=0.5,
                 color="salmon",
-                label="Model Prediction - SwissAI",
+                label="Model Prediction",
             )
             axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
             axs[j, 0].legend()

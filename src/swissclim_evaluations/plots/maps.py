@@ -27,17 +27,20 @@ def run(
 
     random.seed(seed)
     time_index = 0
-    if "time" in ds.dims and ds.time.size > 0:
-        time_index = random.randint(0, ds.time.size - 1)
-        time_selected = ds.time[time_index]
-        time_fmt = (
-            time_selected.dt.strftime("%Y%m%d%H%M").item()
-            if hasattr(time_selected, "dt")
-            else str(time_selected.values)
+    lead_index = 0
+    time_selected = None
+    if "init_time" in ds.dims and ds.init_time.size > 0:
+        time_index = random.randint(0, ds.init_time.size - 1)
+        time_selected = ds.init_time[time_index]
+    if "lead_time" in ds.dims and ds.lead_time.size > 0:
+        lead_index = 0
+    time_fmt = (
+        time_selected.dt.strftime("%Y%m%d%H%M").item()
+        if (time_selected is not None and hasattr(time_selected, "dt"))
+        else (
+            str(time_selected.values) if time_selected is not None else "notime"
         )
-    else:
-        time_selected = None
-        time_fmt = "notime"
+    )
 
     # Determine variables
     variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
@@ -53,14 +56,16 @@ def run(
             subplot_kw={"projection": ccrs.PlateCarree()},
         )
 
-        ds_var = (
-            ds[var].isel(time=time_index) if "time" in ds[var].dims else ds[var]
-        )
-        ds_ml_var = (
-            ds_ml[var].isel(time=time_index)
-            if "time" in ds_ml[var].dims
-            else ds_ml[var]
-        )
+        ds_var = ds[var]
+        ds_ml_var = ds_ml[var]
+        if "init_time" in ds_var.dims:
+            ds_var = ds_var.isel(init_time=time_index)
+        if "lead_time" in ds_var.dims:
+            ds_var = ds_var.isel(lead_time=lead_index)
+        if "init_time" in ds_ml_var.dims:
+            ds_ml_var = ds_ml_var.isel(init_time=time_index)
+        if "lead_time" in ds_ml_var.dims:
+            ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
 
         vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
         vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
@@ -75,7 +80,7 @@ def run(
         )
         axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
         axes[0].coastlines(linewidth=0.5)
-        axes[0].set_title("Ground Truth - ERA5")
+        axes[0].set_title("Ground Truth")
 
         ds_ml_var.plot(
             ax=axes[1],
@@ -87,7 +92,7 @@ def run(
         )
         axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
         axes[1].coastlines(linewidth=0.5)
-        axes[1].set_title("Model Prediction - SwissAI")
+        axes[1].set_title("Model Prediction")
 
         cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
         plt.colorbar(
@@ -111,10 +116,7 @@ def run(
             )
         if save_plot_data:
             # Save the exact data used for this plot
-            ds_save = xr.Dataset({
-                "nwp": ds_var,
-                "ml": ds_ml_var,
-            })
+            ds_save = xr.Dataset({"nwp": ds_var, "ml": ds_ml_var})
             section_output.mkdir(parents=True, exist_ok=True)
             ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_sfc.nc")
 
@@ -137,14 +139,16 @@ def run(
             subplot_kw={"projection": ccrs.PlateCarree()},
         )
 
-        ds_var = (
-            ds[var].isel(time=time_index) if "time" in ds[var].dims else ds[var]
-        )
-        ds_ml_var = (
-            ds_ml[var].isel(time=time_index)
-            if "time" in ds_ml[var].dims
-            else ds_ml[var]
-        )
+        ds_var = ds[var]
+        ds_ml_var = ds_ml[var]
+        if "init_time" in ds_var.dims:
+            ds_var = ds_var.isel(init_time=time_index)
+        if "lead_time" in ds_var.dims:
+            ds_var = ds_var.isel(lead_time=lead_index)
+        if "init_time" in ds_ml_var.dims:
+            ds_ml_var = ds_ml_var.isel(init_time=time_index)
+        if "lead_time" in ds_ml_var.dims:
+            ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
         vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
         vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
 
@@ -176,7 +180,7 @@ def run(
             )
             ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax_ds_ml.coastlines(linewidth=0.5)
-            ax_ds_ml.set_title(f"SwissAI - Level {level}")
+            ax_ds_ml.set_title(f"Model - Level {level}")
 
         cbar_ax = plt.gcf().add_axes([0.15, 0.05, 0.7, 0.02])
         plt.colorbar(
@@ -200,10 +204,7 @@ def run(
                 dpi=200,
             )
         if save_plot_data:
-            ds_save = xr.Dataset({
-                "nwp": ds_var,
-                "ml": ds_ml_var,
-            })
+            ds_save = xr.Dataset({"nwp": ds_var, "ml": ds_ml_var})
             section_output.mkdir(parents=True, exist_ok=True)
             ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_pl.nc")
         if i == 0 and "cell-first" in outputs:

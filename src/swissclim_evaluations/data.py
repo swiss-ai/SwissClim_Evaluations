@@ -1,73 +1,125 @@
 import numpy as np
 import xarray as xr
 
-
-LEVELS = [500, 700, 850]
-LATITUDES = [90.0, -89.75]
-LONGITUDES = [0.0, 359.75]
-VARIABLES_2D = [
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "2m_temperature",
-    "mean_sea_level_pressure",
-]
-VARIABLES_3D = [
-    "geopotential",
-    "specific_humidity",
-    "temperature",
-    "u_component_of_wind",
-    "v_component_of_wind",
-]
+# Allowed dimension names for all datasets used by the pipeline.
+# 'ensemble' is optional and must not be forced when missing.
+ALLOWED_DIMS: tuple[str, ...] = (
+    "latitude",
+    "longitude",
+    "level",
+    "init_time",
+    "lead_time",
+    "ensemble",
+)
 
 
-def _esmf_patch_time(ds: xr.Dataset) -> xr.Dataset:
-    return (ds
-    .rename(time="valid_time")
-    .expand_dims(lead_time=np.array([6], dtype="timedelta64[h]").astype("timedelta64[ns]"), axis=1)
-    .assign_coords(init_time=lambda x: x["valid_time"] - np.timedelta64(6, "h"))
-    .swap_dims({"valid_time": "init_time"})
-    .assign_coords(valid_time=lambda x: x["init_time"] + x["lead_time"])
-    )
+def standardize_dims(ds: xr.Dataset, dataset_name: str) -> xr.Dataset:
+    """Standardize dataset dims and coords for this pipeline.
 
-def esmf_deterministic(path=None, variables=None) -> xr.Dataset:
-    PATH = "/iopsstor/scratch/cscs/sadamov/pyprojects_data/swissai/preds_20250219/aurora.zarr"
-    ds = xr.open_zarr(path or PATH)[variables or VARIABLES_2D + VARIABLES_3D]
-    # ds = ds.sel(latitude=slice(*LATITUDES), longitude=slice(*LONGITUDES), level=LEVELS)
-    return _esmf_patch_time(ds)
+    - Normalize alias names (initial_time->init_time, number/member->ensemble, prediction_timedelta->lead_time, etc.).
+    - Convert legacy 'time' -> 'init_time' and add a singleton zero 'lead_time' if absent.
+    - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
+    - Ensure spatial dims latitude/longitude exist; add singleton 'level' if missing.
+    - Enforce dims set equals either {lat, lon, level, init_time, lead_time} or with optional 'ensemble'.
+    """
+    # Normalize alias dimension/coordinate names first
+    dim_aliases = {
+        "initial_time": "init_time",
+        "init": "init_time",
+        "prediction_timedelta": "lead_time",
+        "lead": "lead_time",
+        "number": "ensemble",
+        "member": "ensemble",
+    }
+    rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
+    if rename_dims_map:
+        ds = ds.rename_dims(rename_dims_map)
+    rename_coords_map = {k: v for k, v in dim_aliases.items() if k in ds.coords}
+    if rename_coords_map:
+        ds = ds.rename(rename_coords_map)
 
-def esmf_ensemble(path=None, variables=None) -> xr.Dataset:
-    PATH = "/capstor/store/cscs/swissai/a01/ESFM_Results/preds_20250219/aurora_tail.zarr"
-    # PATH = "/iopsstor/scratch/cscs/sadamov/pyprojects_data/swissai/preds_20250219/aurora_tail.zarr"
-    ds = xr.open_zarr(path or PATH)[variables or VARIABLES_2D + VARIABLES_3D]
-    indexers = {}
-    if "level" in ds.dims:
-        indexers["level"] = LEVELS
-    ds = ds.sel(indexers)
-    return _esmf_patch_time(ds)
+    # Forbid any use of valid_time
+    if "valid_time" in ds.dims or "valid_time" in ds.coords:
+        raise ValueError(
+            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not allowed."
+        )
 
-def ifs(path=None, variables=None) -> xr.Dataset:
-    PATH = "/capstor/store/cscs/swissai/a01/IFSensemble-2020-1440x721.zarr"
-    ds = xr.open_zarr(path or PATH, decode_timedelta=True)[variables or VARIABLES_2D + VARIABLES_3D]
-    indexers = {}
-    if "level" in ds.dims:
-        indexers["level"] = LEVELS
-    ds = ds.sel(indexers)
-    ds = ds.isel(time=list(set(range(734)) - set([106, 300, 456, 511]))) # remove 4 duplicates from the time indices
-    ds = ds.rename({"time": "init_time", "prediction_timedelta": "lead_time", "number": "ensemble"})
-    ds = ds.assign_coords(valid_time=ds.init_time + ds.lead_time)
+    # Convert legacy time -> init_time
+    if "time" in ds.dims:
+        ds = ds.rename_dims({"time": "init_time"})
+        if "time" in ds.coords:
+            ds = ds.rename({"time": "init_time"})
+
+    # Ensure latitude/longitude present
+    for d in ("latitude", "longitude"):
+        if d not in ds.dims:
+            raise ValueError(
+                f"Dataset '{dataset_name}' is missing required spatial dim '{d}'."
+            )
+
+    # Ensure lead_time exists; add singleton zero if absent when init_time exists
+    if "init_time" in ds.dims and "lead_time" not in ds.dims:
+        zero_lead = np.array([0], dtype="timedelta64[h]").astype(
+            "timedelta64[ns]"
+        )
+        ds = ds.expand_dims({"lead_time": zero_lead})
+    # Coerce lead_time dtype to timedelta64[ns]
+    if "lead_time" in ds.dims:
+        lt = ds["lead_time"].values
+        if not np.issubdtype(lt.dtype, np.timedelta64):
+            ds = ds.assign_coords(
+                lead_time=np.array(lt, dtype="timedelta64[h]").astype(
+                    "timedelta64[ns]"
+                )
+            )
+
+    # Add singleton dim for level if missing to satisfy IO schema
+    if "level" not in ds.dims:
+        ds = ds.expand_dims({"level": np.array([0], dtype=np.int32)})
+
+    # Enforce allowed dims only
+    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
+    if bad_dims:
+        raise ValueError(
+            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. "
+            f"Only {ALLOWED_DIMS} are allowed. Please preprocess your data accordingly."
+        )
+
+    # Ensure the set of dims matches one of the allowed exact schemas
+    required_no_ens = {
+        "latitude",
+        "longitude",
+        "level",
+        "init_time",
+        "lead_time",
+    }
+    required_with_ens = required_no_ens | {"ensemble"}
+    dims_set = set(ds.dims)
+    if dims_set not in (required_no_ens, required_with_ens):
+        raise ValueError(
+            f"Dataset '{dataset_name}' dims must be exactly {tuple(sorted(required_no_ens))} "
+            f"or {tuple(sorted(required_with_ens))}, got {tuple(ds.dims)}."
+        )
     return ds
 
-def era5(path=None, variables=None) -> xr.Dataset:
-    PATH = "/capstor/store/cscs/ERA5/weatherbench2_original"
-    ds = xr.open_zarr(path or PATH, decode_timedelta=True)[variables or VARIABLES_2D + VARIABLES_3D]
-    indexers = {}
-    if "level" in ds.dims:
-        indexers["level"] = LEVELS
-    ds = ds.sel(indexers)
+
+def open_ml(path: str, variables: list[str] | None = None) -> xr.Dataset:
+    """Open model dataset from Zarr and optionally subset variables."""
+    ds = xr.open_zarr(path, decode_timedelta=True)
+    if variables:
+        ds = ds[[v for v in variables if v in ds.data_vars]]
     return ds
 
-def land_sea_mask(path=None, variables=None) -> xr.Dataset:
-    PATH = "/capstor/store/cscs/ERA5/weatherbench2_original"
-    da = xr.open_zarr(path or PATH, decode_timedelta=True)["land_sea_mask"]
-    da = da.sel(latitude=slice(*LATITUDES), longitude=slice(*LONGITUDES))
+
+def era5(path: str, variables: list[str] | None = None) -> xr.Dataset:
+    """Open ERA5 dataset from Zarr and optionally subset variables."""
+    ds = xr.open_zarr(path, decode_timedelta=True)
+    if variables:
+        ds = ds[[v for v in variables if v in ds.data_vars]]
+    return ds
+
+
+def land_sea_mask(path: str) -> xr.DataArray:
+    """Load land_sea_mask field from a Zarr store without any hardcoded slicing."""
+    da = xr.open_zarr(path, decode_timedelta=True)["land_sea_mask"]
     return da

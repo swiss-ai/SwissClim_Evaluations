@@ -23,28 +23,73 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     latitudes: list[float] | None = sel.get("latitudes")
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
+    check_missing: bool = bool(sel.get("check_missing", False))
 
     if levels is not None and "level" in ds.dims:
-        ds = ds.sel(level=levels)
+        # Only select levels that exist to avoid KeyError when upstream datasets
+        # have been pre-trimmed to a subset of pressure levels.
+        try:
+            available = set(ds.coords["level"].values.tolist())
+        except Exception:
+            available = set()
+        requested = list(levels)
+        present = [lv for lv in requested if lv in available]
+        missing = [lv for lv in requested if lv not in available]
+        if missing and check_missing:
+            raise KeyError(
+                f"Requested pressure levels not found: {missing}. Available: {sorted(available)}"
+            )
+        if present:
+            ds = ds.sel(level=present)
+        else:
+            # No overlap; keep dataset unchanged but warn to stdout for visibility.
+            if requested:
+                print(
+                    "[swissclim_evaluations] Warning: none of the requested levels are present; "
+                    f"requested={requested}, available={sorted(available)}. Skipping level selection."
+                )
     if latitudes is not None:
         ds = ds.sel(latitude=slice(*latitudes))
     if longitudes is not None:
         ds = ds.sel(longitude=slice(*longitudes))
     if datetimes is not None:
-        ds = ds.sel(time=slice(*datetimes)) if "time" in ds.dims else ds
+        # Interpret provided datetimes as temporal range (pre-standardization)
+        if "init_time" in ds.dims:
+            ds = ds.sel(init_time=slice(*datetimes))
+            # except for legacy datasets with 'time' dim (e.g. ERA5)
+        elif "time" in ds.dims:
+            ds = ds.sel(time=slice(*datetimes))
     return ds
 
 
 def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
+    """Downsample temporal axes to the requested hourly resolution.
+
+    Preference order:
+    - If both init_time and lead_time exist, stride along lead_time if it is evenly spaced.
+    - Else, stride along init_time if present.
+    - Else, no-op.
+    """
     if hours is None:
         return ds
-    if "time" not in ds.dims or ds.time.size < 2:
-        return ds
-    timestep = int(
-        (ds.time.isel(time=1) - ds.time.isel(time=0)).dt.total_seconds() / 3600
-    )
-    factor = max(1, hours // timestep) if timestep > 0 else 1
-    return ds.isel(time=slice(None, None, factor))
+    if "lead_time" in ds.dims and ds.lead_time.size >= 2:
+        step_ns = int(
+            (ds.lead_time[1] - ds.lead_time[0]).astype("timedelta64[h]")
+            / np.timedelta64(1, "h")
+        )
+        step_ns = max(1, step_ns)
+        factor = max(1, hours // step_ns)
+        return ds.isel(lead_time=slice(None, None, factor))
+    if "init_time" in ds.dims and ds.init_time.size >= 2:
+        # Treat init_time as hourly series for downsampling
+        dt_hours = int(
+            (ds.init_time[1] - ds.init_time[0]).astype("timedelta64[h]")
+            / np.timedelta64(1, "h")
+        )
+        dt_hours = max(1, dt_hours)
+        factor = max(1, hours // dt_hours)
+        return ds.isel(init_time=slice(None, None, factor))
+    return ds
 
 
 def _select_variables(
@@ -65,22 +110,19 @@ def _select_variables(
 def _maybe_subsample_time(
     ds: xr.Dataset, n: int | None, seed: int | None
 ) -> xr.Dataset:
-    if n is None or "time" not in ds.dims or ds.time.size == 0:
+    """Optionally subsample along init_time for quick previews."""
+    if n is None or "init_time" not in ds.dims or ds.init_time.size == 0:
         return ds
-    n = int(min(n, ds.time.size))
+    n = int(min(n, ds.init_time.size))
     rng = np.random.default_rng(seed)
-    idx = np.sort(rng.choice(ds.time.size, size=n, replace=False))
-    return ds.isel(time=idx)
+    idx = np.sort(rng.choice(ds.init_time.size, size=n, replace=False))
+    return ds.isel(init_time=idx)
 
 
 def _standardize_pair(
     ds: xr.Dataset, ds_ml: xr.Dataset
 ) -> tuple[xr.Dataset, xr.Dataset]:
-    combined = (
-        xr.concat([ds, ds_ml], dim="time")
-        if "time" in ds.dims
-        else xr.concat([ds, ds_ml], dim="combine")
-    )
+    combined = xr.concat([ds, ds_ml], dim="__concat__")
     mean = combined.mean()
     std = combined.std()
     return (ds - mean) / std, (ds_ml - mean) / std
@@ -96,15 +138,24 @@ def prepare_datasets(
     hours = sel.get("temporal_resolution_hours")
     ensemble_member = sel.get("ensemble_member")
 
-    ds_nwp = data_mod.era5(paths.get("nwp"))
-    ds_ml = xr.open_zarr(paths.get("ml"))
+    # Open datasets from paths with optional variable selection
+    var_list = None
+    if variables_2d or variables_3d:
+        var_list = list((variables_2d or [])) + list((variables_3d or []))
+    ds_nwp = data_mod.era5(paths.get("nwp"), variables=var_list)
+    ds_ml = data_mod.open_ml(paths.get("ml"), variables=var_list)
 
-    # Align dims to match notebook expectations
+    # Align dims to match config expectations
     ds_nwp = _slice_common(ds_nwp, cfg)
     ds_ml = _slice_common(ds_ml, cfg)
 
+    # Standardize temporal dims and enforce required schema
+    ds_nwp = data_mod.standardize_dims(ds_nwp, dataset_name="ground_truth")
+    ds_ml = data_mod.standardize_dims(ds_ml, dataset_name="ml")
+
     if "ensemble" in ds_ml.dims and ensemble_member is not None:
-        ds_ml = ds_ml.isel(ensemble=int(ensemble_member))
+        # Keep the 'ensemble' dimension by slicing to a length-1 selection
+        ds_ml = ds_ml.isel(ensemble=[int(ensemble_member)])
 
     ds_nwp = _apply_temporal_resolution(ds_nwp, hours)
     ds_ml = _apply_temporal_resolution(ds_ml, hours)
@@ -117,11 +168,28 @@ def prepare_datasets(
     ds_nwp = _maybe_subsample_time(
         ds_nwp, plot_cfg.get("time_subsamples"), plot_cfg.get("random_seed")
     )
-    ds_ml = (
-        ds_ml.sel(time=ds_nwp.time)
-        if "time" in ds_nwp.dims and "time" in ds_ml.dims
-        else ds_ml
-    )
+    # Align ML dataset to NWP along init_time intersection if available
+    if "init_time" in ds_nwp.dims and "init_time" in ds_ml.dims:
+        common_inits = np.intersect1d(
+            ds_nwp.init_time.values, ds_ml.init_time.values
+        )
+        if common_inits.size == 0:
+            raise ValueError(
+                "No overlapping init_time values between ground_truth and ml datasets after selection."
+            )
+        ds_nwp = ds_nwp.sel(init_time=common_inits)
+        ds_ml = ds_ml.sel(init_time=common_inits)
+    # If both have lead_time, enforce identical coords by intersection
+    if "lead_time" in ds_nwp.dims and "lead_time" in ds_ml.dims:
+        common_leads = np.intersect1d(
+            ds_nwp.lead_time.values, ds_ml.lead_time.values
+        )
+        if common_leads.size == 0:
+            raise ValueError(
+                "No overlapping lead_time values between ground_truth and ml datasets after selection."
+            )
+        ds_nwp = ds_nwp.sel(lead_time=common_leads)
+        ds_ml = ds_ml.sel(lead_time=common_leads)
 
     ds_std, ds_ml_std = _standardize_pair(ds_nwp, ds_ml)
     return ds_nwp, ds_ml, ds_std, ds_ml_std
@@ -141,7 +209,7 @@ def run_selected(
     out_root = _ensure_output(
         cfg.get("paths", {}).get("output_root", "output/verification_esfm")
     )
-    chapter_flags = cfg.get("chapters", {})
+    chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
 
     # Import lazily to avoid import time if not needed
@@ -224,23 +292,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", type=str, required=True, help="Path to YAML config"
     )
     p.add_argument(
-        "--chapters",
-        type=str,
-        nargs="*",
-        choices=[
-            "maps",
-            "histograms",
-            "wd_kde",
-            "energy_spectra",
-            "vertical_profiles",
-            "deterministic",
-            "ets",
-            "probabilistic",
-            "probabilistic_wbx",
-        ],
-        help="[Deprecated] Use --modules. Subset of modules to run. If omitted, uses config toggles.",
-    )
-    p.add_argument(
         "--modules",
         type=str,
         nargs="*",
@@ -255,7 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
             "probabilistic",
             "probabilistic_wbx",
         ],
-        help="Subset of modules to run. If omitted, uses config toggles.",
+        help=(
+            "Optional subset of modules to run. If omitted, uses module toggles from the config file."
+        ),
     )
     return p
 
@@ -263,15 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
-    # Combine deprecated --chapters and new --modules
-    selected: list[str] | None = None
-    if args.modules or args.chapters:
-        selected = []
-        if args.modules:
-            selected.extend(args.modules)
-        if args.chapters:
-            selected.extend(args.chapters)
-    run_selected(cfg, selected)
+    # Pass through optional module subset directly
+    run_selected(cfg, args.modules)
 
 
 if __name__ == "__main__":

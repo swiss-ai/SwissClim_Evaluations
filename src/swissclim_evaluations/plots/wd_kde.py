@@ -69,13 +69,13 @@ def run(
                 x_eval,
                 kde_ds(x_eval),
                 color="skyblue",
-                label="Ground Truth - ERA5",
+                label="Ground Truth",
             )
             axs[j, 1].plot(
                 x_eval,
                 kde_ml(x_eval),
                 color="salmon",
-                label="Model Prediction - SwissAI",
+                label="Model Prediction",
             )
             axs[j, 1].set_title(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
@@ -121,13 +121,13 @@ def run(
                 x_eval,
                 kde_ds(x_eval),
                 color="skyblue",
-                label="Ground Truth - ERA5",
+                label="Ground Truth",
             )
             axs[j, 0].plot(
                 x_eval,
                 kde_ml(x_eval),
                 color="salmon",
-                label="Model Prediction - SwissAI",
+                label="Model Prediction",
             )
             axs[j, 0].set_title(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
