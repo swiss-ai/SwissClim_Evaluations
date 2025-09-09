@@ -128,8 +128,15 @@ def ensemble_std(fct, name_prefix: str = "EnsembleSTD"):
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 
 
-def _add_metric_prefix(ds: xr.Dataset, prefix: str):
-    return ds.rename({var: f"{prefix}.{var}" for var in ds.data_vars})
+def _add_metric_prefix(da_or_ds: xr.Dataset | xr.DataArray, prefix: str):
+    # Accept both Dataset and DataArray; for DataArray, rename the variable name if present
+    if isinstance(da_or_ds, xr.DataArray):
+        name = da_or_ds.name or "value"
+        return da_or_ds.rename(f"{prefix}.{name}")
+    else:
+        return da_or_ds.rename({
+            var: f"{prefix}.{var}" for var in da_or_ds.data_vars
+        })
 
 
 # --- Runner helpers and orchestrators (combined) ---

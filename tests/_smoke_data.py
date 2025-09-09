@@ -15,8 +15,9 @@ def make_synthetic_datasets(
 ) -> tuple[xr.Dataset, xr.Dataset]:
     rng = np.random.default_rng(0)
     coords = {
-        "time": np.arange(time, dtype="datetime64[h]")
-        + np.datetime64("2021-01-01T00"),
+        # Build time coordinate as hourly timedeltas added to a start datetime
+        "time": np.datetime64("2021-01-01T00", "h")
+        + np.arange(time, dtype="timedelta64[h]"),
         "latitude": np.linspace(45.0, 47.0, lat),
         "longitude": np.linspace(6.0, 9.0, lon),
     }

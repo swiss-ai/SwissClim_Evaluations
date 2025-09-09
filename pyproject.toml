@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0",
     "opt-einsum>=3.4.0",
     "pandas>=2.2",
+    "pytest>=7.4",
     "scikit-image>=0.24",
     "scikit-learn>=1.5",
     "scipy>=1.15.2",
