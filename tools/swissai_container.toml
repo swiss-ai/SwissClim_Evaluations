@@ -1,0 +1,31 @@
+# Swiss AI container definition for CSCS
+
+# If the container is not availble on the system, it can be built with:
+# podman build -t python:3.11-slim -f tools/swissai.dockerfile .
+# enroot import -o /capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/swissai.sqsh podman://localhost/python:3.11-slim
+
+
+image = "/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/tools/swissai.sqsh"
+
+workdir = "/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations"
+
+mounts = [
+    "/users",
+    "/capstor",
+    "/iopsstor",
+    "/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations",
+]
+writable = true
+
+[env]
+LD_LIBRARY_PATH = "/usr/local/cuda/lib64:/opt/hpcx/ucc/lib/:/opt/hpcx/ucx/lib:/usr/local/cuda/compat/lib.real:/external/lib:/usr/local/lib/python3.10/dist-packages/torch/lib:/usr/local/lib/python3.10/dist-packages/torch_tensorrt/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+XDG_CONFIG_HOME = "/root/.config"
+HTTP_PROXY = "http://proxy.cscs.ch:8080"
+HTTPS_PROXY = "http://proxy.cscs.ch:8080"
+CONDA_AUTO_ACTIVATE_BASE = "false"
+CONDA_DEFAULT_ENV = ""
+GOGC = "off"
+OMP_WAIT_POLICY = "ACTIVE"
+OMP_PLACES = "cores"
+OMP_PROC_BIND = "close"
+OMP_MAX_ACTIVE_LEVELS = "1"

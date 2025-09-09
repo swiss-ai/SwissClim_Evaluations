@@ -43,3 +43,7 @@ Thumbs.db
 *.log
 *.tmp
 *.swp
+
+# SwissClim Evaluations specific
+logs
+*.sqsh
