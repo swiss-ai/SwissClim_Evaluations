@@ -124,8 +124,6 @@ Enable via YAML (`modules.*`) or `--modules` flag:
 - probabilistic: CRPS, PIT, ensemble statistics
 - probabilistic_wbx: WeatherBench-X compatible probabilistic metrics
 
-Legacy alias for `--chapters metrics` has been removed.
-
 ## Outputs
 
 Examples under `output_root`:
@@ -170,7 +168,3 @@ python -m jupyter notebook notebooks/
 ## Contributing
 
 Contributions are welcome. Please follow Xarray-friendly patterns and keep computations chunk-aware where practical.
-
-## Notes
-
-- If building in a container and you see `/root/.cargo/bin/uv: not found`, either install uv in your Dockerfile or replace the uv step with pip.
