@@ -1,0 +1,8 @@
+name: swissai-eval
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11 # fixed because of weatherbenchX
+  - uv
+  - pip
