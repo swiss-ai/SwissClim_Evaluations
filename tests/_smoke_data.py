@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+import numpy as np
+import xarray as xr
+
+VARS_2D = ["2m_temperature", "10m_u_component_of_wind"]
+
+
+def make_synthetic_datasets(
+    with_ensemble: bool = True,
+    time: int = 2,
+    lat: int = 3,
+    lon: int = 4,
+    ensemble: int = 5,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    rng = np.random.default_rng(0)
+    coords = {
+        "time": np.arange(time, dtype="datetime64[h]")
+        + np.datetime64("2021-01-01T00"),
+        "latitude": np.linspace(45.0, 47.0, lat),
+        "longitude": np.linspace(6.0, 9.0, lon),
+    }
+    obs = xr.Dataset(
+        {
+            v: (
+                ["time", "latitude", "longitude"],
+                rng.standard_normal((time, lat, lon)),
+            )
+            for v in VARS_2D
+        },
+        coords=coords,
+    )
+
+    if with_ensemble:
+        coords_ml = coords | {"ensemble": np.arange(ensemble)}
+        ml = xr.Dataset(
+            {
+                v: (
+                    ["time", "latitude", "longitude", "ensemble"],
+                    rng.standard_normal((time, lat, lon, ensemble))
+                    + obs[v].values[..., None],
+                )
+                for v in VARS_2D
+            },
+            coords=coords_ml,
+        )
+    else:
+        ml = xr.Dataset(
+            {
+                v: (
+                    ["time", "latitude", "longitude"],
+                    rng.standard_normal((time, lat, lon)) + obs[v].values,
+                )
+                for v in VARS_2D
+            },
+            coords=coords,
+        )
+
+    return obs, ml

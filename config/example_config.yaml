@@ -1,0 +1,52 @@
+paths:
+  ml: "/iopsstor/scratch/cscs/sadamov/pyprojects_data/swissai/preds_20250219/aurora.zarr"
+  nwp: "/capstor/store/cscs/ERA5/weatherbench2_original"
+  output_root: "output/verification_esfm"
+
+selection:
+  levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+  temporal_resolution_hours: 1
+  datetimes: ["2021-01-01T12", "2021-02-01T06"]
+  latitudes: [90.0, -89.75]
+  longitudes: [0.0, 359.75]
+  variables_2d: [
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+    "2m_temperature",
+    "mean_sea_level_pressure",
+  ]
+  variables_3d: [
+    "geopotential",
+    "specific_humidity",
+    "temperature",
+    "u_component_of_wind",
+    "v_component_of_wind",
+  ]
+  ensemble_member: 0
+  check_missing: false
+
+plotting:
+  random_seed: 42
+  time_subsamples: 10
+  dpi: 48
+  outputs: ["file", "cell-first"]
+  save_plot_data: true
+
+chapters:
+  maps: true
+  histograms: true
+  wd_kde: true
+  energy_spectra: true
+  vertical_profiles: true
+  deterministic: true
+  ets: true
+  probabilistic: false
+  probabilistic_wbx: false
+
+metrics:
+  deterministic:
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+  ets:
+    thresholds: [50, 60, 70, 80, 90]
+    save_csv: true
