@@ -1,243 +1,176 @@
-# SwissClim_Evaluations
+# SwissClim Evaluations
 
-A Python package for evaluating weather and climate model forecasts using probabilistic and deterministic metrics.
-
-## TL;DR
-
-- Recommended install (uv):
-  - Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-  - Create env + deps: `uv sync && source .venv/bin/activate`
-- Hello World (Python): see the short snippet below to compute CRPS on synthetic data in seconds.
-- CLI runs full "chapters" from a YAML config (examples below).
-
-## Overview
-
-SwissClim_Evaluations provides tools to assess any weather or climate model output by computing verification metrics. The package works with any model data as long as it follows the expected Xarray format conventions. Built-in support is provided for ERA5, IFS ensemble forecasts, and ESMF model outputs.
-
-## Features
-
-- **Probabilistic Metrics**: CRPS, Probability Integral Transform (PIT), ensemble statistics
-- **Universal Model Support**: Works with any weather/climate model output in proper Xarray format
-- **Built-in Data Loaders**: ERA5, IFS ensemble, and ESMF model data
-- **Spatial Aggregation**: Latitude-weighted averaging and histogram computations
-- **WeatherBench-X Integration**: Compatible with weatherbenchX metrics framework
-- **Efficient Processing**: Chunked processing for large datasets using Xarray and Dask
+Evaluate weather and climate model output against reference datasets (e.g., ERA5) with deterministic and probabilistic metrics, spectral analysis, and diagnostic plots. Built on Xarray, NumPy/SciPy, Dask, and Cartopy (for maps).
 
 ## Installation
 
-Pick one of the following:
+Pick one workflow:
 
-1. uv (recommended, fastest)
+- UV virtualenv (recommended)
+  - Use the provided script which also clones WBX next to the repo:
+    - bash tools/setup_env_uv.sh
+  - This sets up a `.venv` with Python 3.12 (via uv), installs deps, and clones `../weatherbenchX` for WBX metrics.
 
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-source .venv/bin/activate
+- Conda environment
+  - Create and activate env from `tools/environment.yml` (Python 3.11):
+    - bash tools/setup_env_conda.sh
+  - Then activate it later with: `conda activate swissai-eval`
+
+- Container (CSCS Enroot/Sarus)
+  - See `tools/swissai_container.toml` and `tools/swissai.dockerfile` for building/importing a Python 3.11 image that clones WBX and installs this project.
+
+Notes:
+
+- WeatherBench-X (WBX) is used for additional probabilistic metrics. The project is configured to source WBX locally (see `[tool.uv.sources]` in `pyproject.toml`). If you plan to run WBX modules, ensure `../weatherbenchX` exists. The UV and container scripts handle this automatically.
+- Cartopy is required for map plots and is included as a dependency.
+
+1. Create a minimal YAML config (e.g., `config/minimal.yaml`):
+
+```yaml
+paths:
+  nwp: "/path/to/era5.zarr"           # ERA5 or similar reference
+  ml:  "/path/to/model_output.zarr"   # Your model predictions
+  output_root: "./output/verification"
+
+selection:
+  variables_2d: ["2m_temperature"]    # optional: variables_3d, levels, latitudes, longitudes, datetimes
+  temporal_resolution_hours: 6          # optional downsampling
+  # ensemble_member: 0                  # pick a member if ML has an ensemble dim
+
+modules:
+  deterministic: true
+  probabilistic: true
+  maps: false
+  histograms: false
+  wd_kde: false
+  energy_spectra: false
+  vertical_profiles: false
+  ets: false
+  probabilistic_wbx: false
+
+plotting:
+  outputs: ["file"]                   # ["file", "cell", "cell-first"]
+  dpi: 48
+  random_seed: 42
+  time_subsamples: 4
+  save_plot_data: false
+
+metrics:
+  deterministic:
+    include: ["MAE", "RMSE", "Pearson R", "FSS", "Wasserstein"]   # optional
+    standardized_include: ["MAE", "RMSE", "Wasserstein"]            # optional
+  ets:
+    thresholds: [90, 95, 99]     # quantile thresholds in %
+    save_csv: true
 ```
 
-1. pip (vanilla Python)
+1. Run modules using the module entry point:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-# WeatherBench-X may be needed; either from PyPI or directly from GitHub
-python -m pip install git+https://github.com/google-research/weatherbenchX.git
-python -m pip install -e .
+python -m swissclim_evaluations.cli --config config/minimal.yaml
+# Or select modules explicitly (preferred flag):
+python -m swissclim_evaluations.cli --config config/minimal.yaml --modules deterministic probabilistic
 ```
 
-1. CSCS (Clariden) with modules and uv
+Outputs are written under `paths.output_root`, one subfolder per module.
 
-```bash
-module load prgenv-gnu/24.11:v1
-./tools/setup_env_uv.sh
-source .venv/bin/activate
-```
+## Quick start (Python)
 
-## Quick Start
-
-### Hello World (Python in < 30s)
-
-Compute CRPS and PIT on tiny synthetic data to see the library in action:
+Compute CRPS and PIT on toy data:
 
 ```python
 import numpy as np
 import xarray as xr
 from swissclim_evaluations.metrics.probabilistic import crps_ensemble, probability_integral_transform
 
-# Synthetic grid and time
 time = xr.cftime_range("2021-01-01", periods=4)
-lat = xr.DataArray(np.linspace(-60, 60, 8), dims=["latitude"]) 
-lon = xr.DataArray(np.linspace(0, 357.5, 16), dims=["longitude"]) 
-ens = xr.DataArray(np.arange(5), dims=["ensemble"]) 
+lat = xr.DataArray(np.linspace(-60, 60, 8), dims=["latitude"])
+lon = xr.DataArray(np.linspace(0, 357.5, 16), dims=["longitude"])
+ens = xr.DataArray(np.arange(5), dims=["ensemble"])
 
-# Observations and ensemble forecasts for a single variable
 rng = np.random.default_rng(0)
-obs = xr.Dataset({
-  "2m_temperature": ("time", rng.normal(size=time.size))
-}).assign_coords(time=time).expand_dims({"latitude": lat, "longitude": lon}).transpose("time","latitude","longitude")
+obs = xr.Dataset({"2m_temperature": ("time", rng.normal(size=time.size))}).assign_coords(time=time).expand_dims({"latitude": lat, "longitude": lon}).transpose("time","latitude","longitude")
+fct = xr.Dataset({"2m_temperature": (("time","ensemble"), rng.normal(size=(time.size, ens.size)))}).assign_coords(time=time, ensemble=ens).expand_dims({"latitude": lat, "longitude": lon}).transpose("time","ensemble","latitude","longitude")
 
-fct = xr.Dataset({
-  "2m_temperature": ("time", rng.normal(size=time.size))
-}).assign_coords(time=time).expand_dims({"latitude": lat, "longitude": lon, "ensemble": ens}).transpose("time","ensemble","latitude","longitude")
-
-# Compute scores
 crps = crps_ensemble(obs["2m_temperature"], fct["2m_temperature"], ensemble_dim="ensemble")
 pit = probability_integral_transform(obs["2m_temperature"], fct["2m_temperature"], ensemble_dim="ensemble")
-
 print("CRPS mean:", float(crps.mean()))
 print("PIT mean:", float(pit.mean()))
 ```
 
-That’s it—no data downloads needed.
+## Data requirements
 
-### Using Your Own Model Data
+- Xarray Datasets with standard dims:
+  - time (optional), latitude/lat, longitude/lon
+  - level for 3D variables (pressure level)
+  - ensemble (optional)
+- CLI expects:
+  - paths.nwp: reference dataset (e.g., ERA5)
+  - paths.ml: model predictions (e.g., Zarr)
+- Optional selection keys: variables_2d, variables_3d, levels, latitudes, longitudes, datetimes, temporal_resolution_hours, ensemble_member
+- Time alignment and optional subsampling are handled in the CLI.
 
-The package works with any model output that follows Xarray conventions:
+## Modules
 
-```python
-import xarray as xr
-from swissclim_evaluations.metrics.probabilistic import crps_ensemble
+Enable via YAML (`modules.*`) or `--modules` flag:
 
-# Load your model data (must have proper dimensions)
-forecasts = xr.open_dataset("your_model_output.nc")  # e.g., dims: [time, ensemble, lat, lon]
-observations = xr.open_dataset("observations.nc")    # e.g., dims: [time, lat, lon]
+- maps: Global maps for 2D and per-level 3D fields (Cartopy)
+- histograms: Distributions by latitude bands
+- wd_kde: KDEs by latitude band with Wasserstein distances (standardized)
+- energy_spectra: Zonal energy spectra and Log Spectral Distance (LSD)
+- vertical_profiles: Relative error vertical profiles per latitude band
+- deterministic: MAE, RMSE, MSE, Pearson R, FSS, Wasserstein; plus standardized metrics
+- ets: Equitable Threat Score across quantile thresholds
+- probabilistic: CRPS, PIT, ensemble statistics
+- probabilistic_wbx: WeatherBench-X compatible probabilistic metrics
 
-# Compute CRPS
-crps = crps_ensemble(observations, forecasts, ensemble_dim="ensemble")
-```
+Legacy alias for `--chapters metrics` has been removed.
 
-### Using Built-in Data Loaders
+## Outputs
 
-```python
-from swissclim_evaluations.data import era5, ifs
-from swissclim_evaluations.metrics.probabilistic import crps_ensemble
+Examples under `output_root`:
 
-# Load data using built-in loaders
-obs = era5(variables=["2m_temperature"])
-forecasts = ifs(variables=["2m_temperature"])
+- `deterministic/metrics.csv`, `deterministic/metrics_standardized.csv`
+- `histograms/*.png` (+ optional `*.npz`)
+- `wd_kde/*.png` (+ optional `*.npz`)
+- `energy_spectra/*_energy.png`, `energy_spectra/lsd_metrics.csv` (+ optional `*.npz`)
+- `vertical_profiles/*_pl_rel_error.png` (+ optional `*_pl_rel_error.nc`)
+- `maps/*_sfc.png` and `maps/*_pl.png` (+ optional NetCDF dumps)
+- `probabilistic/crps_summary.csv`, `probabilistic/{var}_pit_hist.npz` (+ optional `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`)
+- `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
 
-# Compute metrics
-crps = crps_ensemble(obs, forecasts, ensemble_dim="ensemble")
-```
+Standardization: Some comparisons also run on standardized pairs (combined mean/std over ds and ds_ml) and are saved separately.
 
-## Data Format Requirements
+## Tips
 
-Your model data should be Xarray Datasets/DataArrays with standard dimension names:
+- Large data: use `selection.temporal_resolution_hours` and `plotting.time_subsamples` to reduce work.
+- Ensemble data: set `selection.ensemble_member` to pick a single member from ML data when needed.
+- Reproducibility: `plotting.save_plot_data` writes arrays used to create figures.
 
-- **Time dimensions**: `time`, `init_time`, `lead_time`
-- **Spatial dimensions**: `latitude`/`lat`, `longitude`/`lon`
-- **Ensemble dimension**: `ensemble`, `member`, or specify via `ensemble_dim` parameter
+## Notebooks
 
-## Available Metrics
+- notebooks/probabilistic_verification.ipynb: Probabilistic verification
+- notebooks/probabilistic_verification_wbx.ipynb: WeatherBench-X workflow
 
-### Probabilistic Metrics ([`src/swissclim_evaluations/metrics/probabilistic.py`](src/swissclim_evaluations/metrics/probabilistic.py))
-
-- **CRPS (Continuous Ranked Probability Score)**: [`crps_ensemble`](src/swissclim_evaluations/metrics/probabilistic.py), [`crps_e1`](src/swissclim_evaluations/metrics/probabilistic.py), [`crps_e2`](src/swissclim_evaluations/metrics/probabilistic.py)
-- **PIT (Probability Integral Transform)**: [`probability_integral_transform`](src/swissclim_evaluations/metrics/probabilistic.py)
-- **Ensemble Statistics**: [`ensemble_mean_se`](src/swissclim_evaluations/metrics/probabilistic.py), [`ensemble_std`](src/swissclim_evaluations/metrics/probabilistic.py)
-
-## Project Structure
-
-```text
-SwissClim_Evaluations/
-├── src/swissclim_evaluations/
-│   ├── __init__.py
-│   ├── data.py                    # Data loading functions
-│   ├── helpers.py                 # Utility functions
-│   ├── aggregations.py           # Spatial aggregation tools
-│   └── metrics/
-│       ├── probabilistic.py      # Core probabilistic + WBX-compatible metrics
-│       └── deterministic.py      # Deterministic (formerly objective) metrics
-├── notebooks/                     # Analysis notebooks
-├── tools/setup_env.sh            # Environment setup script
-└── README.md
-```
-
-## CLI runner
-
-This repo also provides a YAML-driven CLI to run verification “chapters” end-to-end. Chapters can be enabled in your YAML config under `chapters` or selected explicitly via the CLI `--chapters` flag.
-
-- plots: `maps`, `histograms`, `wd_kde`, `vertical_profiles`
-- metrics: `energy_spectra`, `deterministic`, `ets`, `probabilistic`, `probabilistic_wbx`
-
-Configuration examples can be found in `config/example_config.yaml`. Notable keys:
-
-- `plotting.save_plot_data` (bool): Save data used to generate plots in addition to images.
-- `metrics.deterministic.include` and `metrics.deterministic.standardized_include`: Control which deterministic metrics are computed and stored.
-- `metrics.ets.thresholds`: Quantile thresholds (in %) for ETS computation.
-- `metrics.ets.save_csv` (bool): Save ETS results to `output_root/ets/ets_metrics.csv`.
-
-## Try it
-
-Run chapters via the CLI using your YAML config:
-
-```bash
-swissclim-evaluations --config config/example_config.yaml --chapters deterministic probabilistic
-```
-
-If you omit `--chapters`, the CLI uses the toggles under `chapters:` in your YAML.
-
-### Minimal YAML example
-
-Create a small `config/minimal.yaml` pointing to your datasets and choose a couple of chapters:
-
-```yaml
-paths:
-  nwp: "/path/to/era5.zarr"      # or NetCDF; must follow xarray conventions
-  ml: "/path/to/model_output.zarr"
-  output_root: "./output/verification"
-
-selection:
-  variables_2d: ["2m_temperature"]
-  temporal_resolution_hours: 6    # optional downsampling
-
-chapters:
-  deterministic: true
-  probabilistic: true
-
-plotting:
-  save_plot_data: false
-```
-
-Then run:
-
-```bash
-swissclim-evaluations --config config/minimal.yaml
-```
-
-## Examples
-
-See the [`notebooks/`](notebooks/) directory for detailed examples:
-
-- [`probabilistic_verification.ipynb`](notebooks/probabilistic_verification.ipynb): Probabilistic forecast verification
-- [`probabilistic_verification_wbx.ipynb`](notebooks/probabilistic_verification_wbx.ipynb): Using WeatherBench-X metrics
-
-## Contributing
-
-This package is designed for evaluating climate foundational models. When adding new metrics or data sources, ensure compatibility with the Xarray/Dask ecosystem and follow the existing code patterns.
-
-## Dependencies
-
-- `xarray`: Multi-dimensional data handling
-- `numpy`: Numerical computations
-- `dask`: Parallel and chunked computing
-- `weatherbenchX`: Weather forecast verification framework
-
-## Notes
-
-- The former “objective metrics” have been renamed to “deterministic” throughout the code and config (metrics.deterministic.*). The CLI still accepts `--chapters metrics` for backward compatibility.
-- If building in a container and you see `/root/.cargo/bin/uv: not found`, either install uv in your Dockerfile or replace the uv step with pip:
-  - Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-  - Or use pip: `python -m pip install -e .`
-
-### Open the notebooks
-
-After activating the environment, launch Jupyter and open the examples:
+Launch with your environment active:
 
 ```bash
 python -m ipykernel install --user --name swissclim-evals --display-name "Python (swissclim-evals)"
 python -m jupyter notebook notebooks/
 ```
 
-Select the installed kernel when prompted.
+## Dependencies
+
+- xarray, numpy, scipy, pandas, dask
+- matplotlib, seaborn, bokeh
+- cartopy (maps)
+- scores (verification metrics)
+- weatherbenchX (WBX-compatible metrics; local source expected at `../weatherbenchX`)
+
+## Contributing
+
+Contributions are welcome. Please follow Xarray-friendly patterns and keep computations chunk-aware where practical.
+
+## Notes
+
+- If building in a container and you see `/root/.cargo/bin/uv: not found`, either install uv in your Dockerfile or replace the uv step with pip.

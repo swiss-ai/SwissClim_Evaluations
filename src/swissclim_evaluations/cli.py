@@ -133,7 +133,9 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
     return p
 
 
-def run_selected(cfg: dict[str, Any], chapters: list[str] | None) -> None:
+def run_selected(
+    cfg: dict[str, Any], selected_modules: list[str] | None
+) -> None:
     ds, ds_ml, ds_std, ds_ml_std = prepare_datasets(cfg)
 
     out_root = _ensure_output(
@@ -143,46 +145,45 @@ def run_selected(cfg: dict[str, Any], chapters: list[str] | None) -> None:
     plotting = cfg.get("plotting", {})
 
     # Import lazily to avoid import time if not needed
-    if (not chapters and chapter_flags.get("maps")) or (
-        chapters and "maps" in chapters
+    if (not selected_modules and chapter_flags.get("maps")) or (
+        selected_modules and "maps" in selected_modules
     ):
         from .plots import maps as maps_mod
 
         maps_mod.run(ds, ds_ml, out_root, plotting)
 
-    if (not chapters and chapter_flags.get("histograms")) or (
-        chapters and "histograms" in chapters
+    if (not selected_modules and chapter_flags.get("histograms")) or (
+        selected_modules and "histograms" in selected_modules
     ):
         from .plots import histograms as hist_mod
 
         hist_mod.run(ds, ds_ml, out_root, plotting)
 
-    if (not chapters and chapter_flags.get("wd_kde")) or (
-        chapters and "wd_kde" in chapters
+    if (not selected_modules and chapter_flags.get("wd_kde")) or (
+        selected_modules and "wd_kde" in selected_modules
     ):
         from .plots import wd_kde as wd_mod
 
         wd_mod.run(ds, ds_ml, ds_std, ds_ml_std, out_root, plotting)
 
-    if (not chapters and chapter_flags.get("energy_spectra")) or (
-        chapters and "energy_spectra" in chapters
+    if (not selected_modules and chapter_flags.get("energy_spectra")) or (
+        selected_modules and "energy_spectra" in selected_modules
     ):
         from .metrics import energy_spectra as es_mod
 
         es_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
-    if (not chapters and chapter_flags.get("vertical_profiles")) or (
-        chapters and "vertical_profiles" in chapters
+    if (not selected_modules and chapter_flags.get("vertical_profiles")) or (
+        selected_modules and "vertical_profiles" in selected_modules
     ):
         from .plots import vertical_profiles as vp_mod
 
         vp_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
     # Deterministic (previously called objective metrics)
-    if (
-        not chapters
-        and (chapter_flags.get("deterministic") or chapter_flags.get("metrics"))
-    ) or (chapters and ("deterministic" in chapters or "metrics" in chapters)):
+    if (not selected_modules and chapter_flags.get("deterministic")) or (
+        selected_modules and ("deterministic" in selected_modules)
+    ):
         from .metrics import deterministic as det_mod
 
         det_mod.run(
@@ -195,22 +196,22 @@ def run_selected(cfg: dict[str, Any], chapters: list[str] | None) -> None:
             cfg.get("metrics", {}),
         )
 
-    if (not chapters and chapter_flags.get("ets")) or (
-        chapters and "ets" in chapters
+    if (not selected_modules and chapter_flags.get("ets")) or (
+        selected_modules and "ets" in selected_modules
     ):
         from .metrics import ets as ets_mod
 
         ets_mod.run(ds, ds_ml, out_root, cfg.get("metrics", {}))
 
-    if (not chapters and chapter_flags.get("probabilistic")) or (
-        chapters and "probabilistic" in chapters
+    if (not selected_modules and chapter_flags.get("probabilistic")) or (
+        selected_modules and "probabilistic" in selected_modules
     ):
         from .metrics.probabilistic import run_probabilistic
 
         run_probabilistic(ds, ds_ml, out_root, plotting, cfg)
 
-    if (not chapters and chapter_flags.get("probabilistic_wbx")) or (
-        chapters and "probabilistic_wbx" in chapters
+    if (not selected_modules and chapter_flags.get("probabilistic_wbx")) or (
+        selected_modules and "probabilistic_wbx" in selected_modules
     ):
         from .metrics.probabilistic import run_probabilistic_wbx
 
@@ -233,12 +234,28 @@ def build_parser() -> argparse.ArgumentParser:
             "energy_spectra",
             "vertical_profiles",
             "deterministic",
-            "metrics",
             "ets",
             "probabilistic",
             "probabilistic_wbx",
         ],
-        help="Subset of chapters to run. If omitted, uses config toggles",
+        help="[Deprecated] Use --modules. Subset of modules to run. If omitted, uses config toggles.",
+    )
+    p.add_argument(
+        "--modules",
+        type=str,
+        nargs="*",
+        choices=[
+            "maps",
+            "histograms",
+            "wd_kde",
+            "energy_spectra",
+            "vertical_profiles",
+            "deterministic",
+            "ets",
+            "probabilistic",
+            "probabilistic_wbx",
+        ],
+        help="Subset of modules to run. If omitted, uses config toggles.",
     )
     return p
 
@@ -246,7 +263,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
-    run_selected(cfg, args.chapters)
+    # Combine deprecated --chapters and new --modules
+    selected: list[str] | None = None
+    if args.modules or args.chapters:
+        selected = []
+        if args.modules:
+            selected.extend(args.modules)
+        if args.chapters:
+            selected.extend(args.chapters)
+    run_selected(cfg, selected)
 
 
 if __name__ == "__main__":
