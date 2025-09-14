@@ -1,12 +1,23 @@
 #!/bin/bash
 
+ENV_NAME="prgenv-gnu/24.11:v1"
+
+# Check if uenv image is already pulled
+if ! uenv image list | grep -q "$ENV_NAME"; then
+    echo "🔄 Pulling uenv image $ENV_NAME to local storage..."
+    uenv image pull "$ENV_NAME"
+else
+    echo "✅ uenv image $ENV_NAME already available locally."
+fi
+
 # Check if already in uenv environment
 if uenv status | grep -q "there is no uenv loaded"; then
-    echo "Starting uenv with prgenv-gnu..."
-    uenv start prgenv-gnu/24.11:v1 --view=modules
+    echo "🚀 Starting uenv with $ENV_NAME..."
+    uenv start "$ENV_NAME" --view=modules
 else
     echo "✅ Already in uenv environment: $UENV_SESSION"
 fi
+
 # load required modules
 module load gcc
 module load cmake 
