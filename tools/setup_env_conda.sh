@@ -1,12 +1,30 @@
+
 #!/bin/bash
 set -euo pipefail
+
+# Path to conda.sh
+CONDA_SH="$HOME/miniconda3/etc/profile.d/conda.sh"
+
 # Check if conda is available
 if ! command -v conda > /dev/null; then
-    echo "❌ conda is not available. Please install conda first."
-    exit 1
+    echo "⚠️ conda command not found in PATH. Trying to source conda.sh..."
+    if [ -f "$CONDA_SH" ]; then
+        # shellcheck source=/dev/null
+        source "$CONDA_SH"
+        if command -v conda > /dev/null; then
+            echo "✅ conda successfully sourced from $CONDA_SH."
+        else
+            echo "❌ Failed to source conda from $CONDA_SH. Please install or initialize conda."
+            exit 1
+        fi
+    else
+        echo "❌ conda.sh not found at $CONDA_SH. Please install conda or adjust the path."
+        exit 1
+    fi
 else
-    echo "✅ conda is available."
+    echo "✅ conda is already available."
 fi
+
 
 # Create conda environment if not already created
 if ! conda env list | grep -q "swissai-eval"; then
