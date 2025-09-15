@@ -24,11 +24,10 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
-    outputs = plotting_cfg.get(
-        "outputs", ["file"]
-    )  # ["file", "cell", "cell-first"]
+    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = bool(plotting_cfg.get("save_plot_data", False))
     section_output = out_root / "wd_kde"
 
     variables_2d = [
@@ -37,8 +36,21 @@ def run(
     lat_bins, n_bands, n_rows = _lat_bands()
 
     for i, variable_name in enumerate(variables_2d):
+        print(f"[wd_kde] variable: {variable_name}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
+        combined = {
+            "neg_x": [],
+            "neg_kde_ds": [],
+            "neg_kde_ml": [],
+            "neg_lat_min": [],
+            "neg_lat_max": [],
+            "pos_x": [],
+            "pos_kde_ds": [],
+            "pos_kde_ml": [],
+            "pos_lat_min": [],
+            "pos_lat_max": [],
+        }
 
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
@@ -81,16 +93,12 @@ def run(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
             )
             axs[j, 1].legend()
-            if save_plot_data:
-                section_output.mkdir(parents=True, exist_ok=True)
-                np.savez(
-                    section_output
-                    / f"{variable_name}_neg_{lat_min}_{lat_max}_kde.npz",
-                    x_eval=x_eval,
-                    kde_ds=kde_ds(x_eval),
-                    kde_ml=kde_ml(x_eval),
-                    wasserstein=w,
-                )
+            if save_npz:
+                combined["neg_x"].append(x_eval)
+                combined["neg_kde_ds"].append(kde_ds(x_eval))
+                combined["neg_kde_ml"].append(kde_ml(x_eval))
+                combined["neg_lat_min"].append(float(lat_min))
+                combined["neg_lat_max"].append(float(lat_max))
 
         # Positive latitudes (left column)
         for j in range(n_bands // 2):
@@ -133,16 +141,12 @@ def run(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
             )
             axs[j, 0].legend()
-            if save_plot_data:
-                section_output.mkdir(parents=True, exist_ok=True)
-                np.savez(
-                    section_output
-                    / f"{variable_name}_pos_{lat_min}_{lat_max}_kde.npz",
-                    x_eval=x_eval,
-                    kde_ds=kde_ds(x_eval),
-                    kde_ml=kde_ml(x_eval),
-                    wasserstein=w,
-                )
+            if save_npz:
+                combined["pos_x"].append(x_eval)
+                combined["pos_kde_ds"].append(kde_ds(x_eval))
+                combined["pos_kde_ml"].append(kde_ml(x_eval))
+                combined["pos_lat_min"].append(float(lat_min))
+                combined["pos_lat_max"].append(float(lat_max))
 
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
         plt.suptitle(
@@ -151,18 +155,29 @@ def run(
         )
         plt.tight_layout()
 
-        if "file" in outputs:
+        if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
             plt.savefig(
                 section_output / f"{variable_name}_sfc_latbands_norm.png",
                 bbox_inches="tight",
                 dpi=200,
             )
-        if (
-            i == 0
-            and "cell-first" in outputs
-            and plt.get_backend().lower().find("agg") == -1
-        ):
-            plt.show()
-        if i > 0 and "cell" not in outputs:
-            plt.close(fig)
+        if save_npz:
+            section_output.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                section_output
+                / f"{variable_name}_sfc_latbands_kde_combined.npz",
+                mean_w=mean_w,
+                neg_x=np.array(combined["neg_x"], dtype=object),
+                neg_kde_ds=np.array(combined["neg_kde_ds"], dtype=object),
+                neg_kde_ml=np.array(combined["neg_kde_ml"], dtype=object),
+                neg_lat_min=np.array(combined["neg_lat_min"]),
+                neg_lat_max=np.array(combined["neg_lat_max"]),
+                pos_x=np.array(combined["pos_x"], dtype=object),
+                pos_kde_ds=np.array(combined["pos_kde_ds"], dtype=object),
+                pos_kde_ml=np.array(combined["pos_kde_ml"], dtype=object),
+                pos_lat_min=np.array(combined["pos_lat_min"]),
+                pos_lat_max=np.array(combined["pos_lat_max"]),
+                allow_pickle=True,
+            )
+        plt.close(fig)

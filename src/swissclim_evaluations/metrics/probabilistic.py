@@ -204,11 +204,12 @@ def run_probabilistic(
     Outputs:
     - crps_summary.csv (mean across common dims)
     - {var}_pit_hist.npz (counts, edges)
-    - Optional: {var}_pit.nc and {var}_crps.nc when plotting.save_plot_data is True
+    - Optional: {var}_pit.nc and {var}_crps.nc when plotting.output_mode is 'npz' or 'both'
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
-    save_plot_data = bool(cfg_plot.get("save_plot_data", False))
+    mode = str(cfg_plot.get("output_mode", "plot")).lower()
+    save_plot_data = mode in ("npz", "both")
 
     if "ensemble" not in ds_ml.dims:
         print(

@@ -76,9 +76,10 @@ def _plot_energy_spectra(
     ds_ml: xr.Dataset,
     var: str,
     level: int | None,
-    out_path: Path,
+    out_path: Path | None,
     dpi: int,
     save_plot_data: bool = False,
+    save_figure: bool = True,
 ) -> float:
     if level is not None:
         var_data = ds[var].sel(level=level)
@@ -149,12 +150,17 @@ def _plot_energy_spectra(
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, bbox_inches="tight", dpi=200)
+    if save_figure and out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_path, bbox_inches="tight", dpi=200)
     if save_plot_data:
         # Save underlying spectra and wavenumber arrays
         np.savez(
-            out_path.with_suffix(".npz"),
+            (
+                out_path.with_suffix(".npz")
+                if out_path is not None
+                else Path("spectra_temp.npz")
+            ),
             wavenumber_ds=wavenumber_ds,
             spectrum_ds=spectrum_ds,
             wavenumber_ml=wavenumber_ml,
@@ -175,8 +181,10 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
 ) -> None:
+    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = bool(plotting_cfg.get("save_plot_data", False))
+    save_plot_data = mode in ("npz", "both")
+    save_figure = mode in ("plot", "both")
     section_output = out_root / "energy_spectra"
 
     variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
@@ -185,28 +193,34 @@ def run(
 
     # 2D variables
     for var in variables_2d:
+        print(f"[energy_spectra] 2D variable: {var}")
         _plot_energy_spectra(
             ds,
             ds_ml,
             var,
             None,
-            section_output / f"{var}_sfc_energy.png",
+            (section_output / f"{var}_sfc_energy.png") if save_figure else None,
             dpi,
             save_plot_data,
+            save_figure,
         )
 
     # 3D variables and LSD table
     lsd_data: dict[str, list[float]] = {var: [] for var in variables_3d}
     for var in variables_3d:
+        print(f"[energy_spectra] 3D variable: {var}")
         for level in levels:
             lsd = _plot_energy_spectra(
                 ds,
                 ds_ml,
                 var,
                 int(level),
-                section_output / f"{var}_{level}hPa_energy.png",
+                (section_output / f"{var}_{level}hPa_energy.png")
+                if save_figure
+                else None,
                 dpi,
                 save_plot_data,
+                save_figure,
             )
             lsd_data[var].append(lsd)
 

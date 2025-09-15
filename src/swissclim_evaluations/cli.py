@@ -285,6 +285,15 @@ def run_selected(
     )
     chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
+    mode = str(plotting.get("output_mode", "plot")).lower()
+
+    # Basic overview
+    all_vars = list(ds.data_vars)
+    vars_2d = [v for v in all_vars if "level" not in ds[v].dims]
+    vars_3d = [v for v in all_vars if "level" in ds[v].dims]
+    print(
+        f"[swissclim] Starting run. Output mode={mode}. Variables: 2D={len(vars_2d)}, 3D={len(vars_3d)}. Selected modules={selected_modules or 'config-toggles'}."
+    )
 
     # Import lazily to avoid import time if not needed
     if (not selected_modules and chapter_flags.get("maps")) or (
@@ -292,6 +301,9 @@ def run_selected(
     ):
         from .plots import maps as maps_mod
 
+        print(
+            f"[swissclim] Module: maps — vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
+        )
         maps_mod.run(ds, ds_ml, out_root, plotting)
 
     if (not selected_modules and chapter_flags.get("histograms")) or (
@@ -299,6 +311,7 @@ def run_selected(
     ):
         from .plots import histograms as hist_mod
 
+        print(f"[swissclim] Module: histograms — vars_2d={len(vars_2d)}")
         hist_mod.run(ds, ds_ml, out_root, plotting)
 
     if (not selected_modules and chapter_flags.get("wd_kde")) or (
@@ -306,6 +319,9 @@ def run_selected(
     ):
         from .plots import wd_kde as wd_mod
 
+        print(
+            f"[swissclim] Module: wd_kde — vars_2d={len(vars_2d)} (standardized)"
+        )
         wd_mod.run(ds, ds_ml, ds_std, ds_ml_std, out_root, plotting)
 
     if (not selected_modules and chapter_flags.get("energy_spectra")) or (
@@ -313,6 +329,9 @@ def run_selected(
     ):
         from .metrics import energy_spectra as es_mod
 
+        print(
+            f"[swissclim] Module: energy_spectra — vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
+        )
         es_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
     if (not selected_modules and chapter_flags.get("vertical_profiles")) or (
@@ -320,6 +339,7 @@ def run_selected(
     ):
         from .plots import vertical_profiles as vp_mod
 
+        print(f"[swissclim] Module: vertical_profiles — vars_3d={len(vars_3d)}")
         vp_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
     # Deterministic (previously called objective metrics)
@@ -327,6 +347,8 @@ def run_selected(
         selected_modules and ("deterministic" in selected_modules)
     ):
         from .metrics import deterministic as det_mod
+
+        print(f"[swissclim] Module: deterministic — variables={len(all_vars)}")
 
         det_mod.run(
             ds,
@@ -343,6 +365,7 @@ def run_selected(
     ):
         from .metrics import ets as ets_mod
 
+        print(f"[swissclim] Module: ets — variables={len(all_vars)}")
         ets_mod.run(ds, ds_ml, out_root, cfg.get("metrics", {}))
 
     if (not selected_modules and chapter_flags.get("probabilistic")) or (
@@ -350,6 +373,9 @@ def run_selected(
     ):
         from .metrics.probabilistic import run_probabilistic
 
+        print(
+            "[swissclim] Module: probabilistic — using ensemble metrics if available"
+        )
         run_probabilistic(ds, ds_ml, out_root, plotting, cfg)
 
     if (not selected_modules and chapter_flags.get("probabilistic_wbx")) or (
@@ -357,6 +383,9 @@ def run_selected(
     ):
         from .metrics.probabilistic import run_probabilistic_wbx
 
+        print(
+            "[swissclim] Module: probabilistic_wbx — WBX spread–skill and CRPS"
+        )
         run_probabilistic_wbx(ds, ds_ml, out_root, plotting, cfg)
 
 

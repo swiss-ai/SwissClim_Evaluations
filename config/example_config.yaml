@@ -30,27 +30,28 @@ plotting:
   random_seed: 42
   time_subsamples: 10
   dpi: 48
-  outputs: ["file", "cell-first"]
-  save_plot_data: true
+  # Unified plotting output mode:
+  #   - plot: save PNGs only
+  #   - npz: export numeric data files only (NPZ)
+  #   - both: save PNGs and export NPZ
+  output_mode: both
+  # Legacy keys 'outputs' and 'save_plot_data' are still supported if output_mode is omitted.
 
 modules:
-  maps: false
-  histograms: false
-  wd_kde: false
-  energy_spectra: false
-  vertical_profiles: false
-  deterministic: false
-  ets: false
-  probabilistic: true
-  probabilistic_wbx: true
+  maps: true
+  histograms: true
+  wd_kde: true
+  energy_spectra: true
+  vertical_profiles: true
+  deterministic: true
+  ets: true
+  probabilistic: false
+  probabilistic_wbx: false
 
 metrics:
   deterministic:
-    # include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
-    include: ["MAE"]
-    # standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
-    standardized_include: ["MAE"]
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
   ets:
-    # thresholds: [50, 60, 70, 80, 90]
-    thresholds: [90]
-    save_csv: true
+    thresholds: [50, 60, 70, 80, 90]
+    # CSV export is always enabled for ETS; this key is ignored if present.

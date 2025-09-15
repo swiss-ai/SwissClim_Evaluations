@@ -7,6 +7,7 @@ from typing import Any
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
+import numpy as np
 import xarray as xr
 
 
@@ -16,12 +17,11 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
-    outputs = plotting_cfg.get(
-        "outputs", ["file"]
-    )  # ["file", "cell", "cell-first"]
+    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     seed = int(plotting_cfg.get("random_seed", 42))
-    save_plot_data = bool(plotting_cfg.get("save_plot_data", False))
 
     section_output = out_root / "maps"
 
@@ -48,6 +48,7 @@ def run(
 
     # 2D maps
     for i, var in enumerate(variables_2d):
+        print(f"[maps] 2D variable: {var}")
         fig, axes = plt.subplots(
             1,
             2,
@@ -107,30 +108,35 @@ def run(
                 f"{var} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
             )
 
-        if "file" in outputs:
+        if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
             plt.savefig(
                 section_output / f"{time_fmt}_{var}_sfc.png",
                 bbox_inches="tight",
                 dpi=200,
             )
-        if save_plot_data:
-            # Save the exact data used for this plot
-            ds_save = xr.Dataset({"nwp": ds_var, "ml": ds_ml_var})
+        if save_npz:
+            # Save the exact data used for this plot as NPZ for portability
             section_output.mkdir(parents=True, exist_ok=True)
-            ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_sfc.nc")
+            npz_path = section_output / f"{time_fmt}_{var}_sfc.npz"
+            # store arrays and minimal coords
+            np.savez(
+                npz_path,
+                nwp=ds_var.values,
+                ml=ds_ml_var.values,
+                latitude=ds_var.coords.get("latitude", None).values
+                if "latitude" in ds_var.coords
+                else None,
+                longitude=ds_var.coords.get("longitude", None).values
+                if "longitude" in ds_var.coords
+                else None,
+            )
 
-        if (
-            i == 0
-            and "cell-first" in outputs
-            and plt.get_backend().lower().find("agg") == -1
-        ):
-            plt.show()
-        if i > 0 and "cell" not in outputs:
-            plt.close(fig)
+        plt.close(fig)
 
     # 3D maps per level
     for i, var in enumerate(variables_3d):
+        print(f"[maps] 3D variable: {var}")
         levels = list(ds[var].coords.get("level", []))
         if not levels:
             continue
@@ -200,22 +206,28 @@ def run(
             )
         plt.subplots_adjust(bottom=0.1, top=0.95, hspace=0.05, wspace=0.05)
 
-        if "file" in outputs:
+        if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
             plt.savefig(
                 section_output / f"{time_fmt}_{var}_pl.png",
                 bbox_inches="tight",
                 dpi=200,
             )
-        if save_plot_data:
-            ds_save = xr.Dataset({"nwp": ds_var, "ml": ds_ml_var})
+        if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_pl.nc")
-        if (
-            i == 0
-            and "cell-first" in outputs
-            and plt.get_backend().lower().find("agg") == -1
-        ):
-            plt.show()
-        if i > 0 and "cell" not in outputs:
-            plt.close(fig)
+            npz_path = section_output / f"{time_fmt}_{var}_pl.npz"
+            np.savez(
+                npz_path,
+                nwp=ds_var.values,
+                ml=ds_ml_var.values,
+                latitude=ds_var.coords.get("latitude", None).values
+                if "latitude" in ds_var.coords
+                else None,
+                longitude=ds_var.coords.get("longitude", None).values
+                if "longitude" in ds_var.coords
+                else None,
+                level=ds_var.coords.get("level", None).values
+                if "level" in ds_var.coords
+                else None,
+            )
+        plt.close(fig)

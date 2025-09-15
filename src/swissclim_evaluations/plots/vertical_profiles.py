@@ -23,11 +23,10 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
 ) -> None:
-    outputs = plotting_cfg.get(
-        "outputs", ["file"]
-    )  # ["file", "cell", "cell-first"]
+    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = bool(plotting_cfg.get("save_plot_data", False))
     section_output = out_root / "vertical_profiles"
 
     variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
@@ -37,6 +36,7 @@ def run(
 
     fig_count = 0
     for var in variables_3d:
+        print(f"[vertical_profiles] variable: {var}")
         # Derive actual levels present for this variable; intersect with config if provided
         level_coord = ds[var].coords.get("level", None)
         if level_coord is None or int(level_coord.size) == 0:
@@ -193,15 +193,15 @@ def run(
         )
         plt.tight_layout()
 
-        if "file" in outputs:
+        if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
             plt.savefig(
                 section_output / f"{var}_pl_rel_error.png",
                 bbox_inches="tight",
                 dpi=200,
             )
-        if save_plot_data:
-            # Save relative error curves per band and level
+        if save_npz:
+            # Save a single combined NPZ for this variable containing all bands and metadata
             bands = n_bands // 2
             neg_curves = []
             pos_curves = []
@@ -279,25 +279,17 @@ def run(
 
             neg_arr = np.stack(neg_curves, axis=0)
             pos_arr = np.stack(pos_curves, axis=0)
-            ds_save = xr.Dataset({
-                "rel_error_neg": (("band", "level"), neg_arr),
-                "rel_error_pos": (("band", "level"), pos_arr),
-            }).assign_coords(
-                band=np.arange(bands),
-                level=("level", level_values),
-                neg_lat_min=("band", np.array(neg_min)),
-                neg_lat_max=("band", np.array(neg_max)),
-                pos_lat_min=("band", np.array(pos_min)),
-                pos_lat_max=("band", np.array(pos_max)),
-            )
             section_output.mkdir(parents=True, exist_ok=True)
-            ds_save.to_netcdf(section_output / f"{var}_pl_rel_error.nc")
-        if (
-            fig_count == 0
-            and "cell-first" in outputs
-            and plt.get_backend().lower().find("agg") == -1
-        ):
-            plt.show()
-        if fig_count > 0 and "cell" not in outputs:
-            plt.close(fig)
+            np.savez(
+                section_output / f"{var}_pl_rel_error_combined.npz",
+                rel_error_neg=neg_arr,
+                rel_error_pos=pos_arr,
+                band=np.arange(bands),
+                level=level_values,
+                neg_lat_min=np.array(neg_min),
+                neg_lat_max=np.array(neg_max),
+                pos_lat_min=np.array(pos_min),
+                pos_lat_max=np.array(pos_max),
+            )
+        plt.close(fig)
         fig_count += 1

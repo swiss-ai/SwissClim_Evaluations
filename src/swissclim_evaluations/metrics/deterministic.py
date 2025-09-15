@@ -172,3 +172,15 @@ def run(
     section_output.mkdir(parents=True, exist_ok=True)
     regular_metrics.to_csv(section_output / "metrics.csv")
     standardized_metrics.to_csv(section_output / "metrics_standardized.csv")
+
+    # Console summary similar to ETS
+    try:
+        print("Deterministic metrics (first 5 rows):")
+        print(regular_metrics.head())
+    except Exception:
+        pass
+    try:
+        print("Deterministic standardized metrics (first 5 rows):")
+        print(standardized_metrics.head())
+    except Exception:
+        pass

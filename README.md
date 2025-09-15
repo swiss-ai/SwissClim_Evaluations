@@ -49,11 +49,12 @@ modules:
   probabilistic_wbx: false
 
 plotting:
-  outputs: ["file"]                   # ["file", "cell", "cell-first"]
+  # Unified output control: one of 'plot', 'npz', or 'both'
+  output_mode: plot                    # or npz, or both
   dpi: 48
   random_seed: 42
   time_subsamples: 4
-  save_plot_data: false
+  # Use 'output_mode' to control figure (PNG) vs numeric exports (NPZ)
 
 metrics:
   deterministic:
@@ -61,7 +62,7 @@ metrics:
     standardized_include: ["MAE", "RMSE", "Wasserstein"]            # optional
   ets:
     thresholds: [90, 95, 99]     # quantile thresholds in %
-    save_csv: true
+    # CSV export is always enabled; no save_csv toggle
 ```
 
 1. Run modules using the module entry point:
@@ -108,8 +109,8 @@ Examples under `output_root`:
 - `histograms/*.png` (+ optional `*.npz`)
 - `wd_kde/*.png` (+ optional `*.npz`)
 - `energy_spectra/*_energy.png`, `energy_spectra/lsd_metrics.csv` (+ optional `*.npz`)
-- `vertical_profiles/*_pl_rel_error.png` (+ optional `*_pl_rel_error.nc`)
-- `maps/*_sfc.png` and `maps/*_pl.png` (+ optional NetCDF dumps)
+- `vertical_profiles/*_pl_rel_error.png` (+ optional `*_pl_rel_error.npz`)
+- `maps/*_sfc.png` and `maps/*_pl.png` (+ optional `*.npz` dumps)
 - `probabilistic/crps_summary.csv`, `probabilistic/{var}_pit_hist.npz` (+ optional `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`)
 - `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
 
@@ -119,7 +120,7 @@ Standardization: Some comparisons also run on standardized pairs (combined mean/
 
 - Large data: use `selection.temporal_resolution_hours` and `plotting.time_subsamples` to reduce work.
 - Ensemble data: set `selection.ensemble_member` to pick a single member from ML data when needed.
-- Reproducibility: `plotting.save_plot_data` writes arrays used to create figures.
+-- Reproducibility: set `plotting.output_mode: npz` or `both` to write arrays used to create figures.
 
 ## Notebooks
 
