@@ -195,11 +195,9 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                section_output / f"{var}_pl_rel_error.png",
-                bbox_inches="tight",
-                dpi=200,
-            )
+            out_png = section_output / f"{var}_pl_rel_error.png"
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[vertical_profiles] saved {out_png}")
         if save_npz:
             # Save a single combined NPZ for this variable containing all bands and metadata
             bands = n_bands // 2
@@ -280,8 +278,9 @@ def run(
             neg_arr = np.stack(neg_curves, axis=0)
             pos_arr = np.stack(pos_curves, axis=0)
             section_output.mkdir(parents=True, exist_ok=True)
+            out_npz = section_output / f"{var}_pl_rel_error_combined.npz"
             np.savez(
-                section_output / f"{var}_pl_rel_error_combined.npz",
+                out_npz,
                 rel_error_neg=neg_arr,
                 rel_error_pos=pos_arr,
                 band=np.arange(bands),
@@ -291,5 +290,6 @@ def run(
                 pos_lat_min=np.array(pos_min),
                 pos_lat_max=np.array(pos_max),
             )
+            print(f"[vertical_profiles] saved {out_npz}")
         plt.close(fig)
         fig_count += 1

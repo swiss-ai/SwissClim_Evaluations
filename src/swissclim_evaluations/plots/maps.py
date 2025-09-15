@@ -110,11 +110,9 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                section_output / f"{time_fmt}_{var}_sfc.png",
-                bbox_inches="tight",
-                dpi=200,
-            )
+            out_png = section_output / f"{time_fmt}_{var}_sfc.png"
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[maps] saved {out_png}")
         if save_npz:
             # Save the exact data used for this plot as NPZ for portability
             section_output.mkdir(parents=True, exist_ok=True)
@@ -131,6 +129,7 @@ def run(
                 if "longitude" in ds_var.coords
                 else None,
             )
+            print(f"[maps] saved {npz_path}")
 
         plt.close(fig)
 
@@ -208,11 +207,9 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                section_output / f"{time_fmt}_{var}_pl.png",
-                bbox_inches="tight",
-                dpi=200,
-            )
+            out_png = section_output / f"{time_fmt}_{var}_pl.png"
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[maps] saved {out_png}")
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
             npz_path = section_output / f"{time_fmt}_{var}_pl.npz"
@@ -230,4 +227,5 @@ def run(
                 if "level" in ds_var.coords
                 else None,
             )
+            print(f"[maps] saved {npz_path}")
         plt.close(fig)

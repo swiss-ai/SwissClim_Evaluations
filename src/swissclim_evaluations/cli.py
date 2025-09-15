@@ -275,9 +275,7 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
     return p
 
 
-def run_selected(
-    cfg: dict[str, Any], selected_modules: list[str] | None
-) -> None:
+def run_selected(cfg: dict[str, Any]) -> None:
     ds, ds_ml, ds_std, ds_ml_std = prepare_datasets(cfg)
 
     out_root = _ensure_output(
@@ -292,13 +290,11 @@ def run_selected(
     vars_2d = [v for v in all_vars if "level" not in ds[v].dims]
     vars_3d = [v for v in all_vars if "level" in ds[v].dims]
     print(
-        f"[swissclim] Starting run. Output mode={mode}. Variables: 2D={len(vars_2d)}, 3D={len(vars_3d)}. Selected modules={selected_modules or 'config-toggles'}."
+        f"[swissclim] Starting run → output_root='{out_root}'. Output mode={mode}. Variables: 2D={len(vars_2d)}, 3D={len(vars_3d)}. Modules from config toggles."
     )
 
     # Import lazily to avoid import time if not needed
-    if (not selected_modules and chapter_flags.get("maps")) or (
-        selected_modules and "maps" in selected_modules
-    ):
+    if chapter_flags.get("maps"):
         from .plots import maps as maps_mod
 
         print(
@@ -306,17 +302,13 @@ def run_selected(
         )
         maps_mod.run(ds, ds_ml, out_root, plotting)
 
-    if (not selected_modules and chapter_flags.get("histograms")) or (
-        selected_modules and "histograms" in selected_modules
-    ):
+    if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
 
         print(f"[swissclim] Module: histograms — vars_2d={len(vars_2d)}")
         hist_mod.run(ds, ds_ml, out_root, plotting)
 
-    if (not selected_modules and chapter_flags.get("wd_kde")) or (
-        selected_modules and "wd_kde" in selected_modules
-    ):
+    if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
 
         print(
@@ -324,9 +316,7 @@ def run_selected(
         )
         wd_mod.run(ds, ds_ml, ds_std, ds_ml_std, out_root, plotting)
 
-    if (not selected_modules and chapter_flags.get("energy_spectra")) or (
-        selected_modules and "energy_spectra" in selected_modules
-    ):
+    if chapter_flags.get("energy_spectra"):
         from .metrics import energy_spectra as es_mod
 
         print(
@@ -334,18 +324,14 @@ def run_selected(
         )
         es_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
-    if (not selected_modules and chapter_flags.get("vertical_profiles")) or (
-        selected_modules and "vertical_profiles" in selected_modules
-    ):
+    if chapter_flags.get("vertical_profiles"):
         from .plots import vertical_profiles as vp_mod
 
         print(f"[swissclim] Module: vertical_profiles — vars_3d={len(vars_3d)}")
         vp_mod.run(ds, ds_ml, out_root, plotting, cfg.get("selection", {}))
 
     # Deterministic (previously called objective metrics)
-    if (not selected_modules and chapter_flags.get("deterministic")) or (
-        selected_modules and ("deterministic" in selected_modules)
-    ):
+    if chapter_flags.get("deterministic"):
         from .metrics import deterministic as det_mod
 
         print(f"[swissclim] Module: deterministic — variables={len(all_vars)}")
@@ -360,17 +346,13 @@ def run_selected(
             cfg.get("metrics", {}),
         )
 
-    if (not selected_modules and chapter_flags.get("ets")) or (
-        selected_modules and "ets" in selected_modules
-    ):
+    if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
 
         print(f"[swissclim] Module: ets — variables={len(all_vars)}")
         ets_mod.run(ds, ds_ml, out_root, cfg.get("metrics", {}))
 
-    if (not selected_modules and chapter_flags.get("probabilistic")) or (
-        selected_modules and "probabilistic" in selected_modules
-    ):
+    if chapter_flags.get("probabilistic"):
         from .metrics.probabilistic import run_probabilistic
 
         print(
@@ -378,9 +360,7 @@ def run_selected(
         )
         run_probabilistic(ds, ds_ml, out_root, plotting, cfg)
 
-    if (not selected_modules and chapter_flags.get("probabilistic_wbx")) or (
-        selected_modules and "probabilistic_wbx" in selected_modules
-    ):
+    if chapter_flags.get("probabilistic_wbx"):
         from .metrics.probabilistic import run_probabilistic_wbx
 
         print(
@@ -394,33 +374,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--config", type=str, required=True, help="Path to YAML config"
     )
-    p.add_argument(
-        "--modules",
-        type=str,
-        nargs="*",
-        choices=[
-            "maps",
-            "histograms",
-            "wd_kde",
-            "energy_spectra",
-            "vertical_profiles",
-            "deterministic",
-            "ets",
-            "probabilistic",
-            "probabilistic_wbx",
-        ],
-        help=(
-            "Optional subset of modules to run. If omitted, uses module toggles from the config file."
-        ),
-    )
     return p
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
-    # Pass through optional module subset directly
-    run_selected(cfg, args.modules)
+    run_selected(cfg)
 
 
 if __name__ == "__main__":

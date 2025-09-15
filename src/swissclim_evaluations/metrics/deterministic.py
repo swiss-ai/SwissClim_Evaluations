@@ -170,8 +170,12 @@ def run(
     ]
 
     section_output.mkdir(parents=True, exist_ok=True)
-    regular_metrics.to_csv(section_output / "metrics.csv")
-    standardized_metrics.to_csv(section_output / "metrics_standardized.csv")
+    out_csv = section_output / "metrics.csv"
+    out_csv_std = section_output / "metrics_standardized.csv"
+    regular_metrics.to_csv(out_csv)
+    standardized_metrics.to_csv(out_csv_std)
+    print(f"[deterministic] saved {out_csv}")
+    print(f"[deterministic] saved {out_csv_std}")
 
     # Console summary similar to ETS
     try:

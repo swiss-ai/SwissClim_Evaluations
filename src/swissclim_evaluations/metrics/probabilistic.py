@@ -208,8 +208,7 @@ def run_probabilistic(
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
-    mode = str(cfg_plot.get("output_mode", "plot")).lower()
-    save_plot_data = mode in ("npz", "both")
+    # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
 
     if "ensemble" not in ds_ml.dims:
         print(
@@ -244,19 +243,28 @@ def run_probabilistic(
                 obs, fct, ensemble_dim="ensemble", name_prefix=None
             )
             counts, edges = _pit_histogram_np(pit_da, bins=50)
+            pit_npz = section_output / f"{var}_pit_hist.npz"
             np.savez(
-                section_output / f"{var}_pit_hist.npz",
+                pit_npz,
                 counts=counts,
                 edges=edges,
             )
-            if save_plot_data:
-                pit_da.to_netcdf(section_output / f"{var}_pit.nc")
-                crps_da.to_netcdf(section_output / f"{var}_crps.nc")
+            print(f"[probabilistic] saved {pit_npz}")
+            # Always save PIT and CRPS fields for reproducibility
+            pit_nc = section_output / f"{var}_pit.nc"
+            crps_nc = section_output / f"{var}_crps.nc"
+            pit_da.to_netcdf(pit_nc)
+            crps_da.to_netcdf(crps_nc)
+            print(f"[probabilistic] saved {pit_nc}")
+            print(f"[probabilistic] saved {crps_nc}")
 
     if crps_rows:
-        pd.DataFrame(crps_rows).groupby("variable").mean().to_csv(
-            section_output / "crps_summary.csv"
-        )
+        df = pd.DataFrame(crps_rows).groupby("variable").mean()
+        out_csv = section_output / "crps_summary.csv"
+        df.to_csv(out_csv)
+        print("CRPS summary (per variable):")
+        print(df.head())
+        print(f"[probabilistic] saved {out_csv}")
 
 
 # --- WBX-compatible metric classes (moved from wbx.py) ---
@@ -397,7 +405,9 @@ def run_probabilistic_wbx(
     except TypeError:
         ssr_values = ssr_metric.compute(predictions=fct, targets=obs)  # type: ignore[attr-defined]
     ssr_df = _per_variable_mean_df(ssr_values)
-    ssr_df.to_csv(section_output / "spread_skill_ratio.csv")
+    ssr_csv = section_output / "spread_skill_ratio.csv"
+    ssr_df.to_csv(ssr_csv)
+    print(f"[probabilistic_wbx] saved {ssr_csv}")
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
     try:
@@ -405,7 +415,9 @@ def run_probabilistic_wbx(
     except TypeError:
         crps_values = crps_metric.compute(predictions=fct, targets=obs)  # type: ignore[attr-defined]
     crps_df = _per_variable_mean_df(crps_values)
-    crps_df.to_csv(section_output / "crps_ensemble.csv")
+    crps_csv = section_output / "crps_ensemble.csv"
+    crps_df.to_csv(crps_csv)
+    print(f"[probabilistic_wbx] saved {crps_csv}")
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:

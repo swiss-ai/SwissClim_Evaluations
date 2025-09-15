@@ -1,21 +1,49 @@
+# Global configuration for SwissClim Evaluations
+#
+# Tip: All paths should be absolute or relative to the repository root.
+# Python: 3.11 (uv, conda, and container setups)
+
 paths:
+  # Path to your model predictions in Zarr format (root directory).
+  # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
   ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_tail_20250219_Jan2021_b.zarr/"
+
+  # Path to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
   nwp: "/capstor/store/cscs/ERA5/weatherbench2_original"
+
+  # Where outputs are written; a subfolder per module will be created here.
   output_root: "output/verification_esfm"
 
 selection:
-  # levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+  # Pressure levels (hPa) for 3D variables. Only levels present in the data are kept.
+  # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
   levels: [100, 500, 1000]
+
+  # Optional time downsampling in hours. Applied as a stride along lead_time if present,
+  # otherwise along init_time. Set to null to disable.
   temporal_resolution_hours: 1
+
+  # Time slice in ISO-8601 format [start, end]. Examples: "2021-01-01T00", "2021-01-05T06".
+  # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
   datetimes: ["2021-01-01T12", "2021-01-05T06"]
+
+  # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
+  # so [90, -90] is typical. Adjust to match your grid extents.
   latitudes: [90.0, -89.75]
+
+  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360 (e.g., 0.0 to 359.75).
   longitudes: [0.0, 359.75]
+
+  # Variables without a level dimension present in BOTH datasets.
   variables_2d: [
     "10m_u_component_of_wind",
     # "10m_v_component_of_wind",
     # "2m_temperature",
     # "mean_sea_level_pressure",
   ]
+
+  # Variables with a level dimension present in BOTH datasets (pressure levels).
   variables_3d: [
     # "geopotential",
     # "specific_humidity",
@@ -23,35 +51,57 @@ selection:
     "u_component_of_wind",
     # "v_component_of_wind",
   ]
+
+  # For ML datasets with an 'ensemble' dimension:
+  #   - Set to an integer index to select a single member for deterministic runs.
+  #   - Leave as null/omit to use the ensemble mean when probabilistic modules are disabled.
+  #   - When probabilistic modules are enabled, ensemble is kept regardless.
   ensemble_member: 0
+
+  # If true, raise an error when requested pressure levels are missing from the data.
   check_missing: false
 
 plotting:
+  # Random seed used for reproducible time subsampling in plots.
   random_seed: 42
+
+  # Number of init_time samples to plot (randomly chosen). Use null or 0 to disable subsampling.
   time_subsamples: 10
+
+  # Base DPI for plots.
   dpi: 48
+
   # Unified plotting output mode:
-  #   - plot: save PNGs only
-  #   - npz: export numeric data files only (NPZ)
+  #   - plot: save PNG figures only
+  #   - npz: export numeric data files only (NPZ) for supported modules
   #   - both: save PNGs and export NPZ
+  # Notes:
+  #   - Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
   output_mode: both
-  # Legacy keys 'outputs' and 'save_plot_data' are still supported if output_mode is omitted.
 
 modules:
-  maps: true
-  histograms: true
-  wd_kde: true
-  energy_spectra: true
-  vertical_profiles: true
-  deterministic: true
-  ets: true
-  probabilistic: false
-  probabilistic_wbx: false
+  # Toggle individual modules on/off. The CLI runs based on these flags only.
+  maps: true                 # Global and per-level maps (Cartopy)
+  histograms: true           # Distributions by latitude bands (2D variables)
+  wd_kde: true               # KDE by latitude band on standardized fields; also reports mean Wasserstein
+  energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
+  vertical_profiles: true    # Relative error vertical profiles per latitude band (3D)
+  deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: true                  # Equitable Threat Score across quantile thresholds
+  probabilistic: false       # CRPS & PIT with ensemble forecasts; NPZ/NetCDF artifacts always saved
+  probabilistic_wbx: false   # WBX-compatible metrics (Spread–Skill Ratio, CRPS ensemble)
 
 metrics:
+  # Deterministic metrics configuration. If lists are omitted, a default set is computed.
+  # Available metric names:
+  #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
+  #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
+    # Subset to compute on standardized pairs (combined mean/std across obs+model).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+
+  # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
+  # observed distribution at the given percentile.
   ets:
     thresholds: [50, 60, 70, 80, 90]
-    # CSV export is always enabled for ETS; this key is ignored if present.

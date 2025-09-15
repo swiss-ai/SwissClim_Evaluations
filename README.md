@@ -1,147 +1,129 @@
 # SwissClim Evaluations
 
-Evaluate weather and climate model output against reference datasets (e.g., ERA5) with deterministic and probabilistic metrics, spectral analysis, and diagnostic plots. Built on Xarray, NumPy/SciPy, Dask, and Cartopy (for maps).
+Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other references). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
 
-## Installation
+## Quickstart
 
-Pick one workflow:
+1. Create an environment (pick one):
 
-- UV virtualenv (recommended)
-  - Use the provided script which also clones WBX next to the repo:
-    - bash tools/setup_env_uv.sh
-  - This sets up a `.venv` with Python 3.12 (via uv), installs deps, and clones `../weatherbenchX` for WBX metrics.
+- UV virtualenv
+  - Run: bash tools/setup_env_uv.sh
+  - Creates .venv with Python 3.11 via uv and installs deps (+ clones ../weatherbenchX for WBX metrics).
 
-- Conda environment
-  - Create and activate env from `tools/environment.yml` (Python 3.11):
-    - bash tools/setup_env_conda.sh
-  - Then activate it later with: `conda activate swissai-eval`
+- Conda
+  - Run: bash tools/setup_env_conda.sh
+  - Creates env (Python 3.11) from tools/environment.yml and installs deps.
 
-- Container (CSCS Enroot/Sarus)
-  - See `tools/swissai_container.toml` and `tools/swissai.dockerfile` for building/importing a Python 3.11 image that clones WBX and installs this project.
+- Container (CSCS Enroot/Podman)
+  - See tools/swissai_container.toml and tools/swissai.dockerfile
 
-Notes:
+1. Review and edit the example config:
 
-- WeatherBench-X (WBX) is used for additional probabilistic metrics. The project is configured to source WBX locally (see `[tool.uv.sources]` in `pyproject.toml`). If you plan to run WBX modules, ensure `../weatherbenchX` exists. The UV and container scripts handle this automatically.
-- Cartopy is required for map plots and is included as a dependency.
+The project ships with a commented config that explains every key and valid values. Copy it and adjust the paths and selections as needed.
 
-1. Create a example_config YAML config (e.g., `config/example_config.yaml`):
+Example:
 
-```yaml
-paths:
-  nwp: "/path/to/era5.zarr"           # ERA5 or similar reference
-  ml:  "/path/to/model_output.zarr"   # Your model predictions
-  output_root: "./output/verification"
+- cp config/example_config.yaml config/my_run.yaml
+- Edit config/my_run.yaml (see inline comments)
 
-selection:
-  variables_2d: ["2m_temperature"]    # optional: variables_3d, levels, latitudes, longitudes, datetimes
-  temporal_resolution_hours: 6          # optional downsampling
-  # ensemble_member: 0                  # pick a member if ML has an ensemble dim
-
-modules:
-  deterministic: true
-  probabilistic: true
-  maps: false
-  histograms: false
-  wd_kde: false
-  energy_spectra: false
-  vertical_profiles: false
-  ets: false
-  probabilistic_wbx: false
-
-plotting:
-  # Unified output control: one of 'plot', 'npz', or 'both'
-  output_mode: plot                    # or npz, or both
-  dpi: 48
-  random_seed: 42
-  time_subsamples: 4
-  # Use 'output_mode' to control figure (PNG) vs numeric exports (NPZ)
-
-metrics:
-  deterministic:
-    include: ["MAE", "RMSE", "Pearson R", "FSS", "Wasserstein"]   # optional
-    standardized_include: ["MAE", "RMSE", "Wasserstein"]            # optional
-  ets:
-    thresholds: [90, 95, 99]     # quantile thresholds in %
-    # CSV export is always enabled; no save_csv toggle
-```
-
-1. Run modules using the module entry point:
+1. Run:
 
 ```bash
-python -m swissclim_evaluations.cli --config config/example_config.yaml
-# Or select modules explicitly (preferred flag):
-python -m swissclim_evaluations.cli --config config/example_config.yaml --modules deterministic probabilistic
+python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-Outputs are written under `paths.output_root`, one subfolder per module.
+Outputs appear under paths.output_root (one sub-folder per module).
 
-## Data requirements
+## Configure
 
-- Xarray Datasets with standard dims:
-  - time (optional), latitude/lat, longitude/lon
-  - level for 3D variables (pressure level)
-  - ensemble (optional)
-- CLI expects:
-  - paths.nwp: reference dataset (e.g., ERA5)
-  - paths.ml: model predictions (e.g., Zarr)
-- Optional selection keys: variables_2d, variables_3d, levels, latitudes, longitudes, datetimes, temporal_resolution_hours, ensemble_member
-- Time alignment and optional subsampling are handled in the CLI.
+The YAML is the single source of truth. Key sections:
 
-## Modules
+- paths
+  - ml: path to your model zarr
+  - nwp: path to ERA5 (WeatherBench2 style) or another reference
+  - output_root: where results go
+- selection
+  - variables_2d, variables_3d: variable names present in both datasets
+  - levels: pressure levels for 3D variables
+  - datetimes: [ISO start, ISO end] for slicing
+  - latitudes, longitudes: [min, max]
+  - temporal_resolution_hours: downsample along time to speed up
+  - ensemble_member: pick one ensemble member from ML if desired
+- plotting
+  - output_mode: plot | npz | both
+    - plot: save PNGs only
+    - npz: write numeric arrays only
+    - both: do both
+  - dpi, random_seed, time_subsamples
+- modules
+  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic, probabilistic_wbx
+- metrics
+  - deterministic.include / .standardized_include (optional filters)
+  - ets.thresholds (percentiles)
 
-Enable via YAML (`modules.*`) or `--modules` flag:
+Notes
 
-- maps: Global maps for 2D and per-level 3D fields (Cartopy)
-- histograms: Distributions by latitude bands
-- wd_kde: KDEs by latitude band with Wasserstein distances (standardized)
-- energy_spectra: Zonal energy spectra and Log Spectral Distance (LSD)
-- vertical_profiles: Relative error vertical profiles per latitude band
-- deterministic: MAE, RMSE, MSE, Pearson R, FSS, Wasserstein; plus standardized metrics
-- ets: Equitable Threat Score across quantile thresholds
-- probabilistic: CRPS, PIT, ensemble statistics
-- probabilistic_wbx: WeatherBench-X compatible probabilistic metrics
+- Time alignment: ERA5 uses time while the ML dataset uses init_time + lead_time. The CLI aligns them by valid_time = init_time + lead_time so both sides compare the same moments.
+- Ensemble handling: If your ML data has an ensemble dim, you can:
+  - selection.ensemble_member: pick a specific member, or
+  - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
+- Plotting control: output_mode is the only switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
 
-## Outputs
+## What you get
 
-Examples under `output_root`:
+- Deterministic metrics
+  - deterministic/metrics.csv and deterministic/metrics_standardized.csv
+  - Summary previews printed to the terminal
+- ETS
+  - ets/ets_metrics.csv and a terminal preview
+- Energy spectra
+  - energy_spectra/*_energy.png, energy_spectra/lsd_metrics.csv, and always an accompanying .npz with spectra arrays
+- Histograms by latitude bands (2D only)
+  - histograms/{var}_sfc_latbands.png (+ combined NPZ per var)
+- KDE + Wasserstein by bands (standardized)
+  - wd_kde/{var}_sfc_latbands_norm.png (+ combined NPZ per var, mean Wasserstein)
+- Vertical profiles (3D)
+  - vertical_profiles/{var}_pl_rel_error.png (+ combined NPZ per var)
+- Maps
+  - maps/{timestamp}_{var}_sfc.png and maps/{timestamp}_{var}_pl.png (+ NPZ dumps of arrays)
+- Probabilistic
+  - probabilistic/crps_summary.csv, probabilistic/{var}_pit_hist.npz, and always {var}_pit.nc and {var}_crps.nc
+- Probabilistic (WBX)
+  - probabilistic_wbx/spread_skill_ratio.csv, probabilistic_wbx/crps_ensemble.csv
 
-- `deterministic/metrics.csv`, `deterministic/metrics_standardized.csv`
-- `histograms/*.png` (+ optional `*.npz`)
-- `wd_kde/*.png` (+ optional `*.npz`)
-- `energy_spectra/*_energy.png`, `energy_spectra/lsd_metrics.csv` (+ optional `*.npz`)
-- `vertical_profiles/*_pl_rel_error.png` (+ optional `*_pl_rel_error.npz`)
-- `maps/*_sfc.png` and `maps/*_pl.png` (+ optional `*.npz` dumps)
-- `probabilistic/crps_summary.csv`, `probabilistic/{var}_pit_hist.npz` (+ optional `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`)
-- `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
+All modules print concise progress like:
 
-Standardization: Some comparisons also run on standardized pairs (combined mean/std over ds and ds_ml) and are saved separately.
+- [swissclim] Module: deterministic — variables=5
+- [histograms] variable: 10m_u_component_of_wind
+- [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_energy.png
 
-## Tips
+## Tips and best practices
 
-- Large data: use `selection.temporal_resolution_hours` and `plotting.time_subsamples` to reduce work.
-- Ensemble data: set `selection.ensemble_member` to pick a single member from ML data when needed.
--- Reproducibility: set `plotting.output_mode: npz` or `both` to write arrays used to create figures.
+- Reduce size
+  - selection.temporal_resolution_hours: 1, 3, 6 …
+  - plotting.time_subsamples: limit number of init_time samples for plots
+- Keep the same variable names between ERA5 and ML; only overlapping variables are processed.
+- Maps require Cartopy; use npz mode on headless systems if you only need data exports.
+- For reproducibility in plots, prefer plotting.output_mode: npz or both, which writes the exact arrays used to render figures.
 
 ## Notebooks
 
-- notebooks/probabilistic_verification.ipynb: Probabilistic verification
-- notebooks/probabilistic_verification_wbx.ipynb: WeatherBench-X workflow
+For the probabilistic modules, you can explore the outputs interactively using the provided notebooks (legacy support):
 
-Launch with your environment active:
+- notebooks/probabilistic_verification.ipynb
+- notebooks/probabilistic_verification_wbx.ipynb
 
-```bash
-python -m ipykernel install --user --name swissclim-evals --display-name "Python (swissclim-evals)"
-python -m jupyter notebook notebooks/
+## Development
+
+```
+- Python: 3.11
+- Key libs: xarray, numpy, scipy, pandas, matplotlib, cartopy, scores, weatherbenchX
 ```
 
-## Dependencies
+Run tests:
 
-- xarray, numpy, scipy, pandas, dask
-- matplotlib, seaborn, bokeh
-- cartopy (maps)
-- scores (verification metrics)
-- weatherbenchX (WBX-compatible metrics; local source expected at `../weatherbenchX`)
+```bash
+pytest -q
+```
 
-## Contributing
-
-Contributions are welcome. Please follow Xarray-friendly patterns and keep computations chunk-aware where practical.
+Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.

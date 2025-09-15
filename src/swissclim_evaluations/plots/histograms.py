@@ -131,11 +131,9 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                section_output / f"{variable_name}_sfc_latbands.png",
-                bbox_inches="tight",
-                dpi=200,
-            )
+            out_png = section_output / f"{variable_name}_sfc_latbands.png"
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[histograms] saved {out_png}")
         if save_npz:
             # Write one combined NPZ with all band histograms for this variable
             # Convert list of tuples to stacked arrays for easier downstream use
@@ -171,8 +169,11 @@ def run(
 
             # The _stack_counts_bins returns stacks of objects; to keep it simple, store ragged lists via allow_pickle
             section_output.mkdir(parents=True, exist_ok=True)
+            out_npz = (
+                section_output / f"{variable_name}_sfc_latbands_combined.npz"
+            )
             np.savez(
-                section_output / f"{variable_name}_sfc_latbands_combined.npz",
+                out_npz,
                 neg_counts=np.array(combined["neg_counts"], dtype=object),
                 neg_bins=np.array(combined["neg_bins"], dtype=object),
                 pos_counts=np.array(combined["pos_counts"], dtype=object),
@@ -183,4 +184,5 @@ def run(
                 pos_lat_max=np.array(combined["pos_lat_max"]),
                 allow_pickle=True,
             )
+            print(f"[histograms] saved {out_npz}")
         plt.close(fig)

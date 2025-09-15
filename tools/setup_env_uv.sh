@@ -33,7 +33,7 @@ fi
 # create environment if not already created
 if [ ! -d ".venv" ]; then
     echo "🔧 Creating environment..."
-    uv venv --prompt=swissai-eval --python=3.12.9
+    uv venv --prompt=swissai-eval --python=3.11.9
 else
     echo "✅ Environment already created."
 fi

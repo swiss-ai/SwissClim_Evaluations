@@ -157,16 +157,17 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                section_output / f"{variable_name}_sfc_latbands_norm.png",
-                bbox_inches="tight",
-                dpi=200,
-            )
+            out_png = section_output / f"{variable_name}_sfc_latbands_norm.png"
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[wd_kde] saved {out_png}")
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            np.savez(
+            out_npz = (
                 section_output
-                / f"{variable_name}_sfc_latbands_kde_combined.npz",
+                / f"{variable_name}_sfc_latbands_kde_combined.npz"
+            )
+            np.savez(
+                out_npz,
                 mean_w=mean_w,
                 neg_x=np.array(combined["neg_x"], dtype=object),
                 neg_kde_ds=np.array(combined["neg_kde_ds"], dtype=object),
@@ -180,4 +181,5 @@ def run(
                 pos_lat_max=np.array(combined["pos_lat_max"]),
                 allow_pickle=True,
             )
+            print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)

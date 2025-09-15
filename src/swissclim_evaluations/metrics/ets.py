@@ -51,4 +51,6 @@ def run(
     if out_root is not None:
         section_output = out_root / "ets"
         section_output.mkdir(parents=True, exist_ok=True)
-        df.to_csv(section_output / "ets_metrics.csv")
+        out_csv = section_output / "ets_metrics.csv"
+        df.to_csv(out_csv)
+        print(f"[ets] saved {out_csv}")

@@ -153,14 +153,16 @@ def _plot_energy_spectra(
     if save_figure and out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(out_path, bbox_inches="tight", dpi=200)
+        print(f"[energy_spectra] saved {out_path}")
     if save_plot_data:
         # Save underlying spectra and wavenumber arrays
+        npz_target = (
+            out_path.with_suffix(".npz")
+            if out_path is not None
+            else Path("spectra_temp.npz")
+        )
         np.savez(
-            (
-                out_path.with_suffix(".npz")
-                if out_path is not None
-                else Path("spectra_temp.npz")
-            ),
+            npz_target,
             wavenumber_ds=wavenumber_ds,
             spectrum_ds=spectrum_ds,
             wavenumber_ml=wavenumber_ml,
@@ -170,6 +172,7 @@ def _plot_energy_spectra(
             level=level if level is not None else -1,
             variable=var,
         )
+        print(f"[energy_spectra] saved {npz_target}")
     plt.close(fig)
     return lsd
 
@@ -183,7 +186,8 @@ def run(
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = mode in ("npz", "both")
+    # Always export NPZ data; figures are controlled by output_mode
+    save_plot_data = True
     save_figure = mode in ("plot", "both")
     section_output = out_root / "energy_spectra"
 
@@ -228,4 +232,6 @@ def run(
         df = pd.DataFrame(lsd_data, index=levels)
         df.index.name = "Height Level"
         section_output.mkdir(parents=True, exist_ok=True)
-        df.to_csv(section_output / "lsd_metrics.csv")
+        out_csv = section_output / "lsd_metrics.csv"
+        df.to_csv(out_csv)
+        print(f"[energy_spectra] saved {out_csv}")
