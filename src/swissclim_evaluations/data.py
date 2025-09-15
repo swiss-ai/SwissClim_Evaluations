@@ -44,11 +44,20 @@ def standardize_dims(ds: xr.Dataset, dataset_name: str) -> xr.Dataset:
             f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not allowed."
         )
 
-    # Convert legacy time -> init_time
+    # Convert legacy time -> init_time while keeping an index for label-based selection
     if "time" in ds.dims:
-        ds = ds.rename_dims({"time": "init_time"})
         if "time" in ds.coords:
+            # Rename both the dimension and its coordinate in one go
             ds = ds.rename({"time": "init_time"})
+            # On newer xarray, rename drops the xindex; restore it if possible
+            try:  # xarray>=2024.10
+                ds = ds.set_xindex("init_time")
+            except Exception:
+                # Older versions or if already indexed; safe to ignore
+                pass
+        else:
+            # Fallback: only dimension exists (no coord var)
+            ds = ds.rename_dims({"time": "init_time"})
 
     # Ensure latitude/longitude present
     for d in ("latitude", "longitude"):

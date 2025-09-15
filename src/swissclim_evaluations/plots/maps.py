@@ -120,7 +120,11 @@ def run(
             section_output.mkdir(parents=True, exist_ok=True)
             ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_sfc.nc")
 
-        if i == 0 and "cell-first" in outputs:
+        if (
+            i == 0
+            and "cell-first" in outputs
+            and plt.get_backend().lower().find("agg") == -1
+        ):
             plt.show()
         if i > 0 and "cell" not in outputs:
             plt.close(fig)
@@ -207,7 +211,11 @@ def run(
             ds_save = xr.Dataset({"nwp": ds_var, "ml": ds_ml_var})
             section_output.mkdir(parents=True, exist_ok=True)
             ds_save.to_netcdf(section_output / f"{time_fmt}_{var}_pl.nc")
-        if i == 0 and "cell-first" in outputs:
+        if (
+            i == 0
+            and "cell-first" in outputs
+            and plt.get_backend().lower().find("agg") == -1
+        ):
             plt.show()
         if i > 0 and "cell" not in outputs:
             plt.close(fig)

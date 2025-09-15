@@ -31,11 +31,25 @@ def run(
     section_output = out_root / "vertical_profiles"
 
     variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
-    levels = select_cfg.get("levels") or list(ds.coords.get("level", []))
     lat_bins, n_bands = _lat_bands()
+
+    # Note: derive levels per-variable from dataset to avoid mismatches with config
 
     fig_count = 0
     for var in variables_3d:
+        # Derive actual levels present for this variable; intersect with config if provided
+        level_coord = ds[var].coords.get("level", None)
+        if level_coord is None or int(level_coord.size) == 0:
+            continue
+        if select_cfg.get("levels"):
+            requested = np.array(select_cfg.get("levels"))
+            avail = set(level_coord.values.tolist())
+            level_values = np.array([lv for lv in requested if lv in avail])
+            if level_values.size == 0:
+                # No overlap; skip this variable
+                continue
+        else:
+            level_values = np.array(level_coord.values)
         n_cols = 2
         fig, axes = plt.subplots(
             n_cols, n_bands // 2, figsize=(24, 10), dpi=dpi * 2, sharey=True
@@ -49,15 +63,26 @@ def run(
             lat_min_neg = lat_bins[i]
             lat_max_neg = lat_bins[i + 1]
             lat_slice_neg = slice(lat_max_neg, lat_min_neg)
-            data_ds_neg = ds[var].sel(latitude=lat_slice_neg)
-            data_ds_ml_neg = ds_ml[var].sel(latitude=lat_slice_neg)
+            data_ds_neg = (
+                ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+            )
+            data_ds_ml_neg = (
+                ds_ml[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+            )
+            reduce_dims = [
+                d
+                for d in [
+                    "time",
+                    "init_time",
+                    "lead_time",
+                    "latitude",
+                    "longitude",
+                    "ensemble",
+                ]
+                if d in data_ds_neg.dims
+            ]
             rel_err_neg = ((data_ds_ml_neg - data_ds_neg) / data_ds_neg).mean(
-                dim=[
-                    d
-                    for d in ["time", "latitude", "longitude"]
-                    if d in data_ds_neg.dims
-                ],
-                skipna=True,
+                dim=reduce_dims, skipna=True
             ) * 100
             finite_mask = np.isfinite(rel_err_neg)
             if finite_mask.any():
@@ -72,15 +97,26 @@ def run(
             lat_min_pos = lat_bins[idx]
             lat_max_pos = lat_bins[idx - 1]
             lat_slice_pos = slice(lat_min_pos, lat_max_pos)
-            data_ds_pos = ds[var].sel(latitude=lat_slice_pos)
-            data_ds_ml_pos = ds_ml[var].sel(latitude=lat_slice_pos)
+            data_ds_pos = (
+                ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+            )
+            data_ds_ml_pos = (
+                ds_ml[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+            )
+            reduce_dims_pos = [
+                d
+                for d in [
+                    "time",
+                    "init_time",
+                    "lead_time",
+                    "latitude",
+                    "longitude",
+                    "ensemble",
+                ]
+                if d in data_ds_pos.dims
+            ]
             rel_err_pos = ((data_ds_ml_pos - data_ds_pos) / data_ds_pos).mean(
-                dim=[
-                    d
-                    for d in ["time", "latitude", "longitude"]
-                    if d in data_ds_pos.dims
-                ],
-                skipna=True,
+                dim=reduce_dims_pos, skipna=True
             ) * 100
             global_min = min(global_min, float(rel_err_pos.min()))
             global_max = max(global_max, float(rel_err_pos.max()))
@@ -90,17 +126,28 @@ def run(
             lat_max_neg = lat_bins[i + 1]
             lat_slice_neg = slice(lat_max_neg, lat_min_neg)
             ax_neg = axes[0, i]
-            data_ds_neg = ds[var].sel(latitude=lat_slice_neg)
-            data_ds_ml_neg = ds_ml[var].sel(latitude=lat_slice_neg)
+            data_ds_neg = (
+                ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+            )
+            data_ds_ml_neg = (
+                ds_ml[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+            )
+            reduce_dims = [
+                d
+                for d in [
+                    "time",
+                    "init_time",
+                    "lead_time",
+                    "latitude",
+                    "longitude",
+                    "ensemble",
+                ]
+                if d in data_ds_neg.dims
+            ]
             rel_err_neg = ((data_ds_ml_neg - data_ds_neg) / data_ds_neg).mean(
-                dim=[
-                    d
-                    for d in ["time", "latitude", "longitude"]
-                    if d in data_ds_neg.dims
-                ],
-                skipna=True,
+                dim=reduce_dims, skipna=True
             ) * 100
-            ax_neg.plot(rel_err_neg, levels)
+            ax_neg.plot(np.ravel(rel_err_neg.squeeze().values), level_values)
             ax_neg.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
             ax_neg.set_xlabel("Relative Error (%)")
             ax_neg.set_ylabel("Level")
@@ -112,17 +159,28 @@ def run(
             lat_max_pos = lat_bins[idx - 1]
             lat_slice_pos = slice(lat_min_pos, lat_max_pos)
             ax_pos = axes[1, i]
-            data_ds_pos = ds[var].sel(latitude=lat_slice_pos)
-            data_ds_ml_pos = ds_ml[var].sel(latitude=lat_slice_pos)
+            data_ds_pos = (
+                ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+            )
+            data_ds_ml_pos = (
+                ds_ml[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+            )
+            reduce_dims_pos = [
+                d
+                for d in [
+                    "time",
+                    "init_time",
+                    "lead_time",
+                    "latitude",
+                    "longitude",
+                    "ensemble",
+                ]
+                if d in data_ds_pos.dims
+            ]
             rel_err_pos = ((data_ds_ml_pos - data_ds_pos) / data_ds_pos).mean(
-                dim=[
-                    d
-                    for d in ["time", "latitude", "longitude"]
-                    if d in data_ds_pos.dims
-                ],
-                skipna=True,
+                dim=reduce_dims_pos, skipna=True
             ) * 100
-            ax_pos.plot(rel_err_pos, levels)
+            ax_pos.plot(np.ravel(rel_err_pos.squeeze().values), level_values)
             ax_pos.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
             ax_pos.set_xlabel("Relative Error (%)")
             ax_pos.set_ylabel("Level")
@@ -156,19 +214,32 @@ def run(
                 lat_min_neg = lat_bins[i]
                 lat_max_neg = lat_bins[i + 1]
                 lat_slice_neg = slice(lat_max_neg, lat_min_neg)
-                data_ds_neg = ds[var].sel(latitude=lat_slice_neg)
-                data_ds_ml_neg = ds_ml[var].sel(latitude=lat_slice_neg)
+                data_ds_neg = (
+                    ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                )
+                data_ds_ml_neg = (
+                    ds_ml[var]
+                    .sel(latitude=lat_slice_neg)
+                    .sel(level=level_values)
+                )
                 rel_err_neg = (
                     (data_ds_ml_neg - data_ds_neg) / data_ds_neg
                 ).mean(
                     dim=[
                         d
-                        for d in ["time", "latitude", "longitude"]
+                        for d in [
+                            "time",
+                            "init_time",
+                            "lead_time",
+                            "latitude",
+                            "longitude",
+                            "ensemble",
+                        ]
                         if d in data_ds_neg.dims
                     ],
                     skipna=True,
                 ) * 100
-                neg_curves.append(rel_err_neg.values)
+                neg_curves.append(np.ravel(rel_err_neg.squeeze().values))
                 neg_min.append(float(lat_min_neg))
                 neg_max.append(float(lat_max_neg))
 
@@ -177,30 +248,43 @@ def run(
                 lat_min_pos = lat_bins[idx]
                 lat_max_pos = lat_bins[idx - 1]
                 lat_slice_pos = slice(lat_min_pos, lat_max_pos)
-                data_ds_pos = ds[var].sel(latitude=lat_slice_pos)
-                data_ds_ml_pos = ds_ml[var].sel(latitude=lat_slice_pos)
+                data_ds_pos = (
+                    ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                )
+                data_ds_ml_pos = (
+                    ds_ml[var]
+                    .sel(latitude=lat_slice_pos)
+                    .sel(level=level_values)
+                )
                 rel_err_pos = (
                     (data_ds_ml_pos - data_ds_pos) / data_ds_pos
                 ).mean(
                     dim=[
                         d
-                        for d in ["time", "latitude", "longitude"]
+                        for d in [
+                            "time",
+                            "init_time",
+                            "lead_time",
+                            "latitude",
+                            "longitude",
+                            "ensemble",
+                        ]
                         if d in data_ds_pos.dims
                     ],
                     skipna=True,
                 ) * 100
-                pos_curves.append(rel_err_pos.values)
+                pos_curves.append(np.ravel(rel_err_pos.squeeze().values))
                 pos_min.append(float(lat_min_pos))
                 pos_max.append(float(lat_max_pos))
 
             neg_arr = np.stack(neg_curves, axis=0)
             pos_arr = np.stack(pos_curves, axis=0)
             ds_save = xr.Dataset({
-                "rel_error_neg": ("band", neg_arr),
-                "rel_error_pos": ("band", pos_arr),
+                "rel_error_neg": (("band", "level"), neg_arr),
+                "rel_error_pos": (("band", "level"), pos_arr),
             }).assign_coords(
                 band=np.arange(bands),
-                level=("level", np.array(levels)),
+                level=("level", level_values),
                 neg_lat_min=("band", np.array(neg_min)),
                 neg_lat_max=("band", np.array(neg_max)),
                 pos_lat_min=("band", np.array(pos_min)),
@@ -208,7 +292,11 @@ def run(
             )
             section_output.mkdir(parents=True, exist_ok=True)
             ds_save.to_netcdf(section_output / f"{var}_pl_rel_error.nc")
-        if fig_count == 0 and "cell-first" in outputs:
+        if (
+            fig_count == 0
+            and "cell-first" in outputs
+            and plt.get_backend().lower().find("agg") == -1
+        ):
             plt.show()
         if fig_count > 0 and "cell" not in outputs:
             plt.close(fig)

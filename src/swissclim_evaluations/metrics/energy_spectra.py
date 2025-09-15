@@ -13,8 +13,15 @@ def calculate_energy_spectra(data: xr.DataArray):
     EARTH_RADIUS_KM = 6371.0
     wavenumber_list = []
 
+    # Reduce optional ensemble dimension if present
+    if "ensemble" in data.dims:
+        data = data.mean(dim="ensemble")
+
     # Prefer init_time over time for temporal axis handling
     if "init_time" in data.dims:
+        # If lead_time is present, collapse it (mean) so we can have a single temporal axis
+        if "lead_time" in data.dims:
+            data = data.mean(dim="lead_time")
         var_data = data.transpose("latitude", "longitude", "init_time")
         time_axis = -1
     elif "time" in data.dims:

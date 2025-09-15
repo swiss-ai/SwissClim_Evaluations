@@ -158,7 +158,11 @@ def run(
                 bbox_inches="tight",
                 dpi=200,
             )
-        if i == 0 and "cell-first" in outputs:
+        if (
+            i == 0
+            and "cell-first" in outputs
+            and plt.get_backend().lower().find("agg") == -1
+        ):
             plt.show()
         if i > 0 and "cell" not in outputs:
             plt.close(fig)

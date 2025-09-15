@@ -122,7 +122,8 @@ def _maybe_subsample_time(
 def _standardize_pair(
     ds: xr.Dataset, ds_ml: xr.Dataset
 ) -> tuple[xr.Dataset, xr.Dataset]:
-    combined = xr.concat([ds, ds_ml], dim="__concat__")
+    # Explicit join ensures compatibility with upcoming xarray default change
+    combined = xr.concat([ds, ds_ml], dim="__concat__", join="outer")
     mean = combined.mean()
     std = combined.std()
     return (ds - mean) / std, (ds_ml - mean) / std
@@ -153,9 +154,18 @@ def prepare_datasets(
     ds_nwp = data_mod.standardize_dims(ds_nwp, dataset_name="ground_truth")
     ds_ml = data_mod.standardize_dims(ds_ml, dataset_name="ml")
 
-    if "ensemble" in ds_ml.dims and ensemble_member is not None:
-        # Keep the 'ensemble' dimension by slicing to a length-1 selection
-        ds_ml = ds_ml.isel(ensemble=[int(ensemble_member)])
+    # Handle optional ensemble dimension according to config and selected modules
+    modules_cfg = cfg.get("modules", {})
+    probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
+        modules_cfg.get("probabilistic_wbx")
+    )
+    if "ensemble" in ds_ml.dims:
+        if ensemble_member is not None:
+            # Select the given member and drop the ensemble dim to behave as deterministic
+            ds_ml = ds_ml.isel(ensemble=int(ensemble_member), drop=True)
+        elif not probabilistic_enabled:
+            # No specific member requested and no probabilistic metrics: use ensemble mean
+            ds_ml = ds_ml.mean(dim="ensemble", keep_attrs=True)
 
     ds_nwp = _apply_temporal_resolution(ds_nwp, hours)
     ds_ml = _apply_temporal_resolution(ds_ml, hours)
@@ -168,28 +178,92 @@ def prepare_datasets(
     ds_nwp = _maybe_subsample_time(
         ds_nwp, plot_cfg.get("time_subsamples"), plot_cfg.get("random_seed")
     )
-    # Align ML dataset to NWP along init_time intersection if available
+
+    # Align by valid_time using stack/unstack to ensure identical (init_time, lead_time) dims
     if "init_time" in ds_nwp.dims and "init_time" in ds_ml.dims:
-        common_inits = np.intersect1d(
-            ds_nwp.init_time.values, ds_ml.init_time.values
+        # Ensure both have lead_time coordinate
+        if "lead_time" not in ds_ml.dims:
+            ds_ml = ds_ml.expand_dims({
+                "lead_time": np.array(
+                    [np.timedelta64(0, "h")], dtype="timedelta64[h]"
+                ).astype("timedelta64[ns]")
+            })
+        if "lead_time" not in ds_nwp.dims:
+            ds_nwp = ds_nwp.expand_dims({
+                "lead_time": np.array(
+                    [np.timedelta64(0, "h")], dtype="timedelta64[h]"
+                ).astype("timedelta64[ns]")
+            })
+
+        # Stack to a single dimension 'pair' (MultiIndex of init_time, lead_time)
+        ml_init = ds_ml["init_time"].astype("datetime64[ns]")
+        ml_lead = ds_ml["lead_time"].astype("timedelta64[ns]")
+        nwp_init = ds_nwp["init_time"].astype("datetime64[ns]")
+        nwp_lead = ds_nwp["lead_time"].astype("timedelta64[ns]")
+
+        ds_ml_stacked = ds_ml.stack(pair=("init_time", "lead_time"))
+        ds_nwp_stacked = ds_nwp.stack(pair=("init_time", "lead_time"))
+
+        # Compute valid_time coordinate for each pair
+        ml_valid = (ml_init.values[:, None] + ml_lead.values[None, :]).ravel()
+        nwp_valid = (
+            nwp_init.values[:, None] + nwp_lead.values[None, :]
+        ).ravel()
+        ds_ml_stacked = ds_ml_stacked.assign_coords(
+            valid_time=("pair", ml_valid.astype("datetime64[ns]"))
         )
-        if common_inits.size == 0:
-            raise ValueError(
-                "No overlapping init_time values between ground_truth and ml datasets after selection."
-            )
-        ds_nwp = ds_nwp.sel(init_time=common_inits)
-        ds_ml = ds_ml.sel(init_time=common_inits)
-    # If both have lead_time, enforce identical coords by intersection
-    if "lead_time" in ds_nwp.dims and "lead_time" in ds_ml.dims:
-        common_leads = np.intersect1d(
-            ds_nwp.lead_time.values, ds_ml.lead_time.values
+        ds_nwp_stacked = ds_nwp_stacked.assign_coords(
+            valid_time=("pair", nwp_valid.astype("datetime64[ns]"))
         )
-        if common_leads.size == 0:
+
+        # Intersection of valid times
+        common_valid = np.intersect1d(
+            ds_ml_stacked["valid_time"].values,
+            ds_nwp_stacked["valid_time"].values,
+        )
+        if common_valid.size == 0:
             raise ValueError(
-                "No overlapping lead_time values between ground_truth and ml datasets after selection."
+                "No overlapping valid times between ground_truth (ERA5 time) and ml (init_time+lead_time) after selection."
             )
-        ds_nwp = ds_nwp.sel(lead_time=common_leads)
-        ds_ml = ds_ml.sel(lead_time=common_leads)
+
+        # Filter both by common valid_time
+        ml_mask = np.isin(ds_ml_stacked["valid_time"].values, common_valid)
+        nwp_mask = np.isin(ds_nwp_stacked["valid_time"].values, common_valid)
+        ds_ml_stacked = ds_ml_stacked.isel(pair=ml_mask)
+        ds_nwp_stacked = ds_nwp_stacked.isel(pair=nwp_mask)
+
+        # Build mapping from valid_time -> first index in NWP; then align NWP order to ML order
+        nwp_vt = ds_nwp_stacked["valid_time"].values
+        ml_vt = ds_ml_stacked["valid_time"].values
+        # Use a dict of int indices for quick lookup
+        index_map: dict[np.datetime64, int] = {}
+        for i, vt in enumerate(nwp_vt):
+            # only first occurrence kept; duplicates in NWP unlikely with zero lead_time
+            index_map.setdefault(vt, i)
+        try:
+            take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
+        except KeyError:
+            # This should not happen due to intersection, but guard anyway
+            raise ValueError(
+                "Internal alignment error: ML valid_time not found in NWP after intersection."
+            )
+        ds_nwp_stacked = ds_nwp_stacked.isel(pair=take_idx)
+        # Make NWP stacked coordinate exactly the ML 'pair' MultiIndex for identical labels
+        # Drop existing pair and its level coords first to avoid future MultiIndex inconsistency
+        to_drop = [
+            name
+            for name in ("pair", "init_time", "lead_time")
+            if name in ds_nwp_stacked.coords
+        ]
+        if to_drop:
+            ds_nwp_stacked = ds_nwp_stacked.drop_vars(to_drop)
+        ds_nwp_stacked = ds_nwp_stacked.assign_coords(
+            pair=ds_ml_stacked["pair"]
+        )  # type: ignore[index]
+
+    # Unstack back to (init_time, lead_time) using the ML's pair labels for both
+    ds_ml = ds_ml_stacked.unstack("pair")
+    ds_nwp = ds_nwp_stacked.unstack("pair")
 
     ds_std, ds_ml_std = _standardize_pair(ds_nwp, ds_ml)
     return ds_nwp, ds_ml, ds_std, ds_ml_std

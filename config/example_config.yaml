@@ -1,26 +1,27 @@
 paths:
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_20250219_Jan2021_b.zarr"
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_tail_20250219_Jan2021_b.zarr/"
   nwp: "/capstor/store/cscs/ERA5/weatherbench2_original"
   output_root: "output/verification_esfm"
 
 selection:
-  levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+  # levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+  levels: [100, 500, 1000]
   temporal_resolution_hours: 1
   datetimes: ["2021-01-01T12", "2021-01-05T06"]
   latitudes: [90.0, -89.75]
   longitudes: [0.0, 359.75]
   variables_2d: [
     "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "2m_temperature",
-    "mean_sea_level_pressure",
+    # "10m_v_component_of_wind",
+    # "2m_temperature",
+    # "mean_sea_level_pressure",
   ]
   variables_3d: [
-    "geopotential",
-    "specific_humidity",
-    "temperature",
+    # "geopotential",
+    # "specific_humidity",
+    # "temperature",
     "u_component_of_wind",
-    "v_component_of_wind",
+    # "v_component_of_wind",
   ]
   ensemble_member: 0
   check_missing: false
@@ -33,20 +34,23 @@ plotting:
   save_plot_data: true
 
 modules:
-  maps: true
-  histograms: true
-  wd_kde: true
-  energy_spectra: true
-  vertical_profiles: true
-  deterministic: true
-  ets: true
-  probabilistic: false
-  probabilistic_wbx: false
+  maps: false
+  histograms: false
+  wd_kde: false
+  energy_spectra: false
+  vertical_profiles: false
+  deterministic: false
+  ets: false
+  probabilistic: true
+  probabilistic_wbx: true
 
 metrics:
   deterministic:
-    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
-    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+    # include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
+    include: ["MAE"]
+    # standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+    standardized_include: ["MAE"]
   ets:
-    thresholds: [50, 60, 70, 80, 90]
+    # thresholds: [50, 60, 70, 80, 90]
+    thresholds: [90]
     save_csv: true
