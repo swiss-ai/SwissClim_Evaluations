@@ -26,13 +26,14 @@ selection:
 
   # Time slice in ISO-8601 format [start, end]. Examples: "2021-01-01T00", "2021-01-05T06".
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
-  datetimes: ["2023-01-02T12", "2023-01-10T06"]
+  datetimes: ["2023-01-02T12", "2023-01-06T06"]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
-  # so [90, -90] is typical. Adjust to match your grid extents.
+  # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
   latitudes: [90.0, -89.75]
 
-  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360 (e.g., 0.0 to 359.75).
+  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360.
+  # Aurora/ESFM has a polar cutoff, so [0, 359.75] is typical.
   longitudes: [0.0, 359.75]
 
   # Variables without a level dimension present in BOTH datasets.
@@ -98,7 +99,7 @@ metrics:
   #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
-    # Subset to compute on standardized pairs (combined mean/std across obs+model).
+  # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
