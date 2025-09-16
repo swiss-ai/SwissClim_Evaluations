@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -9,6 +10,7 @@ import numpy as np
 import xarray as xr
 import yaml
 
+from . import console as c
 from . import data as data_mod
 
 
@@ -65,8 +67,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         else:
             # No overlap; keep dataset unchanged but warn to stdout for visibility.
             if requested:
-                print(
-                    "[swissclim_evaluations] Warning: none of the requested levels are present; "
+                c.warn(
+                    "None of the requested pressure levels are present; "
                     f"requested={requested}, available={sorted(available)}. Skipping level selection."
                 )
     if latitudes is not None:
@@ -392,6 +394,8 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
 
 
 def run_selected(cfg: dict[str, Any]) -> None:
+    c.header("SwissClim Evaluations")
+    t0 = time.time()
     ds_target, ds_prediction, ds_target_std, ds_prediction_std = (
         prepare_datasets(cfg)
     )
@@ -422,70 +426,76 @@ def run_selected(cfg: dict[str, Any]) -> None:
     else:
         vars_3d = []
         vars_2d = all_vars
-    print(
-        f"[swissclim] Starting run → output_root='{out_root}'. Output mode={mode}. Variables: 2D={len(vars_2d)}, 3D={len(vars_3d)}. Modules from config toggles."
+    c.panel(
+        f"Output: [bold]{out_root}[/]\nMode: [bold]{mode}[/]\nVariables → 2D: [bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]",
+        title="Run Overview",
+        style="cyan",
     )
 
     # Show the prepared model dataset and describe ensemble handling
-    print("[swissclim] predictions (prepared):")
+    c.section("Model dataset (prepared)")
     # printing the Dataset object provides a concise summary (dims/coords/vars)
-    print(ds_prediction)
-    print(f"[swissclim] {_ensemble_handling_message(ds_prediction, cfg)}")
+    try:
+        from rich.pretty import Pretty  # type: ignore
+
+        from .console import console as _rc
+
+        _rc.print(Pretty(ds_prediction))
+    except Exception:
+        print(ds_prediction)
+    # Ensemble handling summary
+    ens_msg = _ensemble_handling_message(ds_prediction, cfg)
+    level = "ok" if "probabilistic modules enabled" in ens_msg else "info"
+    c.ensemble_panel(ens_msg, level=level)
 
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):
         from .plots import maps as maps_mod
 
-        print(
-            f"[swissclim] Module: maps — vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
+        c.module_status(
+            "maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
         )
         if "ensemble" in ds_prediction.dims:
             ens_full = int(ds_prediction.sizes.get("ensemble"))
             ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
             if ens_plot < ens_full:
-                print(
-                    f"[swissclim] Module 'maps' ensemble: present (selected size={ens_plot} of total {ens_full}) — maps will be generated for selected members."
+                c.info(
+                    f"Ensemble present (selected size={ens_plot} of total {ens_full}) → generating maps for selected members."
                 )
             else:
-                print(
-                    f"[swissclim] Module 'maps' ensemble: present (size={ens_full}) — maps will be generated for all members."
+                c.info(
+                    f"Ensemble present (size={ens_full}) → generating maps for all members."
                 )
         else:
-            print(
-                "[swissclim] Module 'maps' ensemble: absent — deterministic inputs."
-            )
+            c.info("No ensemble dimension → deterministic inputs.")
         maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
 
-        print(f"[swissclim] Module: histograms — vars_2d={len(vars_2d)}")
+        c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'histograms' ensemble: present (size={ens_size}) — module displays deterministic reduction."
+            c.info(
+                f"Ensemble present (size={ens_size}) → module displays deterministic reduction."
             )
         else:
-            print(
-                "[swissclim] Module 'histograms' ensemble: absent — deterministic inputs."
-            )
-    hist_mod.run(ds_target, ds_prediction, out_root, plotting)
+            c.info("No ensemble dimension → deterministic inputs.")
+        hist_mod.run(ds_target, ds_prediction, out_root, plotting)
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
 
-        print(
-            f"[swissclim] Module: wd_kde — vars_2d={len(vars_2d)} (standardized)"
+        c.module_status(
+            "wd_kde", "run", f"vars_2d={len(vars_2d)} (standardized)"
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'wd_kde' ensemble: present (size={ens_size}) — module uses reduced standardized mean."
+            c.info(
+                f"Ensemble present (size={ens_size}) → module uses reduced standardized mean."
             )
         else:
-            print(
-                "[swissclim] Module 'wd_kde' ensemble: absent — deterministic standardized inputs."
-            )
+            c.info("No ensemble dimension → deterministic standardized inputs.")
         wd_mod.run(
             ds_target,
             ds_prediction,
@@ -498,18 +508,18 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("energy_spectra"):
         from .metrics import energy_spectra as es_mod
 
-        print(
-            f"[swissclim] Module: energy_spectra — vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
+        c.module_status(
+            "energy_spectra",
+            "run",
+            f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'energy_spectra' ensemble: present (size={ens_size}) — spectra computed for reduced mean field."
+            c.info(
+                f"Ensemble present (size={ens_size}) → spectra computed for reduced mean field."
             )
         else:
-            print(
-                "[swissclim] Module 'energy_spectra' ensemble: absent — deterministic inputs."
-            )
+            c.info("No ensemble dimension → deterministic inputs.")
         es_mod.run(
             ds_target,
             ds_prediction,
@@ -521,16 +531,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("vertical_profiles"):
         from .plots import vertical_profiles as vp_mod
 
-        print(f"[swissclim] Module: vertical_profiles — vars_3d={len(vars_3d)}")
+        c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'vertical_profiles' ensemble: present (size={ens_size}) — profiles shown for deterministic reduction only."
+            c.info(
+                f"Ensemble present (size={ens_size}) → profiles shown for deterministic reduction only."
             )
         else:
-            print(
-                "[swissclim] Module 'vertical_profiles' ensemble: absent — deterministic inputs."
-            )
+            c.info("No ensemble dimension → deterministic inputs.")
         vp_mod.run(
             ds_target,
             ds_prediction,
@@ -543,16 +551,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("deterministic"):
         from .metrics import deterministic as det_mod
 
-        print(f"[swissclim] Module: deterministic — variables={len(all_vars)}")
+        c.module_status("deterministic", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'deterministic' ensemble: present (size={ens_size}) — metrics computed on deterministic reduction."
+            c.info(
+                f"Ensemble present (size={ens_size}) → metrics computed on deterministic reduction."
             )
         else:
-            print(
-                "[swissclim] Module 'deterministic' ensemble: absent — deterministic inputs."
-            )
+            c.info("No ensemble dimension → deterministic inputs.")
         det_mod.run(
             ds_target,
             ds_prediction,
@@ -566,33 +572,33 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
 
-        print(f"[swissclim] Module: ets — variables={len(all_vars)}")
+        c.module_status("ets", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'ets' ensemble: present (size={ens_size}) — ETS computed on deterministic reduction."
+            c.info(
+                f"Ensemble present (size={ens_size}) → ETS computed on deterministic reduction."
             )
         else:
-            print(
-                "[swissclim] Module 'ets' ensemble: absent — deterministic inputs."
-            )
+            c.info("No ensemble dimension → deterministic inputs.")
         ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
 
     if chapter_flags.get("probabilistic"):
         from .metrics.probabilistic import run_probabilistic
         from .plots import probabilistic as prob_plot_mod
 
-        print(
-            "[swissclim] Module: probabilistic — using ensemble metrics if available"
+        c.module_status(
+            "probabilistic",
+            "run",
+            "will compute CRPS/PIT if ensemble is present",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'probabilistic' ensemble: present (size={ens_size}) — CRPS and PIT will use full ensemble."
+            c.success(
+                f"Ensemble present (size={ens_size}) → CRPS and PIT will use full ensemble."
             )
         else:
-            print(
-                "[swissclim] Module 'probabilistic' ensemble: absent — skipping (module requires an ensemble)."
+            c.warn(
+                "No ensemble dimension → skipping (module requires an ensemble)."
             )
         if "ensemble" in ds_prediction.dims:
             run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
@@ -602,20 +608,30 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("probabilistic_wbx"):
         from .plots import probabilistic_wbx as prob_wbx_mod
 
-        print(
-            "[swissclim] Module: probabilistic_wbx — WBX spread–skill and CRPS"
+        c.module_status(
+            "probabilistic_wbx",
+            "run",
+            "WBX spread–skill and CRPS",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            print(
-                f"[swissclim] Module 'probabilistic_wbx' ensemble: present (size={ens_size}) — WBX metrics will use full ensemble."
+            c.success(
+                f"Ensemble present (size={ens_size}) → WBX metrics will use full ensemble."
             )
         else:
-            print(
-                "[swissclim] Module 'probabilistic_wbx' ensemble: absent — skipping (module requires an ensemble)."
+            c.warn(
+                "No ensemble dimension → skipping (module requires an ensemble)."
             )
         if "ensemble" in ds_prediction.dims:
             prob_wbx_mod.run(ds_target, ds_prediction, out_root, plotting, cfg)
+
+    # Final completion message
+    elapsed = time.time() - t0
+    c.panel(
+        f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
+        title="✅ Finished",
+        style="green",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
