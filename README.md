@@ -2,37 +2,75 @@
 
 Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other references). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
 
-## Quickstart
+## Quickstart (default: container with Podman + Enroot)
 
-1. Create an environment (pick one):
+We recommend the container workflow for fastest, reproducible setup.
 
-- UV virtualenv
-  - Run: bash tools/setup_env_uv.sh
-  - Creates .venv with Python 3.11 via uv and installs deps.
+1. Build the container (Podman) at repo root int interactive session:
 
-- Conda
-  - Run: bash tools/setup_env_conda.sh
-  - Creates env (Python 3.11) from tools/environment.yml and installs deps.
+```bash
+srun --container-writable -t 01:00:00 -A a122 -p debug --pty bash
+podman build -t swissclim-eval .
+```
 
-- Container (CSCS Enroot/Podman)
-  - See tools/swissai_container.toml and tools/swissai.dockerfile
+2. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
 
-1. Review and edit the example config:
+```bash
+rm -f tools/swissclim-eval.sqsh
+enroot import -x mount -o tools/swissclim-eval.sqsh podman://swissclim-eval
+exit # exit the interactive build session
+mkdir -p ~/.edf
+sed "s/{{username}}/$USER/g" tools/edf_template.toml > ~/.edf/swissclim-eval.toml
+```
 
-The project ships with a commented config that explains every key and valid values. Copy it and adjust the paths and selections as needed.
+3. Review and edit the example config:
 
-Example:
+The project ships with a commented config that explains every key and valid
+values. Copy it and adjust the paths and selections as needed.
 
-- cp config/example_config.yaml config/my_run.yaml
-- Edit config/my_run.yaml (see inline comments)
+```bash
+cp config/example_config.yaml config/my_run.yaml
 
-1. Run:
+4. (CSCS Alps) Launch an interactive session using the container:
+
+```bash
+srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
+```
+
+You are now inside the container with all dependencies installed.
+For a richter debugging experience we consider using `code tunnel`.
+
+5. Run:
 
 ```bash
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
 Outputs appear under paths.output_root (one sub-folder per module).
+
+> Prefer a plain virtual environment? Use one of the alternatives below.
+
+<details>
+<summary>Install with uv (fast Python)</summary>
+
+```bash
+bash tools/setup_env_uv.sh
+# Activates .venv and installs deps via uv
+python -m swissclim_evaluations.cli --config config/my_run.yaml
+```
+
+</details>
+
+<details>
+<summary>Install with conda</summary>
+
+```bash
+bash tools/setup_env_conda.sh
+conda activate swissclim-eval
+python -m swissclim_evaluations.cli --config config/my_run.yaml
+```
+
+</details>
 
 ## Configure
 
