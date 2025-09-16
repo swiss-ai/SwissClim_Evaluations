@@ -24,9 +24,7 @@ def _ensemble_handling_message(
 ) -> str:
     sel = cfg.get("selection", {})
     modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
-        modules_cfg.get("probabilistic_wbx")
-    )
+    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ensemble_member = sel.get("ensemble_member")
 
     if "ensemble" not in ds_prediction.dims:
@@ -269,9 +267,7 @@ def prepare_datasets(
 
     # Handle optional ensemble dimension according to config and selected modules
     modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
-        modules_cfg.get("probabilistic_wbx")
-    )
+    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_member=ensemble_member,
@@ -506,7 +502,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         )
 
     if chapter_flags.get("energy_spectra"):
-        from .metrics import energy_spectra as es_mod
+        from .plots import energy_spectra as es_mod
 
         c.module_status(
             "energy_spectra",
@@ -529,7 +525,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         )
 
     if chapter_flags.get("vertical_profiles"):
-        from .plots import vertical_profiles as vp_mod
+        from .metrics import vertical_profiles as vp_mod
 
         c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
@@ -582,48 +578,36 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
 
+    # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
-        from .metrics.probabilistic import run_probabilistic
-        from .plots import probabilistic as prob_plot_mod
+        from .metrics.probabilistic import (
+            plot_probabilistic,
+            run_probabilistic,
+            run_probabilistic_wbx,
+        )
 
         c.module_status(
             "probabilistic",
             "run",
-            "will compute CRPS/PIT if ensemble is present",
+            "CRPS/PIT (xarray) + WBX SSR/CRPS",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
             c.success(
-                f"Ensemble present (size={ens_size}) → CRPS and PIT will use full ensemble."
+                f"Ensemble present (size={ens_size}) → running both xarray and WBX probabilistic metrics."
             )
         else:
             c.warn(
-                "No ensemble dimension → skipping (module requires an ensemble)."
+                "No ensemble dimension → skipping probabilistic metrics (requires 'ensemble')."
             )
         if "ensemble" in ds_prediction.dims:
+            # Xarray-based CRPS/PIT + plots
             run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
-            # Also generate plots equivalent to the notebook (CRPS map + PIT histogram)
-            prob_plot_mod.run(ds_target, ds_prediction, out_root, plotting)
-
-    if chapter_flags.get("probabilistic_wbx"):
-        from .plots import probabilistic_wbx as prob_wbx_mod
-
-        c.module_status(
-            "probabilistic_wbx",
-            "run",
-            "WBX spread–skill and CRPS",
-        )
-        if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
-            c.success(
-                f"Ensemble present (size={ens_size}) → WBX metrics will use full ensemble."
+            plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+            # WeatherBenchX-based summaries and aggregates
+            run_probabilistic_wbx(
+                ds_target, ds_prediction, out_root, plotting, cfg
             )
-        else:
-            c.warn(
-                "No ensemble dimension → skipping (module requires an ensemble)."
-            )
-        if "ensemble" in ds_prediction.dims:
-            prob_wbx_mod.run(ds_target, ds_prediction, out_root, plotting, cfg)
 
     # Final completion message
     elapsed = time.time() - t0

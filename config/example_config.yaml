@@ -95,8 +95,7 @@ modules:
   vertical_profiles: true    # Relative error vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
-  probabilistic: true       # CRPS & PIT with ensemble forecasts; NPZ/NetCDF artifacts always saved
-  probabilistic_wbx: true   # WBX-compatible metrics (Spread–Skill Ratio, CRPS ensemble)
+  probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.

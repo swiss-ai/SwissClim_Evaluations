@@ -55,11 +55,17 @@ The YAML is the single source of truth. Key sections:
     - npz: write numeric arrays only
     - both: do both
   - dpi, random_seed, plot_datetime
+  - map_variable: optional variable name to use for CRPS/PIT maps (defaults to first common variable)
 - modules
-  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic, probabilistic_wbx
+  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic (combined xarray + WBX)
 - metrics
   - deterministic.include / .standardized_include (optional filters)
   - ets.thresholds (percentiles)
+
+- probabilistic (optional)
+  - init_time_chunk_size: chunk size for iterating over init_time (WBX and xarray runners)
+  - lead_time_chunk_size: chunk size for iterating over lead_time (WBX and xarray runners)
+  - lead_times_ns: optional explicit list of numpy timedelta64[ns] lead times to override dataset values (WBX)
 
 Notes
 
@@ -103,27 +109,55 @@ Attributes:
   - init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble: -1 (-1 = no chunking)
 - This ensures apply_ufunc metrics that use the ensemble as a core dimension work without errors and keeps memory usage predictable. If a dataset deviates, it will be rechunked automatically with a warning.
 
-## What you get
+## Output Overview
 
-- Deterministic metrics
-  - deterministic/metrics.csv and deterministic/metrics_standardized.csv
-  - Summary previews printed to the terminal
-- ETS
-  - ets/ets_metrics.csv and a terminal preview
-- Energy spectra
-  - energy_spectra/*_energy.png, energy_spectra/lsd_metrics.csv, and always an accompanying .npz with spectra arrays
-- Histograms by latitude bands (2D only)
-  - histograms/{var}_sfc_latbands.png (+ combined NPZ per var)
-- KDE + Wasserstein by bands (standardized)
-  - wd_kde/{var}_sfc_latbands_norm.png (+ combined NPZ per var, mean Wasserstein)
-- Vertical profiles (3D)
-  - vertical_profiles/{var}_pl_rel_error.png (+ combined NPZ per var)
-- Maps
-  - maps/{timestamp}_{var}_sfc.png and maps/{timestamp}_{var}_pl.png (+ NPZ dumps of arrays)
-- Probabilistic
-  - probabilistic/crps_summary.csv, probabilistic/{var}_pit_hist.npz, and always {var}_pit.nc and {var}_crps.nc
-- Probabilistic (WBX)
-  - probabilistic_wbx/spread_skill_ratio.csv, probabilistic_wbx/crps_ensemble.csv
+The evaluation generates organized results for each enabled module:
+
+### Deterministic Metrics
+
+- CSV summaries: `deterministic/metrics.csv` and `deterministic/metrics_standardized.csv`
+- Terminal preview of key statistics
+
+### Extreme Threshold Statistics (ETS)
+
+- Metrics file: `ets/ets_metrics.csv`
+- Terminal summary preview
+
+### Energy Spectra Analysis
+
+- Spectral plots: `energy_spectra/*_energy.png`
+- Metrics summary: `energy_spectra/lsd_metrics.csv`
+- Raw data: accompanying `.npz` files with spectral arrays
+
+### Distribution Analysis
+
+- Histograms by latitude: `histograms/{var}_sfc_latbands.png`
+- KDE + Wasserstein distance: `wd_kde/{var}_sfc_latbands_norm.png`
+- Supporting data: combined NPZ files per variable
+
+### Vertical Structure (3D variables only)
+
+- Profile plots: `vertical_profiles/{var}_pl_rel_error.png`
+- Raw data: combined NPZ files per variable
+
+### Spatial Maps
+
+- Surface maps: `maps/{timestamp}_{var}_sfc.png`
+- Pressure level maps: `maps/{timestamp}_{var}_pl.png`
+- Raw arrays: NPZ dumps for each plot
+
+### Probabilistic Verification (combined)
+
+- Xarray-based (per-variable fields and plots):
+  - CRPS summary: `probabilistic/crps_summary.csv`
+  - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
+  - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
+  - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
+- WeatherBenchX-based (summaries and aggregates):
+  - CSV summaries: `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
+  - Temporal aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_temporal.nc`
+  - Spatial/regional aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_spatial.nc`
+  - Optional CRPS map: `probabilistic_wbx/crps_map_{var}.png`
 
 ### Details for probabilistic outputs
 

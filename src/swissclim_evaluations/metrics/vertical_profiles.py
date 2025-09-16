@@ -9,8 +9,6 @@ import xarray as xr
 
 
 def _lat_bands():
-    import numpy as np
-
     lat_bins = np.arange(-90, 91, 10)
     n_bands = len(lat_bins) - 1
     return lat_bins, n_bands
@@ -34,12 +32,9 @@ def run(
     ]
     lat_bins, n_bands = _lat_bands()
 
-    # Note: derive levels per-variable from dataset to avoid mismatches with config
-
     fig_count = 0
     for var in variables_3d:
         print(f"[vertical_profiles] variable: {var}")
-        # Derive actual levels present for this variable; intersect with config if provided
         level_coord = ds_target[var].coords.get("level", None)
         if level_coord is None or int(level_coord.size) == 0:
             continue
@@ -48,7 +43,6 @@ def run(
             avail = set(level_coord.values.tolist())
             level_values = np.array([lv for lv in requested if lv in avail])
             if level_values.size == 0:
-                # No overlap; skip this variable
                 continue
         else:
             level_values = np.array(level_coord.values)
@@ -218,7 +212,6 @@ def run(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[vertical_profiles] saved {out_png}")
         if save_npz:
-            # Save a single combined NPZ for this variable containing all bands and metadata
             bands = n_bands // 2
             neg_curves = []
             pos_curves = []
@@ -227,7 +220,6 @@ def run(
             pos_min = []
             pos_max = []
             for i in range(bands):
-                # Negative latitudes band
                 lat_min_neg = lat_bins[i]
                 lat_max_neg = lat_bins[i + 1]
                 lat_slice_neg = slice(lat_max_neg, lat_min_neg)
@@ -262,7 +254,6 @@ def run(
                 neg_min.append(float(lat_min_neg))
                 neg_max.append(float(lat_max_neg))
 
-                # Positive latitudes band
                 idx = -(i + 1)
                 lat_min_pos = lat_bins[idx]
                 lat_max_pos = lat_bins[idx - 1]

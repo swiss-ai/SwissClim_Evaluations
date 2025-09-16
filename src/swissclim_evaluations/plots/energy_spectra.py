@@ -22,18 +22,13 @@ def calculate_energy_spectra(
     - Latitude-weighted average (cos(lat)) and time average
     Returns (wavenumber, spectrum, k_effective) where k_effective≈n_lon/4.
     """
-    # Reduce optional ensemble/lead_time dimensions if present
     if "ensemble" in data.dims:
         data = data.mean(dim="ensemble")
     if "lead_time" in data.dims:
         data = data.mean(dim="lead_time")
-
-    # Drop/squeeze a singleton level dimension so transpose works
     if "level" in data.dims and int(data.sizes.get("level", 0)) == 1:
         data = data.isel(level=0, drop=True)
 
-    # Choose a time-like dimension if available
-    time_dim: str | None
     if "init_time" in data.dims:
         time_dim = "init_time"
     elif "time" in data.dims:
@@ -41,42 +36,35 @@ def calculate_energy_spectra(
     else:
         time_dim = None
 
-    # Reorder dims to [latitude, longitude, time?]
     order = [d for d in ("latitude", "longitude") if d in data.dims]
     if time_dim:
         order.append(time_dim)
     var_data = data.transpose(*order)
 
-    # Rechunk longitude to single chunk before interpolate (dask safety)
     try:
         if hasattr(var_data.data, "chunks"):
             var_data = var_data.chunk({"longitude": -1})
     except Exception:
         pass
 
-    # Fill NaNs along longitude to avoid FFT propagation of NaNs
     try:
         if "longitude" in var_data.dims:
             var_data = var_data.interpolate_na(dim="longitude")
     except Exception:
         pass
 
-    # Prepare arrays
     n_lon = int(var_data.sizes.get("longitude", 0))
     if n_lon == 0:
         return np.array([]), np.array([]), 0.0
 
-    arr = var_data.values  # shape: (n_lat, n_lon[, n_time])
+    arr = var_data.values
     if arr.ndim == 2:
-        arr = arr[:, :, None]  # add time axis
+        arr = arr[:, :, None]
 
     n_lat, _, n_time = arr.shape
-
-    # rFFT along longitude (axis=1)
     fft = np.fft.rfft(arr, axis=1)
-    power = np.abs(fft) ** 2  # (n_lat, n_k, n_time)
+    power = np.abs(fft) ** 2
 
-    # Latitude weighting (cosine of radians)
     lat_vals = var_data.coords.get("latitude", None)
     if lat_vals is not None:
         cosw = np.cos(np.deg2rad(np.asarray(lat_vals)))
@@ -88,20 +76,15 @@ def calculate_energy_spectra(
         power_w = power
         lat_weight = 1.0
 
-    # Average over latitude and time
     power_lat_mean = power_w.sum(axis=0) / (
         lat_weight.sum(axis=0) if isinstance(lat_weight, np.ndarray) else n_lat
     )
-    spectrum = power_lat_mean.mean(axis=-1)  # (n_k,)
+    spectrum = power_lat_mean.mean(axis=-1)
 
-    # Wavenumber in cycles around Earth
     n_k = spectrum.shape[0]
     wavenumber = np.arange(n_k, dtype=float)
 
-    # Simple effective resolution proxy
     k_effective = float(n_lon / 4.0)
-
-    # Drop first couple bins to avoid DC/very-low-k artifacts when plotting; caller may slice
     return wavenumber, spectrum, k_effective
 
 
@@ -124,7 +107,6 @@ def _plot_energy_spectra(
     save_plot_data: bool = False,
     save_figure: bool = True,
 ) -> float:
-    # Select variable and optional level
     if level is not None:
         da_target = ds_target[var].sel(level=level)
         da_prediction = ds_prediction[var].sel(level=level)
@@ -135,7 +117,6 @@ def _plot_energy_spectra(
     wavenumber_ds, spectrum_ds, k_eff = calculate_energy_spectra(da_target)
     wavenumber_ml, spectrum_ml, _ = calculate_energy_spectra(da_prediction)
 
-    # Align to common length if necessary (should be identical)
     n = min(spectrum_ds.shape[0], spectrum_ml.shape[0])
     wavenumber_ds = wavenumber_ds[:n]
     wavenumber_ml = wavenumber_ml[:n]
@@ -236,7 +217,6 @@ def run(
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     dpi = int(plotting_cfg.get("dpi", 48))
-    # Always export NPZ data; figures are controlled by output_mode
     save_plot_data = True
     save_figure = mode in ("plot", "both")
     section_output = out_root / "energy_spectra"
@@ -252,7 +232,6 @@ def run(
         variables_2d = list(ds_target.data_vars)
         levels = []
 
-    # 2D variables (no level); write a simple CSV summarizing LSD for completeness
     lsd_rows = []
     for var in variables_2d:
         print(f"[energy_spectra] 2D variable: {var}")
@@ -275,7 +254,6 @@ def run(
         df2d.to_csv(out_csv_2d)
         print(f"[energy_spectra] saved {out_csv_2d}")
 
-    # 3D variables and LSD table
     lsd_data: dict[str, list[float]] = {var: [] for var in variables_3d}
     for var in variables_3d:
         print(f"[energy_spectra] 3D variable: {var}")
