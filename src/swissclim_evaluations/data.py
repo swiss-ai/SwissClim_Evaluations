@@ -106,7 +106,9 @@ def enforce_chunking(
     return ds
 
 
-def standardize_dims(ds: xr.Dataset, dataset_name: str) -> xr.Dataset:
+def standardize_dims(
+    ds: xr.Dataset, dataset_name: str, *, first_lead_only: bool | None = None
+) -> xr.Dataset:
     """Standardize dataset dims and coords for this pipeline.
 
     - Normalize alias names (initial_time->init_time, number/member->ensemble, prediction_timedelta->lead_time, etc.).
@@ -175,6 +177,16 @@ def standardize_dims(ds: xr.Dataset, dataset_name: str) -> xr.Dataset:
                     "timedelta64[ns]"
                 )
             )
+        # Optional policy: restrict to first lead_time (no forecasting)
+        # If first_lead_only is None, we apply it by default (True) to ensure consistency
+        if first_lead_only is None or bool(first_lead_only):
+            if int(ds.lead_time.size) > 1:
+                # Keep coordinate label and dimension length 1
+                lead0 = ds["lead_time"].values[0]
+                try:
+                    ds = ds.sel(lead_time=[lead0])
+                except Exception:
+                    ds = ds.isel(lead_time=0, drop=False)
 
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
