@@ -284,10 +284,8 @@ def prepare_datasets(
     ds_target = _apply_temporal_resolution(ds_target, hours)
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
 
-
     ds_target = _select_variables(ds_target, variables_2d, variables_3d)
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
-
 
     # Align by valid_time using stack/unstack to ensure identical (init_time, lead_time) dims
     if "init_time" in ds_target.dims and "init_time" in ds_prediction.dims:
@@ -582,6 +580,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     if chapter_flags.get("probabilistic"):
         from .metrics.probabilistic import run_probabilistic
+        from .plots import probabilistic as prob_plot_mod
 
         print(
             "[swissclim] Module: probabilistic — using ensemble metrics if available"
@@ -597,9 +596,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         if "ensemble" in ds_prediction.dims:
             run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
+            # Also generate plots equivalent to the notebook (CRPS map + PIT histogram)
+            prob_plot_mod.run(ds_target, ds_prediction, out_root, plotting)
 
     if chapter_flags.get("probabilistic_wbx"):
-        from .metrics.probabilistic import run_probabilistic_wbx
+        from .plots import probabilistic_wbx as prob_wbx_mod
 
         print(
             "[swissclim] Module: probabilistic_wbx — WBX spread–skill and CRPS"
@@ -614,9 +615,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 "[swissclim] Module 'probabilistic_wbx' ensemble: absent — skipping (module requires an ensemble)."
             )
         if "ensemble" in ds_prediction.dims:
-            run_probabilistic_wbx(
-                ds_target, ds_prediction, out_root, plotting, cfg
-            )
+            prob_wbx_mod.run(ds_target, ds_prediction, out_root, plotting, cfg)
 
 
 def build_parser() -> argparse.ArgumentParser:
