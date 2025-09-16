@@ -148,15 +148,15 @@ All modules print concise progress like:
 
 ## Notebooks
 
-For the probabilistic modules, you can explore the outputs interactively using the provided notebooks (legacy support):
+You can explore the outputs interactively using the provided notebooks:
 
+- notebooks/deterministic_verification.ipynb (classic deterministic metrics, maps, histograms, spectra, profiles)
 - notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our xarray-based implementation)
 - notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill Ratio and CRPS summaries)
 
 Notebook tips
 
 - Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
-- For CRPS maps in the notebook: compute `crps_ensemble(targets, predictions, ensemble_dim="ensemble")` and then average over `["time", "init_time", "lead_time", "ensemble"]` where present to produce a lat/lon field for plotting.
 
 ## Development
 
@@ -179,5 +179,3 @@ Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and sm
 - predictions: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `predictions`.
 
 In notebooks and internal code we also favor the explicit names `ds_targets` and `ds_predictions` for clarity.
-
-Backwards compatibility: older code using keyword arguments like `ds=` and `ds_ml=` has been updated in this repo. If you have downstream code pinned to those names, update calls to use `targets=` and `predictions=` respectively.
