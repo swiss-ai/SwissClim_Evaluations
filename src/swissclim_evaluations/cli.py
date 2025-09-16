@@ -377,6 +377,66 @@ def prepare_datasets(
     )
     ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="ml")
 
+    # Optional: strict check for missing values in inputs
+    try:
+        check_missing_flag = bool(
+            cfg.get("selection", {}).get("check_missing", False)
+        )
+    except Exception:
+        check_missing_flag = False
+    if check_missing_flag:
+        problems: list[str] = []
+        for name, ds in (
+            ("ground_truth", ds_target),
+            ("predictions", ds_prediction),
+        ):
+            missing_counts: dict[str, int] = {}
+            totals: dict[str, int] = {}
+            for var in ds.data_vars:
+                da = ds[var]
+                try:
+                    nan_sum = da.isnull().sum()
+                    # nan_sum is a 0-D DataArray (possibly dask-backed) → compute
+                    count = int(nan_sum.compute())  # type: ignore[arg-type]
+                    if count > 0:
+                        missing_counts[var] = count
+                        totals[var] = int(da.size)
+                except Exception:
+                    # Fallback: attempt an 'any' check
+                    try:
+                        has_nan = bool(da.isnull().any().compute())
+                    except Exception:
+                        has_nan = False
+                    if has_nan:
+                        missing_counts[var] = -1  # unknown exact count
+                        totals[var] = int(getattr(da, "size", 0) or 0)
+            if missing_counts:
+                lines = []
+                for v, cnt in missing_counts.items():
+                    tot = totals.get(v, 0)
+                    if cnt >= 0 and tot > 0:
+                        lines.append(f"  - {v}: {cnt}/{tot} missing values")
+                    else:
+                        lines.append(
+                            f"  - {v}: missing values present (count unavailable)"
+                        )
+                problems.append(
+                    f"{name} dataset contains missing data:\n"
+                    + "\n".join(lines)
+                )
+        # Always print the result to the terminal; do not abort here
+        if problems:
+            c.panel(
+                "Missing-value check (enabled): issues found after selection/alignment.\n\n"
+                + "\n\n".join(problems),
+                title="Missing Values — Summary",
+                style="yellow",
+            )
+        else:
+            c.success(
+                "Missing-value check (enabled): no NaNs detected in ground_truth or predictions."
+            )
+
     ds_target_std, ds_prediction_std = _standardize_pair(
         ds_target, ds_prediction
     )

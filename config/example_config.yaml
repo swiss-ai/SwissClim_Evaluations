@@ -60,7 +60,7 @@ selection:
   ensemble_member: 0
 
   # If true, raise an error when requested pressure levels are missing from the data.
-  check_missing: false
+  check_missing: true
 
 plotting:
   # Random seed used for reproducible time subsampling in plots.
@@ -73,7 +73,7 @@ plotting:
   # Plot specific ensemble members (indices)
   # Provide a list of integers. Leave null/omit to plot all ensemble members present.
   # Example: [0, 3, 7]
-  plot_ensemble_members: [0]
+  plot_ensemble_members: null
 
   # Base DPI for plots.
   dpi: 48
@@ -106,6 +106,21 @@ metrics:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
   # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+
+    # Fractional Skill Score (FSS) configuration
+    # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
+    # - window_size: integer (square window) or two-element list [height, width]
+    # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
+    # Optional: use absolute thresholds instead of quantiles:
+    #   - threshold: single float applied to all variables (units must match each variable)
+    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
+    fss:
+      quantile: 0.95
+      window_size: 9            # Example: square window of 9x9
+      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
+      # thresholds:              # Example: per-variable thresholds (units must match dataset)
+      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
+      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
