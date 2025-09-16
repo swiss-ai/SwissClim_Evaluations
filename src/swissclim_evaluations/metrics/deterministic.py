@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -25,11 +25,66 @@ def _calculate_all_metrics(
     calc_relative: bool,
     n_points: int,
     include: list[str] | None,
+    fss_cfg: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     # ds_target = ground truth, ds_prediction = model predictions
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
-    window_size = _window_size(ds_target)
+    # FSS configuration
+    # Typical defaults used in global NWP verification:
+    # - quantile = 0.90 (90th percentile) when no absolute threshold is provided
+    # - window_size = 9x9 grid cells
+    auto_window_size = _window_size(ds_target)
+    fss_quantile = 0.90
+    fss_window_size: Tuple[int, int] = (9, 9)
+    # Optional absolute thresholds (either a single float for all vars or per-variable mapping)
+    fss_threshold_global: float | None = None
+    fss_thresholds_per_var: dict[str, float] | None = None
+    if isinstance(fss_cfg, dict):
+        # quantile can be [0,1] or percentile in [0,100]
+        try:
+            if "quantile" in fss_cfg and fss_cfg["quantile"] is not None:
+                q_val = float(fss_cfg["quantile"])  # type: ignore[assignment]
+                if q_val > 1.0:
+                    q_val = q_val / 100.0
+                # clamp into (0,1)
+                fss_quantile = min(max(q_val, 0.0), 1.0)
+        except Exception:
+            fss_quantile = 0.90
+        # window_size as int or [h, w]
+        ws = fss_cfg.get("window_size")
+        if ws is not None:
+            try:
+                if isinstance(ws, int):
+                    fss_window_size = (max(1, int(ws)), max(1, int(ws)))
+                elif isinstance(ws, Iterable) and not isinstance(
+                    ws, (str, bytes)
+                ):
+                    ws_list = list(ws)  # type: ignore[arg-type]
+                    if len(ws_list) >= 2:
+                        fss_window_size = (
+                            max(1, int(ws_list[0])),
+                            max(1, int(ws_list[1])),
+                        )
+                # else: keep default (9,9)
+            except Exception:
+                # fallback to an automatic heuristic if provided value is invalid
+                fss_window_size = auto_window_size
+        # thresholds: a single float or per-variable dict
+        th = fss_cfg.get("threshold")
+        if th is not None:
+            try:
+                fss_threshold_global = float(th)
+            except Exception:
+                fss_threshold_global = None
+        th_map = fss_cfg.get("thresholds")
+        if isinstance(th_map, dict):
+            try:
+                fss_thresholds_per_var = {
+                    str(k): float(v) for k, v in th_map.items()
+                }
+            except Exception:
+                fss_thresholds_per_var = None
 
     # Determine which metrics to compute. If include is None, compute all.
     all_metric_names = {
@@ -74,18 +129,28 @@ def _calculate_all_metrics(
 
         # FSS (expensive); only compute if requested
         if (include is None) or ("FSS" in metrics_to_compute):
-            # Compute threshold based on a random sample of y_true
-            sample = np.random.default_rng(42).choice(
-                y_true.values.ravel(), min(n_points, y_true.size), replace=False
-            )
-            quantile_90 = float(np.quantile(sample, 0.90))
+            # Determine event threshold preference order:
+            # 1) per-variable absolute threshold (if provided)
+            # 2) global absolute threshold (if provided)
+            # 3) quantile of observed sample (default)
+            if fss_thresholds_per_var and (var in fss_thresholds_per_var):
+                event_threshold = float(fss_thresholds_per_var[var])
+            elif fss_threshold_global is not None:
+                event_threshold = float(fss_threshold_global)
+            else:
+                sample = np.random.default_rng(42).choice(
+                    y_true.values.ravel(),
+                    min(n_points, y_true.size),
+                    replace=False,
+                )
+                event_threshold = float(np.quantile(sample, fss_quantile))
             try:
                 fss_val = float(
                     fss_2d(
                         y_pred.compute(),
                         y_true.compute(),
-                        event_threshold=quantile_90,
-                        window_size=window_size,
+                        event_threshold=event_threshold,
+                        window_size=fss_window_size,
                         spatial_dims=["latitude", "longitude"],
                     )
                 )
@@ -154,9 +219,11 @@ def run(
 
     include = None
     std_include = None
+    fss_cfg: dict[str, Any] | None = None
     if metrics_cfg and isinstance(metrics_cfg.get("deterministic"), dict):
         include = metrics_cfg["deterministic"].get("include")
         std_include = metrics_cfg["deterministic"].get("standardized_include")
+        fss_cfg = metrics_cfg["deterministic"].get("fss")
 
     regular_metrics = _calculate_all_metrics(
         ds_target,
@@ -164,6 +231,7 @@ def run(
         calc_relative=True,
         n_points=n_points,
         include=include,
+        fss_cfg=fss_cfg,
     )
     standardized_metrics = _calculate_all_metrics(
         ds_target_std,
@@ -171,6 +239,7 @@ def run(
         calc_relative=False,
         n_points=n_points,
         include=std_include,
+        fss_cfg=fss_cfg,
     )
     standardized_metrics.columns = [
         f"{c} (Stdized)" for c in standardized_metrics.columns

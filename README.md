@@ -2,37 +2,75 @@
 
 Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other references). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
 
-## Quickstart
+## Quickstart (default: container with Podman + Enroot)
 
-1. Create an environment (pick one):
+We recommend the container workflow for fastest, reproducible setup.
 
-- UV virtualenv
-  - Run: bash tools/setup_env_uv.sh
-  - Creates .venv with Python 3.11 via uv and installs deps.
+1. Build the container (Podman) at repo root int interactive session:
 
-- Conda
-  - Run: bash tools/setup_env_conda.sh
-  - Creates env (Python 3.11) from tools/environment.yml and installs deps.
+```bash
+srun --container-writable -t 01:00:00 -A a122 -p debug --pty bash
+podman build -t swissclim-eval .
+```
 
-- Container (CSCS Enroot/Podman)
-  - See tools/swissai_container.toml and tools/swissai.dockerfile
+2. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
 
-1. Review and edit the example config:
+```bash
+rm -f tools/swissclim-eval.sqsh
+enroot import -x mount -o tools/swissclim-eval.sqsh podman://swissclim-eval
+exit # exit the interactive build session
+mkdir -p ~/.edf
+sed "s/{{username}}/$USER/g" tools/edf_template.toml > ~/.edf/swissclim-eval.toml
+```
 
-The project ships with a commented config that explains every key and valid values. Copy it and adjust the paths and selections as needed.
+3. Review and edit the example config:
 
-Example:
+The project ships with a commented config that explains every key and valid
+values. Copy it and adjust the paths and selections as needed.
 
-- cp config/example_config.yaml config/my_run.yaml
-- Edit config/my_run.yaml (see inline comments)
+```bash
+cp config/example_config.yaml config/my_run.yaml
 
-1. Run:
+4. (CSCS Alps) Launch an interactive session using the container:
+
+```bash
+srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
+```
+
+You are now inside the container with all dependencies installed.
+For a richter debugging experience we consider using `code tunnel`.
+
+5. Run:
 
 ```bash
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
 Outputs appear under paths.output_root (one sub-folder per module).
+
+> Prefer a plain virtual environment? Use one of the alternatives below.
+
+<details>
+<summary>Install with uv (fast Python)</summary>
+
+```bash
+bash tools/setup_env_uv.sh
+# Activates .venv and installs deps via uv
+python -m swissclim_evaluations.cli --config config/my_run.yaml
+```
+
+</details>
+
+<details>
+<summary>Install with conda</summary>
+
+```bash
+bash tools/setup_env_conda.sh
+conda activate swissclim-eval
+python -m swissclim_evaluations.cli --config config/my_run.yaml
+```
+
+</details>
 
 ## Configure
 
@@ -54,12 +92,18 @@ The YAML is the single source of truth. Key sections:
     - plot: save PNGs only
     - npz: write numeric arrays only
     - both: do both
-  - dpi, random_seed, time_subsamples
+  - dpi, random_seed, plot_datetime
+  - map_variable: optional variable name to use for CRPS/PIT maps (defaults to first common variable)
 - modules
-  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic, probabilistic_wbx
+  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic (combined xarray + WBX)
 - metrics
   - deterministic.include / .standardized_include (optional filters)
   - ets.thresholds (percentiles)
+
+- probabilistic (optional)
+  - init_time_chunk_size: chunk size for iterating over init_time (WBX and xarray runners)
+  - lead_time_chunk_size: chunk size for iterating over lead_time (WBX and xarray runners)
+  - lead_times_ns: optional explicit list of numpy timedelta64[ns] lead times to override dataset values (WBX)
 
 Notes
 
@@ -67,7 +111,9 @@ Notes
 - Ensemble handling: If your ML data has an ensemble dim, you can:
   - selection.ensemble_member: pick a specific member, or
   - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
-- Plotting control: output_mode is the only switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+- Plotting control: output_mode is the main switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+  - Optional: plotting.plot_datetime lets you choose a specific init_time to plot (must lie within selection.datetimes and exist in predictions).
+  - Default: when plot_datetime is not set, plotting uses the first available init_time.
 
 ## Dataset Requirements
 
@@ -101,27 +147,55 @@ Attributes:
   - init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble: -1 (-1 = no chunking)
 - This ensures apply_ufunc metrics that use the ensemble as a core dimension work without errors and keeps memory usage predictable. If a dataset deviates, it will be rechunked automatically with a warning.
 
-## What you get
+## Output Overview
 
-- Deterministic metrics
-  - deterministic/metrics.csv and deterministic/metrics_standardized.csv
-  - Summary previews printed to the terminal
-- ETS
-  - ets/ets_metrics.csv and a terminal preview
-- Energy spectra
-  - energy_spectra/*_energy.png, energy_spectra/lsd_metrics.csv, and always an accompanying .npz with spectra arrays
-- Histograms by latitude bands (2D only)
-  - histograms/{var}_sfc_latbands.png (+ combined NPZ per var)
-- KDE + Wasserstein by bands (standardized)
-  - wd_kde/{var}_sfc_latbands_norm.png (+ combined NPZ per var, mean Wasserstein)
-- Vertical profiles (3D)
-  - vertical_profiles/{var}_pl_rel_error.png (+ combined NPZ per var)
-- Maps
-  - maps/{timestamp}_{var}_sfc.png and maps/{timestamp}_{var}_pl.png (+ NPZ dumps of arrays)
-- Probabilistic
-  - probabilistic/crps_summary.csv, probabilistic/{var}_pit_hist.npz, and always {var}_pit.nc and {var}_crps.nc
-- Probabilistic (WBX)
-  - probabilistic_wbx/spread_skill_ratio.csv, probabilistic_wbx/crps_ensemble.csv
+The evaluation generates organized results for each enabled module:
+
+### Deterministic Metrics
+
+- CSV summaries: `deterministic/metrics.csv` and `deterministic/metrics_standardized.csv`
+- Terminal preview of key statistics
+
+### Extreme Threshold Statistics (ETS)
+
+- Metrics file: `ets/ets_metrics.csv`
+- Terminal summary preview
+
+### Energy Spectra Analysis
+
+- Spectral plots: `energy_spectra/*_energy.png`
+- Metrics summary: `energy_spectra/lsd_metrics.csv`
+- Raw data: accompanying `.npz` files with spectral arrays
+
+### Distribution Analysis
+
+- Histograms by latitude: `histograms/{var}_sfc_latbands.png`
+- KDE + Wasserstein distance: `wd_kde/{var}_sfc_latbands_norm.png`
+- Supporting data: combined NPZ files per variable
+
+### Vertical Structure (3D variables only)
+
+- Profile plots: `vertical_profiles/{var}_pl_rel_error.png`
+- Raw data: combined NPZ files per variable
+
+### Spatial Maps
+
+- Surface maps: `maps/{timestamp}_{var}_sfc.png`
+- Pressure level maps: `maps/{timestamp}_{var}_pl.png`
+- Raw arrays: NPZ dumps for each plot
+
+### Probabilistic Verification (combined)
+
+- Xarray-based (per-variable fields and plots):
+  - CRPS summary: `probabilistic/crps_summary.csv`
+  - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
+  - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
+  - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
+- WeatherBenchX-based (summaries and aggregates):
+  - CSV summaries: `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
+  - Temporal aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_temporal.nc`
+  - Spatial/regional aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_spatial.nc`
+  - Optional CRPS map: `probabilistic_wbx/crps_map_{var}.png`
 
 ### Details for probabilistic outputs
 
@@ -139,22 +213,22 @@ All modules print concise progress like:
 
 - Reduce size
   - selection.temporal_resolution_hours: 1, 3, 6 …
-  - plotting.time_subsamples: limit number of init_time samples for plots
+  - plotting.plot_datetime: pick a single init_time to plot (default already selects the first).
 - Keep the same variable names between ERA5 and ML; only overlapping variables are processed.
 - Maps require Cartopy; use npz mode on headless systems if you only need data exports.
 - For reproducibility in plots, prefer plotting.output_mode: npz or both, which writes the exact arrays used to render figures.
 
 ## Notebooks
 
-For the probabilistic modules, you can explore the outputs interactively using the provided notebooks (legacy support):
+You can explore the outputs interactively using the provided notebooks:
 
+- notebooks/deterministic_verification.ipynb (classic deterministic metrics, maps, histograms, spectra, profiles)
 - notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our xarray-based implementation)
 - notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill Ratio and CRPS summaries)
 
 Notebook tips
 
 - Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
-- For CRPS maps in the notebook: compute `crps_ensemble(targets, predictions, ensemble_dim="ensemble")` and then average over `["time", "init_time", "lead_time", "ensemble"]` where present to produce a lat/lon field for plotting.
 
 ## Development
 
@@ -177,5 +251,3 @@ Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and sm
 - predictions: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `predictions`.
 
 In notebooks and internal code we also favor the explicit names `ds_targets` and `ds_predictions` for clarity.
-
-Backwards compatibility: older code using keyword arguments like `ds=` and `ds_ml=` has been updated in this repo. If you have downstream code pinned to those names, update calls to use `targets=` and `predictions=` respectively.
