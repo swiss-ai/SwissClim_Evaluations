@@ -30,6 +30,7 @@ values. Copy it and adjust the paths and selections as needed.
 
 ```bash
 cp config/example_config.yaml config/my_run.yaml
+```
 
 4. (CSCS Alps) Launch an interactive session using the container:
 
