@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -9,6 +10,7 @@ import numpy as np
 import xarray as xr
 import yaml
 
+from . import console as c
 from . import data as data_mod
 
 
@@ -22,9 +24,7 @@ def _ensemble_handling_message(
 ) -> str:
     sel = cfg.get("selection", {})
     modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
-        modules_cfg.get("probabilistic_wbx")
-    )
+    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ensemble_member = sel.get("ensemble_member")
 
     if "ensemble" not in ds_prediction.dims:
@@ -34,7 +34,7 @@ def _ensemble_handling_message(
     # ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
     if probabilistic_enabled:
-        return f"Ensemble: probabilistic modules enabled → keeping full ensemble (size={ens_size})."
+        return f"Ensemble: probabilistic modules enabled → ensemble (size={ens_size})."
     return f"Ensemble: deterministic mode without explicit member → expected reduction to mean, but 'ensemble' still present (size={ens_size})."
 
 
@@ -65,8 +65,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         else:
             # No overlap; keep dataset unchanged but warn to stdout for visibility.
             if requested:
-                print(
-                    "[swissclim_evaluations] Warning: none of the requested levels are present; "
+                c.warn(
+                    "None of the requested pressure levels are present; "
                     f"requested={requested}, available={sorted(available)}. Skipping level selection."
                 )
     if latitudes is not None:
@@ -128,16 +128,102 @@ def _select_variables(
     return ds
 
 
-def _maybe_subsample_time(
-    ds: xr.Dataset, n: int | None, seed: int | None
-) -> xr.Dataset:
-    """Optionally subsample along init_time for quick previews."""
-    if n is None or "init_time" not in ds.dims or ds.init_time.size == 0:
-        return ds
-    n = int(min(n, ds.init_time.size))
-    rng = np.random.default_rng(seed)
-    idx = np.sort(rng.choice(ds.init_time.size, size=n, replace=False))
-    return ds.isel(init_time=idx)
+def _parse_iso_datetime(value: str) -> np.datetime64:
+    return np.datetime64(value).astype("datetime64[ns]")
+
+
+def _select_plot_datetime(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """If plotting.plot_datetime is set, select that init_time for plotting datasets.
+
+    Validates that the requested datetime lies within selection.datetimes range (if provided)
+    and matches an available init_time label. Returns filtered copies with a length-1
+    init_time dimension. If not set, defaults to selecting the first available init_time.
+    """
+    plot_dt_str = (cfg.get("plotting", {}) or {}).get("plot_datetime")
+    if not plot_dt_str:
+        # Default behavior: pick the first available init_time from predictions
+        if (
+            "init_time" in ds_prediction.dims
+            and int(ds_prediction.init_time.size) > 0
+        ):
+            plot_dt = ds_prediction["init_time"].values[0]
+            ds_target_plot = (
+                ds_target.sel(init_time=[plot_dt])
+                if "init_time" in ds_target.dims
+                else ds_target
+            )
+            ds_prediction_plot = ds_prediction.sel(init_time=[plot_dt])
+            return ds_target_plot, ds_prediction_plot
+        return ds_target, ds_prediction
+
+    # Validate against selection.datetimes boundaries, if present
+    sel = cfg.get("selection", {}) or {}
+    bounds = sel.get("datetimes")
+    plot_dt = _parse_iso_datetime(plot_dt_str)
+    if bounds and len(bounds) == 2 and all(bounds):
+        start = _parse_iso_datetime(bounds[0])
+        end = _parse_iso_datetime(bounds[1])
+        if not (start <= plot_dt <= end):
+            raise ValueError(
+                f"plot_datetime={plot_dt_str} must lie within selection.datetimes={bounds}"
+            )
+
+    if "init_time" not in ds_prediction.dims:
+        raise ValueError(
+            "plot_datetime requires datasets with 'init_time' dimension."
+        )
+
+    # Ensure exact label present in predictions (targets are aligned to ML labels)
+    available = ds_prediction["init_time"].values
+    if plot_dt not in available:
+        raise ValueError(
+            "Requested plot_datetime not found in predictions init_time. "
+            f"Requested={plot_dt_str}. Available examples: {available[:8]} (total {available.size})."
+        )
+
+    ds_target_plot = (
+        ds_target.sel(init_time=[plot_dt])
+        if "init_time" in ds_target.dims
+        else ds_target
+    )
+    ds_prediction_plot = ds_prediction.sel(init_time=[plot_dt])
+    return ds_target_plot, ds_prediction_plot
+
+
+def _select_plot_ensemble(
+    ds_prediction: xr.Dataset,
+    ds_prediction_std: xr.Dataset,
+    cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Optionally select specific ensemble members for plotting datasets.
+
+    plotting.plot_ensemble_members: list of integer indices. If provided, subset
+    the 'ensemble' dimension in predictions and predictions_std to those indices.
+    Targets are unaffected (typically non-ensemble). If 'ensemble' is absent and
+    a list is provided, raise a ValueError.
+    """
+    members = (cfg.get("plotting", {}) or {}).get("plot_ensemble_members")
+    if not members:
+        return ds_prediction, ds_prediction_std
+    if "ensemble" not in ds_prediction.dims:
+        raise ValueError(
+            "plot_ensemble_members specified but 'ensemble' dim not present in predictions."
+        )
+    # Validate indices
+    ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+    idx = [int(m) for m in members]
+    if any((m < 0 or m >= ens_size) for m in idx):
+        raise ValueError(
+            f"plot_ensemble_members indices out of range. Requested={idx}, available range=0..{ens_size - 1}."
+        )
+    ds_prediction = ds_prediction.isel(ensemble=idx)
+    if "ensemble" in ds_prediction_std.dims:
+        ds_prediction_std = ds_prediction_std.isel(ensemble=idx)
+    return ds_prediction, ds_prediction_std
 
 
 def _standardize_pair(
@@ -173,15 +259,15 @@ def prepare_datasets(
 
     # Standardize temporal dims and enforce required schema
     ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth"
+        ds_target, dataset_name="ground_truth", first_lead_only=True
     )
-    ds_prediction = data_mod.standardize_dims(ds_prediction, dataset_name="ml")
+    ds_prediction = data_mod.standardize_dims(
+        ds_prediction, dataset_name="ml", first_lead_only=True
+    )
 
     # Handle optional ensemble dimension according to config and selected modules
     modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
-        modules_cfg.get("probabilistic_wbx")
-    )
+    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_member=ensemble_member,
@@ -196,20 +282,8 @@ def prepare_datasets(
     ds_target = _apply_temporal_resolution(ds_target, hours)
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
 
-    # Always keep only the first lead_time (next-timestep prediction assumption)
-    if "lead_time" in ds_target.dims and ds_target.lead_time.size > 1:
-        ds_target = ds_target.isel(lead_time=0, drop=False)
-    if "lead_time" in ds_prediction.dims and ds_prediction.lead_time.size > 1:
-        ds_prediction = ds_prediction.isel(lead_time=0, drop=False)
-
     ds_target = _select_variables(ds_target, variables_2d, variables_3d)
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
-
-    # Ensure same time subsampling later
-    plot_cfg = cfg.get("plotting", {})
-    ds_target = _maybe_subsample_time(
-        ds_target, plot_cfg.get("time_subsamples"), plot_cfg.get("random_seed")
-    )
 
     # Align by valid_time using stack/unstack to ensure identical (init_time, lead_time) dims
     if "init_time" in ds_target.dims and "init_time" in ds_prediction.dims:
