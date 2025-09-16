@@ -9,16 +9,16 @@ from ._smoke_data import make_synthetic_datasets
 
 
 def test_deterministic_smoke(tmp_path: Path):
-    obs, ml = make_synthetic_datasets(with_ensemble=False)
-    obs_std = (obs - obs.mean()) / obs.std()
-    ml_std = (ml - obs.mean()) / obs.std()
+    targets, predictions = make_synthetic_datasets(with_ensemble=False)
+    targets_std = (targets - targets.mean()) / targets.std()
+    predictions_std = (predictions - targets.mean()) / targets.std()
 
     out_root = tmp_path / "out"
     run_deterministic(
-        ds=obs,
-        ds_ml=ml,
-        ds_std=obs_std,
-        ds_ml_std=ml_std,
+        ds_target=targets,
+        ds_prediction=predictions,
+        ds_target_std=targets_std,
+        ds_prediction_std=predictions_std,
         out_root=out_root,
         plotting_cfg={},
         metrics_cfg={
@@ -35,12 +35,12 @@ def test_deterministic_smoke(tmp_path: Path):
 
 
 def test_probabilistic_smoke(tmp_path: Path):
-    obs, ml = make_synthetic_datasets(with_ensemble=True)
+    targets, predictions = make_synthetic_datasets(with_ensemble=True)
 
     out_root = tmp_path / "out"
     run_probabilistic(
-        ds=obs,
-        ds_ml=ml,
+        ds_target=targets,
+        ds_prediction=predictions,
         out_root=out_root,
         cfg_plot={"save_plot_data": True},
         cfg_all={

@@ -16,8 +16,8 @@ def _lat_bands() -> tuple[np.ndarray, int, int]:
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
@@ -28,7 +28,9 @@ def run(
     section_output = out_root / "histograms"
 
     # Select only genuine 2D variables (no 'level' dimension)
-    variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
+    variables_2d = [
+        v for v in ds_target.data_vars if "level" not in ds_target[v].dims
+    ]
     if not variables_2d:
         print("[histograms] No 2D variables found – skipping.")
         return
@@ -54,8 +56,12 @@ def run(
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
-            da_true = ds[variable_name].sel(latitude=slice(lat_min, lat_max))
-            da_pred = ds_ml[variable_name].sel(latitude=slice(lat_min, lat_max))
+            da_true = ds_target[variable_name].sel(
+                latitude=slice(lat_min, lat_max)
+            )
+            da_pred = ds_prediction[variable_name].sel(
+                latitude=slice(lat_min, lat_max)
+            )
             # Surface variable, no level dim expected
             data_ds = da_true.values.flatten()
             data_ds_ml = da_pred.values.flatten()
@@ -88,8 +94,12 @@ def run(
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            da_true = ds[variable_name].sel(latitude=slice(lat_min, lat_max))
-            da_pred = ds_ml[variable_name].sel(latitude=slice(lat_min, lat_max))
+            da_true = ds_target[variable_name].sel(
+                latitude=slice(lat_min, lat_max)
+            )
+            da_pred = ds_prediction[variable_name].sel(
+                latitude=slice(lat_min, lat_max)
+            )
             # Surface variable, no level dim expected
             data_ds = da_true.values.flatten()
             data_ds_ml = da_pred.values.flatten()
@@ -117,7 +127,7 @@ def run(
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
 
-        units = ds[variable_name].attrs.get("units", "")
+        units = ds_target[variable_name].attrs.get("units", "")
         plt.suptitle(
             f"Distribution of {variable_name} ({units}) by latitude bands",
             y=1.02,

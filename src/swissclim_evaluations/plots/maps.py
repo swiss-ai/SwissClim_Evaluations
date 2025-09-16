@@ -12,8 +12,8 @@ import xarray as xr
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
@@ -29,10 +29,10 @@ def run(
     time_index = 0
     lead_index = 0
     time_selected = None
-    if "init_time" in ds.dims and ds.init_time.size > 0:
-        time_index = random.randint(0, ds.init_time.size - 1)
-        time_selected = ds.init_time[time_index]
-    if "lead_time" in ds.dims and ds.lead_time.size > 0:
+    if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
+        time_index = random.randint(0, ds_target.init_time.size - 1)
+        time_selected = ds_target.init_time[time_index]
+    if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
     time_fmt = (
         time_selected.dt.strftime("%Y%m%d%H%M").item()
@@ -43,20 +43,22 @@ def run(
     )
 
     # Determine variables
-    if "level" in ds.dims and int(ds.level.size) > 1:
-        variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
-        variables_2d = [v for v in ds.data_vars if v not in variables_3d]
+    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
+        variables_3d = [
+            v for v in ds_target.data_vars if "level" in ds_target[v].dims
+        ]
+        variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
     else:
         variables_3d = []
-        variables_2d = list(ds.data_vars)
+        variables_2d = list(ds_target.data_vars)
 
     # Assume no missing data per project requirement; use direct min/max.
 
-    # Determine ensemble members (if any) from ds_ml preference; fall back to ds
-    if "ensemble" in ds_ml.dims:
-        ensemble_members = list(range(ds_ml.sizes["ensemble"]))
-    elif "ensemble" in ds.dims:
-        ensemble_members = list(range(ds.sizes["ensemble"]))
+    # Determine ensemble members (if any) from predictions preference; fall back to targets
+    if "ensemble" in ds_prediction.dims:
+        ensemble_members = list(range(ds_prediction.sizes["ensemble"]))
+    elif "ensemble" in ds_target.dims:
+        ensemble_members = list(range(ds_target.sizes["ensemble"]))
     else:
         ensemble_members = [None]
 
@@ -73,8 +75,8 @@ def run(
                 subplot_kw={"projection": ccrs.PlateCarree()},
             )
 
-            ds_var = ds[var]
-            ds_ml_var = ds_ml[var]
+            ds_var = ds_target[var]
+            ds_ml_var = ds_prediction[var]
             if ens is not None:
                 if "ensemble" in ds_var.dims:
                     ds_var = ds_var.isel(ensemble=ens)
@@ -120,7 +122,7 @@ def run(
                 im0,
                 cax=cbar_ax,
                 orientation="horizontal",
-                label=ds[var].attrs.get("units", ""),
+                label=ds_target[var].attrs.get("units", ""),
             )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
@@ -162,7 +164,7 @@ def run(
     # 3D maps per level
     for i, var in enumerate(variables_3d):
         print(f"[maps] 3D variable: {var}")
-        levels = list(ds[var].coords.get("level", []))
+        levels = list(ds_target[var].coords.get("level", []))
         if not levels:
             continue
         num_rows = len(levels)
@@ -177,8 +179,8 @@ def run(
                 squeeze=False,
             )
 
-            ds_var = ds[var]
-            ds_ml_var = ds_ml[var]
+            ds_var = ds_target[var]
+            ds_ml_var = ds_prediction[var]
             if ens is not None:
                 if "ensemble" in ds_var.dims:
                     ds_var = ds_var.isel(ensemble=ens)
@@ -230,7 +232,7 @@ def run(
                 im_ds,
                 cax=cbar_ax,
                 orientation="horizontal",
-                label=ds[var].attrs.get("units", ""),
+                label=ds_target[var].attrs.get("units", ""),
             )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"

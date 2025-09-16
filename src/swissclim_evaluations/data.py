@@ -176,7 +176,6 @@ def standardize_dims(ds: xr.Dataset, dataset_name: str) -> xr.Dataset:
                 )
             )
 
-    # Do not inject a synthetic 'level' dimension anymore.
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
     # Enforce allowed dims only

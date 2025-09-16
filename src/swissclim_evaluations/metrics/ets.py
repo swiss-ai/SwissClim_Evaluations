@@ -10,19 +10,20 @@ from scores.categorical import BinaryContingencyManager
 
 
 def _calculate_ets_for_thresholds(
-    ds: xr.Dataset, ds_ml: xr.Dataset, thresholds: list[int]
+    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
 ) -> pd.DataFrame:
-    variables = list(ds.data_vars)
+    # ds_target (ground truth), ds_prediction (model)
+    variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
     for var in variables:
-        y_true = ds[var]
-        y_pred = ds_ml[var]
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
         metrics_dict[var] = {}
         for threshold in thresholds:
-            quantile = float(np.quantile(y_true, threshold / 100.0))
-            obs_events = y_true >= quantile
-            fcst_events = y_pred >= quantile
+            quantile = float(np.quantile(da_target, threshold / 100.0))
+            obs_events = da_target >= quantile  # targets events
+            fcst_events = da_prediction >= quantile  # predictions events
             bcm = BinaryContingencyManager(
                 fcst_events=fcst_events, obs_events=obs_events
             )
@@ -34,17 +35,17 @@ def _calculate_ets_for_thresholds(
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path | None = None,
     metrics_cfg: dict[str, Any] | None = None,
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
-    df = _calculate_ets_for_thresholds(ds, ds_ml, thresholds)
+    df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
 
     # Quick console feedback
-    print("Equitable Threat Score (first 5 rows):")
+    print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
     print(df.head())
 
     # Always export CSV

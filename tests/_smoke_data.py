@@ -21,7 +21,7 @@ def make_synthetic_datasets(
         "latitude": np.linspace(45.0, 47.0, lat),
         "longitude": np.linspace(6.0, 9.0, lon),
     }
-    obs = xr.Dataset(
+    targets = xr.Dataset(
         {
             v: (
                 ["time", "latitude", "longitude"],
@@ -34,27 +34,27 @@ def make_synthetic_datasets(
 
     if with_ensemble:
         coords_ml = coords | {"ensemble": np.arange(ensemble)}
-        ml = xr.Dataset(
+        predictions = xr.Dataset(
             {
                 v: (
                     ["time", "latitude", "longitude", "ensemble"],
                     rng.standard_normal((time, lat, lon, ensemble))
-                    + obs[v].values[..., None],
+                    + targets[v].values[..., None],
                 )
                 for v in VARS_2D
             },
             coords=coords_ml,
         )
     else:
-        ml = xr.Dataset(
+        predictions = xr.Dataset(
             {
                 v: (
                     ["time", "latitude", "longitude"],
-                    rng.standard_normal((time, lat, lon)) + obs[v].values,
+                    rng.standard_normal((time, lat, lon)) + targets[v].values,
                 )
                 for v in VARS_2D
             },
             coords=coords,
         )
 
-    return obs, ml
+    return targets, predictions

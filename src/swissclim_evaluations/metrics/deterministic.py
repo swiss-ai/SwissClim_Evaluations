@@ -20,15 +20,16 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
 
 
 def _calculate_all_metrics(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     calc_relative: bool,
     n_points: int,
     include: list[str] | None,
 ) -> pd.DataFrame:
-    variables = list(ds.data_vars)
+    # ds_target = ground truth, ds_prediction = model predictions
+    variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
-    window_size = _window_size(ds)
+    window_size = _window_size(ds_target)
 
     # Determine which metrics to compute. If include is None, compute all.
     all_metric_names = {
@@ -45,8 +46,8 @@ def _calculate_all_metrics(
     metrics_to_compute = all_metric_names if include is None else set(include)
 
     for var in variables:
-        y_true = ds[var]
-        y_pred = ds_ml[var]
+        y_true = ds_target[var]
+        y_pred = ds_prediction[var]
         # Precompute stats only if required
         row: dict[str, float] = {}
 
@@ -130,10 +131,10 @@ def _calculate_all_metrics(
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
-    ds_std: xr.Dataset,
-    ds_ml_std: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    ds_target_std: xr.Dataset,
+    ds_prediction_std: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
     metrics_cfg: dict[str, Any] | None = None,
@@ -146,7 +147,9 @@ def run(
     """
     section_output = out_root / "deterministic"
     n_points = (
-        min(10_000_000, ds[list(ds.data_vars)[0]].size) if ds.data_vars else 0
+        min(10_000_000, ds_target[list(ds_target.data_vars)[0]].size)
+        if ds_target.data_vars
+        else 0
     )
 
     include = None
@@ -156,11 +159,15 @@ def run(
         std_include = metrics_cfg["deterministic"].get("standardized_include")
 
     regular_metrics = _calculate_all_metrics(
-        ds, ds_ml, calc_relative=True, n_points=n_points, include=include
+        ds_target,
+        ds_prediction,
+        calc_relative=True,
+        n_points=n_points,
+        include=include,
     )
     standardized_metrics = _calculate_all_metrics(
-        ds_std,
-        ds_ml_std,
+        ds_target_std,
+        ds_prediction_std,
         calc_relative=False,
         n_points=n_points,
         include=std_include,
@@ -179,12 +186,14 @@ def run(
 
     # Console summary similar to ETS
     try:
-        print("Deterministic metrics (first 5 rows):")
+        print("Deterministic metrics (targets vs predictions) — first 5 rows:")
         print(regular_metrics.head())
     except Exception:
         pass
     try:
-        print("Deterministic standardized metrics (first 5 rows):")
+        print(
+            "Deterministic standardized metrics (targets vs predictions) — first 5 rows:"
+        )
         print(standardized_metrics.head())
     except Exception:
         pass

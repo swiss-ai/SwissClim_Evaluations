@@ -17,10 +17,10 @@ def _lat_bands():
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
-    ds_std: xr.Dataset,
-    ds_ml_std: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    ds_target_std: xr.Dataset,
+    ds_prediction_std: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
@@ -32,7 +32,9 @@ def run(
 
     # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [
-        v for v in ds_std.data_vars if "level" not in ds_std[v].dims
+        v
+        for v in ds_target_std.data_vars
+        if "level" not in ds_target_std[v].dims
     ]
     if not variables_2d:
         print("[wd_kde] No 2D variables found – skipping.")
@@ -62,18 +64,18 @@ def run(
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
 
-            ds_slice = ds_std[variable_name].sel(
+            da_target_slice = ds_target_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            ds_ml_slice = ds_ml_std[variable_name].sel(
+            da_prediction_slice = ds_prediction_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
             # Surface variable, no level dim expected
-            if ds_slice.size == 0 or ds_ml_slice.size == 0:
+            if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_flat = ds_slice.values.flatten()
-            ml_flat = ds_ml_slice.values.flatten()
+            ds_flat = da_target_slice.values.flatten()
+            ml_flat = da_prediction_slice.values.flatten()
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
             kde_ds = gaussian_kde(ds_flat)
@@ -111,18 +113,18 @@ def run(
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            ds_slice = ds_std[variable_name].sel(
+            da_target_slice = ds_target_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            ds_ml_slice = ds_ml_std[variable_name].sel(
+            da_prediction_slice = ds_prediction_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
             # Surface variable, no level dim expected
-            if ds_slice.size == 0 or ds_ml_slice.size == 0:
+            if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_flat = ds_slice.values.flatten()
-            ml_flat = ds_ml_slice.values.flatten()
+            ds_flat = da_target_slice.values.flatten()
+            ml_flat = da_prediction_slice.values.flatten()
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
             kde_ds = gaussian_kde(ds_flat)

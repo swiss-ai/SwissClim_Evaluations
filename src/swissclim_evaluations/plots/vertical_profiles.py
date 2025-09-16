@@ -17,8 +17,8 @@ def _lat_bands():
 
 
 def run(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
@@ -29,7 +29,9 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "vertical_profiles"
 
-    variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
+    variables_3d = [
+        v for v in ds_target.data_vars if "level" in ds_target[v].dims
+    ]
     lat_bins, n_bands = _lat_bands()
 
     # Note: derive levels per-variable from dataset to avoid mismatches with config
@@ -38,7 +40,7 @@ def run(
     for var in variables_3d:
         print(f"[vertical_profiles] variable: {var}")
         # Derive actual levels present for this variable; intersect with config if provided
-        level_coord = ds[var].coords.get("level", None)
+        level_coord = ds_target[var].coords.get("level", None)
         if level_coord is None or int(level_coord.size) == 0:
             continue
         if select_cfg.get("levels"):
@@ -50,6 +52,7 @@ def run(
                 continue
         else:
             level_values = np.array(level_coord.values)
+
         n_cols = 2
         fig, axes = plt.subplots(
             n_cols, n_bands // 2, figsize=(24, 10), dpi=dpi * 2, sharey=True
@@ -64,10 +67,14 @@ def run(
             lat_max_neg = lat_bins[i + 1]
             lat_slice_neg = slice(lat_max_neg, lat_min_neg)
             data_ds_neg = (
-                ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                ds_target[var]
+                .sel(latitude=lat_slice_neg)
+                .sel(level=level_values)
             )
             data_ds_ml_neg = (
-                ds_ml[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                ds_prediction[var]
+                .sel(latitude=lat_slice_neg)
+                .sel(level=level_values)
             )
             reduce_dims = [
                 d
@@ -98,10 +105,14 @@ def run(
             lat_max_pos = lat_bins[idx - 1]
             lat_slice_pos = slice(lat_min_pos, lat_max_pos)
             data_ds_pos = (
-                ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                ds_target[var]
+                .sel(latitude=lat_slice_pos)
+                .sel(level=level_values)
             )
             data_ds_ml_pos = (
-                ds_ml[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                ds_prediction[var]
+                .sel(latitude=lat_slice_pos)
+                .sel(level=level_values)
             )
             reduce_dims_pos = [
                 d
@@ -127,10 +138,14 @@ def run(
             lat_slice_neg = slice(lat_max_neg, lat_min_neg)
             ax_neg = axes[0, i]
             data_ds_neg = (
-                ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                ds_target[var]
+                .sel(latitude=lat_slice_neg)
+                .sel(level=level_values)
             )
             data_ds_ml_neg = (
-                ds_ml[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                ds_prediction[var]
+                .sel(latitude=lat_slice_neg)
+                .sel(level=level_values)
             )
             reduce_dims = [
                 d
@@ -160,10 +175,14 @@ def run(
             lat_slice_pos = slice(lat_min_pos, lat_max_pos)
             ax_pos = axes[1, i]
             data_ds_pos = (
-                ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                ds_target[var]
+                .sel(latitude=lat_slice_pos)
+                .sel(level=level_values)
             )
             data_ds_ml_pos = (
-                ds_ml[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                ds_prediction[var]
+                .sel(latitude=lat_slice_pos)
+                .sel(level=level_values)
             )
             reduce_dims_pos = [
                 d
@@ -213,10 +232,12 @@ def run(
                 lat_max_neg = lat_bins[i + 1]
                 lat_slice_neg = slice(lat_max_neg, lat_min_neg)
                 data_ds_neg = (
-                    ds[var].sel(latitude=lat_slice_neg).sel(level=level_values)
+                    ds_target[var]
+                    .sel(latitude=lat_slice_neg)
+                    .sel(level=level_values)
                 )
                 data_ds_ml_neg = (
-                    ds_ml[var]
+                    ds_prediction[var]
                     .sel(latitude=lat_slice_neg)
                     .sel(level=level_values)
                 )
@@ -247,10 +268,12 @@ def run(
                 lat_max_pos = lat_bins[idx - 1]
                 lat_slice_pos = slice(lat_min_pos, lat_max_pos)
                 data_ds_pos = (
-                    ds[var].sel(latitude=lat_slice_pos).sel(level=level_values)
+                    ds_target[var]
+                    .sel(latitude=lat_slice_pos)
+                    .sel(level=level_values)
                 )
                 data_ds_ml_pos = (
-                    ds_ml[var]
+                    ds_prediction[var]
                     .sel(latitude=lat_slice_pos)
                     .sel(level=level_values)
                 )

@@ -18,60 +18,64 @@ from weatherbenchX.metrics.probabilistic import (
 from ..helpers import time_chunks
 
 
-def _crps_e1(obs, fct):
-    M: int = fct.shape[-1]
-    e_1 = np.sum(np.abs(obs[..., None] - fct), axis=-1) / M
+def _crps_e1(da_target, da_prediction):
+    M: int = da_prediction.shape[-1]
+    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
     return e_1
 
 
-def crps_e1(obs, fct, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the CRPS for ensemble forecasts."""
+def crps_e1(
+    da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"
+):
+    """Compute the CRPS (e1 component) for ensemble predictions vs targets."""
     return xr.apply_ufunc(
         _crps_e1,
-        obs,
-        fct,
+        da_target,
+        da_prediction,
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
     )
 
 
-def _crps_e2(fct):
-    M: int = fct.shape[-1]
+def _crps_e2(da_prediction):
+    M: int = da_prediction.shape[-1]
     e_2 = np.sum(
-        np.abs(fct[..., None] - fct[..., None, :]),
+        np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
     ) / (M * (M - 1))
     return e_2
 
 
-def crps_e2(fct, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the CRPS for ensemble forecasts."""
+def crps_e2(da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
+    """Compute the CRPS (e2 component) for ensemble predictions."""
     return xr.apply_ufunc(
         _crps_e2,
-        fct,
+        da_prediction,
         input_core_dims=[[ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
     )
 
 
-def _crps_ensemble_fair(obs, fct):
-    M: int = fct.shape[-1]
-    e_1 = np.sum(np.abs(obs[..., None] - fct), axis=-1) / M
+def _crps_ensemble_fair(da_target, da_prediction):
+    M: int = da_prediction.shape[-1]
+    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
     e_2 = np.sum(
-        np.abs(fct[..., None] - fct[..., None, :]),
+        np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
     ) / (M * (M - 1))
     return e_1 - 0.5 * e_2
 
 
-def crps_ensemble(obs, fct, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the CRPS for ensemble forecasts."""
+def crps_ensemble(
+    da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"
+):
+    """Compute the fair CRPS for ensemble predictions vs targets."""
     res = xr.apply_ufunc(
         _crps_ensemble_fair,
-        obs,
-        fct,
+        da_target,
+        da_prediction,
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
@@ -79,18 +83,18 @@ def crps_ensemble(obs, fct, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     return _add_metric_prefix(res, name_prefix)
 
 
-def _pit(obs, fct):
-    return np.mean(fct < obs[..., None], axis=-1)
+def _pit(da_target, da_prediction):
+    return np.mean(da_prediction < da_target[..., None], axis=-1)
 
 
 def probability_integral_transform(
-    obs, fct, ensemble_dim="ensemble", name_prefix: str = "PIT"
+    da_target, da_prediction, ensemble_dim="ensemble", name_prefix: str = "PIT"
 ):
-    """Compute the probability integral transform."""
+    """Compute the probability integral transform for ensemble predictions vs targets."""
     res = xr.apply_ufunc(
         _pit,
-        obs,
-        fct,
+        da_target,
+        da_prediction,
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
@@ -98,16 +102,18 @@ def probability_integral_transform(
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 
 
-def _ens_mean_se(obs, fct):
-    return (fct.mean(axis=-1) - obs) ** 2
+def _ens_mean_se(da_target, da_prediction):
+    return (da_prediction.mean(axis=-1) - da_target) ** 2
 
 
-def ensemble_mean_se(obs, fct, name_prefix: str = "EnsembleMeanSquaredError"):
-    """Compute the ensemble mean squared error."""
+def ensemble_mean_se(
+    da_target, da_prediction, name_prefix: str = "EnsembleMeanSquaredError"
+):
+    """Compute the ensemble mean squared error of predictions vs targets."""
     res = xr.apply_ufunc(
         _ens_mean_se,
-        obs,
-        fct,
+        da_target,
+        da_prediction,
         input_core_dims=[[], ["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
@@ -115,15 +121,15 @@ def ensemble_mean_se(obs, fct, name_prefix: str = "EnsembleMeanSquaredError"):
     return _add_metric_prefix(res, name_prefix)
 
 
-def _ens_std(fct):
-    return fct.std(axis=-1)
+def _ens_std(da_prediction):
+    return da_prediction.std(axis=-1)
 
 
-def ensemble_std(fct, name_prefix: str = "EnsembleSTD"):
-    """Compute the ensemble standard deviation."""
+def ensemble_std(da_prediction, name_prefix: str = "EnsembleSTD"):
+    """Compute the ensemble standard deviation of predictions."""
     res = xr.apply_ufunc(
         _ens_std,
-        fct,
+        da_prediction,
         input_core_dims=[["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
@@ -174,30 +180,30 @@ def _pit_histogram_np(
 
 
 def _iter_time_chunks(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     init_chunk: int | None = None,
     lead_chunk: int | None = None,
 ):
-    if all(dim in ds_ml.dims for dim in ("init_time", "lead_time")):
+    if all(dim in ds_prediction.dims for dim in ("init_time", "lead_time")):
         for init_chunk_vals, lead_chunk_vals in time_chunks(
-            ds_ml["init_time"].values,
-            ds_ml["lead_time"].values,
+            ds_prediction["init_time"].values,
+            ds_prediction["lead_time"].values,
             init_chunk,
             lead_chunk,
         ):
             idx = {"init_time": init_chunk_vals, "lead_time": lead_chunk_vals}
-            # Assumes CLI aligned ds and ds_ml by init_time/lead_time intersection already.
-            yield (ds.sel(**idx).load(), ds_ml.sel(**idx).load())
-    elif "time" in ds_ml.dims:
-        yield ds, ds_ml
+            # Assumes CLI aligned targets and predictions by init_time/lead_time intersection already.
+            yield (ds_target.sel(**idx).load(), ds_prediction.sel(**idx).load())
+    elif "time" in ds_prediction.dims:
+        yield ds_target, ds_prediction
     else:
-        yield ds, ds_ml
+        yield ds_target, ds_prediction
 
 
 def run_probabilistic(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path,
     cfg_plot: dict[str, Any],
     cfg_all: dict[str, Any],
@@ -213,16 +219,16 @@ def run_probabilistic(
     section_output.mkdir(parents=True, exist_ok=True)
     # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
 
-    if "ensemble" not in ds_ml.dims:
+    if "ensemble" not in ds_prediction.dims:
         print(
             "[probabilistic] Skipping: model dataset has no 'ensemble' dimension."
         )
         return
 
-    variables = [v for v in ds_ml.data_vars if v in ds.data_vars]
+    variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
         print(
-            "[probabilistic] No overlapping variables between obs and forecast; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
         )
         return
 
@@ -232,18 +238,35 @@ def run_probabilistic(
 
     crps_rows: list[dict[str, Any]] = []
 
-    for ds_obs_chunk, ds_fct_chunk in _iter_time_chunks(
-        ds, ds_ml, init_chunk=init_chunk, lead_chunk=lead_chunk
+    for targ_chunk, pred_chunk in _iter_time_chunks(
+        ds_target, ds_prediction, init_chunk=init_chunk, lead_chunk=lead_chunk
     ):
         for var in variables:
-            obs = ds_obs_chunk[var]
-            fct = ds_fct_chunk[var]
-            crps_da = crps_ensemble(obs, fct, ensemble_dim="ensemble")
+            # Extract and align targets and predictions along shared coordinates
+            da_target = targ_chunk[var]
+            da_prediction = pred_chunk[var]
+            try:
+                da_target, da_prediction = xr.align(
+                    da_target, da_prediction, join="exact"
+                )
+            except Exception:
+                # Fallback to by-position if shapes match exactly
+                if da_target.shape == da_prediction.shape:
+                    da_target = da_target.copy()
+                    da_prediction = da_prediction.copy()
+                else:
+                    raise
+            crps_da = crps_ensemble(
+                da_target, da_prediction, ensemble_dim="ensemble"
+            )
             crps_mean = float(_reduce_mean_all(crps_da))
             crps_rows.append({"variable": var, "CRPS": crps_mean})
 
             pit_da = probability_integral_transform(
-                obs, fct, ensemble_dim="ensemble", name_prefix=None
+                da_target,
+                da_prediction,
+                ensemble_dim="ensemble",
+                name_prefix=None,
             )
             counts, edges = _pit_histogram_np(pit_da, bins=50)
             pit_npz = section_output / f"{var}_pit_hist.npz"
@@ -270,16 +293,18 @@ def run_probabilistic(
         print(f"[probabilistic] saved {out_csv}")
 
 
-# --- Thin re-exports for compatibility ---
-# Keep names imported by notebooks while delegating to WeatherBenchX
+"""
+Thin re-exports for compatibility with notebooks and callers expecting these names.
+We bind the official WeatherBenchX metric classes to our module-level names.
+"""
 CRPSEnsemble = WBXCRPSEnsemble
 SpreadSkillRatio = WBXSpreadSkillRatio
 
 
 def _wbx_metric_to_df(
     metric: Any,
-    predictions: xr.Dataset,
-    targets: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    ds_target: xr.Dataset,
     value_col: str,
 ) -> pd.DataFrame:
     """Compute a WeatherBenchX PerVariableMetric into a tidy DataFrame.
@@ -292,12 +317,12 @@ def _wbx_metric_to_df(
     - Return DataFrame with index 'variable' and a single column 'value_col'.
     """
     # Build var->DataArray mappings using only common variables
-    variables = [v for v in predictions.data_vars if v in targets.data_vars]
+    variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     pred_map: Mapping[Hashable, xr.DataArray] = {
-        v: predictions[v] for v in variables
+        v: ds_prediction[v] for v in variables
     }
     targ_map: Mapping[Hashable, xr.DataArray] = {
-        v: targets[v] for v in variables
+        v: ds_target[v] for v in variables
     }
 
     # Compute and average statistics per variable
@@ -332,8 +357,8 @@ def _wbx_metric_to_df(
 
 
 def run_probabilistic_wbx(
-    ds: xr.Dataset,
-    ds_ml: xr.Dataset,
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
     all_cfg: dict[str, Any],
@@ -346,24 +371,29 @@ def run_probabilistic_wbx(
     section_output = out_root / "probabilistic_wbx"
     section_output.mkdir(parents=True, exist_ok=True)
 
-    if "ensemble" not in ds_ml.dims:
+    if "ensemble" not in ds_prediction.dims:
         print(
             "[probabilistic_wbx] Skipping: model dataset has no 'ensemble' dimension."
         )
         return
 
-    common_vars = [v for v in ds_ml.data_vars if v in ds.data_vars]
+    common_vars = [
+        v for v in ds_prediction.data_vars if v in ds_target.data_vars
+    ]
     if not common_vars:
         print(
-            "[probabilistic_wbx] No overlapping variables between obs and forecast; nothing to do."
+            "[probabilistic_wbx] No overlapping variables between targets and predictions; nothing to do."
         )
         return
-    fct = ds_ml[common_vars]
-    obs = ds[common_vars]
+    ds_prediction_sel = ds_prediction[common_vars]
+    ds_target_sel = ds_target[common_vars]
 
     ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
     ssr_df = _wbx_metric_to_df(
-        ssr_metric, predictions=fct, targets=obs, value_col="SSR"
+        ssr_metric,
+        ds_prediction=ds_prediction_sel,
+        ds_target=ds_target_sel,
+        value_col="SSR",
     )
     ssr_csv = section_output / "spread_skill_ratio.csv"
     ssr_df.to_csv(ssr_csv)
@@ -371,7 +401,10 @@ def run_probabilistic_wbx(
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
     crps_df = _wbx_metric_to_df(
-        crps_metric, predictions=fct, targets=obs, value_col="CRPS"
+        crps_metric,
+        ds_prediction=ds_prediction_sel,
+        ds_target=ds_target_sel,
+        value_col="CRPS",
     )
     crps_csv = section_output / "crps_ensemble.csv"
     crps_df.to_csv(crps_csv)
