@@ -69,6 +69,32 @@ Notes
   - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
 - Plotting control: output_mode is the only switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
 
+## Dataset Requirements
+
+This verification is based on xarray Datasets with the following structure.
+Currently the dataloader expects the a zarr archive of the following shape:
+
+```bash
+<xarray.Dataset> Size: 297GB
+Dimensions:                  (init_time: 28, ensemble: 8, lead_time: 40,
+                              latitude: 720, longitude: 1440, level: 37)
+Coordinates:
+  * ensemble                 (ensemble) int64 64B 0 1 2 3 4 5 6 7
+  * init_time                (init_time) datetime64[ns] 224B 2023-01-02 ... 2...
+  * latitude                 (latitude) float32 3kB 90.0 89.75 ... -89.5 -89.75
+  * lead_time                (lead_time) timedelta64[ns] 320B 0 days 06:00:00...
+  * level                    (level) int64 296B 1 2 3 5 ... 950 975 1000
+  * longitude                (longitude) float32 6kB 0.0 0.25 ... 359.5 359.8
+Data variables:
+    10m_u_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    10m_v_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    2m_temperature           (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    global_CO2               (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    u_component_of_wind      (init_time, lead_time, level, ensemble, latitude, longitude) float32 1TB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
+Attributes:
+    model:    model_ckpt-step=7300-loss_train=0.07.ckpt
+```
+
 ### Chunking policy (xarray/dask)
 
 - The repository enforces a default Dask chunking policy in code:
@@ -128,11 +154,11 @@ For the probabilistic modules, you can explore the outputs interactively using t
 Notebook tips
 
 - Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
-- For CRPS maps in the notebook: compute `crps_ensemble(obs, fct, ensemble_dim="ensemble")` and then average over `["time", "init_time", "lead_time", "ensemble"]` where present to produce a lat/lon field for plotting.
+- For CRPS maps in the notebook: compute `crps_ensemble(targets, predictions, ensemble_dim="ensemble")` and then average over `["time", "init_time", "lead_time", "ensemble"]` where present to produce a lat/lon field for plotting.
 
 ## Development
 
-```
+```text
 - Python: 3.11
 - Key libs: xarray, numpy, scipy, pandas, matplotlib, cartopy, scores, weatherbenchX
 ```
@@ -144,3 +170,12 @@ pytest -q
 ```
 
 Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
+
+## Naming conventions
+
+- targets: the ground-truth/reference dataset (e.g., ERA5). Public APIs now consistently use the parameter name `targets`.
+- predictions: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `predictions`.
+
+In notebooks and internal code we also favor the explicit names `ds_targets` and `ds_predictions` for clarity.
+
+Backwards compatibility: older code using keyword arguments like `ds=` and `ds_ml=` has been updated in this repo. If you have downstream code pinned to those names, update calls to use `targets=` and `predictions=` respectively.
