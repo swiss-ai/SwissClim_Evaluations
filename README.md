@@ -54,7 +54,7 @@ The YAML is the single source of truth. Key sections:
     - plot: save PNGs only
     - npz: write numeric arrays only
     - both: do both
-  - dpi, random_seed, time_subsamples
+  - dpi, random_seed, plot_datetime
 - modules
   - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic, probabilistic_wbx
 - metrics
@@ -67,7 +67,9 @@ Notes
 - Ensemble handling: If your ML data has an ensemble dim, you can:
   - selection.ensemble_member: pick a specific member, or
   - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
-- Plotting control: output_mode is the only switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+- Plotting control: output_mode is the main switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+  - Optional: plotting.plot_datetime lets you choose a specific init_time to plot (must lie within selection.datetimes and exist in predictions).
+  - Default: when plot_datetime is not set, plotting uses the first available init_time.
 
 ## Dataset Requirements
 
@@ -139,7 +141,7 @@ All modules print concise progress like:
 
 - Reduce size
   - selection.temporal_resolution_hours: 1, 3, 6 …
-  - plotting.time_subsamples: limit number of init_time samples for plots
+  - plotting.plot_datetime: pick a single init_time to plot (default already selects the first).
 - Keep the same variable names between ERA5 and ML; only overlapping variables are processed.
 - Maps require Cartopy; use npz mode on headless systems if you only need data exports.
 - For reproducibility in plots, prefer plotting.output_mode: npz or both, which writes the exact arrays used to render figures.

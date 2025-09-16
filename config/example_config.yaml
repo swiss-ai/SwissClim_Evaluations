@@ -22,11 +22,11 @@ selection:
 
   # Optional time downsampling in hours. Applied as a stride along lead_time if present,
   # otherwise along init_time. Set to null to disable.
-  temporal_resolution_hours: 0
+  temporal_resolution_hours: null
 
   # Time slice in ISO-8601 format [start, end]. Examples: "2021-01-01T00", "2021-01-05T06".
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
-  datetimes: ["2023-01-02T12", "2023-01-06T06"]
+  datetimes: ["2023-01-02T12", "2023-01-03T00"]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
   # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
@@ -66,8 +66,14 @@ plotting:
   # Random seed used for reproducible time subsampling in plots.
   random_seed: 42
 
-  # Number of init_time samples to plot (randomly chosen). Use null or 0 to disable subsampling.
-  time_subsamples: 10
+  # Plot a specific init_time. Must lie within selection.datetimes and exist in predictions.
+  # Example: "2023-01-03T12". Leave null/omit to plot the first available init_time.
+  plot_datetime: null
+
+  # Plot specific ensemble members (indices)
+  # Provide a list of integers. Leave null/omit to plot all ensemble members present.
+  # Example: [0, 3, 7]
+  plot_ensemble_members: [0]
 
   # Base DPI for plots.
   dpi: 48
