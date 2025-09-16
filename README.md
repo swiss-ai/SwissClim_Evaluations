@@ -52,7 +52,7 @@ Outputs appear under paths.output_root (one sub-folder per module).
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
 <details>
-<summary>Install with uv (fast Python)</summary>
+<summary>Install with uenv + uv</summary>
 
 ```bash
 bash tools/setup_env_uv.sh
@@ -63,7 +63,7 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 </details>
 
 <details>
-<summary>Install with conda</summary>
+<summary>Install with conda + uv</summary>
 
 ```bash
 bash tools/setup_env_conda.sh
