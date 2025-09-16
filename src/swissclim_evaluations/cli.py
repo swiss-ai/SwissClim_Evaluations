@@ -159,16 +159,25 @@ def prepare_datasets(
     probabilistic_enabled = bool(modules_cfg.get("probabilistic")) or bool(
         modules_cfg.get("probabilistic_wbx")
     )
-    if "ensemble" in ds_ml.dims:
-        if ensemble_member is not None:
-            # Select the given member and drop the ensemble dim to behave as deterministic
-            ds_ml = ds_ml.isel(ensemble=int(ensemble_member), drop=True)
-        elif not probabilistic_enabled:
-            # No specific member requested and no probabilistic metrics: use ensemble mean
-            ds_ml = ds_ml.mean(dim="ensemble", keep_attrs=True)
+    ds_ml = data_mod.apply_ensemble_policy(
+        ds_ml,
+        ensemble_member=ensemble_member,
+        probabilistic_enabled=probabilistic_enabled,
+    )
+    ds_nwp = data_mod.apply_ensemble_policy(
+        ds_nwp,
+        ensemble_member=None,
+        probabilistic_enabled=probabilistic_enabled,
+    )
 
     ds_nwp = _apply_temporal_resolution(ds_nwp, hours)
     ds_ml = _apply_temporal_resolution(ds_ml, hours)
+
+    # Always keep only the first lead_time (next-timestep prediction assumption)
+    if "lead_time" in ds_nwp.dims and ds_nwp.lead_time.size > 1:
+        ds_nwp = ds_nwp.isel(lead_time=0, drop=False)
+    if "lead_time" in ds_ml.dims and ds_ml.lead_time.size > 1:
+        ds_ml = ds_ml.isel(lead_time=0, drop=False)
 
     ds_nwp = _select_variables(ds_nwp, variables_2d, variables_3d)
     ds_ml = _select_variables(ds_ml, variables_2d, variables_3d)
@@ -265,6 +274,10 @@ def prepare_datasets(
     ds_ml = ds_ml_stacked.unstack("pair")
     ds_nwp = ds_nwp_stacked.unstack("pair")
 
+    # Enforce repository-wide chunking policy to ensure predictable performance
+    ds_nwp = data_mod.enforce_chunking(ds_nwp, dataset_name="ground_truth")
+    ds_ml = data_mod.enforce_chunking(ds_ml, dataset_name="ml")
+
     ds_std, ds_ml_std = _standardize_pair(ds_nwp, ds_ml)
     return ds_nwp, ds_ml, ds_std, ds_ml_std
 
@@ -287,8 +300,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     # Basic overview
     all_vars = list(ds.data_vars)
-    vars_2d = [v for v in all_vars if "level" not in ds[v].dims]
-    vars_3d = [v for v in all_vars if "level" in ds[v].dims]
+    # Classify variables: treat singleton level dimension (size==1) as non-3D
+    if "level" in ds.dims and int(ds.level.size) > 1:
+        vars_3d = [v for v in all_vars if "level" in ds[v].dims]
+        vars_2d = [v for v in all_vars if v not in vars_3d]
+    else:
+        vars_3d = []
+        vars_2d = all_vars
     print(
         f"[swissclim] Starting run → output_root='{out_root}'. Output mode={mode}. Variables: 2D={len(vars_2d)}, 3D={len(vars_3d)}. Modules from config toggles."
     )

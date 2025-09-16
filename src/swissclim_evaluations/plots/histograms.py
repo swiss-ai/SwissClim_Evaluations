@@ -27,7 +27,12 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "histograms"
 
+    # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
+    if not variables_2d:
+        print("[histograms] No 2D variables found – skipping.")
+        return
+    print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
     lat_bins, n_bands, n_rows = _lat_bands()
 
     for i, variable_name in enumerate(variables_2d):
@@ -49,16 +54,11 @@ def run(
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
-            data_ds = (
-                ds[variable_name]
-                .sel(latitude=slice(lat_min, lat_max))
-                .values.flatten()
-            )
-            data_ds_ml = (
-                ds_ml[variable_name]
-                .sel(latitude=slice(lat_min, lat_max))
-                .values.flatten()
-            )
+            da_true = ds[variable_name].sel(latitude=slice(lat_min, lat_max))
+            da_pred = ds_ml[variable_name].sel(latitude=slice(lat_min, lat_max))
+            # Surface variable, no level dim expected
+            data_ds = da_true.values.flatten()
+            data_ds_ml = da_pred.values.flatten()
             counts_ds, bins_ds, _ = axs[j, 1].hist(
                 data_ds,
                 bins=1000,
@@ -88,16 +88,11 @@ def run(
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            data_ds = (
-                ds[variable_name]
-                .sel(latitude=slice(lat_min, lat_max))
-                .values.flatten()
-            )
-            data_ds_ml = (
-                ds_ml[variable_name]
-                .sel(latitude=slice(lat_min, lat_max))
-                .values.flatten()
-            )
+            da_true = ds[variable_name].sel(latitude=slice(lat_min, lat_max))
+            da_pred = ds_ml[variable_name].sel(latitude=slice(lat_min, lat_max))
+            # Surface variable, no level dim expected
+            data_ds = da_true.values.flatten()
+            data_ds_ml = da_pred.values.flatten()
             counts_ds, bins_ds, _ = axs[j, 0].hist(
                 data_ds,
                 bins=1000,

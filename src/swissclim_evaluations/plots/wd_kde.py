@@ -30,9 +30,14 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "wd_kde"
 
+    # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [
         v for v in ds_std.data_vars if "level" not in ds_std[v].dims
     ]
+    if not variables_2d:
+        print("[wd_kde] No 2D variables found – skipping.")
+        return
+    print(f"[wd_kde] Processing {len(variables_2d)} 2D variables.")
     lat_bins, n_bands, n_rows = _lat_bands()
 
     for i, variable_name in enumerate(variables_2d):
@@ -63,6 +68,7 @@ def run(
             ds_ml_slice = ds_ml_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
+            # Surface variable, no level dim expected
             if ds_slice.size == 0 or ds_ml_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
@@ -111,6 +117,7 @@ def run(
             ds_ml_slice = ds_ml_std[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
+            # Surface variable, no level dim expected
             if ds_slice.size == 0 or ds_ml_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue

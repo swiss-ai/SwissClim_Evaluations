@@ -1,5 +1,7 @@
 import itertools
 
+"""Helper utilities for chunking over init and lead times."""
+
 
 def time_chunks(
     init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None
@@ -23,3 +25,6 @@ def time_chunks(
         ]
 
     return itertools.product(init_time_chunks, lead_time_chunks)
+
+
+## Note: patch_time_dimensions was intentionally removed to keep library API unchanged.

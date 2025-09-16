@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Hashable, Mapping
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from weatherbenchX.metrics.probabilistic import (
+    CRPSEnsemble as WBXCRPSEnsemble,
+)
 
-# WeatherBench-X base classes used by WBX metric wrappers
-from weatherbenchX.metrics.base import PerVariableMetric, PerVariableStatistic
-from weatherbenchX.metrics.deterministic import SquaredError
-from weatherbenchX.metrics.wrappers import EnsembleMean, WrappedStatistic
+# Use official WeatherBenchX metrics instead of local copies
+from weatherbenchX.metrics.probabilistic import (
+    SpreadSkillRatio as WBXSpreadSkillRatio,
+)
 
 from ..helpers import time_chunks
 
@@ -267,109 +270,65 @@ def run_probabilistic(
         print(f"[probabilistic] saved {out_csv}")
 
 
-# --- WBX-compatible metric classes (moved from wbx.py) ---
+# --- Thin re-exports for compatibility ---
+# Keep names imported by notebooks while delegating to WeatherBenchX
+CRPSEnsemble = WBXCRPSEnsemble
+SpreadSkillRatio = WBXSpreadSkillRatio
 
 
-class ProbabilityIntegralTransform(PerVariableMetric):
-    """Compute the PIT for ensemble forecasts."""
+def _wbx_metric_to_df(
+    metric: Any,
+    predictions: xr.Dataset,
+    targets: xr.Dataset,
+    value_col: str,
+) -> pd.DataFrame:
+    """Compute a WeatherBenchX PerVariableMetric into a tidy DataFrame.
 
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
+    Steps:
+    - Compute each required statistic via statistic.compute(predictions, targets)
+      to get mapping var -> DataArray.
+    - Reduce each DataArray by taking mean over common dims.
+    - Call metric.values_from_mean_statistics(mean_stats) to obtain final values.
+    - Return DataFrame with index 'variable' and a single column 'value_col'.
+    """
+    # Build var->DataArray mappings using only common variables
+    variables = [v for v in predictions.data_vars if v in targets.data_vars]
+    pred_map: Mapping[Hashable, xr.DataArray] = {
+        v: predictions[v] for v in variables
+    }
+    targ_map: Mapping[Hashable, xr.DataArray] = {
+        v: targets[v] for v in variables
+    }
 
-    def _compute_per_variable(self, predictions, targets):
-        return probability_integral_transform(
-            targets,
-            predictions,
-            ensemble_dim=self.ensemble_dim,
-            name_prefix=None,
-        )
+    # Compute and average statistics per variable
+    mean_stats: dict[str, dict[Hashable, xr.DataArray]] = {}
+    dims_all = [
+        d
+        for d in [
+            "time",
+            "init_time",
+            "lead_time",
+            "latitude",
+            "longitude",
+            "level",
+            "ensemble",
+        ]
+    ]
+    for stat_name, stat in metric.statistics.items():
+        stat_vals = stat.compute(predictions=pred_map, targets=targ_map)
+        reduced: dict[Hashable, xr.DataArray] = {}
+        for var, da in stat_vals.items():
+            dims = [d for d in dims_all if d in da.dims]
+            reduced[var] = da.mean(dim=dims, skipna=True)
+        mean_stats[stat_name] = reduced
 
-
-class EnsembleVariance(PerVariableStatistic):
-    """Compute the ensemble variance."""
-
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
-
-    def _compute_per_variable(self, predictions, targets):
-        return xr.apply_ufunc(
-            lambda x: np.var(x, axis=-1),
-            predictions,
-            input_core_dims=[[self.ensemble_dim]],
-            output_core_dims=[[]],
-            dask="parallelized",
-        )
-
-
-class SpreadSkillRatio(PerVariableMetric):
-    """Computes the (biased) spread-skill ratio."""
-
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
-
-    @property
-    def statistics(self):
-        return {
-            "EnsembleVariance": EnsembleVariance(
-                ensemble_dim=self.ensemble_dim
-            ),
-            "EnsembleMeanSquaredError": WrappedStatistic(
-                SquaredError(),
-                EnsembleMean(
-                    which="predictions",
-                    ensemble_dim=self.ensemble_dim,
-                ),
-            ),
-        }
-
-    def _values_from_mean_statistics_per_variable(
-        self, statistic_values
-    ) -> xr.DataArray:
-        """Computes metrics from aggregated statistics."""
-        return np.sqrt(
-            statistic_values["EnsembleVariance"]
-            / statistic_values["EnsembleMeanSquaredError"]
-        ).compute(scheduler="threads", num_workers=8)
-
-
-class CRPSAccuracyTerm(PerVariableStatistic):
-    """Compute the CRPS accuracy term E|y - f|."""
-
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
-
-    def _compute_per_variable(self, predictions, targets):
-        return crps_e1(targets, predictions, ensemble_dim=self.ensemble_dim)
-
-
-class CRPSSpreadTerm(PerVariableStatistic):
-    """Compute the CRPS spread term E|f - f"|."""
-
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
-
-    def _compute_per_variable(self, predictions, targets):
-        return crps_e2(predictions, ensemble_dim=self.ensemble_dim)
-
-
-class CRPSEnsemble(PerVariableMetric):
-    """Compute the CRPS for ensemble forecasts."""
-
-    def __init__(self, ensemble_dim: str = "ensemble"):
-        self.ensemble_dim = ensemble_dim
-
-    @property
-    def statistics(self):
-        return {
-            "CRPSAccuracyTerm": CRPSAccuracyTerm(self.ensemble_dim),
-            "CRPSSpreadTerm": CRPSSpreadTerm(self.ensemble_dim),
-        }
-
-    def _values_from_mean_statistics_per_variable(self, statistic_values):
-        return (
-            statistic_values["CRPSAccuracyTerm"]
-            - 0.5 * statistic_values["CRPSSpreadTerm"]
-        ).compute(scheduler="threads", num_workers=8)
+    # Derive metric values from averaged statistics
+    values_map = metric.values_from_mean_statistics(mean_stats)
+    rows = []
+    for var, da in values_map.items():
+        rows.append({"variable": str(var), value_col: float(da.values)})
+    df = pd.DataFrame(rows).set_index("variable").sort_index()
+    return df
 
 
 def run_probabilistic_wbx(
@@ -379,7 +338,10 @@ def run_probabilistic_wbx(
     plotting_cfg: dict[str, Any],
     all_cfg: dict[str, Any],
 ) -> None:
-    """Compute WBX spread–skill ratio and CRPS ensemble and save CSV summaries."""
+    """Compute WBX Spread–Skill Ratio and CRPS (ensemble) and save CSV summaries.
+
+    Uses the official WeatherBenchX metric implementations and their API.
+    """
 
     section_output = out_root / "probabilistic_wbx"
     section_output.mkdir(parents=True, exist_ok=True)
@@ -400,21 +362,17 @@ def run_probabilistic_wbx(
     obs = ds[common_vars]
 
     ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
-    try:
-        ssr_values = ssr_metric(obs=obs, predictions=fct)
-    except TypeError:
-        ssr_values = ssr_metric.compute(predictions=fct, targets=obs)  # type: ignore[attr-defined]
-    ssr_df = _per_variable_mean_df(ssr_values)
+    ssr_df = _wbx_metric_to_df(
+        ssr_metric, predictions=fct, targets=obs, value_col="SSR"
+    )
     ssr_csv = section_output / "spread_skill_ratio.csv"
     ssr_df.to_csv(ssr_csv)
     print(f"[probabilistic_wbx] saved {ssr_csv}")
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
-    try:
-        crps_values = crps_metric(obs=obs, predictions=fct)
-    except TypeError:
-        crps_values = crps_metric.compute(predictions=fct, targets=obs)  # type: ignore[attr-defined]
-    crps_df = _per_variable_mean_df(crps_values)
+    crps_df = _wbx_metric_to_df(
+        crps_metric, predictions=fct, targets=obs, value_col="CRPS"
+    )
     crps_csv = section_output / "crps_ensemble.csv"
     crps_df.to_csv(crps_csv)
     print(f"[probabilistic_wbx] saved {crps_csv}")

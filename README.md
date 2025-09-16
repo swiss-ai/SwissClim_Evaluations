@@ -8,7 +8,7 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 - UV virtualenv
   - Run: bash tools/setup_env_uv.sh
-  - Creates .venv with Python 3.11 via uv and installs deps (+ clones ../weatherbenchX for WBX metrics).
+  - Creates .venv with Python 3.11 via uv and installs deps.
 
 - Conda
   - Run: bash tools/setup_env_conda.sh
@@ -69,6 +69,12 @@ Notes
   - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
 - Plotting control: output_mode is the only switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
 
+### Chunking policy (xarray/dask)
+
+- The repository enforces a default Dask chunking policy in code:
+  - init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble: -1 (-1 = no chunking)
+- This ensures apply_ufunc metrics that use the ensemble as a core dimension work without errors and keeps memory usage predictable. If a dataset deviates, it will be rechunked automatically with a warning.
+
 ## What you get
 
 - Deterministic metrics
@@ -91,6 +97,12 @@ Notes
 - Probabilistic (WBX)
   - probabilistic_wbx/spread_skill_ratio.csv, probabilistic_wbx/crps_ensemble.csv
 
+### Details for probabilistic outputs
+
+- CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
+- CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NetCDF.
+
 All modules print concise progress like:
 
 - [swissclim] Module: deterministic — variables=5
@@ -110,8 +122,13 @@ All modules print concise progress like:
 
 For the probabilistic modules, you can explore the outputs interactively using the provided notebooks (legacy support):
 
-- notebooks/probabilistic_verification.ipynb
-- notebooks/probabilistic_verification_wbx.ipynb
+- notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our xarray-based implementation)
+- notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill Ratio and CRPS summaries)
+
+Notebook tips
+
+- Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
+- For CRPS maps in the notebook: compute `crps_ensemble(obs, fct, ensemble_dim="ensemble")` and then average over `["time", "init_time", "lead_time", "ensemble"]` where present to produce a lat/lon field for plotting.
 
 ## Development
 

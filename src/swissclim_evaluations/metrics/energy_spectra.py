@@ -17,20 +17,56 @@ def calculate_energy_spectra(data: xr.DataArray):
     if "ensemble" in data.dims:
         data = data.mean(dim="ensemble")
 
-    # Prefer init_time over time for temporal axis handling
+    # Drop/squeeze a singleton level dimension (introduced artificially) so transpose works
+    if "level" in data.dims and int(data.sizes.get("level", 0)) == 1:
+        data = data.isel(level=0, drop=True)
+
+    # Prefer init_time over time for temporal axis handling; keep only spatial + optional time
     if "init_time" in data.dims:
-        # If lead_time is present, collapse it (mean) so we can have a single temporal axis
         if "lead_time" in data.dims:
             data = data.mean(dim="lead_time")
-        var_data = data.transpose("latitude", "longitude", "init_time")
-        time_axis = -1
+        # After potential squeeze, ensure required dims exist
+        desired = [
+            d for d in ("latitude", "longitude", "init_time") if d in data.dims
+        ]
+        var_data = data.transpose(*desired)
+        time_axis = -1  # last position in desired list
     elif "time" in data.dims:
-        var_data = data.transpose("latitude", "longitude", "time")
+        desired = [
+            d for d in ("latitude", "longitude", "time") if d in data.dims
+        ]
+        var_data = data.transpose(*desired)
         time_axis = -1
     else:
-        var_data = data.transpose("latitude", "longitude")
+        desired = [d for d in ("latitude", "longitude") if d in data.dims]
+        var_data = data.transpose(*desired)
         time_axis = None
-    var_data = var_data.interpolate_na(dim="longitude")
+
+    # Rechunk longitude to single chunk before interpolate to satisfy core dim requirements (dask)
+    try:
+        if hasattr(var_data.data, "chunks"):
+            # Only if more than one chunk along longitude
+            lon_index = (
+                var_data.dims.index("longitude")
+                if "longitude" in var_data.dims
+                else None
+            )
+            if lon_index is not None:
+                # Determine number of chunks along longitude
+                var_chunks = getattr(var_data.data, "chunks", None)
+                if var_chunks and len(var_chunks[lon_index]) > 1:  # type: ignore[index]
+                    var_data = var_data.chunk({"longitude": -1})
+    except Exception:
+        # Non-fatal; continue without rechunking
+        pass
+
+    # Safe interpolation across longitude (fill isolated NaNs)
+    if "longitude" in var_data.dims:
+        try:
+            var_data = var_data.interpolate_na(dim="longitude")
+        except Exception:
+            # Fallback: fill NaNs with nearest value if interpolation fails
+            var_data = var_data.ffill("longitude").bfill("longitude")
     n_lon = var_data.longitude.size
 
     latitudes = np.deg2rad(var_data.latitude.values)
@@ -191,14 +227,20 @@ def run(
     save_figure = mode in ("plot", "both")
     section_output = out_root / "energy_spectra"
 
-    variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
-    variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
-    levels = select_cfg.get("levels") or list(ds.coords.get("level", []))
+    if "level" in ds.dims and int(ds.level.size) > 1:
+        variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
+        variables_2d = [v for v in ds.data_vars if v not in variables_3d]
+        levels = select_cfg.get("levels") or list(ds.level.values)
+    else:
+        variables_3d = []
+        variables_2d = list(ds.data_vars)
+        levels = []
 
-    # 2D variables
+    # 2D variables (no level); write a simple CSV summarizing LSD for completeness
+    lsd_rows = []
     for var in variables_2d:
         print(f"[energy_spectra] 2D variable: {var}")
-        _plot_energy_spectra(
+        lsd = _plot_energy_spectra(
             ds,
             ds_ml,
             var,
@@ -208,6 +250,14 @@ def run(
             save_plot_data,
             save_figure,
         )
+        lsd_rows.append({"variable": var, "lsd": lsd})
+
+    if lsd_rows:
+        section_output.mkdir(parents=True, exist_ok=True)
+        df2d = pd.DataFrame(lsd_rows).set_index("variable")
+        out_csv_2d = section_output / "lsd_2d_metrics.csv"
+        df2d.to_csv(out_csv_2d)
+        print(f"[energy_spectra] saved {out_csv_2d}")
 
     # 3D variables and LSD table
     lsd_data: dict[str, list[float]] = {var: [] for var in variables_3d}

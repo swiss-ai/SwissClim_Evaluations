@@ -43,95 +43,121 @@ def run(
     )
 
     # Determine variables
-    variables_2d = [v for v in ds.data_vars if "level" not in ds[v].dims]
-    variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
+    if "level" in ds.dims and int(ds.level.size) > 1:
+        variables_3d = [v for v in ds.data_vars if "level" in ds[v].dims]
+        variables_2d = [v for v in ds.data_vars if v not in variables_3d]
+    else:
+        variables_3d = []
+        variables_2d = list(ds.data_vars)
 
-    # 2D maps
+    # Assume no missing data per project requirement; use direct min/max.
+
+    # Determine ensemble members (if any) from ds_ml preference; fall back to ds
+    if "ensemble" in ds_ml.dims:
+        ensemble_members = list(range(ds_ml.sizes["ensemble"]))
+    elif "ensemble" in ds.dims:
+        ensemble_members = list(range(ds.sizes["ensemble"]))
+    else:
+        ensemble_members = [None]
+
+    # 2D maps (one figure per ensemble member if present)
     for i, var in enumerate(variables_2d):
         print(f"[maps] 2D variable: {var}")
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(14, 4),
-            dpi=dpi * 2,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-        )
-
-        ds_var = ds[var]
-        ds_ml_var = ds_ml[var]
-        if "init_time" in ds_var.dims:
-            ds_var = ds_var.isel(init_time=time_index)
-        if "lead_time" in ds_var.dims:
-            ds_var = ds_var.isel(lead_time=lead_index)
-        if "init_time" in ds_ml_var.dims:
-            ds_ml_var = ds_ml_var.isel(init_time=time_index)
-        if "lead_time" in ds_ml_var.dims:
-            ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-
-        vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-        vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
-
-        im0 = ds_var.plot(
-            ax=axes[0],
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            add_colorbar=False,
-            transform=ccrs.PlateCarree(),
-        )
-        axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
-        axes[0].coastlines(linewidth=0.5)
-        axes[0].set_title("Ground Truth")
-
-        ds_ml_var.plot(
-            ax=axes[1],
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            add_colorbar=False,
-            transform=ccrs.PlateCarree(),
-        )
-        axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
-        axes[1].coastlines(linewidth=0.5)
-        axes[1].set_title("Model Prediction")
-
-        cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
-        plt.colorbar(
-            im0,
-            cax=cbar_ax,
-            orientation="horizontal",
-            label=ds[var].attrs.get("units", ""),
-        )
-
-        if time_selected is not None:
-            plt.suptitle(
-                f"{var} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+        for ens in ensemble_members:
+            ens_suffix = "" if ens is None else f"_ens{ens}"
+            fig, axes = plt.subplots(
+                1,
+                2,
+                figsize=(14, 4),
+                dpi=dpi * 2,
+                subplot_kw={"projection": ccrs.PlateCarree()},
             )
 
-        if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{time_fmt}_{var}_sfc.png"
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[maps] saved {out_png}")
-        if save_npz:
-            # Save the exact data used for this plot as NPZ for portability
-            section_output.mkdir(parents=True, exist_ok=True)
-            npz_path = section_output / f"{time_fmt}_{var}_sfc.npz"
-            # store arrays and minimal coords
-            np.savez(
-                npz_path,
-                nwp=ds_var.values,
-                ml=ds_ml_var.values,
-                latitude=ds_var.coords.get("latitude", None).values
-                if "latitude" in ds_var.coords
-                else None,
-                longitude=ds_var.coords.get("longitude", None).values
-                if "longitude" in ds_var.coords
-                else None,
-            )
-            print(f"[maps] saved {npz_path}")
+            ds_var = ds[var]
+            ds_ml_var = ds_ml[var]
+            if ens is not None:
+                if "ensemble" in ds_var.dims:
+                    ds_var = ds_var.isel(ensemble=ens)
+                if "ensemble" in ds_ml_var.dims:
+                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
+            if "init_time" in ds_var.dims:
+                ds_var = ds_var.isel(init_time=time_index)
+            if "lead_time" in ds_var.dims:
+                ds_var = ds_var.isel(lead_time=lead_index)
+            if "init_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(init_time=time_index)
+            if "lead_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
+            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
+            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
 
-        plt.close(fig)
+            im0 = ds_var.plot(
+                ax=axes[0],
+                cmap="viridis",
+                vmin=vmin,
+                vmax=vmax,
+                add_colorbar=False,
+                transform=ccrs.PlateCarree(),
+            )
+            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
+            axes[0].coastlines(linewidth=0.5)
+            axes[0].set_title("Ground Truth")
+
+            ds_ml_var.plot(
+                ax=axes[1],
+                cmap="viridis",
+                vmin=vmin,
+                vmax=vmax,
+                add_colorbar=False,
+                transform=ccrs.PlateCarree(),
+            )
+            axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
+            axes[1].coastlines(linewidth=0.5)
+            axes[1].set_title("Model Prediction")
+
+            cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
+            plt.colorbar(
+                im0,
+                cax=cbar_ax,
+                orientation="horizontal",
+                label=ds[var].attrs.get("units", ""),
+            )
+
+            title_extra = "" if ens is None else f" (Ensemble {ens})"
+            if time_selected is not None:
+                plt.suptitle(
+                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+                )
+            elif title_extra:
+                plt.suptitle(f"{var}{title_extra}")
+
+            if save_fig:
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_png = (
+                    section_output / f"{time_fmt}_{var}_sfc{ens_suffix}.png"
+                )
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[maps] saved {out_png}")
+            if save_npz:
+                section_output.mkdir(parents=True, exist_ok=True)
+                npz_path = (
+                    section_output / f"{time_fmt}_{var}_sfc{ens_suffix}.npz"
+                )
+                np.savez(
+                    npz_path,
+                    nwp=ds_var.values,
+                    ml=ds_ml_var.values,
+                    latitude=ds_var.coords.get("latitude", None).values
+                    if "latitude" in ds_var.coords
+                    else None,
+                    longitude=ds_var.coords.get("longitude", None).values
+                    if "longitude" in ds_var.coords
+                    else None,
+                    ensemble=ens if ens is not None else -1,
+                )
+                print(f"[maps] saved {npz_path}")
+
+            plt.close(fig)
 
     # 3D maps per level
     for i, var in enumerate(variables_3d):
@@ -140,92 +166,108 @@ def run(
         if not levels:
             continue
         num_rows = len(levels)
-        fig, axes = plt.subplots(
-            num_rows,
-            2,
-            figsize=(14, 4 * num_rows),
-            dpi=dpi * 2,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-        )
-
-        ds_var = ds[var]
-        ds_ml_var = ds_ml[var]
-        if "init_time" in ds_var.dims:
-            ds_var = ds_var.isel(init_time=time_index)
-        if "lead_time" in ds_var.dims:
-            ds_var = ds_var.isel(lead_time=lead_index)
-        if "init_time" in ds_ml_var.dims:
-            ds_ml_var = ds_ml_var.isel(init_time=time_index)
-        if "lead_time" in ds_ml_var.dims:
-            ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-        vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-        vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
-
-        for idx, level in enumerate(levels):
-            ax_ds = axes[idx, 0]
-            ds_var_lev = ds_var.sel(level=level)
-            ds_ml_var_lev = ds_ml_var.sel(level=level)
-
-            im_ds = ds_var_lev.plot(
-                ax=ax_ds,
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                add_colorbar=False,
-                transform=ccrs.PlateCarree(),
+        for ens in ensemble_members:
+            ens_suffix = "" if ens is None else f"_ens{ens}"
+            fig, axes = plt.subplots(
+                num_rows,
+                2,
+                figsize=(14, 4 * num_rows),
+                dpi=dpi * 2,
+                subplot_kw={"projection": ccrs.PlateCarree()},
+                squeeze=False,
             )
-            ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
-            ax_ds.coastlines(linewidth=0.5)
-            ax_ds.set_title(f"Ground Truth - Level {level}")
 
-            ax_ds_ml = axes[idx, 1]
-            ds_ml_var_lev.plot(
-                ax=ax_ds_ml,
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                add_colorbar=False,
-                transform=ccrs.PlateCarree(),
+            ds_var = ds[var]
+            ds_ml_var = ds_ml[var]
+            if ens is not None:
+                if "ensemble" in ds_var.dims:
+                    ds_var = ds_var.isel(ensemble=ens)
+                if "ensemble" in ds_ml_var.dims:
+                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
+            if "init_time" in ds_var.dims:
+                ds_var = ds_var.isel(init_time=time_index)
+            if "lead_time" in ds_var.dims:
+                ds_var = ds_var.isel(lead_time=lead_index)
+            if "init_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(init_time=time_index)
+            if "lead_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
+            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
+            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
+
+            for idx, level in enumerate(levels):
+                ax_ds = axes[idx, 0]
+                ds_var_lev = ds_var.sel(level=level)
+                ds_ml_var_lev = ds_ml_var.sel(level=level)
+
+                im_ds = ds_var_lev.plot(
+                    ax=ax_ds,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    add_colorbar=False,
+                    transform=ccrs.PlateCarree(),
+                )
+                ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
+                ax_ds.coastlines(linewidth=0.5)
+                ax_ds.set_title(f"Ground Truth - Level {level}")
+
+                ax_ds_ml = axes[idx, 1]
+                ds_ml_var_lev.plot(
+                    ax=ax_ds_ml,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    add_colorbar=False,
+                    transform=ccrs.PlateCarree(),
+                )
+                ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
+                ax_ds_ml.coastlines(linewidth=0.5)
+                ax_ds_ml.set_title(f"Model - Level {level}")
+
+            cbar_ax = plt.gcf().add_axes([0.15, 0.05, 0.7, 0.02])
+            plt.colorbar(
+                im_ds,
+                cax=cbar_ax,
+                orientation="horizontal",
+                label=ds[var].attrs.get("units", ""),
             )
-            ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
-            ax_ds_ml.coastlines(linewidth=0.5)
-            ax_ds_ml.set_title(f"Model - Level {level}")
 
-        cbar_ax = plt.gcf().add_axes([0.15, 0.05, 0.7, 0.02])
-        plt.colorbar(
-            im_ds,
-            cax=cbar_ax,
-            orientation="horizontal",
-            label=ds[var].attrs.get("units", ""),
-        )
+            title_extra = "" if ens is None else f" (Ensemble {ens})"
+            if time_selected is not None:
+                plt.suptitle(
+                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+                )
+            elif title_extra:
+                plt.suptitle(f"{var}{title_extra}")
+            plt.subplots_adjust(bottom=0.1, top=0.95, hspace=0.05, wspace=0.05)
 
-        if time_selected is not None:
-            plt.suptitle(
-                f"{var} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
-            )
-        plt.subplots_adjust(bottom=0.1, top=0.95, hspace=0.05, wspace=0.05)
-
-        if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{time_fmt}_{var}_pl.png"
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[maps] saved {out_png}")
-        if save_npz:
-            section_output.mkdir(parents=True, exist_ok=True)
-            npz_path = section_output / f"{time_fmt}_{var}_pl.npz"
-            np.savez(
-                npz_path,
-                nwp=ds_var.values,
-                ml=ds_ml_var.values,
-                latitude=ds_var.coords.get("latitude", None).values
-                if "latitude" in ds_var.coords
-                else None,
-                longitude=ds_var.coords.get("longitude", None).values
-                if "longitude" in ds_var.coords
-                else None,
-                level=ds_var.coords.get("level", None).values
-                if "level" in ds_var.coords
-                else None,
-            )
-            print(f"[maps] saved {npz_path}")
-        plt.close(fig)
+            if save_fig:
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_png = (
+                    section_output / f"{time_fmt}_{var}_pl{ens_suffix}.png"
+                )
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[maps] saved {out_png}")
+            if save_npz:
+                section_output.mkdir(parents=True, exist_ok=True)
+                npz_path = (
+                    section_output / f"{time_fmt}_{var}_pl{ens_suffix}.npz"
+                )
+                np.savez(
+                    npz_path,
+                    nwp=ds_var.values,
+                    ml=ds_ml_var.values,
+                    latitude=ds_var.coords.get("latitude", None).values
+                    if "latitude" in ds_var.coords
+                    else None,
+                    longitude=ds_var.coords.get("longitude", None).values
+                    if "longitude" in ds_var.coords
+                    else None,
+                    level=ds_var.coords.get("level", None).values
+                    if "level" in ds_var.coords
+                    else None,
+                    ensemble=ens if ens is not None else -1,
+                )
+                print(f"[maps] saved {npz_path}")
+            plt.close(fig)

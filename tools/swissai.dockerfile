@@ -14,9 +14,6 @@ RUN curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch
     bash miniconda.sh -b -p /opt/conda && \
     rm miniconda.sh
 
-# Clone weatherbenchX (as specified in pyproject.toml)
-RUN cd .. && git clone https://github.com/google-research/weatherbenchX.git
-
 # Add conda to PATH
 ENV PATH="/opt/conda/bin:$PATH"
 

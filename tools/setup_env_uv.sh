@@ -38,17 +38,6 @@ else
     echo "✅ Environment already created."
 fi
 
-# Clone weatherbenchX from GitHub to parent directory
-echo "Cloning weatherbenchX from GitHub..."
-cd ..
-if [ ! -d "weatherbenchX" ]; then
-    git clone https://github.com/google-research/weatherbenchX.git weatherbenchX
-    echo "weatherbenchX cloned successfully"
-else
-    echo "weatherbenchX directory already exists, skipping clone"
-fi
-cd SwissClim_Evaluations
-
 uv sync 
 
 # activate environment
