@@ -38,7 +38,7 @@ export SWISSCLIM_COLOR=never
 
 # Ensure Python can import the mounted source directly (no rebuild needed)
 # Uncomment if you want to quickly test local changes without rebuilding the container
-# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # Run with SLURM CPU binding inside the container defined by EDF_CONFIG
 export PYTHONUNBUFFERED=1
