@@ -15,7 +15,7 @@ WORKDIR /app
 ADD . /app
 
 # Create and sync the environment with uv (resolves from pyproject.toml)
-RUN uv sync
+RUN uv sync --dev
 
 # Make uv's Python the default
 ENV PATH="/app/.venv/bin:$PATH"

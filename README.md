@@ -48,6 +48,14 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 
 Outputs appear under paths.output_root (one sub-folder per module).
 
+6. Or submit a batch job (CSCS Alps):
+
+```bash
+sbatch launchscript.sh
+```
+
+Don't forget to adjust the path to cur config/my_run.yaml in launchscript.sh
+
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
 <details>
