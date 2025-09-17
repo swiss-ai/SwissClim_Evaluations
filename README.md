@@ -116,6 +116,11 @@ The YAML is the single source of truth. Key sections:
 Notes
 
 - Time alignment: ERA5 uses time while the ML dataset uses init_time + lead_time. The CLI aligns them by valid_time = init_time + lead_time so both sides compare the same moments.
+  - If targets only provide a continuous 'time' axis, alignment still works; the pipeline synthesizes a zero lead_time and matches by valid_time.
+  - Selecting non-contiguous times:
+    - selection.datetimes_list: list of explicit ISO timestamps (e.g., one week per season). Missing labels are warned (or error if selection.check_missing=true).
+    - selection.datetimes: supports multiple ranges via ["start:end", ...] or [[start,end], ...]. A single timestamp string is treated as [t, t].
+  - Temporal downsampling (selection.temporal_resolution_hours) will only stride along init_time if the cadence is uniform; for irregular selections (e.g., weekly per season), downsampling is skipped with a warning to avoid dropping labels silently.
 - Ensemble handling: If your ML data has an ensemble dim, you can:
   - selection.ensemble_member: pick a specific member, or
   - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.

@@ -24,7 +24,14 @@ selection:
   # otherwise along init_time. Set to null to disable.
   temporal_resolution_hours: null
 
-  # Time slice in ISO-8601 format [start, end]. Examples: "2021-01-01T00", "2021-01-05T06".
+  # Time selection (one of the following):
+  #   1) Single range [start, end]:
+  #      datetimes: ["2023-01-02T12", "2023-01-03T00"]
+  #   2) Multiple ranges:
+  #      datetimes: ["2023-01-02T00:2023-01-02T06", "2023-01-03T12:2023-01-03T18"]
+  #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
+  #   3) Explicit non-contiguous timestamps:
+  #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
   datetimes: ["2023-01-02T12", "2023-01-03T00"]
 
