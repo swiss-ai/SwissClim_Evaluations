@@ -37,8 +37,9 @@ fi
 export SWISSCLIM_COLOR=never
 
 # Run with SLURM CPU binding inside the container defined by EDF_CONFIG
+export PYTHONUNBUFFERED=1
 srun \
   --cpu-bind=cores \
   --container-writable \
   --environment="${EDF_CONFIG}" \
-  python -m swissclim_evaluations.cli --config "${CONFIG_FILE}"
+  python -u -m swissclim_evaluations.cli --config "${CONFIG_FILE}"

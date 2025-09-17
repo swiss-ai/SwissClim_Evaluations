@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -624,11 +625,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.section("Model dataset (prepared)")
     # printing the Dataset object provides a concise summary (dims/coords/vars)
     try:
-        from rich.pretty import Pretty  # type: ignore
+        from .console import USE_RICH  # type: ignore
+        from .console import console as _rc  # type: ignore
 
-        from .console import console as _rc
+        if USE_RICH:
+            from rich.pretty import Pretty  # type: ignore
 
-        _rc.print(Pretty(ds_prediction))
+            _rc.print(Pretty(ds_prediction))
+        else:
+            print(ds_prediction)
     except Exception:
         print(ds_prediction)
     # Ensemble handling summary
@@ -803,11 +808,23 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     # Final completion message
     elapsed = time.time() - t0
-    c.panel(
-        f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
-        title="✅ Finished",
-        style="green",
+    # Always print a plain-text completion line so logs are readable without Rich
+    print(
+        f"FINISHED: duration={elapsed:,.1f}s • outputs={out_root}",
+        flush=True,
     )
+    # If Rich is enabled, also show a styled panel
+    try:
+        from .console import USE_RICH
+
+        if USE_RICH:
+            c.panel(
+                f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
+                title="✅ Finished",
+                style="green",
+            )
+    except Exception:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -819,6 +836,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Try to enforce line-buffered stdout/stderr so Slurm logs update promptly
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    # In non-interactive (no TTY) environments like Slurm, force plain output
+    try:
+        from .console import set_color_mode  # type: ignore
+
+        is_tty = False
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            set_color_mode("never")
+    except Exception:
+        pass
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
     run_selected(cfg)

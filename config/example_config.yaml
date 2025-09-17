@@ -67,7 +67,7 @@ selection:
   ensemble_member: 0
 
   # If true, raise an error when requested pressure levels are missing from the data.
-  check_missing: true
+  check_missing: false
 
 plotting:
   # Random seed used for reproducible time subsampling in plots.
