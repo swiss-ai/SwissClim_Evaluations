@@ -5,6 +5,7 @@ from typing import Any, Hashable, Mapping
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import dask.array as dsa
 import matplotlib.pyplot as plt
 
 # plotting dependencies will be used in plot_probabilistic() and WBX map (optional)
@@ -19,7 +20,6 @@ from weatherbenchX.metrics.probabilistic import (
 from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
-from xhistogram.xarray import histogram as xr_hist
 
 from ..helpers import time_chunks
 
@@ -177,17 +177,23 @@ def _reduce_mean_all(da: xr.DataArray) -> xr.DataArray:
     return da.mean(dim=dims, skipna=True)
 
 
-def _pit_histogram_xarray(
+def _pit_histogram_dask(
     da: xr.DataArray, bins: int = 50, density: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Dask/xarray-friendly PIT histogram without manual dask.array calls.
-    Returns (counts, edges). If density=True, counts are normalized to density.
+    """Compute PIT histogram using dask.array.histogram.
+    Returns (counts, edges). If density=True, return density values.
     """
-    # xhistogram requires explicit bin edges for Dask-backed arrays.
     edges = np.linspace(0.0, 1.0, bins + 1)
-    # Pass edges as a sequence (one per input array) and omit range.
-    counts_da = xr_hist(da, bins=[edges])
-    counts = counts_da.compute().astype(np.float64).values
+    # Use dask-backed data when available; otherwise wrap numpy data lazily
+    data = getattr(da, "data", da)
+    darr = dsa.asarray(data)
+    darr = darr.ravel()
+    darr = darr[~dsa.isnan(darr)]
+    counts = (
+        dsa.histogram(darr, bins=np.asarray(edges))[0]
+        .compute()
+        .astype(np.float64)
+    )
     if density:
         total = counts.sum()
         if total > 0:
@@ -278,7 +284,7 @@ def run_probabilistic(
             ensemble_dim="ensemble",
             name_prefix=None,
         )
-        counts, edges = _pit_histogram_xarray(pit_da, bins=50, density=True)
+        counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
         pit_npz = section_output / f"{var}_pit_hist.npz"
         np.savez(
             pit_npz,
@@ -418,7 +424,7 @@ def plot_probabilistic(
         ensemble_dim="ensemble",
         name_prefix=None,
     )
-    counts, edges = _pit_histogram_xarray(pit, bins=20, density=True)
+    counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
 
     fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
     # Draw histogram from counts/edges to avoid materializing all values

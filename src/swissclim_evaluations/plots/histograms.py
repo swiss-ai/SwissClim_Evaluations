@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dask.array as dsa
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from xhistogram.xarray import histogram as xr_hist
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -57,24 +57,14 @@ def run(
         def _choose_edges(
             da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000
         ):
+            """Choose common bin edges based on robust quantiles over both arrays.
+            Falls back to [-1, 1] if bounds are degenerate.
+            """
             try:
-                # Quick robust bounds via percentiles on a small sample if dask-backed
-                sample1 = da1.isel(**{
-                    d: slice(0, min(da1.sizes[d], 128)) for d in da1.dims
-                })
-                sample2 = da2.isel(**{
-                    d: slice(0, min(da2.sizes[d], 128)) for d in da2.dims
-                })
-                vmin = float(
-                    xr.concat([sample1.min(), sample2.min()], dim="_t")
-                    .min()
-                    .compute()
-                )
-                vmax = float(
-                    xr.concat([sample1.max(), sample2.max()], dim="_t")
-                    .max()
-                    .compute()
-                )
+                both = xr.concat([da1, da2], dim="_t")
+                q = both.quantile([0.001, 0.999], skipna=True).compute()
+                vmin = float(q.isel(quantile=0).item())
+                vmax = float(q.isel(quantile=1).item())
                 if (
                     not np.isfinite(vmin)
                     or not np.isfinite(vmax)
@@ -84,6 +74,17 @@ def run(
             except Exception:
                 vmin, vmax = -1.0, 1.0
             return np.linspace(vmin, vmax, bins + 1)
+
+        def _dask_hist(da: xr.DataArray, edges: np.ndarray):
+            """Compute histogram counts with Dask without materializing the array.
+            Filters NaNs and returns a Dask array of counts matching edges-1 length.
+            """
+            data = getattr(da, "data", da)
+            darr = dsa.asarray(data)
+            darr = darr.ravel()
+            darr = darr[~dsa.isnan(darr)]
+            counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
+            return counts
 
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
@@ -95,12 +96,10 @@ def run(
             da_pred = ds_prediction[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            # Use xhistogram over explicit edges to avoid materializing all values
+            # Use dask.array.histogram over explicit edges to avoid materializing all values
             edges = _choose_edges(da_true, da_pred, bins=1000)
-            counts_ds_da = xr_hist(da_true, bins=[edges])
-            counts_ml_da = xr_hist(da_pred, bins=[edges])
-            counts_ds = counts_ds_da.compute().astype(float).values
-            counts_ml = counts_ml_da.compute().astype(float).values
+            counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+            counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             # Convert to density
             width = np.diff(edges)
             bin_area = (
@@ -149,10 +148,8 @@ def run(
                 latitude=slice(lat_min, lat_max)
             )
             edges = _choose_edges(da_true, da_pred, bins=1000)
-            counts_ds_da = xr_hist(da_true, bins=[edges])
-            counts_ml_da = xr_hist(da_pred, bins=[edges])
-            counts_ds = counts_ds_da.compute().astype(float).values
-            counts_ml = counts_ml_da.compute().astype(float).values
+            counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+            counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             width = np.diff(edges)
             bin_area = (
                 counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
