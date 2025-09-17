@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +24,12 @@ def run(
 
     section_output = out_root / "maps"
 
-    random.seed(seed)
+    rng = np.random.default_rng(seed)
     time_index = 0
     lead_index = 0
     time_selected = None
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
-        time_index = random.randint(0, ds_target.init_time.size - 1)
+        time_index = int(rng.integers(0, ds_target.init_time.size))
         time_selected = ds_target.init_time[time_index]
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
