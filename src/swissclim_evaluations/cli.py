@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -44,6 +45,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     latitudes: list[float] | None = sel.get("latitudes")
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
+    datetimes_list: list[str] | None = sel.get("datetimes_list")
     check_missing: bool = bool(sel.get("check_missing", False))
 
     if levels is not None and "level" in ds.dims:
@@ -73,13 +75,113 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         ds = ds.sel(latitude=slice(*latitudes))
     if longitudes is not None:
         ds = ds.sel(longitude=slice(*longitudes))
-    if datetimes is not None:
-        # Interpret provided datetimes as temporal range (pre-standardization)
-        if "init_time" in ds.dims:
-            ds = ds.sel(init_time=slice(*datetimes))
-            # except for legacy datasets with 'time' dim (e.g. ERA5)
-        elif "time" in ds.dims:
-            ds = ds.sel(time=slice(*datetimes))
+    # Non-contiguous explicit timestamps take precedence if provided
+    if datetimes_list is not None and len(datetimes_list) > 0:
+        try:
+            # normalize to datetime64[ns]
+            req = [
+                np.datetime64(x).astype("datetime64[ns]")
+                for x in datetimes_list
+            ]
+        except Exception:
+            req = list(datetimes_list)
+        dim_name = (
+            "init_time"
+            if "init_time" in ds.dims
+            else ("time" if "time" in ds.dims else None)
+        )
+        if dim_name is not None:
+            try:
+                available = set(ds[dim_name].values.tolist())
+            except Exception:
+                available = set()
+            present = [x for x in req if x in available]
+            missing = [x for x in req if x not in available]
+            if missing and check_missing:
+                raise KeyError(
+                    f"Requested timestamps not found in {dim_name}: {missing[:6]}{' ...' if len(missing) > 6 else ''}"
+                )
+            if missing and not check_missing and len(missing) > 0:
+                c.warn(
+                    f"Some requested timestamps are missing in {dim_name}: {len(missing)} missing; proceeding with {len(present)} present."
+                )
+            if present:
+                ds = ds.sel({dim_name: present})
+        # If neither init_time nor time exist, ignore silently
+    elif datetimes is not None:
+        # Support either a single [start,end] or a list of multiple "start:end" ranges or [[start,end], ...]
+        dim_name = (
+            "init_time"
+            if "init_time" in ds.dims
+            else ("time" if "time" in ds.dims else None)
+        )
+        if dim_name is None:
+            return ds
+
+        def _parse_ranges(values) -> list[tuple[str | None, str | None]]:
+            if not isinstance(values, (list, tuple)):
+                return []
+            # Case: exactly two entries without ':' → treat as single [start, end]
+            if (
+                len(values) == 2
+                and all(isinstance(v, str) for v in values)
+                and all(":" not in v for v in values)  # plain bounds
+            ):
+                return [(values[0], values[1])]
+            ranges: list[tuple[str | None, str | None]] = []
+            for it in values:
+                if isinstance(it, (list, tuple)) and len(it) == 2:
+                    s, e = it[0], it[1]
+                    ranges.append((
+                        str(s) if s else None,
+                        str(e) if e else None,
+                    ))
+                elif isinstance(it, str) and ":" in it:
+                    s, e = it.split(":", 1)
+                    ranges.append((s or None, e or None))
+                elif isinstance(it, str):
+                    # A single timestamp → treat as [t, t]
+                    ranges.append((it, it))
+            return ranges
+
+        ranges = _parse_ranges(datetimes)
+        if not ranges:
+            # Fallback to original behavior if we couldn't parse anything meaningful
+            if len(datetimes) >= 2:
+                ds = ds.sel(**{dim_name: slice(datetimes[0], datetimes[1])})
+            return ds
+
+        vals = ds[dim_name].values.astype("datetime64[ns]")
+        mask = np.zeros(vals.shape, dtype=bool)
+        for start_s, end_s in ranges:
+            try:
+                start = (
+                    np.datetime64(start_s).astype("datetime64[ns]")
+                    if start_s
+                    else vals.min()
+                )
+            except Exception:
+                start = vals.min()
+            try:
+                end = (
+                    np.datetime64(end_s).astype("datetime64[ns]")
+                    if end_s
+                    else vals.max()
+                )
+            except Exception:
+                end = vals.max()
+            mask |= (vals >= start) & (vals <= end)
+
+        count = int(mask.sum())
+        if count == 0:
+            msg = f"No timestamps within requested ranges on {dim_name}."
+            if check_missing:
+                raise KeyError(msg)
+            c.warn(msg + " Keeping dataset unchanged.")
+            return ds
+        # isel by positions retains labels and avoids building a long explicit label list
+        idx = np.nonzero(mask)[0]
+        ds = ds.isel(**{dim_name: idx})
     return ds
 
 
@@ -102,14 +204,23 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
         factor = max(1, hours // step_ns)
         return ds.isel(lead_time=slice(None, None, factor))
     if "init_time" in ds.dims and ds.init_time.size >= 2:
-        # Treat init_time as hourly series for downsampling
-        dt_hours = int(
-            (ds.init_time[1] - ds.init_time[0]).astype("timedelta64[h]")
-            / np.timedelta64(1, "h")
-        )
-        dt_hours = max(1, dt_hours)
-        factor = max(1, hours // dt_hours)
-        return ds.isel(init_time=slice(None, None, factor))
+        # Only stride if cadence appears uniform; otherwise, leave as-is to avoid dropping irregular labels.
+        try:
+            vals = ds.init_time.values.astype("datetime64[h]").astype("int64")
+            diffs = np.diff(vals)
+            is_uniform = diffs.size > 0 and np.all(diffs == diffs[0])
+        except Exception:
+            is_uniform = False
+        if is_uniform:
+            dt_hours = int(diffs[0]) if diffs.size > 0 else 1
+            dt_hours = max(1, dt_hours)
+            factor = max(1, hours // dt_hours)
+            return ds.isel(init_time=slice(None, None, factor))
+        else:
+            c.warn(
+                "Requested temporal downsampling on irregular init_time cadence → skipping stride (no-op)."
+            )
+            return ds
     return ds
 
 
@@ -286,80 +397,95 @@ def prepare_datasets(
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
 
     # Align by valid_time using stack/unstack to ensure identical (init_time, lead_time) dims
-    if "init_time" in ds_target.dims and "init_time" in ds_prediction.dims:
-        # Ensure both have lead_time coordinate
+    # Cases:
+    # 1) targets have (init_time, lead_time) → compute valid_time from both
+    # 2) targets only have time (continuous) → use that as valid_time
+    # 3) predictions have (init_time, lead_time) required
+    if "init_time" in ds_prediction.dims:
+        # Ensure predictions have lead_time
         if "lead_time" not in ds_prediction.dims:
             ds_prediction = ds_prediction.expand_dims({
                 "lead_time": np.array(
                     [np.timedelta64(0, "h")], dtype="timedelta64[h]"
                 ).astype("timedelta64[ns]")
             })
-        if "lead_time" not in ds_target.dims:
-            ds_target = ds_target.expand_dims({
-                "lead_time": np.array(
-                    [np.timedelta64(0, "h")], dtype="timedelta64[h]"
-                ).astype("timedelta64[ns]")
-            })
 
-        # Stack to a single dimension 'pair' (MultiIndex of init_time, lead_time)
+        # Build stacked predictions with valid_time
         ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
         ml_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
-        nwp_init = ds_target["init_time"].astype("datetime64[ns]")
-        nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
-
+        ml_valid_2d = ml_init + ml_lead
         ds_pred_stacked = ds_prediction.stack(pair=("init_time", "lead_time"))
-        ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
+        ml_valid_1d = ml_valid_2d.stack(pair=("init_time", "lead_time"))
+        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=ml_valid_1d)
 
-        # Compute valid_time coordinate for each pair
-        ml_valid = (ml_init.values[:, None] + ml_lead.values[None, :]).ravel()
-        nwp_valid = (
-            nwp_init.values[:, None] + nwp_lead.values[None, :]
-        ).ravel()
-        ds_pred_stacked = ds_pred_stacked.assign_coords(
-            valid_time=("pair", ml_valid.astype("datetime64[ns]"))
-        )
-        ds_tgt_stacked = ds_tgt_stacked.assign_coords(
-            valid_time=("pair", nwp_valid.astype("datetime64[ns]"))
-        )
+        # Targets: support either (init_time, lead_time) or standalone time
+        if "init_time" in ds_target.dims:
+            if "lead_time" not in ds_target.dims:
+                ds_target = ds_target.expand_dims({
+                    "lead_time": np.array(
+                        [np.timedelta64(0, "h")], dtype="timedelta64[h]"
+                    ).astype("timedelta64[ns]")
+                })
+            nwp_init = ds_target["init_time"].astype("datetime64[ns]")
+            nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
+            ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
+            nwp_valid_1d = (nwp_init + nwp_lead).stack(
+                pair=("init_time", "lead_time")
+            )
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
+                valid_time=nwp_valid_1d
+            )
+        elif "time" in ds_target.dims:
+            # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
+            tvals = ds_target["time"].values.astype("datetime64[ns]")
+            # Build a pair index aligned to each time with synthetic init_time=time and lead_time=0
+            ds_tgt_stacked = ds_target.expand_dims({
+                "lead_time": [np.timedelta64(0, "ns")]
+            })
+            ds_tgt_stacked = ds_tgt_stacked.rename({"time": "init_time"})
+            ds_tgt_stacked = ds_tgt_stacked.stack(
+                pair=("init_time", "lead_time")
+            )
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
+                valid_time=("pair", tvals)
+            )
+        else:
+            raise ValueError(
+                "Targets must have either ('init_time','lead_time') or 'time' dimension for alignment."
+            )
 
-        # Intersection of valid times
+        # Intersect valid_time and align order to predictions
         common_valid = np.intersect1d(
             ds_pred_stacked["valid_time"].values,
             ds_tgt_stacked["valid_time"].values,
         )
         if common_valid.size == 0:
             raise ValueError(
-                "No overlapping valid times between ground_truth (ERA5 time) and predictions (init_time+lead_time) after selection."
+                "No overlapping valid times between ground_truth (time/init+lead) and predictions (init+lead) after selection."
             )
-
-        # Filter both by common valid_time
         ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
         nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
         ds_pred_stacked = ds_pred_stacked.isel(pair=ml_mask)
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=nwp_mask)
 
-        # Build mapping from valid_time -> first index in NWP; then align NWP order to ML order
+        # Order targets to match predictions
         nwp_vt = ds_tgt_stacked["valid_time"].values
         ml_vt = ds_pred_stacked["valid_time"].values
-        # Use a dict of int indices for quick lookup
         index_map: dict[np.datetime64, int] = {}
         for i, vt in enumerate(nwp_vt):
-            # only first occurrence kept; duplicates in NWP unlikely with zero lead_time
             index_map.setdefault(vt, i)
         try:
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
         except KeyError:
-            # This should not happen due to intersection, but guard anyway
             raise ValueError(
-                "Internal alignment error: ML valid_time not found in NWP after intersection."
+                "Internal alignment error: ML valid_time not found in targets after intersection."
             )
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
-        # Make NWP stacked coordinate exactly the ML 'pair' MultiIndex for identical labels
-        # Drop existing pair and its level coords first to avoid future MultiIndex inconsistency
+        # Replace pair labels on targets to match predictions exactly for clean unstack
         to_drop = [
-            name
-            for name in ("pair", "init_time", "lead_time")
-            if name in ds_tgt_stacked.coords
+            n
+            for n in ("pair", "init_time", "lead_time")
+            if n in ds_tgt_stacked.coords
         ]
         if to_drop:
             ds_tgt_stacked = ds_tgt_stacked.drop_vars(to_drop)
@@ -367,9 +493,9 @@ def prepare_datasets(
             pair=ds_pred_stacked["pair"]
         )  # type: ignore[index]
 
-    # Unstack back to (init_time, lead_time) using the ML's pair labels for both
-    ds_prediction = ds_pred_stacked.unstack("pair")
-    ds_target = ds_tgt_stacked.unstack("pair")
+        # Unstack back to (init_time, lead_time)
+        ds_prediction = ds_pred_stacked.unstack("pair")
+        ds_target = ds_tgt_stacked.unstack("pair")
 
     # Enforce repository-wide chunking policy to ensure predictable performance
     ds_target = data_mod.enforce_chunking(
@@ -492,11 +618,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.section("Model dataset (prepared)")
     # printing the Dataset object provides a concise summary (dims/coords/vars)
     try:
-        from rich.pretty import Pretty  # type: ignore
+        from .console import USE_RICH  # type: ignore
+        from .console import console as _rc  # type: ignore
 
-        from .console import console as _rc
+        if USE_RICH:
+            from rich.pretty import Pretty  # type: ignore
 
-        _rc.print(Pretty(ds_prediction))
+            _rc.print(Pretty(ds_prediction))
+        else:
+            print(ds_prediction)
     except Exception:
         print(ds_prediction)
     # Ensemble handling summary
@@ -671,11 +801,23 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     # Final completion message
     elapsed = time.time() - t0
-    c.panel(
-        f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
-        title="✅ Finished",
-        style="green",
+    # Always print a plain-text completion line so logs are readable without Rich
+    print(
+        f"FINISHED: duration={elapsed:,.1f}s • outputs={out_root}",
+        flush=True,
     )
+    # If Rich is enabled, also show a styled panel
+    try:
+        from .console import USE_RICH
+
+        if USE_RICH:
+            c.panel(
+                f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
+                title="✅ Finished",
+                style="green",
+            )
+    except Exception:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -687,6 +829,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Try to enforce line-buffered stdout/stderr so Slurm logs update promptly
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    # In non-interactive (no TTY) environments like Slurm, force plain output
+    try:
+        from .console import set_color_mode  # type: ignore
+
+        is_tty = False
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            set_color_mode("never")
+    except Exception:
+        pass
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
     run_selected(cfg)

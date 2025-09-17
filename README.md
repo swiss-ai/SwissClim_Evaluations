@@ -49,6 +49,14 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 
 Outputs appear under paths.output_root (one sub-folder per module).
 
+6. Or submit a batch job (CSCS Alps):
+
+```bash
+sbatch launchscript.sh
+```
+
+Don't forget to adjust the path to cur config/my_run.yaml in launchscript.sh
+
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
 <details>
@@ -75,46 +83,157 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 
 ## Configure
 
-The YAML is the single source of truth. Key sections:
+The YAML is the single source of truth. Use the commented example directly:
 
-- paths
-  - ml: path to your model zarr
-  - nwp: path to ERA5 (WeatherBench2 style) or another reference
-  - output_root: where results go
-- selection
-  - variables_2d, variables_3d: variable names present in both datasets
-  - levels: pressure levels for 3D variables
-  - datetimes: [ISO start, ISO end] for slicing
-  - latitudes, longitudes: [min, max]
-  - temporal_resolution_hours: downsample along time to speed up
-  - ensemble_member: pick one ensemble member from ML if desired
-- plotting
-  - output_mode: plot | npz | both
-    - plot: save PNGs only
-    - npz: write numeric arrays only
-    - both: do both
-  - dpi, random_seed, plot_datetime
-  - map_variable: optional variable name to use for CRPS/PIT maps (defaults to first common variable)
-- modules
-  - Toggle what to run: maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic (combined xarray + WBX)
-- metrics
-  - deterministic.include / .standardized_include (optional filters)
-  - ets.thresholds (percentiles)
+<!-- markdownlint-disable MD033 -->
+<details>
+<summary><strong>Example config (click to expand)</strong></summary>
 
-- probabilistic (optional)
-  - init_time_chunk_size: chunk size for iterating over init_time (WBX and xarray runners)
-  - lead_time_chunk_size: chunk size for iterating over lead_time (WBX and xarray runners)
-  - lead_times_ns: optional explicit list of numpy timedelta64[ns] lead times to override dataset values (WBX)
+```yaml
+# Global configuration for SwissClim Evaluations
+#
+# Tip: All paths should be absolute or relative to the repository root.
+# Python: 3.11 (uv, conda, and container setups)
 
-Notes
+paths:
+  # Path to your model predictions in Zarr format (root directory).
+  # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
 
-- Time alignment: ERA5 uses time while the ML dataset uses init_time + lead_time. The CLI aligns them by valid_time = init_time + lead_time so both sides compare the same moments.
-- Ensemble handling: If your ML data has an ensemble dim, you can:
-  - selection.ensemble_member: pick a specific member, or
-  - leave unset and the CLI will take the ensemble mean when probabilistic modules are off. If probabilistic is on, the ensemble is kept.
-- Plotting control: output_mode is the main switch for figures vs NPZ for most modules. Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
-  - Optional: plotting.plot_datetime lets you choose a specific init_time to plot (must lie within selection.datetimes and exist in predictions).
-  - Default: when plot_datetime is not set, plotting uses the first available init_time.
+  # Path to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
+  nwp: "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr"
+
+  # Where outputs are written; a subfolder per module will be created here.
+  output_root: "output/verification_esfm"
+
+selection:
+  # Pressure levels (hPa) for 3D variables. Only levels present in the data are kept.
+  # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+  levels: [100, 500, 1000]
+
+  # Optional time downsampling in hours. Applied as a stride along lead_time if present,
+  # otherwise along init_time. Set to null to disable.
+  temporal_resolution_hours: null
+
+  # Time selection (one of the following):
+  #   1) Single range [start, end]:
+  #      datetimes: ["2023-01-02T12", "2023-01-03T00"]
+  #   2) Multiple ranges:
+  #      datetimes: ["2023-01-02T00:2023-01-02T06", "2023-01-03T12:2023-01-03T18"]
+  #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
+  #   3) Explicit non-contiguous timestamps:
+  #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
+  # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
+  datetimes: ["2023-01-02T12", "2023-01-03T00"]
+
+  # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
+  # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
+  latitudes: [90.0, -89.75]
+
+  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360.
+  # Aurora/ESFM has a polar cutoff, so [0, 359.75] is typical.
+  longitudes: [0.0, 359.75]
+
+  # Variables without a level dimension present in BOTH datasets.
+  variables_2d: [
+    "10m_u_component_of_wind",
+    # "10m_v_component_of_wind",
+    # "2m_temperature",
+    # "mean_sea_level_pressure",
+  ]
+
+  # Variables with a level dimension present in BOTH datasets (pressure levels).
+  variables_3d: [
+    # "geopotential",
+    # "specific_humidity",
+    # "temperature",
+    # "u_component_of_wind",
+    # "v_component_of_wind",
+  ]
+
+  # For ML datasets with an 'ensemble' dimension:
+  #   - Set to an integer index to select a single member for deterministic runs.
+  #   - Leave as null/omit to use the ensemble mean when probabilistic modules are disabled.
+  #   - When probabilistic modules are enabled, ensemble is kept regardless.
+  ensemble_member: 0
+
+  # If true, raise an error when requested pressure levels are missing from the data.
+  check_missing: false
+
+plotting:
+  # Random seed used for reproducible time subsampling in plots.
+  random_seed: 42
+
+  # Plot a specific init_time. Must lie within selection.datetimes and exist in predictions.
+  # Example: "2023-01-03T12". Leave null/omit to plot the first available init_time.
+  plot_datetime: null
+
+  # Plot specific ensemble members (indices)
+  # Provide a list of integers. Leave null/omit to plot all ensemble members present.
+  # Example: [0, 3, 7]
+  plot_ensemble_members: null
+
+  # Base DPI for plots.
+  dpi: 48
+
+  # Maximum number of samples per latitude band used for KDE/Wasserstein in wd_kde.
+  # Larger values improve smoothness but increase compute and memory. Typical: 50_000–200_000.
+  # Note: Provide as a plain integer (no underscores) in YAML.
+  kde_max_samples: 200000
+
+  # Unified plotting output mode:
+  #   - plot: save PNG figures only
+  #   - npz: export numeric data files only (NPZ) for supported modules
+  #   - both: save PNGs and export NPZ
+  # Notes:
+  #   - Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+  output_mode: both
+
+modules:
+  # Toggle individual modules on/off. The CLI runs based on these flags only.
+  maps: true                 # Global and per-level maps (Cartopy)
+  histograms: true           # Distributions by latitude bands (2D variables)
+  wd_kde: true               # KDE by latitude band on standardized fields; also reports mean Wasserstein
+  energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
+  vertical_profiles: true    # Relative error vertical profiles per latitude band (3D)
+  deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: true                  # Equitable Threat Score across quantile thresholds
+  probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+
+metrics:
+  # Deterministic metrics configuration. If lists are omitted, a default set is computed.
+  # Available metric names:
+  #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
+  #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
+  deterministic:
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
+  # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
+
+    # Fractional Skill Score (FSS) configuration
+    # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
+    # - window_size: integer (square window) or two-element list [height, width]
+    # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
+    # Optional: use absolute thresholds instead of quantiles:
+    #   - threshold: single float applied to all variables (units must match each variable)
+    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
+    fss:
+      quantile: 0.95
+      window_size: 9            # Example: square window of 9x9
+      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
+      # thresholds:              # Example: per-variable thresholds (units must match dataset)
+      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
+      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
+
+  # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
+  # observed distribution at the given percentile.
+  ets:
+    thresholds: [50, 60, 70, 80, 90]
+```
+
+</details>
+<!-- markdownlint-enable MD033 -->
 
 ## Dataset Requirements
 
@@ -187,16 +306,17 @@ The evaluation generates organized results for each enabled module:
 
 ### Probabilistic Verification (combined)
 
-- Xarray-based (per-variable fields and plots):
-  - CRPS summary: `probabilistic/crps_summary.csv`
-  - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
-  - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
-  - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
-- WeatherBenchX-based (summaries and aggregates):
-  - CSV summaries: `probabilistic_wbx/spread_skill_ratio.csv`, `probabilistic_wbx/crps_ensemble.csv`
-  - Temporal aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_temporal.nc`
-  - Spatial/regional aggregates (NetCDF): `probabilistic_wbx/probabilistic_metrics_spatial.nc`
-  - Optional CRPS map: `probabilistic_wbx/crps_map_{var}.png`
+- All probabilistic outputs (xarray + WeatherBenchX) are written into the same folder: `probabilistic/`
+  - Xarray-based (per-variable fields and plots):
+    - CRPS summary: `probabilistic/crps_summary.csv`
+    - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
+    - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
+    - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
+  - WeatherBenchX-based (summaries and aggregates):
+    - CSV summaries: `probabilistic/spread_skill_ratio.csv`, `probabilistic/crps_ensemble.csv`
+    - Temporal aggregates (NetCDF): `probabilistic/probabilistic_metrics_temporal.nc`
+    - Spatial/regional aggregates (NetCDF): `probabilistic/probabilistic_metrics_spatial.nc`
+    - Optional CRPS map (WBX): `probabilistic/crps_map_wbx_{var}.png`
 
 ### Details for probabilistic outputs
 
@@ -246,9 +366,7 @@ pytest -q
 
 Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
 
-## Naming conventions
+### Naming conventions
 
 - targets: the ground-truth/reference dataset (e.g., ERA5). Public APIs now consistently use the parameter name `targets`.
 - predictions: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `predictions`.
-
-In notebooks and internal code we also favor the explicit names `ds_targets` and `ds_predictions` for clarity.

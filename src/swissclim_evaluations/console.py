@@ -7,6 +7,7 @@ Falls back to plain prints if Rich isn't available.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 try:
@@ -25,12 +26,13 @@ except Exception:  # pragma: no cover - fallback when Rich not installed
 class _PlainConsole:
     def print(self, *objects: Any, **kwargs: Any) -> None:  # noqa: D401
         # Plain print fallback
-        print(*objects)
+        print(*objects, flush=True)
 
 
 _COLOR_PREF = os.environ.get("SWISSCLIM_COLOR", "always").lower()
 # always|auto|never
-if _HAS_RICH and _COLOR_PREF != "never":
+USE_RICH = bool(_HAS_RICH and _COLOR_PREF != "never")
+if USE_RICH:
     force = _COLOR_PREF == "always"
     console = Console(
         highlight=False,
@@ -42,15 +44,26 @@ else:
     console = _PlainConsole()
 
 
+_MARKUP_RE = re.compile(r"\[/?[^\]]+\]")
+
+
+def _strip_markup(text: str) -> str:
+    """Remove Rich markup tags from a string for plain-text logs."""
+    try:
+        return _MARKUP_RE.sub("", text)
+    except Exception:
+        return text
+
+
 def header(title: str) -> None:
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(Rule(Text.from_markup(f"[bold cyan]🚀 {title}[/]")))
     else:
         console.print(f"===== {title} =====")
 
 
 def section(title: str) -> None:
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(Rule(Text.from_markup(f"[bold]{title}[/]")))
     else:
         console.print(f"--- {title} ---")
@@ -58,7 +71,7 @@ def section(title: str) -> None:
 
 def info(msg: str) -> None:
     prefix = "ℹ️  "
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(f"[cyan]{prefix}[bold]{msg}[/]")
     else:
         console.print(prefix + msg)
@@ -66,7 +79,7 @@ def info(msg: str) -> None:
 
 def success(msg: str) -> None:
     prefix = "✅ "
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(f"[green]{prefix}[bold]{msg}[/]")
     else:
         console.print(prefix + msg)
@@ -74,7 +87,7 @@ def success(msg: str) -> None:
 
 def warn(msg: str) -> None:
     prefix = "⚠️  "
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(f"[yellow]{prefix}[bold]{msg}[/]")
     else:
         console.print(prefix + msg)
@@ -82,14 +95,14 @@ def warn(msg: str) -> None:
 
 def error(msg: str) -> None:
     prefix = "❌ "
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(f"[red]{prefix}[bold]{msg}[/]")
     else:
         console.print(prefix + msg)
 
 
 def panel(content: str, title: str | None = None, style: str = "") -> None:
-    if _HAS_RICH:
+    if USE_RICH:
         console.print(
             Panel.fit(
                 content,
@@ -101,14 +114,14 @@ def panel(content: str, title: str | None = None, style: str = "") -> None:
     else:
         # Plain fallback
         if title:
-            console.print(f"[{title}] {content}")
+            console.print(f"[{title}] {_strip_markup(content)}")
         else:
-            console.print(content)
+            console.print(_strip_markup(content))
 
 
 def dims_table(ds) -> None:
     """Render a tiny table of dataset dimensions and sizes."""
-    if not _HAS_RICH:
+    if not USE_RICH:
         console.print(
             "dims: " + ", ".join(f"{k}={v}" for k, v in ds.dims.items())
         )
@@ -127,19 +140,21 @@ def module_status(name: str, status: str, detail: str = "") -> None:
     status: one of "run", "skip", "info".
     """
     if status == "run":
-        msg = f"[bold]▶ {name}[/]"
+        icon = "▶"
         color = "green"
     elif status == "skip":
-        msg = f"[bold]⏭ {name}[/]"
+        icon = "⏭"
         color = "yellow"
     else:
-        msg = f"[bold]ℹ {name}[/]"
+        icon = "ℹ"
         color = "cyan"
-    if _HAS_RICH:
+    if USE_RICH:
+        msg = f"[bold]{icon} {name}[/]"
         suffix = f" [dim]{detail}[/]" if detail else ""
         console.print(f"[{color}]{msg}[/]{suffix}")
     else:
-        console.print(f"{msg} {detail}")
+        suffix = f" ({detail})" if detail else ""
+        console.print(f"{icon} {name}{suffix}")
 
 
 def ensemble_panel(message: str, level: str = "info") -> None:

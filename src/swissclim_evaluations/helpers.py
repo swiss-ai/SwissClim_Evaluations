@@ -6,22 +6,28 @@ import itertools
 def time_chunks(
     init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None
 ):
-    init_times = init_times.astype("datetime64[ns]")
+    # Accept non-contiguous init_times; just slice by chunk size without assuming uniform spacing
+    try:
+        init_times = init_times.astype("datetime64[ns]")
+    except Exception:
+        pass
+    total_init = len(init_times)
+    step_i = init_time_chunk_size or total_init
     init_time_chunks = [
-        init_times[i : i + (init_time_chunk_size or len(init_times))]
-        for i in range(
-            0, len(init_times), init_time_chunk_size or len(init_times)
-        )
+        init_times[i : i + step_i] for i in range(0, total_init, step_i)
     ]
 
     if isinstance(lead_times, slice):
         lead_time_chunks = [lead_times]
     else:
-        lead_times = lead_times.astype("timedelta64[ns]")
-        chunk_size = lead_time_chunk_size or len(lead_times)
+        try:
+            lead_times = lead_times.astype("timedelta64[ns]")
+        except Exception:
+            pass
+        total_lead = len(lead_times)
+        step_l = lead_time_chunk_size or total_lead
         lead_time_chunks = [
-            lead_times[i : i + chunk_size]
-            for i in range(0, len(lead_times), chunk_size)
+            lead_times[i : i + step_l] for i in range(0, total_lead, step_l)
         ]
 
     return itertools.product(init_time_chunks, lead_time_chunks)

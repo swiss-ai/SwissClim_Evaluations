@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dask.array as da
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -57,13 +58,18 @@ def calculate_energy_spectra(
     if n_lon == 0:
         return np.array([]), np.array([]), 0.0
 
-    arr = var_data.values
+    # Prefer dask-backed array to avoid immediate materialization
+    arr = var_data.data  # dask or numpy ndarray
     if arr.ndim == 2:
         arr = arr[:, :, None]
 
     n_lat, _, n_time = arr.shape
-    fft = np.fft.rfft(arr, axis=1)
-    power = np.abs(fft) ** 2
+    if hasattr(arr, "chunks") and arr.chunks is not None:
+        fft = da.fft.rfft(arr, axis=1)
+        power = da.absolute(fft) ** 2
+    else:
+        fft = np.fft.rfft(arr, axis=1)
+        power = np.abs(fft) ** 2
 
     lat_vals = var_data.coords.get("latitude", None)
     if lat_vals is not None:
@@ -76,16 +82,24 @@ def calculate_energy_spectra(
         power_w = power
         lat_weight = 1.0
 
-    power_lat_mean = power_w.sum(axis=0) / (
+    denom = (
         lat_weight.sum(axis=0) if isinstance(lat_weight, np.ndarray) else n_lat
     )
+    power_lat_mean = power_w.sum(axis=0) / denom
     spectrum = power_lat_mean.mean(axis=-1)
 
-    n_k = spectrum.shape[0]
+    # Materialize final spectrum to NumPy for return/plotting
+    try:
+        spec_np = (
+            spectrum.compute() if hasattr(spectrum, "compute") else spectrum
+        )
+    except Exception:
+        spec_np = np.asarray(spectrum)
+    n_k = int(spec_np.shape[0])
     wavenumber = np.arange(n_k, dtype=float)
 
     k_effective = float(n_lon / 4.0)
-    return wavenumber, spectrum, k_effective
+    return wavenumber, np.asarray(spec_np), k_effective
 
 
 def calculate_log_spectral_distance(

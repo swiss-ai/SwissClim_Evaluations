@@ -6,7 +6,6 @@ from typing import Any, Iterable, Tuple
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scipy.stats import wasserstein_distance
 from scores.continuous import mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
@@ -94,7 +93,6 @@ def _calculate_all_metrics(
         "Relative MAE",
         "Pearson R",
         "FSS",
-        "Wasserstein",
         "Relative L1",
         "Relative L2",
     }
@@ -138,17 +136,13 @@ def _calculate_all_metrics(
             elif fss_threshold_global is not None:
                 event_threshold = float(fss_threshold_global)
             else:
-                sample = np.random.default_rng(42).choice(
-                    y_true.values.ravel(),
-                    min(n_points, y_true.size),
-                    replace=False,
-                )
-                event_threshold = float(np.quantile(sample, fss_quantile))
+                q_da = y_true.quantile(fss_quantile, skipna=True)
+                event_threshold = float(q_da.compute().item())
             try:
                 fss_val = float(
                     fss_2d(
-                        y_pred.compute(),
-                        y_true.compute(),
+                        y_pred,
+                        y_true,
                         event_threshold=event_threshold,
                         window_size=fss_window_size,
                         spatial_dims=["latitude", "longitude"],
@@ -158,19 +152,12 @@ def _calculate_all_metrics(
                 fss_val = float("nan")
             row["FSS"] = fss_val
 
-        # Wasserstein distance
-        if (include is None) or ("Wasserstein" in metrics_to_compute):
-            row["Wasserstein"] = float(
-                wasserstein_distance(
-                    y_true.values.flatten(), y_pred.values.flatten()
-                )
-            )
-
         # Relative metrics, only if requested and calc_relative True
         if calc_relative:
-            l1_norm = float(np.sum(np.abs(y_true.values)))
-            l2_norm = float(np.sqrt(np.sum(y_true.values**2)))
-            mean_abs = float(np.mean(np.abs(y_true.values)))
+            # Use xarray reductions (lazy with Dask) and compute only final scalars
+            l1_norm = float(np.abs(y_true).sum().compute())
+            l2_norm = float(((y_true**2).sum().compute()) ** 0.5)
+            mean_abs = float(np.abs(y_true).mean().compute())
 
             if (include is None) or ("Relative MAE" in metrics_to_compute):
                 row["Relative MAE"] = (
