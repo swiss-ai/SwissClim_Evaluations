@@ -1,4 +1,4 @@
-name: swissai-eval
+name: swissclim-eval
 channels:
   - conda-forge
   - defaults
