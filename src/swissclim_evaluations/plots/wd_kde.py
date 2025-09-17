@@ -5,6 +5,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
@@ -28,7 +29,15 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
+    # Limit number of samples drawn from each band to avoid loading all data into memory
+    max_samples = int(plotting_cfg.get("kde_max_samples", 200_000))
+    # Global random seed from config for reproducible subsampling
+    base_seed = int(plotting_cfg.get("random_seed", 42))
     section_output = out_root / "wd_kde"
+
+    # Collect all Wasserstein distances across variables and latitude bands
+    # Each row: variable, hemisphere, lat_min, lat_max, wasserstein
+    wasserstein_rows: list[dict[str, float | str]] = []
 
     # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [
@@ -74,10 +83,54 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_flat = da_target_slice.values.flatten()
-            ml_flat = da_prediction_slice.values.flatten()
+
+            # Subsample up to k points by selecting a small slice along each dimension,
+            # then materialize only that subset.
+            def _subsample_values(
+                da: xr.DataArray, k: int, seed: int
+            ) -> np.ndarray:
+                size = int(getattr(da, "size", 0) or 0)
+                if size == 0:
+                    return np.array([], dtype=float)
+                if size <= k:
+                    arr = np.asarray(da.compute().values).ravel()
+                    return arr[np.isfinite(arr)]
+                dims = list(da.dims)
+                nd = max(1, len(dims))
+                frac = (k / float(size)) ** (1.0 / nd)
+                rng = np.random.default_rng(seed)
+                indexers: dict[str, np.ndarray] = {}
+                for d in dims:
+                    n = int(da.sizes.get(d, 1))
+                    take = max(1, int(np.ceil(frac * n)))
+                    take = min(take, n)
+                    idx = rng.choice(n, size=take, replace=False)
+                    idx.sort()
+                    indexers[d] = idx
+                sub = da.isel(**indexers)
+                # Materialize the small subset and keep only finite values (avoid boolean dask indexing)
+                arr = np.asarray(sub.compute().values).ravel()
+                return arr[np.isfinite(arr)]
+
+            # Derive deterministic seeds per variable/band/hemisphere
+            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+            ml_seed = ds_seed + 1
+            ds_flat = _subsample_values(
+                da_target_slice, max_samples, seed=ds_seed
+            )
+            ml_flat = _subsample_values(
+                da_prediction_slice, max_samples, seed=ml_seed
+            )
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
+            # record row for CSV
+            wasserstein_rows.append({
+                "variable": variable_name,
+                "hemisphere": "south",
+                "lat_min": float(lat_min),
+                "lat_max": float(lat_max),
+                "wasserstein": float(w),
+            })
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -123,10 +176,24 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_flat = da_target_slice.values.flatten()
-            ml_flat = da_prediction_slice.values.flatten()
+            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+            ml_seed = ds_seed + 1
+            ds_flat = _subsample_values(
+                da_target_slice, max_samples, seed=ds_seed
+            )
+            ml_flat = _subsample_values(
+                da_prediction_slice, max_samples, seed=ml_seed
+            )
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
+            # record row for CSV
+            wasserstein_rows.append({
+                "variable": variable_name,
+                "hemisphere": "north",
+                "lat_min": float(lat_min),
+                "lat_max": float(lat_max),
+                "wasserstein": float(w),
+            })
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -192,3 +259,22 @@ def run(
             )
             print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
+
+    # After processing all variables, write all collected Wasserstein distances to CSV
+    try:
+        if wasserstein_rows:
+            section_output.mkdir(parents=True, exist_ok=True)
+            df_w = pd.DataFrame(wasserstein_rows)
+            # Sort for readability
+            df_w = df_w.sort_values(
+                by=["variable", "hemisphere", "lat_min"]
+            ).reset_index(drop=True)
+            out_csv = section_output / "wasserstein_latbands.csv"
+            df_w.to_csv(out_csv, index=False)
+            print(f"[wd_kde] saved {out_csv}")
+        else:
+            print(
+                "[wd_kde] No Wasserstein distances computed – CSV not written."
+            )
+    except Exception as e:
+        print(f"[wd_kde] Failed to write Wasserstein CSV: {e}")

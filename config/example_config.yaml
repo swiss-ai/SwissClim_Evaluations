@@ -85,6 +85,11 @@ plotting:
   # Base DPI for plots.
   dpi: 48
 
+  # Maximum number of samples per latitude band used for KDE/Wasserstein in wd_kde.
+  # Larger values improve smoothness but increase compute and memory. Typical: 50_000–200_000.
+  # Note: Provide as a plain integer (no underscores) in YAML.
+  kde_max_samples: 200000
+
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules
@@ -110,9 +115,9 @@ metrics:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
   #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
   deterministic:
-    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS", "Wasserstein"]
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
   # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
-    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE", "Wasserstein"]
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
     # Fractional Skill Score (FSS) configuration
     # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
