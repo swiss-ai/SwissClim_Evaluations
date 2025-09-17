@@ -6,6 +6,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from xhistogram.xarray import histogram as xr_hist
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -52,6 +53,38 @@ def run(
             "pos_lat_max": [],
         }
 
+        # Helper to choose common bin edges without loading full arrays
+        def _choose_edges(
+            da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000
+        ):
+            try:
+                # Quick robust bounds via percentiles on a small sample if dask-backed
+                sample1 = da1.isel(**{
+                    d: slice(0, min(da1.sizes[d], 128)) for d in da1.dims
+                })
+                sample2 = da2.isel(**{
+                    d: slice(0, min(da2.sizes[d], 128)) for d in da2.dims
+                })
+                vmin = float(
+                    xr.concat([sample1.min(), sample2.min()], dim="_t")
+                    .min()
+                    .compute()
+                )
+                vmax = float(
+                    xr.concat([sample1.max(), sample2.max()], dim="_t")
+                    .max()
+                    .compute()
+                )
+                if (
+                    not np.isfinite(vmin)
+                    or not np.isfinite(vmax)
+                    or vmin == vmax
+                ):
+                    vmin, vmax = -1.0, 1.0
+            except Exception:
+                vmin, vmax = -1.0, 1.0
+            return np.linspace(vmin, vmax, bins + 1)
+
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
@@ -62,21 +95,36 @@ def run(
             da_pred = ds_prediction[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            # Surface variable, no level dim expected
-            data_ds = da_true.values.flatten()
-            data_ds_ml = da_pred.values.flatten()
-            counts_ds, bins_ds, _ = axs[j, 1].hist(
-                data_ds,
-                bins=1000,
-                density=True,
+            # Use xhistogram over explicit edges to avoid materializing all values
+            edges = _choose_edges(da_true, da_pred, bins=1000)
+            counts_ds_da = xr_hist(da_true, bins=[edges])
+            counts_ml_da = xr_hist(da_pred, bins=[edges])
+            counts_ds = counts_ds_da.compute().astype(float).values
+            counts_ml = counts_ml_da.compute().astype(float).values
+            # Convert to density
+            width = np.diff(edges)
+            bin_area = (
+                counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            )
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = (
+                counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            )
+            counts_ml = counts_ml / bin_area_ml
+            axs[j, 1].bar(
+                edges[:-1],
+                counts_ds,
+                width=width,
+                align="edge",
                 alpha=0.5,
                 color="skyblue",
                 label="Ground Truth",
             )
-            counts_ml, bins_ml, _ = axs[j, 1].hist(
-                data_ds_ml,
-                bins=1000,
-                density=True,
+            axs[j, 1].bar(
+                edges[:-1],
+                counts_ml,
+                width=width,
+                align="edge",
                 alpha=0.5,
                 color="salmon",
                 label="Model Prediction",
@@ -85,7 +133,7 @@ def run(
             axs[j, 1].legend(loc="upper right")
             if save_npz:
                 combined["neg_counts"].append((counts_ds, counts_ml))
-                combined["neg_bins"].append((bins_ds, bins_ml))
+                combined["neg_bins"].append(edges)
                 combined["neg_lat_min"].append(float(lat_min))
                 combined["neg_lat_max"].append(float(lat_max))
 
@@ -100,21 +148,34 @@ def run(
             da_pred = ds_prediction[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            # Surface variable, no level dim expected
-            data_ds = da_true.values.flatten()
-            data_ds_ml = da_pred.values.flatten()
-            counts_ds, bins_ds, _ = axs[j, 0].hist(
-                data_ds,
-                bins=1000,
-                density=True,
+            edges = _choose_edges(da_true, da_pred, bins=1000)
+            counts_ds_da = xr_hist(da_true, bins=[edges])
+            counts_ml_da = xr_hist(da_pred, bins=[edges])
+            counts_ds = counts_ds_da.compute().astype(float).values
+            counts_ml = counts_ml_da.compute().astype(float).values
+            width = np.diff(edges)
+            bin_area = (
+                counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            )
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = (
+                counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            )
+            counts_ml = counts_ml / bin_area_ml
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ds,
+                width=width,
+                align="edge",
                 alpha=0.5,
                 color="skyblue",
                 label="Ground Truth",
             )
-            counts_ml, bins_ml, _ = axs[j, 0].hist(
-                data_ds_ml,
-                bins=1000,
-                density=True,
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ml,
+                width=width,
+                align="edge",
                 alpha=0.5,
                 color="salmon",
                 label="Model Prediction",
@@ -123,7 +184,7 @@ def run(
             axs[j, 0].legend(loc="upper right")
             if save_npz:
                 combined["pos_counts"].append((counts_ds, counts_ml))
-                combined["pos_bins"].append((bins_ds, bins_ml))
+                combined["pos_bins"].append(edges)
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
 
@@ -158,19 +219,6 @@ def run(
                 if combined["pos_counts"]
                 else (np.empty((0,)), np.empty((0,)))
             )
-
-            # Note: counts are tuples (ds, ml). Split into two arrays if present
-            def _split_counts(counts_tuple_stack):
-                if counts_tuple_stack.size == 0:
-                    return np.empty((0,)), np.empty((0,))
-                # counts_tuple_stack is shape (bands, 2, N) if stacked correctly; ensure dims
-                return counts_tuple_stack[:, 0, :], counts_tuple_stack[:, 1, :]
-
-            def _split_bins(bins_tuple_stack):
-                if bins_tuple_stack.size == 0:
-                    return np.empty((0,)), np.empty((0,))
-
-                return bins_tuple_stack[:, 0, :], bins_tuple_stack[:, 1, :]
 
             # The _stack_counts_bins returns stacks of objects; to keep it simple, store ragged lists via allow_pickle
             section_output.mkdir(parents=True, exist_ok=True)

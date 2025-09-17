@@ -19,6 +19,7 @@ from weatherbenchX.metrics.probabilistic import (
 from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
+from xhistogram.xarray import histogram as xr_hist
 
 from ..helpers import time_chunks
 
@@ -176,11 +177,22 @@ def _reduce_mean_all(da: xr.DataArray) -> xr.DataArray:
     return da.mean(dim=dims, skipna=True)
 
 
-def _pit_histogram_np(
-    da: xr.DataArray, bins: int = 50
+def _pit_histogram_xarray(
+    da: xr.DataArray, bins: int = 50, density: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
-    arr = np.asarray(da.values).ravel()
-    counts, edges = np.histogram(arr, bins=bins, range=(0.0, 1.0), density=True)
+    """Dask/xarray-friendly PIT histogram without manual dask.array calls.
+    Returns (counts, edges). If density=True, counts are normalized to density.
+    """
+    # xhistogram requires explicit bin edges for Dask-backed arrays.
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    # Pass edges as a sequence (one per input array) and omit range.
+    counts_da = xr_hist(da, bins=[edges])
+    counts = counts_da.compute().astype(np.float64).values
+    if density:
+        total = counts.sum()
+        if total > 0:
+            bin_width = 1.0 / bins
+            counts = counts / (total * bin_width)
     return counts, edges
 
 
@@ -237,57 +249,50 @@ def run_probabilistic(
         )
         return
 
-    prob_cfg = (cfg_all or {}).get("probabilistic", {})
-    init_chunk = prob_cfg.get("init_time_chunk_size")
-    lead_chunk = prob_cfg.get("lead_time_chunk_size")
-
     crps_rows: list[dict[str, Any]] = []
 
-    for targ_chunk, pred_chunk in _iter_time_chunks(
-        ds_target, ds_prediction, init_chunk=init_chunk, lead_chunk=lead_chunk
-    ):
-        for var in variables:
-            # Extract and align targets and predictions along shared coordinates
-            da_target = targ_chunk[var]
-            da_prediction = pred_chunk[var]
-            try:
-                da_target, da_prediction = xr.align(
-                    da_target, da_prediction, join="exact"
-                )
-            except Exception:
-                # Fallback to by-position if shapes match exactly
-                if da_target.shape == da_prediction.shape:
-                    da_target = da_target.copy()
-                    da_prediction = da_prediction.copy()
-                else:
-                    raise
-            crps_da = crps_ensemble(
-                da_target, da_prediction, ensemble_dim="ensemble"
+    for var in variables:
+        # Extract and align targets and predictions along shared coordinates
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
+        try:
+            da_target, da_prediction = xr.align(
+                da_target, da_prediction, join="exact"
             )
-            crps_mean = float(_reduce_mean_all(crps_da))
-            crps_rows.append({"variable": var, "CRPS": crps_mean})
+        except Exception:
+            # Fallback to by-position if shapes match exactly
+            if da_target.shape == da_prediction.shape:
+                da_target = da_target.copy()
+                da_prediction = da_prediction.copy()
+            else:
+                raise
+        crps_da = crps_ensemble(
+            da_target, da_prediction, ensemble_dim="ensemble"
+        )
+        crps_mean = float(_reduce_mean_all(crps_da).compute().item())
+        crps_rows.append({"variable": var, "CRPS": crps_mean})
 
-            pit_da = probability_integral_transform(
-                da_target,
-                da_prediction,
-                ensemble_dim="ensemble",
-                name_prefix=None,
-            )
-            counts, edges = _pit_histogram_np(pit_da, bins=50)
-            pit_npz = section_output / f"{var}_pit_hist.npz"
-            np.savez(
-                pit_npz,
-                counts=counts,
-                edges=edges,
-            )
-            print(f"[probabilistic] saved {pit_npz}")
-            # Always save PIT and CRPS fields for reproducibility
-            pit_nc = section_output / f"{var}_pit.nc"
-            crps_nc = section_output / f"{var}_crps.nc"
-            pit_da.to_netcdf(pit_nc)
-            crps_da.to_netcdf(crps_nc)
-            print(f"[probabilistic] saved {pit_nc}")
-            print(f"[probabilistic] saved {crps_nc}")
+        pit_da = probability_integral_transform(
+            da_target,
+            da_prediction,
+            ensemble_dim="ensemble",
+            name_prefix=None,
+        )
+        counts, edges = _pit_histogram_xarray(pit_da, bins=50, density=True)
+        pit_npz = section_output / f"{var}_pit_hist.npz"
+        np.savez(
+            pit_npz,
+            counts=counts,
+            edges=edges,
+        )
+        print(f"[probabilistic] saved {pit_npz}")
+        # Always save PIT and CRPS fields for reproducibility
+        pit_nc = section_output / f"{var}_pit.nc"
+        crps_nc = section_output / f"{var}_crps.nc"
+        pit_da.to_netcdf(pit_nc)
+        crps_da.to_netcdf(crps_nc)
+        print(f"[probabilistic] saved {pit_nc}")
+        print(f"[probabilistic] saved {crps_nc}")
 
     if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
@@ -413,15 +418,16 @@ def plot_probabilistic(
         ensemble_dim="ensemble",
         name_prefix=None,
     )
-    pit_flat = pit.values.ravel()
-    pit_flat = pit_flat[np.isfinite(pit_flat)]
+    counts, edges = _pit_histogram_xarray(pit, bins=20, density=True)
 
     fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
-    counts, edges, _ = ax.hist(
-        pit_flat,
-        bins=20,
-        range=(0.0, 1.0),
-        density=True,
+    # Draw histogram from counts/edges to avoid materializing all values
+    widths = np.diff(edges)
+    ax.bar(
+        edges[:-1],
+        counts,
+        width=widths,
+        align="edge",
         color="#4C78A8",
         edgecolor="white",
     )
@@ -514,23 +520,23 @@ def run_probabilistic_wbx(
 ) -> None:
     """Compute WBX temporal/spatial metrics, CSV summaries, and optional CRPS map.
 
-    Outputs (under out_root/probabilistic_wbx):
+    Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
     - crps_ensemble.csv
     - probabilistic_metrics_temporal.nc
     - probabilistic_metrics_spatial.nc
     - Optional: crps_map_<var>.png if output_mode enables plotting
     """
-    section = out_root / "probabilistic_wbx"
+    # Write WBX artifacts into the same probabilistic folder to avoid split outputs
+    section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
 
     # Imports only when needed to avoid hard dependency during other runs
     from weatherbenchX import aggregation, binning, weighting
-    from weatherbenchX import time_chunks as wbx_time_chunks
 
     if "ensemble" not in ds_prediction.dims:
         print(
-            "[probabilistic_wbx] Skipping: model dataset has no 'ensemble' dimension."
+            "[probabilistic] Skipping: model dataset has no 'ensemble' dimension."
         )
         return
 
@@ -539,7 +545,7 @@ def run_probabilistic_wbx(
     ]
     if not common_vars:
         print(
-            "[probabilistic_wbx] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
         )
         return
     ds_pred = ds_prediction[common_vars]
@@ -552,7 +558,7 @@ def run_probabilistic_wbx(
     )
     ssr_csv = section / "spread_skill_ratio.csv"
     ssr_df.to_csv(ssr_csv)
-    print(f"[probabilistic_wbx] saved {ssr_csv}")
+    print(f"[probabilistic] saved {ssr_csv}")
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
     crps_df = _wbx_metric_to_df(
@@ -560,37 +566,7 @@ def run_probabilistic_wbx(
     )
     crps_csv = section / "crps_ensemble.csv"
     crps_df.to_csv(crps_csv)
-    print(f"[probabilistic_wbx] saved {crps_csv}")
-
-    # Chunk iteration and aggregations
-    prob_cfg = (
-        (all_cfg or {}).get("probabilistic", {})
-        if isinstance(all_cfg, dict)
-        else {}
-    )
-    init_chunk_size = int(prob_cfg.get("init_time_chunk_size", 20))
-    lead_chunk_size = int(prob_cfg.get("lead_time_chunk_size", 1))
-    lead_times_override = prob_cfg.get("lead_times_ns")
-
-    init_times = ds_pred["init_time"].values
-    lead_times = ds_pred["lead_time"].values
-    if (
-        getattr(lead_times, "dtype", None) is not None
-        and str(lead_times.dtype) != "timedelta64[ns]"
-    ):
-        try:
-            lead_times = lead_times.astype("timedelta64[ns]")
-        except Exception:
-            pass
-    if lead_times_override is not None:
-        lead_times = np.array(lead_times_override, dtype="timedelta64[ns]")
-
-    times = wbx_time_chunks.TimeChunks(
-        init_times,
-        lead_times,
-        init_time_chunk_size=init_chunk_size,
-        lead_time_chunk_size=lead_chunk_size,
-    )
+    print(f"[probabilistic] saved {crps_csv}")
 
     def _default_regions() -> dict[
         str, tuple[tuple[float, float], tuple[float, float]]
@@ -642,43 +618,16 @@ def run_probabilistic_wbx(
     }
 
     variables = [v for v in ds_pred.data_vars]
-    spatial_results = None
-    temporal_results_list = []
-    chunks_count = 0
-
-    for init_chunk, lead_chunk in times:
-        pred_chunk = ds_pred.sel(init_time=init_chunk, lead_time=lead_chunk)
-        targ_chunk = ds_targ.sel(init_time=init_chunk, lead_time=lead_chunk)
-        pred_map = {v: pred_chunk[v] for v in variables}
-        targ_map = {v: targ_chunk[v] for v in variables}
-
-        # Temporal results: spatial aggregation, keep time axes
-        temporal_results_list.append(
-            aggregation.compute_metric_values_for_single_chunk(
-                metrics, spatial_aggregator, pred_map, targ_map
-            )
-        )
-
-        # Spatial results: temporal aggregation (reduce init_time), average across chunks
-        chunk_spatial = aggregation.compute_metric_values_for_single_chunk(
-            metrics, temporal_aggregator, pred_map, targ_map
-        )
-        spatial_results = (
-            chunk_spatial
-            if spatial_results is None
-            else (spatial_results + chunk_spatial)
-        )
-        chunks_count += 1
-
-    temporal_results = (
-        xr.merge(temporal_results_list)
-        if temporal_results_list
-        else xr.Dataset()
+    pred_map = {v: ds_pred[v] for v in variables}
+    targ_map = {v: ds_targ[v] for v in variables}
+    # Temporal results: reduce spatial dims, keep time dims
+    temporal_results = aggregation.compute_metric_values_for_single_chunk(
+        metrics, spatial_aggregator, pred_map, targ_map
     )
-    if spatial_results is None or chunks_count == 0:
-        spatial_results = xr.Dataset()
-    else:
-        spatial_results = spatial_results / float(chunks_count)
+    # Spatial results: reduce init_time (and optionally bin by season)
+    spatial_results = aggregation.compute_metric_values_for_single_chunk(
+        metrics, temporal_aggregator, pred_map, targ_map
+    )
 
     def _build_time_encoding(ds: xr.Dataset) -> dict:
         enc: dict = {}
@@ -764,9 +713,10 @@ def run_probabilistic_wbx(
                     mesh, ax=ax, orientation="vertical", label=crps_name
                 )
                 ax.set_title(f"CRPS map: {base_var}")
-                out_png = section / f"crps_map_{base_var}.png"
+                # Avoid clashing with non-WBX CRPS map by using a distinct filename
+                out_png = section / f"crps_map_wbx_{base_var}.png"
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[probabilistic_wbx] saved {out_png}")
+                print(f"[probabilistic] saved {out_png}")
                 plt.close(fig)
 
 

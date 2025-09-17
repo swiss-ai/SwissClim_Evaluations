@@ -413,15 +413,10 @@ def prepare_datasets(
         # Build stacked predictions with valid_time
         ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
         ml_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
+        ml_valid_2d = ml_init + ml_lead
         ds_pred_stacked = ds_prediction.stack(pair=("init_time", "lead_time"))
-        ml_valid = (
-            (ml_init.values[:, None] + ml_lead.values[None, :])
-            .ravel()
-            .astype("datetime64[ns]")
-        )
-        ds_pred_stacked = ds_pred_stacked.assign_coords(
-            valid_time=("pair", ml_valid)
-        )
+        ml_valid_1d = ml_valid_2d.stack(pair=("init_time", "lead_time"))
+        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=ml_valid_1d)
 
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
@@ -434,13 +429,11 @@ def prepare_datasets(
             nwp_init = ds_target["init_time"].astype("datetime64[ns]")
             nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
-            nwp_valid = (
-                (nwp_init.values[:, None] + nwp_lead.values[None, :])
-                .ravel()
-                .astype("datetime64[ns]")
+            nwp_valid_1d = (nwp_init + nwp_lead).stack(
+                pair=("init_time", "lead_time")
             )
             ds_tgt_stacked = ds_tgt_stacked.assign_coords(
-                valid_time=("pair", nwp_valid)
+                valid_time=nwp_valid_1d
             )
         elif "time" in ds_target.dims:
             # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
