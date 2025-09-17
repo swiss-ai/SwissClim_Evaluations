@@ -39,7 +39,7 @@ srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p de
 ```
 
 You are now inside the container with all dependencies installed.
-For a richter debugging experience we consider using `code tunnel`.
+For a richer debugging experience we recommend using `code tunnel`.
 
 5. Run:
 
@@ -55,7 +55,7 @@ Outputs appear under paths.output_root (one sub-folder per module).
 sbatch launchscript.sh
 ```
 
-Don't forget to adjust the path to cur config/my_run.yaml in launchscript.sh
+Don't forget to adjust the path to your `config/my_run.yaml` in `launchscript.sh`.
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
@@ -350,6 +350,49 @@ You can explore the outputs interactively using the provided notebooks:
 Notebook tips
 
 - Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
+
+## Intercomparison of Saved Artifacts
+
+This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons.
+
+Expected structure per model (created by the main runner):
+
+- output/modelA/
+  - maps/*.npz
+  - histograms/*_sfc_latbands_combined.npz
+  - wd_kde/*_sfc_latbands_kde_combined.npz
+  - energy_spectra/*.npz, lsd_2d_metrics.csv
+  - deterministic/metrics.csv, metrics_standardized.csv
+  - ets/ets_metrics.csv
+  - vertical_profiles/*_pl_rel_error_combined.npz
+  - probabilistic/
+    - crps_summary.csv, spread_skill_ratio.csv, crps_ensemble.csv
+    - {var}_pit_hist.npz,
+    - crps_map_{var}.png (xarray) and/or crps_map_wbx_{var}.png
+    - temporal_metrics.nc, spatial_metrics.nc (WBX)
+
+Run the intercomparison:
+
+```bash
+python -m swissclim_evaluations.intercompare output/modelA output/modelB \
+  --labels ModelA ModelB \
+  --out output/intercomparison \
+  --modules spectra hist kde maps metrics prob \
+  --max-map-panels 4
+```
+
+Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
+
+What gets combined:
+
+- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_2d_metrics_combined.csv`.
+- histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
+- wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
+- maps: panel maps with DS in the first column and each model as subsequent columns.
+- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
+- ets: merged CSV (`ets_metrics_combined.csv`).
+- probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
+  - Additionally merges WBX spatial and temporal aggregates (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
 
 ## Development
 

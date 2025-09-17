@@ -36,6 +36,7 @@ weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
 
 [project.scripts]
 swissclim-evaluations = "swissclim_evaluations.cli:main"
+swissclim-evaluations-compare = "swissclim_evaluations.intercompare:main"
 
 [build-system]
 requires = ["hatchling"]
