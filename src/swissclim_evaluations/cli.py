@@ -655,9 +655,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
-    _t = time.time()
-    maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
-    module_timings.append(("maps", time.time() - _t))
+        _t = time.time()
+        maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
+        module_timings.append(("maps", time.time() - _t))
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
@@ -670,9 +670,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
-    _t = time.time()
-    hist_mod.run(ds_target, ds_prediction, out_root, plotting)
-    module_timings.append(("histograms", time.time() - _t))
+        _t = time.time()
+        hist_mod.run(ds_target, ds_prediction, out_root, plotting)
+        module_timings.append(("histograms", time.time() - _t))
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -779,9 +779,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
-    _t = time.time()
-    ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
-    module_timings.append(("ets", time.time() - _t))
+        _t = time.time()
+        ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
+        module_timings.append(("ets", time.time() - _t))
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
