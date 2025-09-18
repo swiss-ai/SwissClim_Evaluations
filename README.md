@@ -71,15 +71,17 @@ Outputs appear under paths.output_root (one sub-folder per module).
 sbatch launchscript.sh
 ```
 
-Don't forget to adjust the path to your `config/my_run.yaml` in `launchscript.sh`.
+Don't forget to adjust the path to your `config/my_run.yaml` in
+`launchscript.sh` if you placed it elsewhere.
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
 <details>
-<summary>Install with uv (fast Python)</summary>
+<summary>Install with uenv</summary>
 
 ```bash
-bash tools/setup_env_uv.sh
+bash tools/setup_env_uenv.sh # activates uenv and exits
+bash tools/setup_env_uenv.sh # installs deps with uv
 # Activates .venv and installs deps via uv
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
