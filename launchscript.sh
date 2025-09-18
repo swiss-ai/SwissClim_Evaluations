@@ -2,9 +2,9 @@
 #SBATCH --job-name=swissclim-eval
 #SBATCH --output=logs/swissclim%j.out
 #SBATCH --error=logs/swissclim%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=01:30:00
 #SBATCH --account=a122
-#SBATCH --partition=normal
+#SBATCH --partition=debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 

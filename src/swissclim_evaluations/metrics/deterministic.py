@@ -10,6 +10,8 @@ from scores.continuous import mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
 
+from ..lead_time_policy import LeadTimePolicy
+
 
 def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     max_spatial_dim = max(ds.longitude.size, ds.latitude.size)
@@ -190,6 +192,7 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     metrics_cfg: dict[str, Any] | None = None,
+    lead_policy: LeadTimePolicy | None = None,
 ) -> None:
     """Compute and store deterministic (formerly objective) metrics.
 
@@ -212,22 +215,118 @@ def run(
         std_include = metrics_cfg["deterministic"].get("standardized_include")
         fss_cfg = metrics_cfg["deterministic"].get("fss")
 
-    regular_metrics = _calculate_all_metrics(
-        ds_target,
-        ds_prediction,
-        calc_relative=True,
-        n_points=n_points,
-        include=include,
-        fss_cfg=fss_cfg,
+    multi_lead = (
+        lead_policy is not None
+        and "lead_time" in ds_prediction.dims
+        and int(ds_prediction.lead_time.size) > 1
+        and lead_policy.mode != "first"
     )
-    standardized_metrics = _calculate_all_metrics(
-        ds_target_std,
-        ds_prediction_std,
-        calc_relative=False,
-        n_points=n_points,
-        include=std_include,
-        fss_cfg=fss_cfg,
-    )
+
+    if not multi_lead:
+        regular_metrics = _calculate_all_metrics(
+            ds_target,
+            ds_prediction,
+            calc_relative=True,
+            n_points=n_points,
+            include=include,
+            fss_cfg=fss_cfg,
+        )
+        standardized_metrics = _calculate_all_metrics(
+            ds_target_std,
+            ds_prediction_std,
+            calc_relative=False,
+            n_points=n_points,
+            include=std_include,
+            fss_cfg=fss_cfg,
+        )
+        # For single-lead mode, averaged versions are identical to originals
+        avg_regular = regular_metrics.copy()
+        avg_std = standardized_metrics.copy()
+    else:
+        # Per-lead loop producing long-form rows
+        rows: list[pd.DataFrame] = []
+        rows_std: list[pd.DataFrame] = []
+        lead_hours = (
+            ds_prediction["lead_time"].values // np.timedelta64(1, "h")
+        ).astype(int)
+        for li, h in enumerate(lead_hours):
+            tgt_slice = ds_target.isel(lead_time=li)
+            pred_slice = ds_prediction.isel(lead_time=li)
+            tgt_std_slice = ds_target_std.isel(lead_time=li)
+            pred_std_slice = ds_prediction_std.isel(lead_time=li)
+            df = _calculate_all_metrics(
+                tgt_slice,
+                pred_slice,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+            )
+            df.insert(0, "lead_time_hours", int(h))
+            rows.append(df.reset_index().rename(columns={"index": "variable"}))
+            df_std = _calculate_all_metrics(
+                tgt_std_slice,
+                pred_std_slice,
+                calc_relative=False,
+                n_points=n_points,
+                include=std_include,
+                fss_cfg=fss_cfg,
+            )
+            df_std.insert(0, "lead_time_hours", int(h))
+            rows_std.append(
+                df_std.reset_index().rename(columns={"index": "variable"})
+            )
+        long_df = pd.concat(rows, ignore_index=True)
+        long_std_df = pd.concat(rows_std, ignore_index=True)
+        # Wide pivot (variable as index, columns multi-level metric->hour)
+        regular_metrics = long_df.pivot_table(
+            index="variable",
+            columns="lead_time_hours",
+            values=[
+                c
+                for c in long_df.columns
+                if c not in ("variable", "lead_time_hours")
+            ],
+        )
+        # reconstruct standardized similarly
+        standardized_metrics = long_std_df.pivot_table(
+            index="variable",
+            columns="lead_time_hours",
+            values=[
+                c
+                for c in long_std_df.columns
+                if c not in ("variable", "lead_time_hours")
+            ],
+        )
+        standardized_metrics.columns = [
+            f"{c[0]} (Stdized)@{c[1]}h" for c in standardized_metrics.columns
+        ]
+        # compute averaged versions across leads to preserve single-lead summary outputs
+        # Flatten multi-index on regular_metrics for averaging
+        try:
+            avg_regular = (
+                regular_metrics.T.groupby(level=0).mean(numeric_only=True).T
+            )
+        except Exception:
+            avg_regular = regular_metrics
+        try:
+            # Columns are strings like "MAE (Stdized)@24h"; group by the part before '@'.
+            _group_index = pd.Index(
+                [c.split("@")[0] for c in standardized_metrics.columns],
+                name="metric",
+            )
+            avg_std = (
+                standardized_metrics.T.groupby(_group_index)
+                .mean(numeric_only=True)
+                .T
+            )
+        except Exception:
+            avg_std = standardized_metrics
+
+    # Single-lead summary (averaged across leads for backward compatibility)
+    single_lead_regular = avg_regular
+    single_lead_std = avg_std
+
     standardized_metrics.columns = [
         f"{c} (Stdized)" for c in standardized_metrics.columns
     ]
@@ -235,8 +334,29 @@ def run(
     section_output.mkdir(parents=True, exist_ok=True)
     out_csv = section_output / "metrics.csv"
     out_csv_std = section_output / "metrics_standardized.csv"
-    regular_metrics.to_csv(out_csv)
-    standardized_metrics.to_csv(out_csv_std)
+    if multi_lead:
+        # Write single-lead (averaged) summary
+        single_lead_regular.to_csv(out_csv)
+        single_lead_std.to_csv(out_csv_std)
+        # Write long & wide detailed artifacts
+        (section_output / "").mkdir(exist_ok=True)
+        # Long-form detailed
+        # Reconstruct long from wide if needed (already have long_df / long_std_df)
+        long_df.to_csv(section_output / "metrics_by_lead_long.csv", index=False)
+        long_std_df.to_csv(
+            section_output / "metrics_standardized_by_lead_long.csv",
+            index=False,
+        )
+        regular_metrics.to_csv(section_output / "metrics_by_lead_wide.csv")
+        standardized_metrics.to_csv(
+            section_output / "metrics_standardized_by_lead_wide.csv"
+        )
+        print(
+            f"[deterministic] saved per-lead metrics (long & wide) under {section_output}"
+        )
+    else:
+        regular_metrics.to_csv(out_csv)
+        standardized_metrics.to_csv(out_csv_std)
     print(f"[deterministic] saved {out_csv}")
     print(f"[deterministic] saved {out_csv_std}")
 

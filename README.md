@@ -1,6 +1,8 @@
 # SwissClim Evaluations
 
-Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other references). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
+Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or
+other references). Compute deterministic and probabilistic scores, spectral
+metrics, and helpful diagnostic plots — all driven by a single YAML config.
 
 ## Quickstart (default: container with Podman + Enroot)
 
@@ -54,8 +56,8 @@ cp config/example_config.yaml config/my_run.yaml
 srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
 ```
 
-You are now inside the container with all dependencies installed.
-For a richer debugging experience we recommend using `code tunnel`.
+You are now inside the container with all dependencies installed. For a richer
+debugging experience we recommend using `code tunnel`.
 
 5. Run:
 
@@ -71,8 +73,17 @@ Outputs appear under paths.output_root (one sub-folder per module).
 sbatch launchscript.sh
 ```
 
+Or directly with a single command:
+
+```bash
+srun --job-name=swissclim-eval --time=00:30:00 --account=a122 \
+    --partition=normal --nodes=1 --ntasks=1 --cpu-bind=cores \
+    --container-writable --environment=/users/$USER/.edf/swissclim-eval.toml \
+    python -u -m swissclim_evaluations.cli --config config/my_run.yaml
+```
+
 Don't forget to adjust the path to your `config/my_run.yaml` in
-`launchscript.sh` if you placed it elsewhere.
+`launchscript.sh`.
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
@@ -108,10 +119,10 @@ The YAML is the single source of truth. Use the commented example directly:
 <summary><strong>Example config (click to expand)</strong></summary>
 
 ```yaml
+# Source: config/example_config.yaml
 # Global configuration for SwissClim Evaluations
 #
 # Tip: All paths should be absolute or relative to the repository root.
-# Python: 3.11 (uv, conda, and container setups)
 
 paths:
   # Path to your model predictions in Zarr format (root directory).
@@ -130,8 +141,10 @@ selection:
   # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
   levels: [100, 500, 1000]
 
-  # Optional time downsampling in hours. Applied as a stride along lead_time if present,
-  # otherwise along init_time. Set to null to disable.
+  # Optional coarse temporal downsampling in hours. Applied as a stride along lead_time if present,
+  # otherwise along init_time. This is an early reduction step and is independent of the
+  # multi-lead selection policy below. Leave null if you plan to control lead selection
+  # exclusively via the lead_time policy.
   temporal_resolution_hours: null
 
   # Time selection (one of the following):
@@ -143,7 +156,16 @@ selection:
   #   3) Explicit non-contiguous timestamps:
   #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
-  datetimes: ["2023-01-02T12", "2023-01-03T00"]
+  datetimes: [
+    "2023-01-02T00:2023-01-08T23",
+    "2023-04-02T00:2023-04-08T23", 
+    "2023-07-02T00:2023-07-08T23",
+    "2023-10-02T00:2023-10-08T23",
+    "2024-01-02T00:2024-01-08T23",
+    "2024-04-02T00:2024-04-08T23",
+    "2024-07-02T00:2024-07-08T23",
+    "2024-10-02T00:2024-10-08T23"
+  ]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
   # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
@@ -224,6 +246,34 @@ modules:
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
+# Multi-lead evaluation policy
+# modes:
+#   first  - only first lead time (single-lead evaluation mode)
+#   full   - use all available lead hours
+#   subset - explicit list of lead hours to keep (provide subset_hours)
+#   stride - keep every Nth hour (provide stride_hours)
+#   bins   - retain all, later aggregate into user-defined bins (bins list)
+# panel.* controls which lead hours are used for multi-panel plots (maps, histograms, spectra, etc.)
+lead_time:
+  mode: stride            # first | full | subset | stride | bins
+  stride_hours: 12
+  max_hour: 120
+  # subset_hours: [0, 6, 12, 24]   # only if mode=subset
+  panel:
+    strategy: evenly_spaced  # first | evenly_spaced | specific
+    count: 5                 # number of panel lead hours to show
+    # panel_specific_hours: [0, 24, 72]  # only if strategy=specific
+  # bins:
+  #   - start: 0   # inclusive (hours)
+  #     end: 24    # exclusive
+  #     label: day1
+  #   - start: 24
+  #     end: 48
+  #     label: day2
+  #   - start: 48
+  #     end: 120
+  #     label: day3_plus
+
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
@@ -242,7 +292,7 @@ metrics:
     #   - threshold: single float applied to all variables (units must match each variable)
     #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
     fss:
-      quantile: 0.95
+      quantile: 0.90
       window_size: 9            # Example: square window of 9x9
       # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
       # thresholds:              # Example: per-variable thresholds (units must match dataset)
@@ -287,8 +337,11 @@ Attributes:
 ### Chunking policy (xarray/dask)
 
 - The repository enforces a default Dask chunking policy in code:
-  - init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble: -1 (-1 = no chunking)
-- This ensures apply_ufunc metrics that use the ensemble as a core dimension work without errors and keeps memory usage predictable. If a dataset deviates, it will be rechunked automatically with a warning.
+  - `init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble:
+    -1 (-1 = no chunking)`
+- This ensures apply_ufunc metrics that use the ensemble as a core dimension
+  work without errors and keeps memory usage predictable. If a dataset deviates,
+  it will be rechunked automatically with a warning.
 
 ## Output Overview
 
@@ -296,7 +349,8 @@ The evaluation generates organized results for each enabled module:
 
 ### Deterministic Metrics
 
-- CSV summaries: `deterministic/metrics.csv` and `deterministic/metrics_standardized.csv`
+- CSV summaries: `deterministic/metrics.csv` and
+  `deterministic/metrics_standardized.csv`
 - Terminal preview of key statistics
 
 ### Extreme Threshold Statistics (ETS)
@@ -329,54 +383,114 @@ The evaluation generates organized results for each enabled module:
 
 ### Probabilistic Verification (combined)
 
-- All probabilistic outputs (xarray + WeatherBenchX) are written into the same folder: `probabilistic/`
+- All probabilistic outputs (xarray + WeatherBenchX) are written into the same
+  folder: `probabilistic/`
   - Xarray-based (per-variable fields and plots):
     - CRPS summary: `probabilistic/crps_summary.csv`
     - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
-    - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
-    - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
+    - PIT/CRPS fields: `probabilistic/{var}_pit.nc`,
+      `probabilistic/{var}_crps.nc`
+    - Optional figures (when `plot` or `both`):
+      `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
   - WeatherBenchX-based (summaries and aggregates):
-    - CSV summaries: `probabilistic/spread_skill_ratio.csv`, `probabilistic/crps_ensemble.csv`
-    - Temporal aggregates (NetCDF): `probabilistic/probabilistic_metrics_temporal.nc`
-    - Spatial/regional aggregates (NetCDF): `probabilistic/probabilistic_metrics_spatial.nc`
+    - CSV summaries: `probabilistic/spread_skill_ratio.csv`,
+      `probabilistic/crps_ensemble.csv`
+    - Temporal aggregates (NetCDF):
+      `probabilistic/probabilistic_metrics_temporal.nc`
+    - Spatial/regional aggregates (NetCDF):
+      `probabilistic/probabilistic_metrics_spatial.nc`
     - Optional CRPS map (WBX): `probabilistic/crps_map_wbx_{var}.png`
 
 ### Details for probabilistic outputs
 
-- CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
-- CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
-- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NetCDF.
+- CRPS and PIT are computed per variable using the ensemble along the `ensemble`
+  dimension.
+- CRPS returned by the library functions is a DataArray (not a Dataset). In
+  notebooks, use the DataArray directly and then reduce over time-like dims to
+  make maps.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility;
+  corresponding PIT fields are also written to NetCDF.
 
 All modules print concise progress like:
 
 - [swissclim] Module: deterministic — variables=5
 - [histograms] variable: 10m_u_component_of_wind
-- [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_energy.png
+- [energy_spectra] saved
+  output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_energy.png
 
 ## Tips and best practices
 
 - Reduce size
   - selection.temporal_resolution_hours: 1, 3, 6 …
-  - plotting.plot_datetime: pick a single init_time to plot (default already selects the first).
-- Keep the same variable names between ERA5 and ML; only overlapping variables are processed.
-- Maps require Cartopy; use npz mode on headless systems if you only need data exports.
-- For reproducibility in plots, prefer plotting.output_mode: npz or both, which writes the exact arrays used to render figures.
+  - plotting.plot_datetime: pick a single init_time to plot (default already
+    selects the first).
+- Keep the same variable names between ERA5 and ML; only overlapping variables
+  are processed.
+- Maps require Cartopy; use npz mode on headless systems if you only need data
+  exports.
+- For reproducibility in plots, prefer plotting.output_mode: npz or both, which
+  writes the exact arrays used to render figures.
 
 ## Notebooks
 
 You can explore the outputs interactively using the provided notebooks:
 
-- notebooks/deterministic_verification.ipynb (classic deterministic metrics, maps, histograms, spectra, profiles)
-- notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our xarray-based implementation)
-- notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill Ratio and CRPS summaries)
+- notebooks/deterministic_verification.ipynb (classic deterministic metrics,
+  maps, histograms, spectra, profiles)
+- notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our
+  xarray-based implementation)
+- notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill
+  Ratio and CRPS summaries)
 
 Notebook tips
 
-- Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
+- Use the YAML config and `prepare_datasets` to ensure alignment, selection, and
+  chunking are consistent with the CLI.
+
+## Multi-lead Time Evaluation
+
+Multi-lead (forecast horizon) evaluation computes metrics and plots for every retained `lead_time` rather than only the first (t+0). It is now a first-class feature.
+
+### Policy Overview
+
+Add a `lead_time` block to the YAML (see embedded example config). Supported modes:
+
+| Mode | Description |
+|------|-------------|
+| first  | Keep only the first lead (single-lead evaluation mode). |
+| full   | Keep all leads (optionally capped by `max_hour`). |
+| subset | Keep only hours listed in `subset_hours`. |
+| stride | Keep every Nth hour defined by `stride_hours`. |
+| bins   | Keep all leads; downstream modules may aggregate by defined bins. |
+
+Additional fields: `max_hour` (inclusive cap), `panel.strategy` (`first`, `evenly_spaced`, `specific`), `panel.count`, and optional `panel_specific_hours`.
+
+At runtime the CLI prints a “Lead Time Policy” panel summarizing the resolved mode, stride/subset, and the final list of lead hours after selection.
+
+### Produced Artifacts
+
+| Module | Additional Files (multi-lead) | Single-lead Summary File (averaged across leads or first lead) |
+|--------|-------------------------------|---------------------------------------------------------------|
+| deterministic | metrics_by_lead_long.csv, metrics_by_lead_wide.csv, metrics_standardized_by_lead_* | metrics.csv / metrics_standardized.csv |
+| ets | ets_metrics_by_lead_wide.csv | ets_metrics.csv |
+| probabilistic | (planned) crps_by_lead.csv | crps_summary.csv |
+| energy_spectra | lsd_2d_metrics_by_lead.csv (panel-selected leads) | lsd_2d_metrics.csv |
+| plots (maps, histograms, wd_kde) | Panels restricted to selected lead hours | — |
+
+If no `lead_time` section is provided behavior falls back to `first` (single lead) for backward compatibility.
+
+### Tips
+
+- Use `stride_hours` with `max_hour` to bound compute when models produce many leads.
+- Use `panel.strategy: evenly_spaced` for balanced visual coverage.
+- Keep `subset_hours` small (< ~10) if you plan to enable many plotting modules simultaneously.
 
 ## Intercomparison of Saved Artifacts
 
-This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons.
+This repo includes a lightweight CLI to combine plots and CSVs from multiple
+model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs
+under each model's output folder and generates combined visualizations for quick
+model-vs-model comparisons.
 
 Expected structure per model (created by the main runner):
 
@@ -404,18 +518,31 @@ python -m swissclim_evaluations.intercompare output/modelA output/modelB \
   --max-map-panels 4
 ```
 
-Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
+Outputs are written under `output/intercomparison/` mirroring the module
+folders. The tool is read-only on the source folders and will only generate
+figures/CSVs by loading the existing artifacts.
 
 What gets combined:
 
-- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_2d_metrics_combined.csv`.
-- histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
-- wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
-- maps: panel maps with DS in the first column and each model as subsequent columns.
-- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
+- energy_spectra: overlays of DS baseline + model spectra per variable (and per
+  level), plus `lsd_2d_metrics_combined.csv`.
+- histograms: per-latitude band distributions (DS line + model lines) using
+  saved combined NPZs.
+- wd_kde: standardized KDE overlays by latitude band (DS + models) using saved
+  NPZs.
+- maps: panel maps with DS in the first column and each model as subsequent
+  columns.
+- deterministic: merged CSVs (`metrics_combined.csv`,
+  `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS
+  when data is present.
 - ets: merged CSV (`ets_metrics_combined.csv`).
-- probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
-  - Additionally merges WBX spatial and temporal aggregates (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+- probabilistic: merged CSVs (`crps_summary_combined.csv`,
+  `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT
+  histogram overlays, and CRPS map panels when NPZ map exports exist.
+  - Additionally merges WBX spatial and temporal aggregates
+    (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with
+    simple region-wise bar charts and time-bin line plots if the corresponding
+    dimensions are present.
 
 ## Development
 
@@ -430,9 +557,12 @@ Run tests:
 pytest -q
 ```
 
-Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
+Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and
+small.
 
 ### Naming conventions
 
-- targets: the ground-truth/reference dataset (e.g., ERA5). Public APIs now consistently use the parameter name `targets`.
-- predictions: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `predictions`.
+- targets: the ground-truth/reference dataset (e.g., ERA5). Public APIs now
+  consistently use the parameter name `targets`.
+- predictions: the model outputs to be evaluated (e.g., ML). Public APIs now
+  consistently use the parameter name `predictions`.

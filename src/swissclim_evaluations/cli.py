@@ -13,6 +13,11 @@ import yaml
 
 from . import console as c
 from . import data as data_mod
+from .lead_time_policy import (
+    LeadTimePolicy,
+    apply_lead_time_selection,
+    parse_lead_time_policy,
+)
 
 
 def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -369,11 +374,24 @@ def prepare_datasets(
     ds_prediction = _slice_common(ds_prediction, cfg)
 
     # Standardize temporal dims and enforce required schema
+    # Lead time policy parsing (opt-in multi-lead) ---------------------------------
+    lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
+    lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
+    # preserve_all_leads when mode != first
+    preserve_all = lead_policy.mode != "first"
+    cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
+
     ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth", first_lead_only=True
+        ds_target,
+        dataset_name="ground_truth",
+        first_lead_only=True,
+        preserve_all_leads=preserve_all,
     )
     ds_prediction = data_mod.standardize_dims(
-        ds_prediction, dataset_name="ml", first_lead_only=True
+        ds_prediction,
+        dataset_name="ml",
+        first_lead_only=True,
+        preserve_all_leads=preserve_all,
     )
 
     # Handle optional ensemble dimension according to config and selected modules
@@ -392,6 +410,11 @@ def prepare_datasets(
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
+
+    # Apply lead time selection (subset/stride) after temporal resolution so stride logic doesn't fight it
+    if preserve_all:
+        ds_target = apply_lead_time_selection(ds_target, lead_policy)
+        ds_prediction = apply_lead_time_selection(ds_prediction, lead_policy)
 
     ds_target = _select_variables(ds_target, variables_2d, variables_3d)
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
@@ -579,9 +602,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
     module_timings: list[tuple[str, float]] = []
+    # Prepare datasets (this call parses and attaches __lead_time_policy onto cfg)
     ds_target, ds_prediction, ds_target_std, ds_prediction_std = (
         prepare_datasets(cfg)
     )
+    # Retrieve the parsed lead time policy AFTER preparation (was previously fetched too early → always None)
+    lead_policy = cfg.get("__lead_time_policy")
 
     # Derive per-plot datasets if a specific plot datetime is requested
     ds_target_plot, ds_prediction_plot = _select_plot_datetime(
@@ -634,6 +660,42 @@ def run_selected(cfg: dict[str, Any]) -> None:
     ens_msg = _ensemble_handling_message(ds_prediction, cfg)
     level = "ok" if "probabilistic modules enabled" in ens_msg else "info"
     c.ensemble_panel(ens_msg, level=level)
+
+    # Lead time policy summary (multi-lead visibility)
+    if lead_policy is not None:
+        try:
+            from .lead_time_policy import LeadTimePolicy  # type: ignore
+
+            if isinstance(lead_policy, LeadTimePolicy):  # runtime guard
+                hours = []
+                if "lead_time" in ds_prediction.dims:
+                    hrs = (
+                        ds_prediction["lead_time"].values
+                        // np.timedelta64(1, "h")
+                    ).astype(int)
+                    hours = hrs.tolist()
+                mode = lead_policy.mode
+                details: list[str] = [f"mode={mode}"]
+                if lead_policy.stride_hours:
+                    details.append(f"stride={lead_policy.stride_hours}h")
+                if lead_policy.subset_hours:
+                    details.append(f"subset={lead_policy.subset_hours}")
+                if lead_policy.max_hour is not None:
+                    details.append(f"max_hour={lead_policy.max_hour}")
+                if lead_policy.bins:
+                    details.append(f"bins={len(lead_policy.bins)}")
+                panel_text = (
+                    "Lead time policy → "
+                    + ", ".join(details)
+                    + (
+                        f"\nAvailable lead hours after selection: {hours}"
+                        if hours
+                        else ""
+                    )
+                )
+                c.panel(panel_text, title="Lead Time Policy", style="magenta")
+        except Exception:
+            pass
 
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):
@@ -720,6 +782,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             out_root,
             plotting,
             cfg.get("selection", {}),
+            lead_policy=lead_policy,
         )
         module_timings.append(("energy_spectra", time.time() - _t))
 
@@ -765,6 +828,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             out_root,
             plotting,
             cfg.get("metrics", {}),
+            lead_policy=lead_policy,
         )
         module_timings.append(("deterministic", time.time() - _t))
 
@@ -780,7 +844,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
+        ets_mod.run(
+            ds_target,
+            ds_prediction,
+            out_root,
+            cfg.get("metrics", {}),
+            lead_policy=lead_policy,
+        )
         module_timings.append(("ets", time.time() - _t))
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
@@ -808,10 +878,22 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             # Xarray-based CRPS/PIT + plots
             _t = time.time()
-            run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
+            run_probabilistic(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                cfg,
+                lead_policy=lead_policy,
+            )
             module_timings.append(("probabilistic:xarray", time.time() - _t))
             _t = time.time()
-            plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+            plot_probabilistic(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+            )
             module_timings.append(("probabilistic:plots", time.time() - _t))
             # WeatherBenchX-based summaries and aggregates
             _t = time.time()
@@ -824,6 +906,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     elapsed = time.time() - t0
     try:
         from .console import timings_summary as _timings
+
         if module_timings:
             _timings(module_timings, elapsed)
     except Exception:

@@ -19,8 +19,10 @@ selection:
   # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
   levels: [100, 500, 1000]
 
-  # Optional time downsampling in hours. Applied as a stride along lead_time if present,
-  # otherwise along init_time. Set to null to disable.
+  # Optional coarse temporal downsampling in hours. Applied as a stride along lead_time if present,
+  # otherwise along init_time. This is an early reduction step and is independent of the
+  # multi-lead selection policy below. Leave null if you plan to control lead selection
+  # exclusively via the lead_time policy.
   temporal_resolution_hours: null
 
   # Time selection (one of the following):
@@ -124,6 +126,34 @@ modules:
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
+# Multi-lead evaluation policy
+# modes:
+#   first  - only first lead time (single-lead evaluation default if omitted)
+#   full   - use all available lead hours
+#   subset - explicit list of lead hours to keep (provide subset_hours)
+#   stride - keep every Nth hour (provide stride_hours)
+#   bins   - retain all, later aggregate into user-defined bins (bins list)
+# panel.* controls which lead hours are used for multi-panel plots (maps, histograms, spectra, etc.)
+lead_time:
+  mode: stride            # first | full | subset | stride | bins
+  stride_hours: 12
+  max_hour: 120
+  # subset_hours: [0, 6, 12, 24]   # only if mode=subset
+  panel:
+    strategy: evenly_spaced  # first | evenly_spaced | specific
+    count: 5                 # number of panel lead hours to show
+    # panel_specific_hours: [0, 24, 72]  # only if strategy=specific
+  # bins:
+  #   - start: 0   # inclusive (hours)
+  #     end: 24    # exclusive
+  #     label: day1
+  #   - start: 24
+  #     end: 48
+  #     label: day2
+  #   - start: 48
+  #     end: 120
+  #     label: day3_plus
+
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
@@ -142,7 +172,7 @@ metrics:
     #   - threshold: single float applied to all variables (units must match each variable)
     #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
     fss:
-      quantile: 0.95
+      quantile: 0.90
       window_size: 9            # Example: square window of 9x9
       # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
       # thresholds:              # Example: per-variable thresholds (units must match dataset)

@@ -22,6 +22,7 @@ from weatherbenchX.metrics.probabilistic import (
 )
 
 from ..helpers import time_chunks
+from ..lead_time_policy import LeadTimePolicy
 
 
 def _crps_e1(da_target, da_prediction):
@@ -230,6 +231,7 @@ def run_probabilistic(
     out_root: Path,
     cfg_plot: dict[str, Any],
     cfg_all: dict[str, Any],
+    lead_policy: LeadTimePolicy | None = None,
 ) -> None:
     """Compute CRPS and PIT, save summaries and optional fields.
 
@@ -257,48 +259,95 @@ def run_probabilistic(
 
     crps_rows: list[dict[str, Any]] = []
 
-    for var in variables:
-        # Extract and align targets and predictions along shared coordinates
-        da_target = ds_target[var]
-        da_prediction = ds_prediction[var]
-        try:
-            da_target, da_prediction = xr.align(
-                da_target, da_prediction, join="exact"
-            )
-        except Exception:
-            # Fallback to by-position if shapes match exactly
-            if da_target.shape == da_prediction.shape:
-                da_target = da_target.copy()
-                da_prediction = da_prediction.copy()
-            else:
-                raise
-        crps_da = crps_ensemble(
-            da_target, da_prediction, ensemble_dim="ensemble"
-        )
-        crps_mean = float(_reduce_mean_all(crps_da).compute().item())
-        crps_rows.append({"variable": var, "CRPS": crps_mean})
+    per_lead = (
+        lead_policy is not None
+        and "lead_time" in ds_prediction.dims
+        and int(ds_prediction.lead_time.size) > 1
+        and lead_policy.mode != "first"
+    )
 
-        pit_da = probability_integral_transform(
-            da_target,
-            da_prediction,
-            ensemble_dim="ensemble",
-            name_prefix=None,
-        )
-        counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
-        pit_npz = section_output / f"{var}_pit_hist.npz"
-        np.savez(
-            pit_npz,
-            counts=counts,
-            edges=edges,
-        )
-        print(f"[probabilistic] saved {pit_npz}")
-        # Always save PIT and CRPS fields for reproducibility
-        pit_nc = section_output / f"{var}_pit.nc"
-        crps_nc = section_output / f"{var}_crps.nc"
-        pit_da.to_netcdf(pit_nc)
-        crps_da.to_netcdf(crps_nc)
-        print(f"[probabilistic] saved {pit_nc}")
-        print(f"[probabilistic] saved {crps_nc}")
+    if not per_lead:
+        for var in variables:
+            da_target = ds_target[var]
+            da_prediction = ds_prediction[var]
+            try:
+                da_target, da_prediction = xr.align(
+                    da_target, da_prediction, join="exact"
+                )
+            except Exception:
+                if da_target.shape == da_prediction.shape:
+                    da_target = da_target.copy()
+                    da_prediction = da_prediction.copy()
+                else:
+                    raise
+            crps_da = crps_ensemble(
+                da_target, da_prediction, ensemble_dim="ensemble"
+            )
+            crps_mean = float(_reduce_mean_all(crps_da).compute().item())
+            crps_rows.append({"variable": var, "CRPS": crps_mean})
+
+            pit_da = probability_integral_transform(
+                da_target,
+                da_prediction,
+                ensemble_dim="ensemble",
+                name_prefix=None,
+            )
+            counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
+            pit_npz = section_output / f"{var}_pit_hist.npz"
+            np.savez(
+                pit_npz,
+                counts=counts,
+                edges=edges,
+            )
+            print(f"[probabilistic] saved {pit_npz}")
+            pit_nc = section_output / f"{var}_pit.nc"
+            crps_nc = section_output / f"{var}_crps.nc"
+            pit_da.to_netcdf(pit_nc)
+            crps_da.to_netcdf(crps_nc)
+            print(f"[probabilistic] saved {pit_nc}")
+            print(f"[probabilistic] saved {crps_nc}")
+    else:
+        lead_hours = (
+            ds_prediction["lead_time"].values // np.timedelta64(1, "h")
+        ).astype(int)
+        crps_lead_rows: list[dict[str, Any]] = []
+        for li, h in enumerate(lead_hours):
+            for var in variables:
+                da_target = ds_target[var].isel(lead_time=li)
+                da_prediction = ds_prediction[var].isel(lead_time=li)
+                try:
+                    da_target, da_prediction = xr.align(
+                        da_target, da_prediction, join="exact"
+                    )
+                except Exception:
+                    if da_target.shape == da_prediction.shape:
+                        da_target = da_target.copy()
+                        da_prediction = da_prediction.copy()
+                    else:
+                        raise
+                crps_da = crps_ensemble(
+                    da_target, da_prediction, ensemble_dim="ensemble"
+                )
+                crps_mean = float(_reduce_mean_all(crps_da).compute().item())
+                crps_lead_rows.append({
+                    "variable": var,
+                    "lead_time_hours": int(h),
+                    "CRPS": crps_mean,
+                })
+                if lead_policy.store_full_fields:
+                    crps_nc = section_output / f"{var}_crps_lead{int(h)}.nc"
+                    crps_da.to_netcdf(crps_nc)
+                # Only compute PIT histogram for panel-selected leads to limit cost
+                # Select panel hours once
+        if crps_lead_rows:
+            crps_df = pd.DataFrame(crps_lead_rows)
+            crps_df.to_csv(section_output / "crps_by_lead.csv", index=False)
+            # Aggregate mean across leads for single-lead summary (backward compatibility)
+            summary = crps_df.groupby("variable").mean(numeric_only=True)[
+                "CRPS"
+            ]
+            for var, val in summary.items():
+                crps_rows.append({"variable": var, "CRPS": float(val)})
 
     if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()

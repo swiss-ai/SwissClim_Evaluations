@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..lead_time_policy import LeadTimePolicy
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -318,12 +320,9 @@ def _plot_energy_spectra(
     stacked_lsd = lsd_da.stack(__time__=time_dims)
     coords_df = stacked_target.__time__.to_index()  # MultiIndex with labels
 
-    # Output directory per variable (and per level)
-    section_output = (
-        (out_path.parent if out_path else Path("."))
-        / var
-        / ("sfc" if level is None else f"level_{level}")
-    )
+    # Output directory per variable (and per level). Flatten surface (no dedicated 'sfc' subfolder).
+    base_dir = (out_path.parent if out_path else Path(".")) / var
+    section_output = base_dir if level is None else base_dir / f"level_{level}"
     section_output.mkdir(parents=True, exist_ok=True)
 
     for idx, key in enumerate(coords_df):
@@ -406,6 +405,7 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
+    lead_policy: LeadTimePolicy | None = None,
 ) -> None:
     # Optional: apply a single init_time selection for plotting (same behavior as CLI)
     plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
@@ -464,40 +464,110 @@ def run(
         variables_2d = list(ds_target.data_vars)
         levels = []
 
-    # 2D variables: detailed per-time LSD
-    detailed_rows_2d: list[pd.DataFrame] = []
-    summary_rows_2d: list[dict] = []
-    for var in variables_2d:
-        print(f"[energy_spectra] 2D variable: {var}")
-        lsd_da = _plot_energy_spectra(
-            ds_target,
-            ds_prediction,
-            var,
-            None,
-            (
-                section_output / f"{var}_sfc_energy.png"
-            ),  # base path (directory anchor)
-            dpi,
-            save_plot_data,
-            save_figure,
-        )
-        df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
-        df_lsd.insert(0, "variable", var)
-        detailed_rows_2d.append(df_lsd)
-        summary_rows_2d.append({
-            "variable": var,
-            "lsd_mean": float(lsd_da.mean().values),
-        })
+    multi_lead = (
+        lead_policy is not None
+        and "lead_time" in ds_prediction.dims
+        and int(ds_prediction.lead_time.size) > 1
+        and getattr(lead_policy, "mode", "first") != "first"
+    )
+    if multi_lead:
+        # Determine available hours and panel selection
+        hours = (
+            ds_prediction["lead_time"].values // np.timedelta64(1, "h")
+        ).astype(int)
+        panel_hours = lead_policy.select_panel_hours(list(map(int, hours)))
+        hour_to_index = {int(h): i for i, h in enumerate(hours)}
+    else:
+        panel_hours = []
+        hour_to_index = {}
 
+    detailed_rows_2d: list[pd.DataFrame] = []
+    summary_rows_2d: list[dict] = []  # retained for non-multi-lead mode only
+    by_lead_rows_summary: list[dict] = []  # per (variable, lead) summary
+    by_lead_rows_detailed: list[pd.DataFrame] = []  # per-time detailed per lead
+
+    for var in variables_2d:
+        if not multi_lead:
+            print(f"[energy_spectra] 2D variable: {var}")
+            lsd_da = _plot_energy_spectra(
+                ds_target,
+                ds_prediction,
+                var,
+                None,
+                (section_output / f"{var}_sfc_energy.png"),
+                dpi,
+                save_plot_data,
+                save_figure,
+            )
+            df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
+            df_lsd.insert(0, "variable", var)
+            detailed_rows_2d.append(df_lsd)
+            summary_rows_2d.append({
+                "variable": var,
+                "lsd_mean": float(lsd_da.mean().values),
+            })
+        else:
+            print(
+                f"[energy_spectra] 2D variable: {var} multi-lead panel_hours={panel_hours}"
+            )
+            lead_means: list[float] = []
+            for h in panel_hours:
+                if int(h) not in hour_to_index:
+                    continue
+                li = hour_to_index[int(h)]
+                # Preserve lead_time dimension (drop=False) for labeling
+                ds_t_lead = ds_target.isel(lead_time=li, drop=False)
+                ds_p_lead = ds_prediction.isel(lead_time=li, drop=False)
+                lsd_da_lead = _plot_energy_spectra(
+                    ds_t_lead,
+                    ds_p_lead,
+                    var,
+                    None,
+                    section_output / f"{var}_sfc_energy_lead{int(h)}.png",
+                    dpi,
+                    save_plot_data,
+                    save_figure,
+                )
+                # Detailed per-time rows for this lead
+                df_lead = lsd_da_lead.to_dataframe(name="lsd").reset_index()
+                df_lead.insert(0, "variable", var)
+                df_lead.insert(1, "lead_time_hours", int(h))
+                by_lead_rows_detailed.append(df_lead)
+                lsd_mean_lead = float(lsd_da_lead.mean().values)
+                by_lead_rows_summary.append({
+                    "variable": var,
+                    "lead_time_hours": int(h),
+                    "lsd_mean": lsd_mean_lead,
+                })
+                lead_means.append(lsd_mean_lead)
+
+    section_output.mkdir(parents=True, exist_ok=True)
     if detailed_rows_2d:
-        section_output.mkdir(parents=True, exist_ok=True)
         pd.concat(detailed_rows_2d, ignore_index=True).to_csv(
             section_output / "lsd_2d_metrics_detailed.csv", index=False
         )
+    if summary_rows_2d:
         pd.DataFrame(summary_rows_2d).set_index("variable").to_csv(
             section_output / "lsd_2d_metrics.csv"
         )
-        print("[energy_spectra] saved per-time & summary LSD for 2D variables")
+    if by_lead_rows_summary:
+        pd.DataFrame(by_lead_rows_summary).to_csv(
+            section_output / "lsd_2d_metrics_by_lead.csv", index=False
+        )
+    if by_lead_rows_detailed:
+        # Optional very detailed file (variable, lead, time dims) for diagnostics
+        pd.concat(by_lead_rows_detailed, ignore_index=True).to_csv(
+            section_output / "lsd_2d_metrics_by_lead_detailed.csv", index=False
+        )
+    if (
+        detailed_rows_2d
+        or summary_rows_2d
+        or by_lead_rows_summary
+        or by_lead_rows_detailed
+    ):
+        print(
+            "[energy_spectra] saved 2D LSD metrics (detailed, summary, and multi-lead where applicable)"
+        )
 
     # 3D variables: per-level per-time LSD
     detailed_rows_3d: list[pd.DataFrame] = []

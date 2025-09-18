@@ -9,12 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from ..lead_time_policy import LeadTimePolicy
+
 
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
+    lead_policy: LeadTimePolicy | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -31,8 +34,24 @@ def run(
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
         time_index = int(rng.integers(0, ds_target.init_time.size))
         time_selected = ds_target.init_time[time_index]
+    multi_lead = (
+        lead_policy is not None
+        and "lead_time" in ds_target.dims
+        and int(ds_target.lead_time.size) > 1
+        and lead_policy.mode != "first"
+    )
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
-        lead_index = 0
+        lead_index = 0  # default
+        # Select panel hours if multi-lead; else keep first
+        if multi_lead:
+            hours = (
+                ds_target["lead_time"].values // np.timedelta64(1, "h")
+            ).astype(int)
+            panel_hours = lead_policy.select_panel_hours(list(map(int, hours)))
+            # Build mapping hour->index
+            hour_to_idx = {int(h): i for i, h in enumerate(hours)}
+        else:
+            panel_hours = []
     time_fmt = (
         time_selected.dt.strftime("%Y%m%d%H%M").item()
         if (time_selected is not None and hasattr(time_selected, "dt"))
@@ -61,104 +80,122 @@ def run(
     else:
         ensemble_members = [None]
 
-    # 2D maps (one figure per ensemble member if present)
+    # 2D maps (one figure per ensemble member if present). For multi-lead we iterate selected panel hours.
     for i, var in enumerate(variables_2d):
         print(f"[maps] 2D variable: {var}")
-        for ens in ensemble_members:
-            ens_suffix = "" if ens is None else f"_ens{ens}"
-            fig, axes = plt.subplots(
-                1,
-                2,
-                figsize=(14, 4),
-                dpi=dpi * 2,
-                subplot_kw={"projection": ccrs.PlateCarree()},
-            )
-
-            ds_var = ds_target[var]
-            ds_ml_var = ds_prediction[var]
-            if ens is not None:
-                if "ensemble" in ds_var.dims:
-                    ds_var = ds_var.isel(ensemble=ens)
-                if "ensemble" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
-            if "init_time" in ds_var.dims:
-                ds_var = ds_var.isel(init_time=time_index)
-            if "lead_time" in ds_var.dims:
-                ds_var = ds_var.isel(lead_time=lead_index)
-            if "init_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(init_time=time_index)
-            if "lead_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
-
-            im0 = ds_var.plot(
-                ax=axes[0],
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                add_colorbar=False,
-                transform=ccrs.PlateCarree(),
-            )
-            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
-            axes[0].coastlines(linewidth=0.5)
-            axes[0].set_title("Ground Truth")
-
-            ds_ml_var.plot(
-                ax=axes[1],
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                add_colorbar=False,
-                transform=ccrs.PlateCarree(),
-            )
-            axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
-            axes[1].coastlines(linewidth=0.5)
-            axes[1].set_title("Model Prediction")
-
-            cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
-            plt.colorbar(
-                im0,
-                cax=cbar_ax,
-                orientation="horizontal",
-                label=ds_target[var].attrs.get("units", ""),
-            )
-
-            title_extra = "" if ens is None else f" (Ensemble {ens})"
-            if time_selected is not None:
-                plt.suptitle(
-                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+        lead_hours_iter = panel_hours if multi_lead else [None]
+        for lead_h in lead_hours_iter:
+            if lead_h is not None:
+                lead_index_local = hour_to_idx.get(int(lead_h), 0)
+            else:
+                lead_index_local = lead_index
+            for ens in ensemble_members:
+                ens_suffix = "" if ens is None else f"_ens{ens}"
+                lead_suffix = (
+                    f"_lead{int(lead_h)}" if lead_h is not None else ""
                 )
-            elif title_extra:
-                plt.suptitle(f"{var}{title_extra}")
+                fig, axes = plt.subplots(
+                    1,
+                    2,
+                    figsize=(14, 4),
+                    dpi=dpi * 2,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                )
 
-            if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_png = (
-                    section_output / f"{time_fmt}_{var}_sfc{ens_suffix}.png"
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[maps] saved {out_png}")
-            if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
-                npz_path = (
-                    section_output / f"{time_fmt}_{var}_sfc{ens_suffix}.npz"
-                )
-                np.savez(
-                    npz_path,
-                    nwp=ds_var.values,
-                    ml=ds_ml_var.values,
-                    latitude=ds_var.coords.get("latitude", None).values
-                    if "latitude" in ds_var.coords
-                    else None,
-                    longitude=ds_var.coords.get("longitude", None).values
-                    if "longitude" in ds_var.coords
-                    else None,
-                    ensemble=ens if ens is not None else -1,
-                )
-                print(f"[maps] saved {npz_path}")
+                ds_var = ds_target[var]
+                ds_ml_var = ds_prediction[var]
+                if ens is not None:
+                    if "ensemble" in ds_var.dims:
+                        ds_var = ds_var.isel(ensemble=ens)
+                    if "ensemble" in ds_ml_var.dims:
+                        ds_ml_var = ds_ml_var.isel(ensemble=ens)
+                if "init_time" in ds_var.dims:
+                    ds_var = ds_var.isel(init_time=time_index)
+                    if "lead_time" in ds_var.dims:
+                        ds_var = ds_var.isel(lead_time=lead_index_local)
+                if "init_time" in ds_ml_var.dims:
+                    ds_ml_var = ds_ml_var.isel(init_time=time_index)
+                    if "lead_time" in ds_ml_var.dims:
+                        ds_ml_var = ds_ml_var.isel(lead_time=lead_index_local)
+                vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
+                vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
 
-            plt.close(fig)
+                im0 = ds_var.plot(
+                    ax=axes[0],
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    add_colorbar=False,
+                    transform=ccrs.PlateCarree(),
+                )
+                axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
+                axes[0].coastlines(linewidth=0.5)
+                axes[0].set_title("Ground Truth")
+
+                ds_ml_var.plot(
+                    ax=axes[1],
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    add_colorbar=False,
+                    transform=ccrs.PlateCarree(),
+                )
+                axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
+                axes[1].coastlines(linewidth=0.5)
+                axes[1].set_title("Model Prediction")
+
+                cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
+                plt.colorbar(
+                    im0,
+                    cax=cbar_ax,
+                    orientation="horizontal",
+                    label=ds_target[var].attrs.get("units", ""),
+                )
+
+                title_extra = "" if ens is None else f" (Ensemble {ens})"
+                if time_selected is not None:
+                    plt.suptitle(
+                        f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+                    )
+                elif title_extra:
+                    plt.suptitle(f"{var}{title_extra}")
+
+                if save_fig:
+                    section_output.mkdir(parents=True, exist_ok=True)
+                    out_png = (
+                        section_output
+                        / f"{time_fmt}_{var}_sfc{ens_suffix}{lead_suffix}.png"
+                    )
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    print(f"[maps] saved {out_png}")
+                if save_npz:
+                    section_output.mkdir(parents=True, exist_ok=True)
+                    npz_path = (
+                        section_output
+                        / f"{time_fmt}_{var}_sfc{ens_suffix}{lead_suffix}.npz"
+                    )
+                    np.savez(
+                        npz_path,
+                        nwp=ds_var.values,
+                        ml=ds_ml_var.values,
+                        latitude=ds_var.coords.get("latitude", None).values
+                        if "latitude" in ds_var.coords
+                        else None,
+                        longitude=ds_var.coords.get("longitude", None).values
+                        if "longitude" in ds_var.coords
+                        else None,
+                        ensemble=ens if ens is not None else -1,
+                        lead_time_hours=int(lead_h)
+                        if lead_h is not None
+                        else int(
+                            ds_target["lead_time"]
+                            .astype("timedelta64[h]")[0]
+                            .astype(int)
+                        ),
+                    )
+                    print(f"[maps] saved {npz_path}")
+
+                plt.close(fig)
 
     # 3D maps per level
     for i, var in enumerate(variables_3d):
