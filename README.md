@@ -77,7 +77,7 @@ Don't forget to adjust the path to your `config/my_run.yaml` in
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
 <details>
-<summary>Install with uenv</summary>
+<summary>Install with uenv + uv</summary>
 
 ```bash
 bash tools/setup_env_uenv.sh # activates uenv and exits
@@ -89,7 +89,7 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 </details>
 
 <details>
-<summary>Install with conda</summary>
+<summary>Install with conda + uv</summary>
 
 ```bash
 bash tools/setup_env_conda.sh
