@@ -30,14 +30,8 @@ else
     echo "✅ uv already installed."
 fi
 
-# create environment if not already created
-if [ ! -d ".venv" ]; then
-    echo "🔧 Creating environment..."
-    uv venv --prompt=swissclim-eval --python=3.11.9
-else
-    echo "✅ Environment already created."
-fi
-
+echo "🔧 Creating environment..."
+uv venv --prompt=swissclim-eval --python=3.11.9
 uv sync 
 
 # activate environment
