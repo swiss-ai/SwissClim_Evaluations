@@ -26,6 +26,15 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
+    # Optional subsampling  to avoid loading full arrays.
+    max_samples = plotting_cfg.get("histogram_max_samples", None)
+    try:
+        max_samples = int(max_samples) if max_samples is not None else None
+        if max_samples <= 0:
+            max_samples = None
+    except Exception:
+        max_samples = None
+    base_seed = int(plotting_cfg.get("random_seed", 42))
     section_output = out_root / "histograms"
 
     # Select only genuine 2D variables (no 'level' dimension)
@@ -86,6 +95,36 @@ def run(
             counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
             return counts
 
+        # Helper subsampling function
+        def _subsample_values(
+            da: xr.DataArray, k: int, seed: int
+        ) -> np.ndarray:
+            if k is None:
+                # No subsampling requested; compute only the flattened, finite array
+                arr = np.asarray(da.compute().values).ravel()
+                return arr[np.isfinite(arr)]
+            size = int(getattr(da, "size", 0) or 0)
+            if size == 0:
+                return np.array([], dtype=float)
+            if size <= k:
+                arr = np.asarray(da.compute().values).ravel()
+                return arr[np.isfinite(arr)]
+            dims = list(da.dims)
+            nd = max(1, len(dims))
+            frac = (k / float(size)) ** (1.0 / nd)
+            rng = np.random.default_rng(seed)
+            indexers: dict[str, np.ndarray] = {}
+            for d in dims:
+                n = int(da.sizes.get(d, 1))
+                take = max(1, int(np.ceil(frac * n)))
+                take = min(take, n)
+                idx = rng.choice(n, size=take, replace=False)
+                idx.sort()
+                indexers[d] = idx
+            sub = da.isel(**indexers)
+            arr = np.asarray(sub.compute().values).ravel()
+            return arr[np.isfinite(arr)]
+
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
@@ -96,10 +135,44 @@ def run(
             da_pred = ds_prediction[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            # Use dask.array.histogram over explicit edges to avoid materializing all values
-            edges = _choose_edges(da_true, da_pred, bins=1000)
-            counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-            counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+            # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
+            if max_samples is not None:
+                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+                ml_seed = ds_seed + 1
+                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
+                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                if ds_sample.size == 0 or ml_sample.size == 0:
+                    axs[j, 1].set_title(
+                        f"Lat {lat_min}° to {lat_max}° (No data)"
+                    )
+                    continue
+                # Determine edges from combined sample quantiles
+                try:
+                    both = np.concatenate([ds_sample, ml_sample])
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if (
+                        not np.isfinite(qlow)
+                        or not np.isfinite(qhigh)
+                        or qlow == qhigh
+                    ):
+                        qlow, qhigh = -1.0, 1.0
+                except Exception:
+                    qlow, qhigh = -1.0, 1.0
+                edges = np.linspace(qlow, qhigh, 1001)
+                # Histogram on subsamples using dask.histogram for consistency
+                dsa_ds = dsa.from_array(
+                    ds_sample, chunks=ds_sample.shape[0] // 4 or 1
+                )
+                dsa_ml = dsa.from_array(
+                    ml_sample, chunks=ml_sample.shape[0] // 4 or 1
+                )
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+            else:
+                # Use dask-based histogram over explicit edges (full arrays)
+                edges = _choose_edges(da_true, da_pred, bins=1000)
+                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             # Convert to density
             width = np.diff(edges)
             bin_area = (
@@ -147,9 +220,40 @@ def run(
             da_pred = ds_prediction[variable_name].sel(
                 latitude=slice(lat_min, lat_max)
             )
-            edges = _choose_edges(da_true, da_pred, bins=1000)
-            counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-            counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+            if max_samples is not None:
+                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+                ml_seed = ds_seed + 1
+                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
+                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                if ds_sample.size == 0 or ml_sample.size == 0:
+                    axs[j, 0].set_title(
+                        f"Lat {lat_min}° to {lat_max}° (No data)"
+                    )
+                    continue
+                try:
+                    both = np.concatenate([ds_sample, ml_sample])
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if (
+                        not np.isfinite(qlow)
+                        or not np.isfinite(qhigh)
+                        or qlow == qhigh
+                    ):
+                        qlow, qhigh = -1.0, 1.0
+                except Exception:
+                    qlow, qhigh = -1.0, 1.0
+                edges = np.linspace(qlow, qhigh, 1001)
+                dsa_ds = dsa.from_array(
+                    ds_sample, chunks=ds_sample.shape[0] // 4 or 1
+                )
+                dsa_ml = dsa.from_array(
+                    ml_sample, chunks=ml_sample.shape[0] // 4 or 1
+                )
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+            else:
+                edges = _choose_edges(da_true, da_pred, bins=1000)
+                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             width = np.diff(edges)
             bin_area = (
                 counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0

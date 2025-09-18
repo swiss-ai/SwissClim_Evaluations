@@ -98,6 +98,13 @@ plotting:
   # Note: Provide as a plain integer (no underscores) in YAML.
   kde_max_samples: 200000
 
+  # (NEW) Maximum number of samples per latitude band for histograms (2D variables).
+  # When set, histograms are computed from a deterministic subsample (similar strategy as wd_kde)
+  # instead of the full Dask arrays. This greatly reduces memory & compute for very large datasets.
+  # Set to null or omit to disable subsampling and use the full data via dask.histogram.
+  # Typical: 50_000–200_000. 
+  histogram_max_samples: 200000
+
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules

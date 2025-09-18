@@ -182,6 +182,11 @@ plotting:
   # Note: Provide as a plain integer (no underscores) in YAML.
   kde_max_samples: 200000
 
+  # Maximum number of samples per latitude band for histograms (2D variables only).
+  # When provided, histograms are built from a deterministic subsample (mirrors wd_kde logic)
+  # rather than the full arrays. Set to null/omit to use full data. Typical: 50_000–200_000.
+  histogram_max_samples: 200000
+
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules
