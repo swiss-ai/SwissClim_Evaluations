@@ -1,4 +1,7 @@
 ## Swiss AI container definition for CSCS
+## IMPORTANT: This template assumes the repository resides at
+##   /capstor/store/cscs/swissai/a122/{{username}}/SwissClim_Evaluations
+## See README Quickstart step 0 if you cloned elsewhere (adjust image/workdir/mount paths accordingly).
 ## If the container is not available on the system, it can be built with:
 ##   podman build -t swissclim-eval .
 ##   enroot import -x mount -o /capstor/store/cscs/swissai/a122/{{username}}/SwissClim_Evaluations/tools/swissclim-eval.sqsh podman://swissclim-eval

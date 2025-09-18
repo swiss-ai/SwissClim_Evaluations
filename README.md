@@ -4,6 +4,22 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 ## Quickstart (default: container with Podman + Enroot)
 
+0. Clone into the expected CSCS path (important)
+
+Several paths in the provided `tools/edf_template.toml` as well as example YAML configs assume the repository lives under:
+
+```bash
+/capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+```
+
+If you place the repo elsewhere, you must adapt those absolute paths (image, workdir, mounts) in your generated EDF TOML and any YAML configs that reference model/data locations. To follow the convention used by collaborators, clone like this:
+
+```bash
+mkdir -p /capstor/store/cscs/swissai/a122/$USER
+git clone git@github.com:swiss-ai/SwissClim_Evaluations.git /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+cd /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+```
+
 We recommend the container workflow for fastest, reproducible setup.
 
 1. Build the container (Podman) at repo root int interactive session:
