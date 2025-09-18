@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from scores.categorical import BinaryContingencyManager
@@ -21,7 +20,12 @@ def _calculate_ets_for_thresholds(
         da_prediction = ds_prediction[var]
         metrics_dict[var] = {}
         for threshold in thresholds:
-            quantile = float(np.quantile(da_target, threshold / 100.0))
+            # Dask-friendly quantile over all dims
+            quantile = float(
+                da_target.quantile(threshold / 100.0, skipna=True)
+                .compute()
+                .item()
+            )
             obs_events = da_target >= quantile  # targets events
             fcst_events = da_prediction >= quantile  # predictions events
             bcm = BinaryContingencyManager(

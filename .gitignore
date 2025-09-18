@@ -48,5 +48,4 @@ Thumbs.db
 logs
 *.sqsh
 output
-uv.lock
 config/my_run.yaml

@@ -166,3 +166,32 @@ def ensemble_panel(message: str, level: str = "info") -> None:
         "ok": "Ensemble",
     }.get(level, "Ensemble")
     panel(message, title=title, style=style)
+
+
+def timings_summary(entries: list[tuple[str, float]], total: float) -> None:
+    """Print a summary of per-module timings and total.
+
+    entries: list of (module_name, seconds)
+    total: total runtime in seconds
+    """
+    if not entries:
+        return
+    # Keep display order as provided
+    if USE_RICH:
+        tbl = Table(title="Module durations", box=box.SIMPLE_HEAVY)
+        tbl.add_column("Module", style="bold")
+        tbl.add_column("Time (s)", justify="right")
+        tbl.add_column("Percent", justify="right")
+        for name, secs in entries:
+            pct = (secs / total * 100.0) if total > 0 else 0.0
+            tbl.add_row(str(name), f"{secs:,.2f}", f"{pct:,.1f}%")
+        console.print(tbl)
+        console.print(f"Total: [bold]{total:,.2f}[/] s")
+    else:
+        console.print("Module durations:")
+        # Compute simple padding for alignment
+        name_w = max(len(str(n)) for n, _ in entries)
+        for name, secs in entries:
+            pct = (secs / total * 100.0) if total > 0 else 0.0
+            console.print(f"  - {str(name).ljust(name_w)}  {secs:7.2f}s  ({pct:5.1f}%)")
+        console.print(f"Total: {total:,.2f}s")

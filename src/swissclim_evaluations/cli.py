@@ -578,6 +578,7 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
 def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
+    module_timings: list[tuple[str, float]] = []
     ds_target, ds_prediction, ds_target_std, ds_prediction_std = (
         prepare_datasets(cfg)
     )
@@ -654,7 +655,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
+        module_timings.append(("maps", time.time() - _t))
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
@@ -667,7 +670,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         hist_mod.run(ds_target, ds_prediction, out_root, plotting)
+        module_timings.append(("histograms", time.time() - _t))
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -682,6 +687,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic standardized inputs.")
+        _t = time.time()
         wd_mod.run(
             ds_target,
             ds_prediction,
@@ -690,6 +696,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             out_root,
             plotting,
         )
+        module_timings.append(("wd_kde", time.time() - _t))
 
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
@@ -706,6 +713,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         es_mod.run(
             ds_target,
             ds_prediction,
@@ -713,6 +721,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             plotting,
             cfg.get("selection", {}),
         )
+        module_timings.append(("energy_spectra", time.time() - _t))
 
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
@@ -725,6 +734,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         vp_mod.run(
             ds_target,
             ds_prediction,
@@ -732,6 +742,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             plotting,
             cfg.get("selection", {}),
         )
+        module_timings.append(("vertical_profiles", time.time() - _t))
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -745,6 +756,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         det_mod.run(
             ds_target,
             ds_prediction,
@@ -754,6 +766,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             plotting,
             cfg.get("metrics", {}),
         )
+        module_timings.append(("deterministic", time.time() - _t))
 
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
@@ -766,7 +779,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
         ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
+        module_timings.append(("ets", time.time() - _t))
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
@@ -792,15 +807,27 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
         if "ensemble" in ds_prediction.dims:
             # Xarray-based CRPS/PIT + plots
+            _t = time.time()
             run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
+            module_timings.append(("probabilistic:xarray", time.time() - _t))
+            _t = time.time()
             plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+            module_timings.append(("probabilistic:plots", time.time() - _t))
             # WeatherBenchX-based summaries and aggregates
+            _t = time.time()
             run_probabilistic_wbx(
                 ds_target, ds_prediction, out_root, plotting, cfg
             )
+            module_timings.append(("probabilistic:wbx", time.time() - _t))
 
-    # Final completion message
+    # Final completion message + timings summary
     elapsed = time.time() - t0
+    try:
+        from .console import timings_summary as _timings
+        if module_timings:
+            _timings(module_timings, elapsed)
+    except Exception:
+        pass
     # Always print a plain-text completion line so logs are readable without Rich
     print(
         f"FINISHED: duration={elapsed:,.1f}s • outputs={out_root}",
