@@ -4,11 +4,11 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 ## Quickstart (default: container with Podman + Enroot)
 
-### 0. Clone into the expected CSCS path (important)
+0. Clone into the expected CSCS path (important)
 
 Several paths in the provided `tools/edf_template.toml` as well as example YAML configs assume the repository lives under:
 
-```
+```bash
 /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
 ```
 
