@@ -29,6 +29,7 @@ dependencies = [
     "weatherbenchx",
     "xarray>=2024.10",
     "zarr>=2.17,<3.0.0",
+    "xrscipy>=0.8.2",
 ]
 
 [tool.uv.sources]
