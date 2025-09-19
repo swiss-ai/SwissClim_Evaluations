@@ -495,12 +495,21 @@ def intercompare_maps(
         lons = payloads[0].get("longitude")
         if lats is None or lons is None:
             continue
+
         # Determine if data are (lat, lon) or (level, lat, lon)
         def _is_3d(arr: np.ndarray) -> bool:
             return isinstance(arr, np.ndarray) and arr.ndim == 3
+
         n_levels = nwp.shape[0] if _is_3d(nwp) else 1
         # Sanity: all ML arrays must match dimensionality
-        if any((_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3)) or ((not _is_3d(nwp)) and (not isinstance(m, np.ndarray) or m.ndim != 2)) for m in mls):
+        if any(
+            (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
+            or (
+                (not _is_3d(nwp))
+                and (not isinstance(m, np.ndarray) or m.ndim != 2)
+            )
+            for m in mls
+        ):
             print(f"[intercompare][maps] shape mismatch for {key}; skipping")
             continue
         # Loop levels (single iteration for 2D)
@@ -509,11 +518,23 @@ def intercompare_maps(
             ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
             # Compute vmin/vmax per level for balanced contrast across models
             try:
-                vmin = float(np.nanmin([np.nanmin(nwp_slice)] + [np.nanmin(x) for x in ml_slices]))
-                vmax = float(np.nanmax([np.nanmax(nwp_slice)] + [np.nanmax(x) for x in ml_slices]))
+                vmin = float(
+                    np.nanmin(
+                        [np.nanmin(nwp_slice)]
+                        + [np.nanmin(x) for x in ml_slices]
+                    )
+                )
+                vmax = float(
+                    np.nanmax(
+                        [np.nanmax(nwp_slice)]
+                        + [np.nanmax(x) for x in ml_slices]
+                    )
+                )
             except ValueError:
                 # In case all NaNs
-                print(f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping")
+                print(
+                    f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping"
+                )
                 continue
             ncols = 1 + len(models)
             fig, axes = plt.subplots(
@@ -540,7 +561,10 @@ def intercompare_maps(
             if n_levels > 1:
                 # Attempt to fetch level coordinate if present
                 level_vals = payloads[0].get("level")
-                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
+                if (
+                    isinstance(level_vals, np.ndarray)
+                    and len(level_vals) == n_levels
+                ):
                     title_base += f" (level {int(level_vals[lvl])})"
                 else:
                     title_base += f" (level {lvl})"
@@ -560,7 +584,9 @@ def intercompare_maps(
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
             cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
             cbar_label = "Value"
-            plt.colorbar(im0, cax=cbar_ax, orientation="horizontal", label=cbar_label)
+            plt.colorbar(
+                im0, cax=cbar_ax, orientation="horizontal", label=cbar_label
+            )
             plt.tight_layout(rect=(0, 0.1, 1, 1))
             suffix = f"_level{lvl}" if n_levels > 1 else ""
             out_png = dst / (key + suffix + "_compare.png")
