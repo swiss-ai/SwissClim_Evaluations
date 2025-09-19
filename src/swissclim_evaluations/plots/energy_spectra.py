@@ -517,7 +517,15 @@ def run(
             )
             df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
             df_lsd.insert(0, "variable", var)
-            df_lsd.insert(1, "level", int(level))
+            if "level" in df_lsd.columns:
+                df_lsd["level"] = int(level)
+                cols = list(df_lsd.columns)
+                if cols[1] != "level":
+                    cols.remove("level")
+                    cols.insert(1, "level")
+                    df_lsd = df_lsd[cols]
+            else:
+                df_lsd.insert(1, "level", int(level))
             detailed_rows_3d.append(df_lsd)
             summary_levels[var].append(float(lsd_da.mean().values))
 
