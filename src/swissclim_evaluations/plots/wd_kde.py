@@ -33,6 +33,8 @@ def run(
     max_samples = int(plotting_cfg.get("kde_max_samples", 200_000))
     # Global random seed from config for reproducible subsampling
     base_seed = int(plotting_cfg.get("random_seed", 42))
+    # Target/prediction always use identical subsamples so that if underlying
+    # arrays are equal the KDEs match exactly (paired subsampling is enforced).
     section_output = out_root / "wd_kde"
 
     # Collect all Wasserstein distances across variables and latitude bands
@@ -113,13 +115,10 @@ def run(
                 return arr[np.isfinite(arr)]
 
             # Derive deterministic seeds per variable/band/hemisphere
-            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-            ml_seed = ds_seed + 1
-            ds_flat = _subsample_values(
-                da_target_slice, max_samples, seed=ds_seed
-            )
+            seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
             ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=ml_seed
+                da_prediction_slice, max_samples, seed=seed
             )
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
@@ -176,13 +175,10 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-            ml_seed = ds_seed + 1
-            ds_flat = _subsample_values(
-                da_target_slice, max_samples, seed=ds_seed
-            )
+            seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
             ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=ml_seed
+                da_prediction_slice, max_samples, seed=seed
             )
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)

@@ -35,6 +35,7 @@ def run(
     except Exception:
         max_samples = None
     base_seed = int(plotting_cfg.get("random_seed", 42))
+    # Always use identical subsamples for target/prediction (paired subsampling enforced)
     section_output = out_root / "histograms"
 
     # Select only genuine 2D variables (no 'level' dimension)
@@ -137,10 +138,9 @@ def run(
             )
             # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
             if max_samples is not None:
-                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-                ml_seed = ds_seed + 1
-                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
-                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 1].set_title(
                         f"Lat {lat_min}° to {lat_max}° (No data)"
@@ -221,10 +221,9 @@ def run(
                 latitude=slice(lat_min, lat_max)
             )
             if max_samples is not None:
-                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                ml_seed = ds_seed + 1
-                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
-                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 0].set_title(
                         f"Lat {lat_min}° to {lat_max}° (No data)"
