@@ -119,7 +119,7 @@ modules:
   histograms: true           # Distributions by latitude bands (2D variables)
   wd_kde: true               # KDE by latitude band on standardized fields; also reports mean Wasserstein
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
-  vertical_profiles: true    # Relative error vertical profiles per latitude band (3D)
+  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)

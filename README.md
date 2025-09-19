@@ -219,7 +219,7 @@ modules:
   histograms: true           # Distributions by latitude bands (2D variables)
   wd_kde: true               # KDE by latitude band on standardized fields; also reports mean Wasserstein
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
-  vertical_profiles: true    # Relative error vertical profiles per latitude band (3D)
+  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
@@ -318,7 +318,7 @@ The evaluation generates organized results for each enabled module:
 
 ### Vertical Structure (3D variables only)
 
-- Profile plots: `vertical_profiles/{var}_pl_rel_error.png`
+- Profile plots: `vertical_profiles/{var}_pl_nmae.png`  (Normalized MAE % by latitude band)
 - Raw data: combined NPZ files per variable
 
 ### Spatial Maps
@@ -387,7 +387,7 @@ Expected structure per model (created by the main runner):
   - energy_spectra/*.npz, lsd_2d_metrics.csv
   - deterministic/metrics.csv, metrics_standardized.csv
   - ets/ets_metrics.csv
-  - vertical_profiles/*_pl_rel_error_combined.npz
+  - vertical_profiles/*_pl_nmae_combined.npz
   - probabilistic/
     - crps_summary.csv, spread_skill_ratio.csv, crps_ensemble.csv
     - {var}_pit_hist.npz,
@@ -400,7 +400,7 @@ Run the intercomparison:
 python -m swissclim_evaluations.intercompare output/modelA output/modelB \
   --labels ModelA ModelB \
   --out output/intercomparison \
-  --modules spectra hist kde maps metrics prob \
+  --modules spectra hist kde maps metrics prob vprof \
   --max-map-panels 4
 ```
 
@@ -416,6 +416,7 @@ What gets combined:
 - ets: merged CSV (`ets_metrics_combined.csv`).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
   - Additionally merges WBX spatial and temporal aggregates (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+- vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/{var}_pl_nmae_combined_compare.png` — plus per-variable summary tables (`{var}_pl_nmae_combined_summary.csv`) listing mean metric by band, hemisphere, and model.
 
 ## Development
 
