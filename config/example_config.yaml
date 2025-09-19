@@ -107,6 +107,7 @@ plotting:
   # Typical: 50_000–200_000. 
   histogram_max_samples: 200000
 
+
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules
