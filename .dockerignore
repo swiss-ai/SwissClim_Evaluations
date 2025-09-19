@@ -1,0 +1,76 @@
+# ---- Core VCS / metadata ----
+.git
+.gitignore
+.gitattributes
+
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (just in case)
+.venv/
+venv/
+.env
+.env*/
+
+# Build / packaging artifacts
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/
+
+# Local runtime output & logs (large / reproducible)
+output/
+logs/
+
+# Large scientific data files that should not bloat the image context
+*.npz
+*.npy
+*.csv
+*.parquet
+*.nc
+*.nc4
+*.grb
+*.grb2
+*.grib
+*.zarr
+*.h5
+*.hdf5
+*.tif
+*.tiff
+
+# Temporary / editor files
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Tools / auxiliary large blobs
+tools/*.sqsh
+
+# If you need to include example configs, keep the directory but you can
+# optionally exclude local run overrides (uncomment if desired):
+# config/my_run.yaml
+
+# Keep project definition & source (DO NOT ignore):
+# pyproject.toml
+# README.md
+# src/
+# config/
+# This file purposefully does NOT exclude the config/ directory so that
+# default examples ship inside the image; adjust if you mount them instead.
