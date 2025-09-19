@@ -38,17 +38,41 @@ def run(
     # Always use identical subsamples for target/prediction (paired subsampling enforced)
     section_output = out_root / "histograms"
 
+    # Config options for 3D handling
+    process_3d = bool(plotting_cfg.get("histograms_include_3d", True))
+    max_levels = plotting_cfg.get("histograms_max_levels", None)
+    try:
+        max_levels = int(max_levels) if max_levels is not None else None
+        if max_levels is not None and max_levels <= 0:
+            max_levels = None
+    except Exception:
+        max_levels = None
+
     # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [
         v for v in ds_target.data_vars if "level" not in ds_target[v].dims
     ]
-    if not variables_2d:
-        print("[histograms] No 2D variables found – skipping.")
+    variables_3d = [
+        v for v in ds_target.data_vars if "level" in ds_target[v].dims
+    ]
+    if not variables_2d and (not process_3d or not variables_3d):
+        print("[histograms] No eligible variables found – skipping.")
         return
-    print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
+    if variables_2d:
+        print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
+    if process_3d and variables_3d:
+        print(
+            f"[histograms] Processing {len(variables_3d)} 3D variables (per-level)."
+        )
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    for i, variable_name in enumerate(variables_2d):
+    def _plot_variable(
+        da_target_var: xr.DataArray,
+        da_pred_var: xr.DataArray,
+        variable_name: str,
+        suffix: str,
+    ):
+        i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] variable: {variable_name}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         # Collect combined NPZ data across all bands
@@ -288,16 +312,16 @@ def run(
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
 
-        units = ds_target[variable_name].attrs.get("units", "")
+        units = da_target_var.attrs.get("units", "")
         plt.suptitle(
-            f"Distribution of {variable_name} ({units}) by latitude bands",
+            f"Distribution of {variable_name}{suffix} ({units}) by latitude bands",
             y=1.02,
         )
         plt.tight_layout()
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{variable_name}_sfc_latbands.png"
+            out_png = section_output / f"{variable_name}{suffix}_latbands.png"
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[histograms] saved {out_png}")
         if save_npz:
@@ -323,7 +347,8 @@ def run(
             # The _stack_counts_bins returns stacks of objects; to keep it simple, store ragged lists via allow_pickle
             section_output.mkdir(parents=True, exist_ok=True)
             out_npz = (
-                section_output / f"{variable_name}_sfc_latbands_combined.npz"
+                section_output
+                / f"{variable_name}{suffix}_latbands_combined.npz"
             )
             np.savez(
                 out_npz,
@@ -339,3 +364,28 @@ def run(
             )
             print(f"[histograms] saved {out_npz}")
         plt.close(fig)
+
+    # 2D variables
+    for variable_name in variables_2d:
+        _plot_variable(
+            ds_target[variable_name],
+            ds_prediction[variable_name],
+            variable_name,
+            suffix="_sfc",
+        )
+
+    # 3D variables per level
+    if process_3d:
+        for variable_name in variables_3d:
+            da_t = ds_target[variable_name]
+            da_p = ds_prediction[variable_name]
+            levels = list(da_t["level"].values)
+            if max_levels is not None:
+                levels = levels[:max_levels]
+            for lvl in levels:
+                # Select single level slice (dropping level dimension for logic reuse)
+                da_t_lvl = da_t.sel(level=lvl)
+                da_p_lvl = da_p.sel(level=lvl)
+                lvl_clean = str(lvl).replace(".", "_")
+                suffix = f"_pl{lvl_clean}"
+                _plot_variable(da_t_lvl, da_p_lvl, variable_name, suffix=suffix)

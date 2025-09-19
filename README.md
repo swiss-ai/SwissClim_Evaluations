@@ -216,8 +216,8 @@ plotting:
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
   maps: true                 # Global and per-level maps (Cartopy)
-  histograms: true           # Distributions by latitude bands (2D variables)
-  wd_kde: true               # KDE by latitude band on standardized fields; also reports mean Wasserstein
+  histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
+  wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
@@ -312,9 +312,13 @@ The evaluation generates organized results for each enabled module:
 
 ### Distribution Analysis
 
-- Histograms by latitude: `histograms/{var}_sfc_latbands.png`
-- KDE + Wasserstein distance: `wd_kde/{var}_sfc_latbands_norm.png`
-- Supporting data: combined NPZ files per variable
+- Surface histograms: `histograms/{var}_sfc_latbands.png`
+- Per-level histograms (when enabled): `histograms/{var}_pl{level}_latbands.png` (e.g., `_pl500`)
+- Surface KDE + Wasserstein: `wd_kde/{var}_sfc_latbands_norm.png`
+- Per-level KDE (when enabled): `wd_kde/{var}_pl{level}_latbands_norm.png`
+- Supporting data: combined NPZ files per variable & level
+  - Histograms: `{var}_sfc_latbands_combined.npz`, `{var}_pl{level}_latbands_combined.npz`
+  - KDE: `{var}_sfc_latbands_kde_combined.npz`, `{var}_pl{level}_latbands_kde_combined.npz`
 
 ### Vertical Structure (3D variables only)
 
@@ -382,8 +386,8 @@ Expected structure per model (created by the main runner):
 
 - output/modelA/
   - maps/*.npz
-  - histograms/*_sfc_latbands_combined.npz
-  - wd_kde/*_sfc_latbands_kde_combined.npz
+  - histograms/*_sfc_latbands_combined.npz, *_pl*_latbands_combined.npz
+  - wd_kde/*_sfc_latbands_kde_combined.npz, *_pl*_latbands_kde_combined.npz
   - energy_spectra/*.npz, lsd_2d_metrics.csv
   - deterministic/metrics.csv, metrics_standardized.csv
   - ets/ets_metrics.csv
