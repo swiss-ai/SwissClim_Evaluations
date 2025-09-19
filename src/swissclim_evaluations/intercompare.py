@@ -54,6 +54,178 @@ def _load_npz(path: Path) -> dict:
         return {k: d[k] for k in d.files}
 
 
+def _find_vertical_profile_files(models: list[Path]) -> tuple[list[str], str]:
+    """Return common vertical profile NPZ basenames and a mode label.
+
+    Supports new pattern (*_pl_nmae_combined.npz) and legacy (*_pl_rel_error_combined.npz).
+    Preference: use new pattern if any found; otherwise try legacy. Only returns files that
+    exist in ALL model folders.
+    """
+    vp_dir = Path("vertical_profiles")
+    # New pattern first
+    new_pattern = "*_pl_nmae_combined.npz"
+    legacy_pattern = "*_pl_rel_error_combined.npz"
+    new_sets: list[set[str]] = []
+    for m in models:
+        files = list((m / vp_dir).glob(new_pattern))
+        new_sets.append({f.name for f in files if f.is_file()})
+    if new_sets and all(len(s) > 0 for s in new_sets):
+        common_new = (
+            set.intersection(*new_sets) if len(new_sets) > 1 else new_sets[0]
+        )
+        if common_new:
+            return sorted(common_new), "nmae"
+    # Legacy fallback
+    legacy_sets: list[set[str]] = []
+    for m in models:
+        files = list((m / vp_dir).glob(legacy_pattern))
+        legacy_sets.append({f.name for f in files if f.is_file()})
+    if legacy_sets and all(len(s) > 0 for s in legacy_sets):
+        common_legacy = (
+            set.intersection(*legacy_sets)
+            if len(legacy_sets) > 1
+            else legacy_sets[0]
+        )
+        if common_legacy:
+            return sorted(common_legacy), "legacy"
+    return [], "none"
+
+
+def intercompare_vertical_profiles(
+    models: list[Path], labels: list[str], out_root: Path
+) -> None:
+    """Overlay vertical profile NMAE (or legacy relative error) curves across models.
+
+    For each variable present in all model folders we create per-lat-band figure
+    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS (ground truth) not expressly stored.
+    The NPZ files only contain metric curves already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
+
+    We therefore only plot model curves. If legacy rel_error files are used, label plots accordingly.
+    """
+    basenames, mode = _find_vertical_profile_files(models)
+    if not basenames:
+        return
+    dst = _ensure_dir(out_root / "vertical_profiles")
+    color_palette = sns.color_palette("tab10", n_colors=len(models))
+    for base in basenames:
+        payloads = []
+        for m in models:
+            try:
+                payloads.append(_load_npz(m / "vertical_profiles" / base))
+            except Exception:
+                payloads.append({})
+        if not payloads or any(len(p) == 0 for p in payloads):
+            continue
+        key_neg = (
+            "nmae_neg"
+            if mode == "nmae"
+            else (
+                "rel_error_neg"
+                if "rel_error_neg" in payloads[0]
+                else "nmae_neg"
+            )
+        )
+        key_pos = (
+            "nmae_pos"
+            if mode == "nmae"
+            else (
+                "rel_error_pos"
+                if "rel_error_pos" in payloads[0]
+                else "nmae_pos"
+            )
+        )
+        if key_neg not in payloads[0] or key_pos not in payloads[0]:
+            continue
+        neg_arr0 = np.asarray(payloads[0][key_neg])
+        bands = neg_arr0.shape[0]
+        neg_lat_min = payloads[0].get("neg_lat_min")
+        neg_lat_max = payloads[0].get("neg_lat_max")
+        pos_lat_min = payloads[0].get("pos_lat_min")
+        pos_lat_max = payloads[0].get("pos_lat_max")
+        level_values = payloads[0].get("level")
+        if level_values is None:
+            continue
+        fig, axs = plt.subplots(
+            bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True
+        )
+        for j in range(bands):
+            axn = axs[j, 0]
+            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+                arr = np.asarray(pay.get(key_pos))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axn.plot(
+                    arr[j], level_values, label=lab, color=color_palette[c]
+                )
+            if pos_lat_min is not None and pos_lat_max is not None:
+                axn.set_title(
+                    f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
+                )
+            axn.invert_yaxis()
+            axn.set_xlabel("NMAE (%)" if mode == "nmae" else "Rel Error")
+            axsou = axs[j, 1]
+            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+                arr = np.asarray(pay.get(key_neg))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axsou.plot(
+                    arr[j], level_values, label=lab, color=color_palette[c]
+                )
+            if neg_lat_min is not None and neg_lat_max is not None:
+                axsou.set_title(
+                    f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
+                )
+            axsou.invert_yaxis()
+            axsou.set_xlabel("NMAE (%)" if mode == "nmae" else "Rel Error")
+        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+        if handles:
+            fig.legend(
+                handles,
+                labels_leg,
+                loc="lower center",
+                ncol=min(6, len(models)),
+            )
+        var = base.replace("_pl_nmae_combined.npz", "").replace(
+            "_pl_rel_error_combined.npz", ""
+        )
+        fig.suptitle(
+            f"Vertical Profiles — {var} ({'NMAE %' if mode == 'nmae' else 'Relative Error'})",
+            y=1.02,
+        )
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
+        out_png = dst / base.replace(".npz", "_compare.png")
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        plt.close(fig)
+        rows = []
+        for lab, pay in zip(labels, payloads):
+            neg_arr = np.asarray(pay.get(key_neg))
+            pos_arr = np.asarray(pay.get(key_pos))
+            if neg_arr is None or pos_arr is None:
+                continue
+            for j in range(bands):
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "north",
+                    "model": lab,
+                    "value": float(np.nanmean(pos_arr[j])),
+                    "metric": "NMAE" if mode == "nmae" else "RelError",
+                })
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "south",
+                    "model": lab,
+                    "value": float(np.nanmean(neg_arr[j])),
+                    "metric": "NMAE" if mode == "nmae" else "RelError",
+                })
+        if rows:
+            df = pd.DataFrame(rows)
+            out_csv = dst / base.replace(".npz", "_summary.csv")
+            df.to_csv(out_csv, index=False)
+            print(f"[intercompare] saved {out_csv}")
+
+
 def intercompare_energy_spectra(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
@@ -314,56 +486,112 @@ def intercompare_maps(
     for base in common[:max_panels]:
         kind, key = _parse_map_filename(base)
         payloads = [_load_npz(m / src_rel / (key + ".npz")) for m in models]
-        # Extract DS from first payload, determine vmin/vmax across all ML
+        # Extract DS from first payload
         nwp = payloads[0].get("nwp")
         mls = [p.get("ml") for p in payloads]
         if any(x is None for x in mls) or nwp is None:
             continue
-        vmin = float(np.nanmin([np.nanmin(nwp)] + [np.nanmin(x) for x in mls]))
-        vmax = float(np.nanmax([np.nanmax(nwp)] + [np.nanmax(x) for x in mls]))
-        # Build panel: 1 + len(models) columns
-        ncols = 1 + len(models)
-        fig, axes = plt.subplots(
-            1,
-            ncols,
-            figsize=(6 * ncols, 4),
-            dpi=160,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-        )
-        if ncols == 1:
-            axes = [axes]
-        # Plot DS baseline
-        im0 = axes[0].pcolormesh(
-            payloads[0].get("longitude"),
-            payloads[0].get("latitude"),
-            nwp,
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            transform=ccrs.PlateCarree(),
-        )
-        axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
-        axes[0].coastlines(linewidth=0.5)
-        axes[0].set_title("Ground Truth")
-        for i, (ax, lab, ml) in enumerate(zip(axes[1:], labels, mls)):
-            ax.pcolormesh(
-                payloads[0].get("longitude"),
-                payloads[0].get("latitude"),
-                ml,
+        lats = payloads[0].get("latitude")
+        lons = payloads[0].get("longitude")
+        if lats is None or lons is None:
+            continue
+
+        # Determine if data are (lat, lon) or (level, lat, lon)
+        def _is_3d(arr: np.ndarray) -> bool:
+            return isinstance(arr, np.ndarray) and arr.ndim == 3
+
+        n_levels = nwp.shape[0] if _is_3d(nwp) else 1
+        # Sanity: all ML arrays must match dimensionality
+        if any(
+            (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
+            or (
+                (not _is_3d(nwp))
+                and (not isinstance(m, np.ndarray) or m.ndim != 2)
+            )
+            for m in mls
+        ):
+            print(f"[intercompare][maps] shape mismatch for {key}; skipping")
+            continue
+        # Loop levels (single iteration for 2D)
+        for lvl in range(n_levels):
+            nwp_slice = nwp[lvl] if n_levels > 1 else nwp
+            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
+            # Compute vmin/vmax per level for balanced contrast across models
+            try:
+                vmin = float(
+                    np.nanmin(
+                        [np.nanmin(nwp_slice)]
+                        + [np.nanmin(x) for x in ml_slices]
+                    )
+                )
+                vmax = float(
+                    np.nanmax(
+                        [np.nanmax(nwp_slice)]
+                        + [np.nanmax(x) for x in ml_slices]
+                    )
+                )
+            except ValueError:
+                # In case all NaNs
+                print(
+                    f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping"
+                )
+                continue
+            ncols = 1 + len(models)
+            fig, axes = plt.subplots(
+                1,
+                ncols,
+                figsize=(6 * ncols, 4),
+                dpi=160,
+                subplot_kw={"projection": ccrs.PlateCarree()},
+            )
+            if ncols == 1:
+                axes = [axes]
+            im0 = axes[0].pcolormesh(
+                lons,
+                lats,
+                nwp_slice,
                 cmap="viridis",
                 vmin=vmin,
                 vmax=vmax,
                 transform=ccrs.PlateCarree(),
             )
-            ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-            ax.coastlines(linewidth=0.5)
-            ax.set_title(lab)
-        cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
-        plt.colorbar(im0, cax=cbar_ax, orientation="horizontal")
-        plt.tight_layout(rect=(0, 0.1, 1, 1))
-        out_png = dst / (key + "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
+            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
+            axes[0].coastlines(linewidth=0.5)
+            title_base = "Ground Truth"
+            if n_levels > 1:
+                # Attempt to fetch level coordinate if present
+                level_vals = payloads[0].get("level")
+                if (
+                    isinstance(level_vals, np.ndarray)
+                    and len(level_vals) == n_levels
+                ):
+                    title_base += f" (level {int(level_vals[lvl])})"
+                else:
+                    title_base += f" (level {lvl})"
+            axes[0].set_title(title_base)
+            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices):
+                ax.pcolormesh(
+                    lons,
+                    lats,
+                    ml_slice,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                )
+                ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+                ax.coastlines(linewidth=0.5)
+                ax.set_title(lab if n_levels == 1 else f"{lab}")
+            cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
+            cbar_label = "Value"
+            plt.colorbar(
+                im0, cax=cbar_ax, orientation="horizontal", label=cbar_label
+            )
+            plt.tight_layout(rect=(0, 0.1, 1, 1))
+            suffix = f"_level{lvl}" if n_levels > 1 else ""
+            out_png = dst / (key + suffix + "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
 
 
 def intercompare_metrics_csv(
@@ -744,8 +972,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--modules",
         nargs="*",
-        default=["spectra", "hist", "kde", "maps", "metrics", "prob"],
-        help="Subset of modules to run: spectra, hist, kde, maps, metrics, prob",
+        default=["spectra", "hist", "kde", "maps", "metrics", "prob", "vprof"],
+        help="Subset of modules to run: spectra, hist, kde, maps, metrics, prob, vprof",
     )
     p.add_argument(
         "--max-map-panels",
@@ -786,6 +1014,8 @@ def main(argv: list[str] | None = None) -> None:
         intercompare_metrics_csv(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(models, labels, out_root)
+    if "vprof" in mods:
+        intercompare_vertical_profiles(models, labels, out_root)
 
 
 if __name__ == "__main__":
