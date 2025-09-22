@@ -193,13 +193,14 @@ def run(
                 ds_ml_var = ds_ml_var.isel(init_time=time_index)
             if "lead_time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
 
             for idx, level in enumerate(levels):
                 ax_ds = axes[idx, 0]
                 ds_var_lev = ds_var.sel(level=level)
                 ds_ml_var_lev = ds_ml_var.sel(level=level)
+
+                vmin = min(float(ds_var_lev.min()), float(ds_ml_var_lev.min()))
+                vmax = max(float(ds_var_lev.max()), float(ds_ml_var_lev.max()))
 
                 im_ds = ds_var_lev.plot(
                     ax=ax_ds,
@@ -226,13 +227,13 @@ def run(
                 ax_ds_ml.coastlines(linewidth=0.5)
                 ax_ds_ml.set_title(f"Model - Level {level}")
 
-            cbar_ax = plt.gcf().add_axes([0.15, 0.05, 0.7, 0.02])
-            plt.colorbar(
-                im_ds,
-                cax=cbar_ax,
-                orientation="horizontal",
-                label=ds_target[var].attrs.get("units", ""),
-            )
+                cbar_ax = plt.gcf().add_axes([0.15, 0.05 - idx * 0.03, 0.7, 0.02])
+                plt.colorbar(
+                    im_ds,
+                    cax=cbar_ax,
+                    orientation="horizontal",
+                    label=f"{ds_target[var].attrs.get('units', '')} (level {level})"
+                )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
