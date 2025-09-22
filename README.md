@@ -424,6 +424,18 @@ What gets combined:
 - Key libs: xarray, numpy, scipy, pandas, matplotlib, cartopy, scores, weatherbenchX
 ```
 
+### Debugging
+
+This repository includes ready-to-use debug launch configurations under `.vscode/launch.json`.
+
+Tip: If you need to debug only one module to save time, temporarily disable others in the YAML (`modules: { ... }`). The debug configuration just passes the config file; everything else is controlled by the YAML content.
+
+Possible workflow:
+
+1. Start an interactive session (container or env activated).
+2. Open a VS Code tunnel (`code tunnel`), connect from your workstation.
+3. Open the repository folder and use the provided debug configuration. No additional adapter setup required (uses `debugpy`). -> `F5` to start debugging.
+
 Run tests:
 
 ```bash
