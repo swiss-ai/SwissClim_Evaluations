@@ -176,6 +176,7 @@ def run(
                 dpi=dpi * 2,
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 squeeze=False,
+                constrained_layout=True,
             )
 
             ds_var = ds_target[var]
@@ -195,7 +196,8 @@ def run(
                 ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
 
             for idx, level in enumerate(levels):
-                ax_ds = axes[idx, 0]
+                level_val = int(level.values) if hasattr(level, "values") else int(level)
+                ax_ds, ax_ds_ml = axes[idx]
                 ds_var_lev = ds_var.sel(level=level)
                 ds_ml_var_lev = ds_ml_var.sel(level=level)
 
@@ -212,9 +214,8 @@ def run(
                 )
                 ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds.coastlines(linewidth=0.5)
-                ax_ds.set_title(f"Ground Truth - Level {level}")
+                ax_ds.set_title(f"Ground Truth - Level {level_val}")
 
-                ax_ds_ml = axes[idx, 1]
                 ds_ml_var_lev.plot(
                     ax=ax_ds_ml,
                     cmap="viridis",
@@ -225,14 +226,12 @@ def run(
                 )
                 ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds_ml.coastlines(linewidth=0.5)
-                ax_ds_ml.set_title(f"Model - Level {level}")
+                ax_ds_ml.set_title(f"Model - Level {level_val}")
 
-                cbar_ax = plt.gcf().add_axes([0.15, 0.05 - idx * 0.03, 0.7, 0.02])
-                plt.colorbar(
-                    im_ds,
-                    cax=cbar_ax,
-                    orientation="horizontal",
-                    label=f"{ds_target[var].attrs.get('units', '')} (level {level})"
+                fig.colorbar(
+                    im_ds, ax=[ax_ds, ax_ds_ml], orientation="horizontal",
+                    fraction=0.05, pad=0.07,
+                    label=f"{ds_target[var].attrs.get('units', '')} (level {level_val})",
                 )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
