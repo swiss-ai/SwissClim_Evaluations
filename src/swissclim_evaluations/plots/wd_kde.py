@@ -8,6 +8,8 @@ import numpy as np
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
+from ..helpers import build_output_filename
+
 
 def _lat_bands():
     lat_bins = np.arange(-90, 91, 10)
@@ -36,6 +38,8 @@ def run(
     # arrays are equal the KDEs match exactly (paired subsampling is enforced).
     section_output = out_root / "wd_kde"
 
+    # Ensure output directory exists early
+    section_output.mkdir(parents=True, exist_ok=True)
     # Collect all Wasserstein distances across variables and latitude bands
     # Each row: variable, hemisphere, lat_min, lat_max, wasserstein
     wasserstein_rows: list[dict[str, float | str]] = []
@@ -75,7 +79,7 @@ def run(
         var_name: str,
         da_t_std: xr.DataArray,
         da_p_std: xr.DataArray,
-        suffix: str,
+        level_token: str,
     ):
         # local copy of loop body (with minor modifications to accept arrays directly)
         def _subsample_values(
@@ -103,7 +107,7 @@ def run(
             arr = np.asarray(sub.compute().values).ravel()
             return arr[np.isfinite(arr)]
 
-        print(f"[wd_kde] variable: {var_name}{suffix}")
+        print(f"[wd_kde] variable: {var_name} level={level_token}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
         combined = {
@@ -129,7 +133,7 @@ def run(
                 continue
             seed = (
                 base_seed
-                + (hash(var_name + suffix) % 1000) * 1000
+                + (hash(var_name + level_token) % 1000) * 1000
                 + (j + 1) * 10
                 + 1
             )
@@ -143,7 +147,7 @@ def run(
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
             wasserstein_rows.append({
-                "variable": var_name + suffix,
+                "variable": var_name,
                 "hemisphere": "south",
                 "lat_min": float(lat_min),
                 "lat_max": float(lat_max),
@@ -184,7 +188,7 @@ def run(
                 continue
             seed = (
                 base_seed
-                + (hash(var_name + suffix) % 1000) * 1000
+                + (hash(var_name + level_token) % 1000) * 1000
                 + (j + 1) * 10
                 + 2
             )
@@ -198,7 +202,7 @@ def run(
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
             wasserstein_rows.append({
-                "variable": var_name + suffix,
+                "variable": var_name,
                 "hemisphere": "north",
                 "lat_min": float(lat_min),
                 "lat_max": float(lat_max),
@@ -229,19 +233,35 @@ def run(
                 combined["pos_lat_max"].append(float(lat_max))
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
         plt.suptitle(
-            f"Normalized Distribution of {var_name}{suffix} by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
+            f"Normalized Distribution of {var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
             y=1.02,
         )
         plt.tight_layout()
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{var_name}{suffix}_latbands_norm.png"
+            out_png = section_output / build_output_filename(
+                metric="wd_kde",
+                variable=var_name,
+                level=level_token,
+                qualifier="plot",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="png",
+            )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[wd_kde] saved {out_png}")
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = (
-                section_output / f"{var_name}{suffix}_latbands_kde_combined.npz"
+            out_npz = section_output / build_output_filename(
+                metric="wd_kde",
+                variable=var_name,
+                level=level_token,
+                qualifier="combined",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="npz",
             )
             np.savez(
                 out_npz,
@@ -261,13 +281,14 @@ def run(
             print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
 
-    # 2D standardized variables
+    # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
     for variable_name in variables_2d:
+        # Omit placeholder level token for 2D variables
         _process_variable(
             variable_name,
             ds_target_std[variable_name],
             ds_prediction_std[variable_name],
-            suffix="_sfc",
+            level_token="",  # empty -> skipped in filename
         )
 
     # 3D standardized variables per level
@@ -283,5 +304,52 @@ def run(
                 da_t_lvl = da_t_std.sel(level=lvl)
                 da_p_lvl = da_p_std.sel(level=lvl)
                 _process_variable(
-                    variable_name, da_t_lvl, da_p_lvl, suffix=f"_pl{lvl_clean}"
+                    variable_name,
+                    da_t_lvl,
+                    da_p_lvl,
+                    level_token=str(lvl_clean),
                 )
+
+    # After processing all variables, write Wasserstein distances CSV summary
+    if wasserstein_rows:
+        import pandas as _pd
+
+        df_w = _pd.DataFrame(wasserstein_rows)
+        out_csv = section_output / build_output_filename(
+            metric="wd_kde_wasserstein",
+            variable=None,  # aggregate across variables -> omit variable token
+            level=None,
+            qualifier="averaged",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="csv",
+        )
+        df_w.to_csv(out_csv, index=False)
+        print(f"[wd_kde] saved {out_csv}")
+    else:
+        # Still emit an empty CSV to satisfy expectations
+        import pandas as _pd
+
+        out_csv = section_output / build_output_filename(
+            metric="wd_kde_wasserstein",
+            variable=None,
+            level=None,
+            qualifier="averaged",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="csv",
+        )
+        _pd.DataFrame(
+            columns=[
+                "variable",
+                "hemisphere",
+                "lat_min",
+                "lat_max",
+                "wasserstein",
+            ]
+        ).to_csv(out_csv, index=False)
+        print(
+            "[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV"
+        )

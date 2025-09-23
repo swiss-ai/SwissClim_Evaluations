@@ -4,7 +4,7 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 ## Quickstart (default: container with Podman + Enroot)
 
-0. Clone into the expected CSCS path (important)
+1. Clone into the expected CSCS path (important)
 
 Several paths in the provided `tools/edf_template.toml` as well as example YAML configs assume the repository lives under:
 
@@ -22,14 +22,14 @@ cd /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
 
 We recommend the container workflow for fastest, reproducible setup.
 
-1. Build the container (Podman) at repo root int interactive session:
+1. Build the container (Podman) at repo root in an interactive session:
 
 ```bash
 srun --container-writable -t 01:00:00 -A a122 -p debug --pty bash
 podman build -t swissclim-eval .
 ```
 
-2. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
+1. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
 
 ```bash
 rm -f tools/swissclim-eval.sqsh
@@ -39,7 +39,7 @@ mkdir -p ~/.edf
 sed "s/{{username}}/$USER/g" tools/edf_template.toml > ~/.edf/swissclim-eval.toml
 ```
 
-3. Review and edit the example config:
+1. Review and edit the example config:
 
 The project ships with a commented config that explains every key and valid
 values. Copy it and adjust the paths and selections as needed.
@@ -48,7 +48,7 @@ values. Copy it and adjust the paths and selections as needed.
 cp config/example_config.yaml config/my_run.yaml
 ```
 
-4. (CSCS Alps) Launch an interactive session using the container:
+1. (CSCS Alps) Launch an interactive session using the container:
 
 ```bash
 srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
@@ -57,7 +57,7 @@ srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p de
 You are now inside the container with all dependencies installed.
 For a richer debugging experience we recommend using `code tunnel`.
 
-5. Run:
+1. Run:
 
 ```bash
 python -m swissclim_evaluations.cli --config config/my_run.yaml
@@ -65,7 +65,7 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 
 Outputs appear under paths.output_root (one sub-folder per module).
 
-6. Or submit a batch job (CSCS Alps):
+1. Or submit a batch job (CSCS Alps):
 
 ```bash
 sbatch launchscript.sh
@@ -73,6 +73,13 @@ sbatch launchscript.sh
 
 Don't forget to adjust the path to your `config/my_run.yaml` in
 `launchscript.sh` if you placed it elsewhere.
+
+1. Here is a one-liner with `srun` instead of the `launchscript`:
+
+```bash
+srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=debug --nodes=1 --ntasks=1 --cpu-bind=cores --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'
+
+```
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
@@ -296,54 +303,94 @@ The evaluation generates organized results for each enabled module:
 
 ### Deterministic Metrics
 
-- CSV summaries: `deterministic/metrics.csv` and `deterministic/metrics_standardized.csv`
-- Terminal preview of key statistics
+Filenames encode only information that is actually present:
+
+- Metric family (e.g. `deterministic_metrics`)
+- Optional qualifier (`averaged`, `standardized`, `standardized_averaged`)
+- Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
+- Ensemble token (always; `ens<idx>` or `ensnone` / `ensmean`)
+
+Examples:
+
+```text
+deterministic_metrics_ensnone.csv
+deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensnone.csv
+deterministic_metrics_standardized_ensnone.csv
+```
 
 ### Extreme Threshold Statistics (ETS)
 
-- Metrics file: `ets/ets_metrics.csv`
-- Terminal summary preview
+ETS filenames follow the same minimal pattern as deterministic metrics.
+
+Examples:
+
+```text
+ets_metrics_ensnone.csv
+ets_metrics_averaged_init2023010200-2023010412_ensnone.csv
+```
 
 ### Energy Spectra Analysis
 
-- Spectral plots: `energy_spectra/*_energy.png`
-- Metrics summary: `energy_spectra/lsd_metrics.csv`
-- Raw data: accompanying `.npz` files with spectral arrays
+Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
+is exported per init_time/lead_time and summarized. Outputs:
+
+- Figures / NPZ (subset init_time for plotting) : `energy_spectra/{var}_{level?}_{init}_{lead}_spectrum.(png|npz)`
+- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_time_<range>.csv` (one row per remaining time slice)
+- LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
+- LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
+- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_time_<range>.csv`
+- LSD averaged (3D levels wide): `energy_spectra/lsd_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
+- LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
 
 ### Distribution Analysis
 
-- Surface histograms: `histograms/{var}_sfc_latbands.png`
-- Per-level histograms (when enabled): `histograms/{var}_pl{level}_latbands.png` (e.g., `_pl500`)
-- Surface KDE + Wasserstein: `wd_kde/{var}_sfc_latbands_norm.png`
-- Per-level KDE (when enabled): `wd_kde/{var}_pl{level}_latbands_norm.png`
-- Supporting data: combined NPZ files per variable & level
-  - Histograms: `{var}_sfc_latbands_combined.npz`, `{var}_pl{level}_latbands_combined.npz`
-  - KDE: `{var}_sfc_latbands_kde_combined.npz`, `{var}_pl{level}_latbands_kde_combined.npz`
+Histogram and KDE outputs drop placeholder tokens. For 2D variables no level token appears; for 3D variables the numeric level is included.
+
+Examples:
+
+```text
+hist_2m_temperature_latbands_ensnone.npz
+hist_temperature_500_latbands_combined_ensnone.npz
+wd_kde_2m_temperature_latbands_combined_ensnone.npz
+wd_kde_wasserstein_averaged_ensnone.csv
+```
+
+If time ranges are present (e.g. for long aggregations) they appear just before the ensemble token similar to metrics: `..._init2023010200-2023010412_lead000h-036h_ensnone.npz`.
 
 ### Vertical Structure (3D variables only)
 
-- Profile plots: `vertical_profiles/{var}_pl_nmae.png`  (Normalized MAE % by latitude band)
-- Raw data: combined NPZ files per variable
+Outputs (suffixed):
+
+- Plot: `vertical_profiles/{var}_pl_nmae_<range>.png`
+- Combined band data (NPZ): `vertical_profiles/{var}_pl_nmae_combined_<range>.npz`
+- Averaged summary: `vertical_profiles/vertical_profiles_nmae_averaged_<range>.csv`
+- Init-time summary: `vertical_profiles/vertical_profiles_nmae_init_time_<range>.csv`
 
 ### Spatial Maps
 
-- Surface maps: `maps/{timestamp}_{var}_sfc.png`
-- Pressure level maps: `maps/{timestamp}_{var}_pl.png`
-- Raw arrays: NPZ dumps for each plot
+Examples:
+
+```text
+map_10m_u_component_of_wind_init2023010200-2023010412_ens0.png
+map_temperature_500_init2023010200-2023010412_ens0.png
+```
 
 ### Probabilistic Verification (combined)
 
-- All probabilistic outputs (xarray + WeatherBenchX) are written into the same folder: `probabilistic/`
-  - Xarray-based (per-variable fields and plots):
-    - CRPS summary: `probabilistic/crps_summary.csv`
-    - PIT histogram NPZ: `probabilistic/{var}_pit_hist.npz`
-    - PIT/CRPS fields: `probabilistic/{var}_pit.nc`, `probabilistic/{var}_crps.nc`
-    - Optional figures (when `plot` or `both`): `probabilistic/crps_map_{var}.png`, `probabilistic/pit_hist_{var}.png`
-  - WeatherBenchX-based (summaries and aggregates):
-    - CSV summaries: `probabilistic/spread_skill_ratio.csv`, `probabilistic/crps_ensemble.csv`
-    - Temporal aggregates (NetCDF): `probabilistic/probabilistic_metrics_temporal.nc`
-    - Spatial/regional aggregates (NetCDF): `probabilistic/probabilistic_metrics_spatial.nc`
-    - Optional CRPS map (WBX): `probabilistic/crps_map_wbx_{var}.png`
+Current minimal pattern (per variable):
+
+```text
+pit_hist_2m_temperature_ensnone.npz
+pit_field_2m_temperature_ensnone.nc
+crps_field_2m_temperature_ensnone.nc
+```
+
+Aggregated summaries:
+
+```text
+crps_summary_ensnone.csv
+crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensnone.csv
+```
 
 ### Details for probabilistic outputs
 
@@ -355,7 +402,7 @@ All modules print concise progress like:
 
 - [swissclim] Module: deterministic — variables=5
 - [histograms] variable: 10m_u_component_of_wind
-- [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_energy.png
+- [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_spectrum.png
 
 ## Tips and best practices
 
@@ -382,21 +429,21 @@ Notebook tips
 
 This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons.
 
-Expected structure per model (created by the main runner):
+Expected structure per model (created by the main runner, updated naming):
 
 - output/modelA/
-  - maps/*.npz
-  - histograms/*_sfc_latbands_combined.npz, *_pl*_latbands_combined.npz
-  - wd_kde/*_sfc_latbands_kde_combined.npz, *_pl*_latbands_kde_combined.npz
-  - energy_spectra/*.npz, lsd_2d_metrics.csv
-  - deterministic/metrics.csv, metrics_standardized.csv
-  - ets/ets_metrics.csv
-  - vertical_profiles/*_pl_nmae_combined.npz
-  - probabilistic/
-    - crps_summary.csv, spread_skill_ratio.csv, crps_ensemble.csv
-    - {var}_pit_hist.npz,
-    - crps_map_{var}.png (xarray) and/or crps_map_wbx_{var}.png
-    - temporal_metrics.nc, spatial_metrics.nc (WBX)
+  - `maps/*_<range>.npz`, `maps/*_pl_<range>.npz`
+  - `histograms/*_<range>_latbands_combined.npz`, `histograms/*_pl*_ <range> _latbands_combined.npz`
+  - `wd_kde/*_<range>_latbands_kde_combined.npz`, `wd_kde/*_pl*_ <range> _latbands_kde_combined.npz`
+    - `energy_spectra/*.npz`, `energy_spectra/lsd_2d_metrics_per_time_*.csv`, `energy_spectra/lsd_3d_metrics_per_time_*.csv`, `energy_spectra/lsd_2d_metrics_averaged_*.csv`, `energy_spectra/lsd_metrics_averaged_*.csv`
+    - `deterministic/metrics_averaged_*.csv`, `deterministic/metrics_standardized_averaged_*.csv`, `deterministic/metrics_init_time_*.csv`
+    - `ets/ets_metrics_averaged_*.csv`, `ets/ets_metrics_init_time_*.csv`
+    - `vertical_profiles/*_pl_nmae_<range>.png`, `vertical_profiles/*_pl_nmae_combined_<range>.npz`, `vertical_profiles/vertical_profiles_nmae_averaged_*.csv`, `vertical_profiles/vertical_profiles_nmae_init_time_*.csv`
+    - probabilistic/
+      - `crps_summary_averaged_*.csv`, `crps_summary_init_time_*.csv`, `spread_skill_ratio_*.csv`, `crps_ensemble_*.csv`
+    - `{var}_pit_hist_*.npz`, `{var}_pit_*.nc`, `{var}_crps_*.nc`
+    - `probabilistic_metrics_temporal_*.nc`, `probabilistic_metrics_spatial_*.nc`
+    - `crps_map_{var}_*.png`, `crps_map_wbx_{var}_*.png` (if plotting enabled)
 
 Run the intercomparison:
 

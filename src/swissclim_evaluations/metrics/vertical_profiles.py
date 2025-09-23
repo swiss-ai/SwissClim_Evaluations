@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
 
+from ..helpers import build_output_filename
+
 
 def _lat_bands() -> tuple[list[float], int]:
     # Pure Python to avoid forcing concrete numpy arrays early
@@ -91,6 +93,50 @@ def run(
     ]
     lat_bins, n_bands = _lat_bands()
 
+    # Extract time ranges for naming
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
     fig_count = 0
     for var in variables_3d:
         print(f"[vertical_profiles] variable: {var}")
@@ -112,11 +158,26 @@ def run(
         south_meta = []  # (lat_min, lat_max)
         north_meta = []
         half = n_bands // 2
+        # Detect latitude ordering once (ERA5 typically descending 90 -> -90). We adapt slice direction
+        # instead of sorting (cheaper and preserves original memory layout / lazy dask graph).
+        try:
+            lat_vals = ds_target[var].latitude
+            lat_desc = bool(lat_vals[0] > lat_vals[-1])
+        except Exception:
+            lat_desc = False
+
+        def _lat_slice(lo: float, hi: float) -> slice:
+            """Return a slice selecting [lo, hi] irrespective of coordinate order.
+            lo < hi in logical (ascending) definition coming from _lat_bands().
+            If coordinate is descending we invert endpoints so that .sel() matches data.
+            """
+            return slice(hi, lo) if lat_desc else slice(lo, hi)
+
         for i in range(half):
             # South bands (negative latitudes in array order)
             lat_min_neg = lat_bins[i]
             lat_max_neg = lat_bins[i + 1]
-            lat_slice_neg = slice(lat_max_neg, lat_min_neg)
+            lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
             south_curves.append(
                 _compute_nmae(
                     ds_target[var],
@@ -130,7 +191,10 @@ def run(
             idx = -(i + 1)
             lat_min_pos = lat_bins[idx]
             lat_max_pos = lat_bins[idx - 1]
-            lat_slice_pos = slice(lat_min_pos, lat_max_pos)
+            # Provide logical lower/upper to helper; it will flip if needed.
+            low = min(lat_min_pos, lat_max_pos)
+            high = max(lat_min_pos, lat_max_pos)
+            lat_slice_pos = _lat_slice(low, high)
             north_curves.append(
                 _compute_nmae(
                     ds_target[var],
@@ -152,18 +216,26 @@ def run(
             ["south", "north"], dims=["hemisphere"], name="hemisphere"
         )
         combined = xr.concat([south_da, north_da], dim=hemisphere)
-        # Global x-range (lazy reduce then single compute)
-        gmin_val, gmax_val = [
-            float(r) for r in [combined.min(), combined.max()]
-        ]
-        # Materialize full combined array once (after range capture if you prefer exact)
+        # Materialize full combined array once; then derive global x-range.
         combined = combined.compute()
-        # Recompute exact min/max post-compute (ensures no rounding from earlier casting)
-        gmin_val = float(np.nanmin(combined.values))
-        gmax_val = float(np.nanmax(combined.values))
-        if not np.isfinite(gmin_val) or not np.isfinite(gmax_val):
+        vals = combined.values
+        # Mask of finite values (ignores NaN/inf). If none are finite, skip gracefully.
+        finite_mask = np.isfinite(vals)
+        if not finite_mask.any():
+            print(
+                f"[vertical_profiles] skipping {var}: no finite NMAE values (all selections empty)."
+            )
             plt.close("all")
             continue
+        # Compute global range only on finite subset to avoid RuntimeWarning from all-NaN slices.
+        finite_vals = vals[finite_mask]
+        gmin_val = float(finite_vals.min())
+        gmax_val = float(finite_vals.max())
+        # If degenerate (all identical), expand range slightly so matplotlib doesn't complain.
+        if gmin_val == gmax_val:
+            pad = 1e-6 if gmin_val == 0 else abs(gmin_val) * 1e-6
+            gmin_val -= pad
+            gmax_val += pad
 
         # Plot
         n_cols = 2
@@ -197,13 +269,31 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{var}_pl_nmae.png"
+            out_png = section_output / build_output_filename(
+                metric="vprof_nmae",
+                variable=var,
+                level="multi",
+                qualifier="plot",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=None,
+                ext="png",
+            )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[vertical_profiles] saved {out_png}")
 
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = section_output / f"{var}_pl_nmae_combined.npz"
+            out_npz = section_output / build_output_filename(
+                metric="vprof_nmae",
+                variable=var,
+                level="multi",
+                qualifier="combined",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=None,
+                ext="npz",
+            )
             south_vals = combined.sel(hemisphere="south").values
             north_vals = combined.sel(hemisphere="north").values
             neg_min = np.asarray([m[0] for m in south_meta])
