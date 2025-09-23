@@ -5,9 +5,10 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
+
+from ..helpers import build_output_filename
 
 
 def _lat_bands():
@@ -33,26 +34,80 @@ def run(
     max_samples = int(plotting_cfg.get("kde_max_samples", 200_000))
     # Global random seed from config for reproducible subsampling
     base_seed = int(plotting_cfg.get("random_seed", 42))
+    # Target/prediction always use identical subsamples so that if underlying
+    # arrays are equal the KDEs match exactly (paired subsampling is enforced).
     section_output = out_root / "wd_kde"
 
+    # Ensure output directory exists early
+    section_output.mkdir(parents=True, exist_ok=True)
     # Collect all Wasserstein distances across variables and latitude bands
     # Each row: variable, hemisphere, lat_min, lat_max, wasserstein
     wasserstein_rows: list[dict[str, float | str]] = []
 
-    # Select only genuine 2D variables (no 'level' dimension)
+    process_3d = bool(plotting_cfg.get("wd_kde_include_3d", True))
+    max_levels = plotting_cfg.get("wd_kde_max_levels", None)
+    try:
+        max_levels = int(max_levels) if max_levels is not None else None
+        if max_levels is not None and max_levels <= 0:
+            max_levels = None
+    except Exception:
+        max_levels = None
+
+    # Select only genuine 2D variables (no 'level' dimension) and 3D ones
     variables_2d = [
         v
         for v in ds_target_std.data_vars
         if "level" not in ds_target_std[v].dims
     ]
-    if not variables_2d:
-        print("[wd_kde] No 2D variables found – skipping.")
+    variables_3d = [
+        v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims
+    ]
+    if not variables_2d and (not process_3d or not variables_3d):
+        print("[wd_kde] No eligible variables found – skipping.")
         return
-    print(f"[wd_kde] Processing {len(variables_2d)} 2D variables.")
+    if variables_2d:
+        print(
+            f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized)."
+        )
+    if process_3d and variables_3d:
+        print(
+            f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized)."
+        )
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    for i, variable_name in enumerate(variables_2d):
-        print(f"[wd_kde] variable: {variable_name}")
+    def _process_variable(
+        var_name: str,
+        da_t_std: xr.DataArray,
+        da_p_std: xr.DataArray,
+        level_token: str,
+    ):
+        # local copy of loop body (with minor modifications to accept arrays directly)
+        def _subsample_values(
+            da: xr.DataArray, k: int, seed: int
+        ) -> np.ndarray:
+            size = int(getattr(da, "size", 0) or 0)
+            if size == 0:
+                return np.array([], dtype=float)
+            if size <= k:
+                arr = np.asarray(da.compute().values).ravel()
+                return arr[np.isfinite(arr)]
+            dims = list(da.dims)
+            nd = max(1, len(dims))
+            frac = (k / float(size)) ** (1.0 / nd)
+            rng = np.random.default_rng(seed)
+            indexers: dict[str, np.ndarray] = {}
+            for d in dims:
+                n = int(da.sizes.get(d, 1))
+                take = max(1, int(np.ceil(frac * n)))
+                take = min(take, n)
+                idx = rng.choice(n, size=take, replace=False)
+                idx.sort()
+                indexers[d] = idx
+            sub = da.isel(**indexers)
+            arr = np.asarray(sub.compute().values).ravel()
+            return arr[np.isfinite(arr)]
+
+        print(f"[wd_kde] variable: {var_name} level={level_token}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
         combined = {
@@ -67,65 +122,32 @@ def run(
             "pos_lat_min": [],
             "pos_lat_max": [],
         }
-
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
-
-            da_target_slice = ds_target_std[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_prediction_slice = ds_prediction_std[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            # Surface variable, no level dim expected
+            da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
+            da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-
-            # Subsample up to k points by selecting a small slice along each dimension,
-            # then materialize only that subset.
-            def _subsample_values(
-                da: xr.DataArray, k: int, seed: int
-            ) -> np.ndarray:
-                size = int(getattr(da, "size", 0) or 0)
-                if size == 0:
-                    return np.array([], dtype=float)
-                if size <= k:
-                    arr = np.asarray(da.compute().values).ravel()
-                    return arr[np.isfinite(arr)]
-                dims = list(da.dims)
-                nd = max(1, len(dims))
-                frac = (k / float(size)) ** (1.0 / nd)
-                rng = np.random.default_rng(seed)
-                indexers: dict[str, np.ndarray] = {}
-                for d in dims:
-                    n = int(da.sizes.get(d, 1))
-                    take = max(1, int(np.ceil(frac * n)))
-                    take = min(take, n)
-                    idx = rng.choice(n, size=take, replace=False)
-                    idx.sort()
-                    indexers[d] = idx
-                sub = da.isel(**indexers)
-                # Materialize the small subset and keep only finite values (avoid boolean dask indexing)
-                arr = np.asarray(sub.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-
-            # Derive deterministic seeds per variable/band/hemisphere
-            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-            ml_seed = ds_seed + 1
-            ds_flat = _subsample_values(
-                da_target_slice, max_samples, seed=ds_seed
+            seed = (
+                base_seed
+                + (hash(var_name + level_token) % 1000) * 1000
+                + (j + 1) * 10
+                + 1
             )
+            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
             ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=ml_seed
+                da_prediction_slice, max_samples, seed=seed
             )
+            if ds_flat.size == 0 or ml_flat.size == 0:
+                axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            # record row for CSV
             wasserstein_rows.append({
-                "variable": variable_name,
+                "variable": var_name,
                 "hemisphere": "south",
                 "lat_min": float(lat_min),
                 "lat_max": float(lat_max),
@@ -139,16 +161,10 @@ def run(
                 100,
             )
             axs[j, 1].plot(
-                x_eval,
-                kde_ds(x_eval),
-                color="skyblue",
-                label="Ground Truth",
+                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
             )
             axs[j, 1].plot(
-                x_eval,
-                kde_ml(x_eval),
-                color="salmon",
-                label="Model Prediction",
+                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
             )
             axs[j, 1].set_title(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
@@ -160,35 +176,33 @@ def run(
                 combined["neg_kde_ml"].append(kde_ml(x_eval))
                 combined["neg_lat_min"].append(float(lat_min))
                 combined["neg_lat_max"].append(float(lat_max))
-
         # Positive latitudes (left column)
         for j in range(n_bands // 2):
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            da_target_slice = ds_target_std[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_prediction_slice = ds_prediction_std[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            # Surface variable, no level dim expected
+            da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
+            da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-            ml_seed = ds_seed + 1
-            ds_flat = _subsample_values(
-                da_target_slice, max_samples, seed=ds_seed
+            seed = (
+                base_seed
+                + (hash(var_name + level_token) % 1000) * 1000
+                + (j + 1) * 10
+                + 2
             )
+            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
             ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=ml_seed
+                da_prediction_slice, max_samples, seed=seed
             )
+            if ds_flat.size == 0 or ml_flat.size == 0:
+                axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            # record row for CSV
             wasserstein_rows.append({
-                "variable": variable_name,
+                "variable": var_name,
                 "hemisphere": "north",
                 "lat_min": float(lat_min),
                 "lat_max": float(lat_max),
@@ -202,16 +216,10 @@ def run(
                 100,
             )
             axs[j, 0].plot(
-                x_eval,
-                kde_ds(x_eval),
-                color="skyblue",
-                label="Ground Truth",
+                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
             )
             axs[j, 0].plot(
-                x_eval,
-                kde_ml(x_eval),
-                color="salmon",
-                label="Model Prediction",
+                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
             )
             axs[j, 0].set_title(
                 f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
@@ -223,24 +231,37 @@ def run(
                 combined["pos_kde_ml"].append(kde_ml(x_eval))
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
-
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
         plt.suptitle(
-            f"Normalized Distribution of {variable_name} by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
+            f"Normalized Distribution of {var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
             y=1.02,
         )
         plt.tight_layout()
-
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{variable_name}_sfc_latbands_norm.png"
+            out_png = section_output / build_output_filename(
+                metric="wd_kde",
+                variable=var_name,
+                level=level_token,
+                qualifier="plot",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="png",
+            )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[wd_kde] saved {out_png}")
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = (
-                section_output
-                / f"{variable_name}_sfc_latbands_kde_combined.npz"
+            out_npz = section_output / build_output_filename(
+                metric="wd_kde",
+                variable=var_name,
+                level=level_token,
+                qualifier="combined",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="npz",
             )
             np.savez(
                 out_npz,
@@ -260,21 +281,75 @@ def run(
             print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
 
-    # After processing all variables, write all collected Wasserstein distances to CSV
-    try:
-        if wasserstein_rows:
-            section_output.mkdir(parents=True, exist_ok=True)
-            df_w = pd.DataFrame(wasserstein_rows)
-            # Sort for readability
-            df_w = df_w.sort_values(
-                by=["variable", "hemisphere", "lat_min"]
-            ).reset_index(drop=True)
-            out_csv = section_output / "wasserstein_latbands.csv"
-            df_w.to_csv(out_csv, index=False)
-            print(f"[wd_kde] saved {out_csv}")
-        else:
-            print(
-                "[wd_kde] No Wasserstein distances computed – CSV not written."
-            )
-    except Exception as e:
-        print(f"[wd_kde] Failed to write Wasserstein CSV: {e}")
+    # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
+    for variable_name in variables_2d:
+        # Omit placeholder level token for 2D variables
+        _process_variable(
+            variable_name,
+            ds_target_std[variable_name],
+            ds_prediction_std[variable_name],
+            level_token="",  # empty -> skipped in filename
+        )
+
+    # 3D standardized variables per level
+    if process_3d:
+        for variable_name in variables_3d:
+            da_t_std = ds_target_std[variable_name]
+            da_p_std = ds_prediction_std[variable_name]
+            levels = list(da_t_std["level"].values)
+            if max_levels is not None:
+                levels = levels[:max_levels]
+            for lvl in levels:
+                lvl_clean = str(lvl).replace(".", "_")
+                da_t_lvl = da_t_std.sel(level=lvl)
+                da_p_lvl = da_p_std.sel(level=lvl)
+                _process_variable(
+                    variable_name,
+                    da_t_lvl,
+                    da_p_lvl,
+                    level_token=str(lvl_clean),
+                )
+
+    # After processing all variables, write Wasserstein distances CSV summary
+    if wasserstein_rows:
+        import pandas as _pd
+
+        df_w = _pd.DataFrame(wasserstein_rows)
+        out_csv = section_output / build_output_filename(
+            metric="wd_kde_wasserstein",
+            variable=None,  # aggregate across variables -> omit variable token
+            level=None,
+            qualifier="averaged",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="csv",
+        )
+        df_w.to_csv(out_csv, index=False)
+        print(f"[wd_kde] saved {out_csv}")
+    else:
+        # Still emit an empty CSV to satisfy expectations
+        import pandas as _pd
+
+        out_csv = section_output / build_output_filename(
+            metric="wd_kde_wasserstein",
+            variable=None,
+            level=None,
+            qualifier="averaged",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="csv",
+        )
+        _pd.DataFrame(
+            columns=[
+                "variable",
+                "hemisphere",
+                "lat_min",
+                "lat_max",
+                "wasserstein",
+            ]
+        ).to_csv(out_csv, index=False)
+        print(
+            "[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV"
+        )

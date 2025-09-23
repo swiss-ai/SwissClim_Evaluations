@@ -20,21 +20,22 @@ def calculate_energy_spectra(
 
     Notes on spectral coordinates
     -----------------------------
-    - wavenumber: cycles per km (NOT angular; no 2π factor). Computed using Earth circumference in km.
+    - wavenumber: cycles per km (NOT angular; no 2π factor). Computed using
+      Earth circumference in km.
     - wavelength: km (1 / wavenumber).
     - wavenumber_m: cycles per m (wavenumber / 1000).
-    Returned power units: (original units)^2 after latitude weighting.
-    No averaging over init_time or lead_time is performed here.
+    Returned power units: (original units)^2 after latitude weighting. Averaging
+    strategy:
+        If ``average_dims`` is provided we now (v2) compute the power spectrum
+        FIRST for each member along those dimensions and *then* average the
+        (latitude–weighted) power spectra. This implements the mean( spectrum(x)
+        ) instead of spectrum( mean(x) ), which avoids loss of variance prior to
+        quadratic power computation.
+    Time / lead dimensions are never implicitly averaged here.
     """
     # Remove trivial level dimension
     if "level" in da_var.dims and da_var.sizes.get("level", 0) == 1:
         da_var = da_var.isel(level=0, drop=True)
-
-    # Average specified dims (e.g., ensemble) but NOT lead_time/time dims by default
-    if average_dims:
-        keep_dims = [d for d in average_dims if d in da_var.dims]
-        if keep_dims:
-            da_var = da_var.mean(dim=keep_dims)
 
     if "longitude" not in da_var.dims:
         raise ValueError("longitude dimension required for energy spectra")
@@ -90,13 +91,19 @@ def calculate_energy_spectra(
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
-    # Latitude weighting (cos φ)
+    # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
     if "latitude" in da_power.coords:
         lat_vals = da_power["latitude"]
         cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
         da_power = da_power.weighted(cosw).mean(dim="latitude")
     else:
         raise ValueError("latitude coordinate required for weighting")
+
+    # Post-spectrum averaging over requested dims (e.g., ensemble)
+    if average_dims:
+        post_avg_dims = [d for d in average_dims if d in da_power.dims]
+        if post_avg_dims:
+            da_power = da_power.mean(dim=post_avg_dims)
     return da_power
 
 
@@ -248,8 +255,7 @@ def _plot_energy_spectra(
     ds_prediction: xr.Dataset,
     var: str,
     level: int | None,
-    out_path: Path
-    | None,  # (unused for per-time outputs; kept for signature compatibility)
+    out_path: Path | None,
     dpi: int,
     save_plot_data: bool = False,
     save_figure: bool = True,
@@ -262,8 +268,8 @@ def _plot_energy_spectra(
         LSD values with remaining time-like dims (init_time, lead_time, ...).
     """
     if level is not None:
-        da_target = ds_target[var].sel(level=level)
-        da_prediction = ds_prediction[var].sel(level=level)
+        da_target = ds_target[var].sel(level=level, drop=True)
+        da_prediction = ds_prediction[var].sel(level=level, drop=True)
     else:
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
@@ -288,6 +294,8 @@ def _plot_energy_spectra(
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
+    from ..helpers import build_output_filename
+
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
         arr_t = spectrum_target.values
@@ -295,7 +303,16 @@ def _plot_energy_spectra(
         init_label = "none"
         lead_label = "none"
         base_dir = out_path.parent if out_path else Path(".")  # fallback
-        fname = f"{var}_{'sfc' if level is None else str(level) + 'hPa'}_single_energy.png"
+        fname = build_output_filename(
+            metric="lsd",
+            variable=var,
+            level=level if level is not None else None,
+            qualifier="single_spectrum",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="png",
+        )
         _plot_single_spectrum(
             wn,
             arr_t,
@@ -318,12 +335,8 @@ def _plot_energy_spectra(
     stacked_lsd = lsd_da.stack(__time__=time_dims)
     coords_df = stacked_target.__time__.to_index()  # MultiIndex with labels
 
-    # Output directory per variable (and per level)
-    section_output = (
-        (out_path.parent if out_path else Path("."))
-        / var
-        / ("sfc" if level is None else f"level_{level}")
-    )
+    # Output directory – flattened layout consistent with other modules.
+    section_output = out_path.parent if out_path else Path(".")
     section_output.mkdir(parents=True, exist_ok=True)
 
     for idx, key in enumerate(coords_df):
@@ -381,7 +394,16 @@ def _plot_energy_spectra(
         else:
             lead_label = "noLead"
 
-        fname = f"{var}_{'sfc' if level is None else str(level) + 'hPa'}_{init_label}_{lead_label}_energy.png"
+        fname = build_output_filename(
+            metric="lsd",
+            variable=var,
+            level=level if level is not None else None,
+            qualifier="spectrum",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=None,
+            ext="png",
+        )
         _plot_single_spectrum(
             wn,
             arr_t,
@@ -407,79 +429,65 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
 ) -> None:
-    # Optional: apply a single init_time selection for plotting (same behavior as CLI)
-    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
-    if plot_dt_str and "init_time" in ds_prediction.dims:
-        try:
-            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
-            available = ds_prediction["init_time"].values
-            if plot_dt not in available:
-                raise ValueError(
-                    f"Requested plot_datetime={plot_dt_str} not in predictions init_time labels."
-                )
-            ds_prediction = ds_prediction.sel(init_time=[plot_dt])
-            if "init_time" in ds_target.dims:
-                # If target has matching init_time dimension (after alignment phase)
-                if plot_dt in ds_target["init_time"].values:
-                    ds_target = ds_target.sel(init_time=[plot_dt])
-                else:
-                    # If target lacks this init_time (e.g., came from time-only dataset) we keep it unchanged
-                    pass
-            print(
-                f"[energy_spectra] Applied plot_datetime filter → init_time={plot_dt_str}"  # noqa: E501
-            )
-        except Exception as e:  # pragma: no cover - defensive
-            print(
-                f"[energy_spectra] Warning: failed to apply plot_datetime={plot_dt_str}: {e}. Proceeding with full dataset."  # noqa: E501
-            )
-    elif (not plot_dt_str) and ("init_time" in ds_prediction.dims):
-        # Mirror CLI default: if not specified choose first init_time for plot modules
-        try:
-            first_dt = ds_prediction["init_time"].values[0]
-            ds_prediction = ds_prediction.sel(init_time=[first_dt])
-            if (
-                "init_time" in ds_target.dims
-                and first_dt in ds_target["init_time"].values
-            ):
-                ds_target = ds_target.sel(init_time=[first_dt])
-            print(
-                f"[energy_spectra] Default plot init_time (first available) applied: {np.datetime_as_string(first_dt, unit='h')}"  # noqa: E501
-            )
-        except Exception:
-            pass
-    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
-    dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = True
-    save_figure = mode in ("plot", "both")
-    section_output = out_root / "energy_spectra"
+    """Compute Log Spectral Distance (LSD) metrics and optional plots."""
 
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
+    section_output = out_root / "energy_spectra"
+    section_output.mkdir(parents=True, exist_ok=True)
+
+    # Preserve full datasets for metrics
+    ds_target_full = ds_target
+    ds_prediction_full = ds_prediction
+
+    # Unified suffix based on init_time/lead_time only
+    from ..helpers import build_output_filename
+
+    # --- Determine variables & levels ---------------------------------------------
+    if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:
         variables_3d = [
-            v for v in ds_target.data_vars if "level" in ds_target[v].dims
+            v
+            for v in ds_target_full.data_vars
+            if "level" in ds_target_full[v].dims
         ]
-        variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
-        levels = select_cfg.get("levels") or list(ds_target.level.values)
+        variables_2d = [
+            v for v in ds_target_full.data_vars if v not in variables_3d
+        ]
+        levels = select_cfg.get("levels") or list(ds_target_full.level.values)
     else:
         variables_3d = []
-        variables_2d = list(ds_target.data_vars)
+        variables_2d = list(ds_target_full.data_vars)
         levels = []
 
-    # 2D variables: detailed per-time LSD
+    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
+    dpi = int(plotting_cfg.get("dpi", 48))
+    save_figures = mode in ("plot", "both")
+    save_plot_data = mode in ("npz", "both")  # keep npz behaviour consistent
+
+    # --- Metrics (full dataset) ----------------------------------------------------
     detailed_rows_2d: list[pd.DataFrame] = []
     summary_rows_2d: list[dict] = []
+    per_init_rows_2d: list[pd.DataFrame] = []
+
     for var in variables_2d:
-        print(f"[energy_spectra] 2D variable: {var}")
+        print(f"[energy_spectra] (metrics) 2D variable: {var}")
         lsd_da = _plot_energy_spectra(
-            ds_target,
-            ds_prediction,
+            ds_target_full,
+            ds_prediction_full,
             var,
             None,
-            (
-                section_output / f"{var}_sfc_energy.png"
-            ),  # base path (directory anchor)
+            section_output
+            / build_output_filename(
+                metric="lsd",
+                variable=var,
+                level=None,
+                qualifier="spectrum",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="png",
+            ),
             dpi,
-            save_plot_data,
-            save_figure,
+            save_plot_data=False,
+            save_figure=False,
         )
         df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
         df_lsd.insert(0, "variable", var)
@@ -488,47 +496,245 @@ def run(
             "variable": var,
             "lsd_mean": float(lsd_da.mean().values),
         })
+        if "init_time" in lsd_da.dims:
+            mean_over = [d for d in lsd_da.dims if d not in ("init_time",)]
+            lsd_by_init = lsd_da.mean(dim=mean_over)
+            df_init = lsd_by_init.to_dataframe(name="lsd_mean").reset_index()
+            df_init.insert(0, "variable", var)
+            per_init_rows_2d.append(df_init)
 
     if detailed_rows_2d:
-        section_output.mkdir(parents=True, exist_ok=True)
-        pd.concat(detailed_rows_2d, ignore_index=True).to_csv(
-            section_output / "lsd_2d_metrics_detailed.csv", index=False
-        )
+        # Per-lead_time if lead_time dim present else per-init_time (else drop 'per' file)
+        per_dim_label = None
+        if detailed_rows_2d and "lead_time" in lsd_da.dims:
+            per_dim_label = "lead_time"
+        elif detailed_rows_2d and "init_time" in lsd_da.dims:
+            per_dim_label = "init_time"
+        if per_dim_label:
+            pd.concat(detailed_rows_2d, ignore_index=True).to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_2d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier=f"per_{per_dim_label}",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=None,
+                    ext="csv",
+                ),
+                index=False,
+            )
         pd.DataFrame(summary_rows_2d).set_index("variable").to_csv(
-            section_output / "lsd_2d_metrics.csv"
+            section_output
+            / build_output_filename(
+                metric="lsd_2d_metrics",
+                variable=None,
+                level=None,
+                qualifier="averaged",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="csv",
+            )
         )
-        print("[energy_spectra] saved per-time & summary LSD for 2D variables")
+        if per_init_rows_2d:
+            pd.concat(per_init_rows_2d, ignore_index=True).to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_2d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="init_time",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=None,
+                    ext="csv",
+                ),
+                index=False,
+            )
+        print(
+            "[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)"
+        )
 
-    # 3D variables: per-level per-time LSD
+    # 3D variables
     detailed_rows_3d: list[pd.DataFrame] = []
     summary_levels: dict[str, list[float]] = {v: [] for v in variables_3d}
+    per_init_rows_3d: list[pd.DataFrame] = []
     for var in variables_3d:
-        print(f"[energy_spectra] 3D variable: {var}")
+        print(f"[energy_spectra] (metrics) 3D variable: {var}")
         for level in levels:
             lsd_da = _plot_energy_spectra(
-                ds_target,
-                ds_prediction,
+                ds_target_full,
+                ds_prediction_full,
                 var,
                 int(level),
-                (section_output / f"{var}_{level}hPa_energy.png"),
+                section_output
+                / build_output_filename(
+                    metric="lsd",
+                    variable=var,
+                    level=level,
+                    qualifier="spectrum",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=None,
+                    ext="png",
+                ),
                 dpi,
-                save_plot_data,
-                save_figure,
+                save_plot_data=False,
+                save_figure=False,
             )
             df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
             df_lsd.insert(0, "variable", var)
             df_lsd.insert(1, "level", int(level))
             detailed_rows_3d.append(df_lsd)
             summary_levels[var].append(float(lsd_da.mean().values))
+            if "init_time" in lsd_da.dims:
+                mean_over = [d for d in lsd_da.dims if d not in ("init_time",)]
+                lsd_by_init = lsd_da.mean(dim=mean_over)
+                df_init = lsd_by_init.to_dataframe(
+                    name="lsd_mean"
+                ).reset_index()
+                df_init.insert(0, "variable", var)
+                df_init.insert(1, "level", int(level))
+                per_init_rows_3d.append(df_init)
 
     if variables_3d:
-        section_output.mkdir(parents=True, exist_ok=True)
         if detailed_rows_3d:
-            pd.concat(detailed_rows_3d, ignore_index=True).to_csv(
-                section_output / "lsd_3d_metrics_detailed.csv", index=False
-            )
-        # Summary (mean over time dims) in wide format (levels index)
+            # Decide per-dimension label once using last computed lsd_da
+            label = None
+            if "lead_time" in lsd_da.dims:
+                label = "lead_time"
+            elif "init_time" in lsd_da.dims:
+                label = "init_time"
+            if label:
+                pd.concat(detailed_rows_3d, ignore_index=True).to_csv(
+                    section_output
+                    / build_output_filename(
+                        metric="lsd_3d_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier=f"per_{label}",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=None,
+                        ext="csv",
+                    ),
+                    index=False,
+                )
         df_summary = pd.DataFrame(summary_levels, index=levels)
         df_summary.index.name = "Height Level"
-        df_summary.to_csv(section_output / "lsd_metrics.csv")
-        print("[energy_spectra] saved per-time & summary LSD for 3D variables")
+        df_summary.to_csv(
+            section_output
+            / build_output_filename(
+                metric="lsd_metrics",
+                variable=None,
+                level=None,
+                qualifier="averaged",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="csv",
+            )
+        )
+        if per_init_rows_3d:
+            pd.concat(per_init_rows_3d, ignore_index=True).to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_3d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="init_time",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=None,
+                    ext="csv",
+                ),
+                index=False,
+            )
+        print(
+            "[energy_spectra] saved 3D LSD metrics (detailed, summary, per-init_time)"
+        )
+
+    # --- Plotting subset (figures only) -------------------------------------------
+    ds_target_plot = ds_target_full
+    ds_prediction_plot = ds_prediction_full
+    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
+    if plot_dt_str and "init_time" in ds_prediction_full.dims:
+        try:
+            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
+            if plot_dt in ds_prediction_full["init_time"].values:
+                ds_prediction_plot = ds_prediction_full.sel(init_time=[plot_dt])
+                if (
+                    "init_time" in ds_target_full.dims
+                    and plot_dt in ds_target_full["init_time"].values
+                ):
+                    ds_target_plot = ds_target_full.sel(init_time=[plot_dt])
+                print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
+        except Exception as e:  # pragma: no cover
+            print(
+                f"[energy_spectra] Warning: plot_datetime failed ({e}); using full dataset for plots."
+            )
+    elif (not plot_dt_str) and ("init_time" in ds_prediction_full.dims):
+        # Default: plot only first init_time to avoid generating very large number of figures
+        try:
+            first_dt = ds_prediction_full["init_time"].values[0]
+            ds_prediction_plot = ds_prediction_full.sel(init_time=[first_dt])
+            if (
+                "init_time" in ds_target_full.dims
+                and first_dt in ds_target_full["init_time"].values
+            ):
+                ds_target_plot = ds_target_full.sel(init_time=[first_dt])
+            print(
+                f"[energy_spectra] Plotting only first init_time: {np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+            )
+        except Exception:
+            pass
+
+    if save_figures or save_plot_data:
+        for var in variables_2d:
+            _ = _plot_energy_spectra(
+                ds_target_plot,
+                ds_prediction_plot,
+                var,
+                None,
+                section_output
+                / build_output_filename(
+                    metric="lsd",
+                    variable=var,
+                    level=None,
+                    qualifier="spectrum",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=None,
+                    ext="png",
+                ),
+                dpi,
+                save_plot_data=save_plot_data,
+                save_figure=save_figures,
+            )
+        for var in variables_3d:
+            for level in levels:
+                _ = _plot_energy_spectra(
+                    ds_target_plot,
+                    ds_prediction_plot,
+                    var,
+                    int(level),
+                    section_output
+                    / build_output_filename(
+                        metric="lsd",
+                        variable=var,
+                        level=level,
+                        qualifier="spectrum",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=None,
+                        ext="png",
+                    ),
+                    dpi,
+                    save_plot_data=save_plot_data,
+                    save_figure=save_figures,
+                )
+        print("[energy_spectra] Figures/NPZ saved (subset dataset)")
+
+    print("[energy_spectra] Completed energy spectra metrics & plots.")

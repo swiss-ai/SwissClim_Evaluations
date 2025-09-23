@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -54,89 +54,245 @@ def _load_npz(path: Path) -> dict:
         return {k: d[k] for k in d.files}
 
 
+def _find_vertical_profile_files(models: list[Path]) -> list[str]:
+    """Return common vertical profile NPZ basenames (simplified schema).
+
+    Only the new NMAE pattern is supported: <variable>_pl_nmae_combined.npz
+    Returns sorted list of basenames existing across all model folders.
+    """
+    vp_dir = Path("vertical_profiles")
+    pattern = "*_pl_nmae_combined.npz"
+    sets: list[set[str]] = []
+    for m in models:
+        files = list((m / vp_dir).glob(pattern))
+        sets.append({f.name for f in files if f.is_file()})
+    if not sets:
+        return []
+    common = set.intersection(*sets) if len(sets) > 1 else sets[0]
+    return sorted(common)
+
+
+def intercompare_vertical_profiles(
+    models: list[Path], labels: list[str], out_root: Path
+) -> None:
+    """Overlay vertical profile NMAE (or legacy relative error) curves across models.
+
+    For each variable present in all model folders we create per-lat-band figure
+    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS (ground truth) not expressly stored.
+    The NPZ files only contain metric curves already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
+
+    We therefore only plot model curves. If legacy rel_error files are used, label plots accordingly.
+    """
+    basenames = _find_vertical_profile_files(models)
+    if not basenames:
+        print(
+            "[intercompare][vprof] no common vertical profile NPZ files found; skipping"
+        )
+        return
+    dst = _ensure_dir(out_root / "vertical_profiles")
+    color_palette = sns.color_palette("tab10", n_colors=len(models))
+    for base in basenames:
+        payloads = []
+        for m in models:
+            try:
+                payloads.append(_load_npz(m / "vertical_profiles" / base))
+            except Exception:
+                payloads.append({})
+        if not payloads or any(len(p) == 0 for p in payloads):
+            continue
+        key_neg = "nmae_neg"
+        key_pos = "nmae_pos"
+        if key_neg not in payloads[0] or key_pos not in payloads[0]:
+            continue
+        neg_arr0 = np.asarray(payloads[0][key_neg])
+        bands = neg_arr0.shape[0]
+        neg_lat_min = payloads[0].get("neg_lat_min")
+        neg_lat_max = payloads[0].get("neg_lat_max")
+        pos_lat_min = payloads[0].get("pos_lat_min")
+        pos_lat_max = payloads[0].get("pos_lat_max")
+        level_values = payloads[0].get("level")
+        if level_values is None:
+            continue
+        fig, axs = plt.subplots(
+            bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True
+        )
+        for j in range(bands):
+            axn = axs[j, 0]
+            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+                arr = np.asarray(pay.get(key_pos))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axn.plot(
+                    arr[j], level_values, label=lab, color=color_palette[c]
+                )
+            if pos_lat_min is not None and pos_lat_max is not None:
+                axn.set_title(
+                    f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
+                )
+            axn.invert_yaxis()
+            axn.set_xlabel("NMAE (%)")
+            axsou = axs[j, 1]
+            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+                arr = np.asarray(pay.get(key_neg))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axsou.plot(
+                    arr[j], level_values, label=lab, color=color_palette[c]
+                )
+            if neg_lat_min is not None and neg_lat_max is not None:
+                axsou.set_title(
+                    f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
+                )
+            axsou.invert_yaxis()
+            axsou.set_xlabel("NMAE (%)")
+        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+        if handles:
+            fig.legend(
+                handles,
+                labels_leg,
+                loc="lower center",
+                ncol=min(6, len(models)),
+            )
+        var = base.replace("_pl_nmae_combined.npz", "").replace(
+            "_pl_rel_error_combined.npz", ""
+        )
+        fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
+        out_png = dst / base.replace(".npz", "_compare.png")
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        plt.close(fig)
+        rows = []
+        for lab, pay in zip(labels, payloads):
+            neg_arr = np.asarray(pay.get(key_neg))
+            pos_arr = np.asarray(pay.get(key_pos))
+            if neg_arr is None or pos_arr is None:
+                continue
+            for j in range(bands):
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "north",
+                    "model": lab,
+                    "value": float(np.nanmean(pos_arr[j])),
+                    "metric": "NMAE",
+                })
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "south",
+                    "model": lab,
+                    "value": float(np.nanmean(neg_arr[j])),
+                    "metric": "NMAE",
+                })
+        if rows:
+            df = pd.DataFrame(rows)
+            out_csv = dst / base.replace(".npz", "_summary.csv")
+            df.to_csv(out_csv, index=False)
+            print(f"[intercompare] saved {out_csv}")
+
+
 def intercompare_energy_spectra(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
     src_rel = Path("energy_spectra")
     dst = _ensure_dir(out_root / "energy_spectra")
 
-    # 2D variables pattern: {var}_sfc_energy.npz
-    common_2d = _common_files(models, str(src_rel / "*_sfc_energy.npz"))
-    for base in common_2d:
-        datas: list[dict] = []
-        for m in models:
-            datas.append(_load_npz(m / src_rel / base))
-        # Use DS from first model as baseline (identical across models by construction)
-        wn = datas[0].get("wavenumber_ds")
-        spec_ds = datas[0].get("spectrum_ds")
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-        if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-            ax.loglog(
-                wn[2:-2], spec_ds[2:-2], color="k", lw=2.0, label="Ground Truth"
+    # Helper to plot a group of NPZ with baseline
+    def _plot_group(basenames: list[str], surface: bool) -> None:
+        for base in basenames:
+            datas = [_load_npz(m / src_rel / base) for m in models]
+            # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
+            wn = datas[0].get("wavenumber")
+            if wn is None:
+                wn = datas[0].get("wavenumber_ds")
+            spec_ds = datas[0].get("spectrum_target")
+            if spec_ds is None:
+                spec_ds = datas[0].get("spectrum_ds")
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+            if wn is not None and spec_ds is not None and len(spec_ds) > 0:
+                try:
+                    ax.loglog(
+                        wn[2:-2],
+                        np.asarray(spec_ds)[2:-2],
+                        color="k",
+                        lw=2.0,
+                        label="Ground Truth",
+                    )
+                except Exception:
+                    pass
+            colors = sns.color_palette("tab10", n_colors=len(models))
+            for i, (lab, dat) in enumerate(zip(labels, datas)):
+                specm = dat.get("spectrum_prediction")
+                if specm is None:
+                    specm = dat.get("spectrum_ml")
+                wnm = dat.get("wavenumber")
+                if wnm is None:
+                    wnm = dat.get("wavenumber_ml")
+                if wnm is None or specm is None or len(np.asarray(specm)) == 0:
+                    continue
+                try:
+                    ax.loglog(
+                        wnm[2:-2],
+                        np.asarray(specm)[2:-2],  # ensure numpy array slicing
+                        label=lab,
+                        color=colors[i],
+                    )
+                except Exception:
+                    continue
+            ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+            ax.set_ylabel("Energy Density (weighted)")
+            var = datas[0].get("variable") or "var"
+            level = datas[0].get("level") if not surface else None
+            title = (
+                f"Energy Spectra — {var} (sfc)"
+                if surface
+                else f"Energy Spectra — {var} {int(level)} hPa"
             )
-        colors = sns.color_palette("tab10", n_colors=len(models))
-        for i, (lab, dat) in enumerate(zip(labels, datas)):
-            wnm = dat.get("wavenumber_ml")
-            specm = dat.get("spectrum_ml")
-            if wnm is None or specm is None or len(specm) == 0:
-                continue
-            ax.loglog(wnm[2:-2], specm[2:-2], label=lab, color=colors[i])
-        ax.set_xlabel("Longitudinal Wavenumber (cycles/Earth)")
-        ax.set_ylabel("Energy Density")
-        var = datas[0].get("variable")
-        title = f"Energy Spectra — {str(var)} (sfc)"
-        ax.set_title(title)
-        ax.grid(True, which="both", ls="--", alpha=0.4)
-        ax.legend(frameon=False)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
+            ax.set_title(title)
+            ax.grid(True, which="both", ls="--", alpha=0.4)
+            ax.legend(frameon=False)
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
 
-    # 3D variables pattern: {var}_{level}hPa_energy.npz
-    common_3d = _common_files(models, str(src_rel / "*_*hPa_energy.npz"))
-    for base in common_3d:
-        datas = [_load_npz(m / src_rel / base) for m in models]
-        wn = datas[0].get("wavenumber_ds")
-        spec_ds = datas[0].get("spectrum_ds")
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-        if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-            ax.loglog(
-                wn[2:-2], spec_ds[2:-2], color="k", lw=2.0, label="Ground Truth"
-            )
-        colors = sns.color_palette("tab10", n_colors=len(models))
-        for i, (lab, dat) in enumerate(zip(labels, datas)):
-            wnm = dat.get("wavenumber_ml")
-            specm = dat.get("spectrum_ml")
-            if wnm is None or specm is None or len(specm) == 0:
-                continue
-            ax.loglog(wnm[2:-2], specm[2:-2], label=lab, color=colors[i])
-        var = datas[0].get("variable")
-        level = datas[0].get("level")
-        ax.set_xlabel("Longitudinal Wavenumber (cycles/Earth)")
-        ax.set_ylabel("Energy Density")
-        ax.set_title(f"Energy Spectra — {str(var)} {int(level)} hPa")
-        ax.grid(True, which="both", ls="--", alpha=0.4)
-        ax.legend(frameon=False)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
+    # Collect NPZ patterns (new first, fallback to legacy)
+    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by build_output_filename outputs
+    # Fallback to legacy glob if any remain
+    # New simplified assumption: spectra NPZ basenames already uniform.
+    # Retain backward compatibility not required; only support existing saved spectrum npz.
+    # Spectrum files in current schema include an ensemble token after '_spectrum',
+    # e.g. '..._spectrum_ensnone.npz'.
+    surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
+    if not surf:
+        print(
+            "[intercompare][spectra] no common spectrum NPZ files found; skipping plotting"
+        )
+    else:
+        # Decide surface vs pressure level by presence of _<digits>hPa_
+        surface_files = [b for b in surf if "hPa" not in b]
+        pl_files = [b for b in surf if "hPa" in b]
+        if surface_files:
+            _plot_group(surface_files, surface=True)
+        if pl_files:
+            _plot_group(pl_files, surface=False)
 
-    # Combine LSD CSVs if present
-    lsd_2d_rows: list[pd.DataFrame] = []
+    # Combine LSD summary across models (2D averaged only current naming)
+    lsd_rows: list[pd.DataFrame] = []
     for lab, m in zip(labels, models):
-        f = m / src_rel / "lsd_2d_metrics.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
-            if "variable" in df.columns:
-                df = df.set_index("variable")
-            df = df.rename(columns={"lsd": "LSD"})
-            df["model"] = lab
-            lsd_2d_rows.append(df.reset_index())
-    if lsd_2d_rows:
-        out_csv = dst / "lsd_2d_metrics_combined.csv"
-        pd.concat(lsd_2d_rows, ignore_index=True).to_csv(out_csv, index=False)
+        for f in (m / src_rel).glob("lsd_2d_metrics_*averaged*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
+            if "variable" not in df.columns and "Unnamed: 0" in df.columns:
+                df = df.rename(columns={"Unnamed: 0": "variable"})
+            df.insert(0, "model", lab)
+            df["source_file"] = f.name
+            lsd_rows.append(df)
+    if lsd_rows:
+        out_csv = dst / "lsd_2d_metrics_averaged_combined.csv"
+        pd.concat(lsd_rows, ignore_index=True).to_csv(out_csv, index=False)
 
 
 def _plot_hist_counts(
@@ -156,7 +312,14 @@ def intercompare_histograms(
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-    common = _common_files(models, str(src_rel / "*_sfc_latbands_combined.npz"))
+    common = _common_files(
+        models, str(src_rel / "hist_*latbands_combined*.npz")
+    )
+    if not common:
+        print(
+            "[intercompare][hist] no common histogram NPZ files found; skipping"
+        )
+        return
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -219,7 +382,23 @@ def intercompare_histograms(
                 ncol=min(6, 1 + len(models)),
             )
         plt.tight_layout(rect=(0, 0.05, 1, 1))
-        var = base.replace("_sfc_latbands_combined.npz", "")
+        # Derive a variable/level label for the figure title.
+        # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
+        # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
+        stem = base[:-4] if base.endswith(".npz") else base
+        if stem.startswith("hist_"):
+            var_part = stem[len("hist_") :]
+        else:
+            var_part = stem
+        # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
+        if "_ens" in var_part:
+            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
+        else:
+            var_part_no_ens = var_part
+        # Remove suffix beginning with '_latbands_combined'
+        if "_latbands_combined" in var_part_no_ens:
+            var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
+        var = var_part_no_ens
         fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -231,9 +410,12 @@ def intercompare_wd_kde(
 ) -> None:
     src_rel = Path("wd_kde")
     dst = _ensure_dir(out_root / "wd_kde")
-    common = _common_files(
-        models, str(src_rel / "*_sfc_latbands_kde_combined.npz")
-    )
+    common = _common_files(models, str(src_rel / "wd_kde_*combined*.npz"))
+    if not common:
+        print(
+            "[intercompare][wd_kde] no common wd_kde NPZ files found; skipping"
+        )
+        return
     colors = sns.color_palette("tab10", n_colors=len(models))
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -284,24 +466,52 @@ def intercompare_wd_kde(
                 ncol=min(6, 1 + len(models)),
             )
         plt.tight_layout(rect=(0, 0.05, 1, 1))
-        var = base.replace("_sfc_latbands_kde_combined.npz", "")
+        # Extract variable/level part.
+        stem = base[:-4] if base.endswith(".npz") else base
+        if stem.startswith("wd_kde_"):
+            var_part = stem[len("wd_kde_") :]
+        else:
+            var_part = stem
+        # Remove trailing ensemble token if present
+        if "_ens" in var_part:
+            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
+        else:
+            var_part_no_ens = var_part
+        # Remove '_combined' suffix (may appear with preceding level token)
+        if var_part_no_ens.endswith("_combined"):
+            var_part_no_ens = var_part_no_ens[: -len("_combined")]
+        var = var_part_no_ens
         fig.suptitle(f"Normalized KDE by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
 
+    # Combine averaged Wasserstein summary across models if present
+    frames_w: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models):
+        for f in (m / src_rel).glob("wd_kde_wasserstein_averaged_*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
+            if df.empty or "wasserstein_mean" not in df.columns:
+                continue
+            df.insert(0, "model", lab)
+            df["source_file"] = f.name
+            frames_w.append(df)
+    if frames_w:
+        combined = pd.concat(frames_w, ignore_index=True)
+        out_csv = dst / "wd_kde_wasserstein_averaged_combined.csv"
+        combined.to_csv(out_csv, index=False)
+        print(f"[intercompare] saved {out_csv}")
 
-def _parse_map_filename(name: str) -> Tuple[str, str]:
-    """Return (kind, key) where kind in {"sfc","pl"} and key without extension for grouping.
 
-    Examples:
-      202301021200_10m_u_component_of_wind_sfc_ens0.npz -> ("sfc", same name)
-      202301021200_temperature_pl_ens0.npz -> ("pl", same name)
+def _parse_map_filename(name: str) -> str:
+    """Return base key without extension.
+
+    New schema already omits placeholder tokens; we simply strip extension.
     """
-    base = name.replace(".npz", "")
-    if "_pl" in base:
-        return "pl", base
-    return "sfc", base
+    return name[:-4] if name.endswith(".npz") else name
 
 
 def intercompare_maps(
@@ -309,61 +519,114 @@ def intercompare_maps(
 ) -> None:
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
-    common = _common_files(models, str(src_rel / "*.npz"))
+    # New schema: map_<var>[ _<level>][ _init...][ _lead...]_ens*.npz
+    common = _common_files(models, str(src_rel / "map_*.npz"))
+    if not common:
+        print("[intercompare][maps] no common map NPZ files found; skipping")
+        return
     # Limit to first N common map artifacts to avoid huge outputs
     for base in common[:max_panels]:
-        kind, key = _parse_map_filename(base)
-        payloads = [_load_npz(m / src_rel / (key + ".npz")) for m in models]
-        # Extract DS from first payload, determine vmin/vmax across all ML
+        key = _parse_map_filename(base)
+        payloads = [_load_npz(m / src_rel / f"{key}.npz") for m in models]
+        # Extract DS from first payload
         nwp = payloads[0].get("nwp")
         mls = [p.get("ml") for p in payloads]
         if any(x is None for x in mls) or nwp is None:
             continue
-        vmin = float(np.nanmin([np.nanmin(nwp)] + [np.nanmin(x) for x in mls]))
-        vmax = float(np.nanmax([np.nanmax(nwp)] + [np.nanmax(x) for x in mls]))
-        # Build panel: 1 + len(models) columns
-        ncols = 1 + len(models)
-        fig, axes = plt.subplots(
-            1,
-            ncols,
-            figsize=(6 * ncols, 4),
-            dpi=160,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-        )
-        if ncols == 1:
-            axes = [axes]
-        # Plot DS baseline
-        im0 = axes[0].pcolormesh(
-            payloads[0].get("longitude"),
-            payloads[0].get("latitude"),
-            nwp,
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            transform=ccrs.PlateCarree(),
-        )
-        axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
-        axes[0].coastlines(linewidth=0.5)
-        axes[0].set_title("Ground Truth")
-        for i, (ax, lab, ml) in enumerate(zip(axes[1:], labels, mls)):
-            ax.pcolormesh(
-                payloads[0].get("longitude"),
-                payloads[0].get("latitude"),
-                ml,
+        lats = payloads[0].get("latitude")
+        lons = payloads[0].get("longitude")
+        if lats is None or lons is None:
+            continue
+
+        def _is_3d(arr: np.ndarray) -> bool:
+            return isinstance(arr, np.ndarray) and arr.ndim == 3
+
+        n_levels = nwp.shape[0] if _is_3d(nwp) else 1
+        if any(
+            (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
+            or (
+                (not _is_3d(nwp))
+                and (not isinstance(m, np.ndarray) or m.ndim != 2)
+            )
+            for m in mls
+        ):
+            print(f"[intercompare][maps] shape mismatch for {key}; skipping")
+            continue
+        for lvl in range(n_levels):
+            nwp_slice = nwp[lvl] if n_levels > 1 else nwp
+            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
+            try:
+                vmin = float(
+                    np.nanmin(
+                        [np.nanmin(nwp_slice)]
+                        + [np.nanmin(x) for x in ml_slices]
+                    )
+                )
+                vmax = float(
+                    np.nanmax(
+                        [np.nanmax(nwp_slice)]
+                        + [np.nanmax(x) for x in ml_slices]
+                    )
+                )
+            except ValueError:
+                print(
+                    f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping"
+                )
+                continue
+            ncols = 1 + len(models)
+            fig, axes = plt.subplots(
+                1,
+                ncols,
+                figsize=(6 * ncols, 4),
+                dpi=160,
+                subplot_kw={"projection": ccrs.PlateCarree()},
+            )
+            if ncols == 1:
+                axes = [axes]
+            im0 = axes[0].pcolormesh(
+                lons,
+                lats,
+                nwp_slice,
                 cmap="viridis",
                 vmin=vmin,
                 vmax=vmax,
                 transform=ccrs.PlateCarree(),
             )
-            ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-            ax.coastlines(linewidth=0.5)
-            ax.set_title(lab)
-        cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
-        plt.colorbar(im0, cax=cbar_ax, orientation="horizontal")
-        plt.tight_layout(rect=(0, 0.1, 1, 1))
-        out_png = dst / (key + "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
+            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
+            axes[0].coastlines(linewidth=0.5)
+            title_base = "Ground Truth"
+            if n_levels > 1:
+                level_vals = payloads[0].get("level")
+                if (
+                    isinstance(level_vals, np.ndarray)
+                    and len(level_vals) == n_levels
+                ):
+                    title_base += f" (level {int(level_vals[lvl])})"
+                else:
+                    title_base += f" (level {lvl})"
+            axes[0].set_title(title_base)
+            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices):
+                ax.pcolormesh(
+                    lons,
+                    lats,
+                    ml_slice,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                )
+                ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+                ax.coastlines(linewidth=0.5)
+                ax.set_title(lab if n_levels == 1 else f"{lab}")
+            cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
+            plt.colorbar(
+                im0, cax=cbar_ax, orientation="horizontal", label="Value"
+            )
+            plt.tight_layout(rect=(0, 0.1, 1, 1))
+            suffix = f"_level{lvl}" if n_levels > 1 else ""
+            out_png = dst / (key + suffix + "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
 
 
 def intercompare_metrics_csv(
@@ -374,7 +637,20 @@ def intercompare_metrics_csv(
     frames: list[pd.DataFrame] = []
     frames_std: list[pd.DataFrame] = []
     for lab, m in zip(labels, models):
-        f = m / "deterministic" / "metrics.csv"
+        # New schema: deterministic_metrics*.csv (may have qualifiers/time tokens)
+        candidates = sorted(
+            (m / "deterministic").glob("deterministic_metrics*.csv")
+        )
+        # Prefer exact base (no averaged/time tokens) for primary combined table
+        f = next(
+            (
+                c
+                for c in candidates
+                if c.name == "deterministic_metrics_ensnone.csv"
+                or c.name.endswith("ensmean.csv")
+            ),
+            (m / "deterministic" / "deterministic_metrics_ensnone.csv"),
+        )
         if f.is_file():
             df = pd.read_csv(f)
             # Normalize variable column
@@ -387,7 +663,21 @@ def intercompare_metrics_csv(
                     df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
             frames.append(df)
-        fstd = m / "deterministic" / "metrics_standardized.csv"
+        fstd = next(
+            (
+                c
+                for c in (m / "deterministic").glob(
+                    "deterministic_metrics_standardized*.csv"
+                )
+                if c.name.endswith("ensnone.csv")
+                or c.name.endswith("ensmean.csv")
+            ),
+            (
+                m
+                / "deterministic"
+                / "deterministic_metrics_standardized_ensnone.csv"
+            ),
+        )
         if fstd.is_file():
             df = pd.read_csv(fstd)
             if "variable" not in df.columns:
@@ -445,9 +735,12 @@ def intercompare_metrics_csv(
     dst_ets = _ensure_dir(out_root / "ets")
     frames_ets: list[pd.DataFrame] = []
     for lab, m in zip(labels, models):
-        f = m / "ets" / "ets_metrics.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
+        # ets_metrics*.csv new naming
+        for f in (m / "ets").glob("ets_metrics*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
             df.insert(0, "model", lab)
             frames_ets.append(df)
     if frames_ets:
@@ -475,9 +768,11 @@ def intercompare_probabilistic(
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
     for lab, m in zip(labels, models):
-        f = m / src_rel / "crps_summary.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
+        for f in (m / src_rel).glob("crps_summary*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
             df.insert(0, "model", lab)
             frames_crps.append(df)
     if frames_crps:
@@ -502,8 +797,12 @@ def intercompare_probabilistic(
             )
 
     # 3) Overlay PIT histograms by variable
-    common_pit = _common_files(models, str(src_rel / "*_pit_hist.npz"))
+    common_pit = _common_files(models, str(src_rel / "pit_hist_*.npz"))
     colors = sns.color_palette("tab10", n_colors=len(models))
+    if not common_pit:
+        print(
+            "[intercompare][prob] no common PIT histogram NPZ files found; skipping PIT overlays"
+        )
     for base in common_pit:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
@@ -529,6 +828,10 @@ def intercompare_probabilistic(
 
     # 4) Panel CRPS maps from saved NPZ (if available)
     common_crps_map_npz = _common_files(models, str(src_rel / "crps_map_*.npz"))
+    if not common_crps_map_npz:
+        print(
+            "[intercompare][prob] no common CRPS map NPZ files found; skipping CRPS map panels"
+        )
     for base in common_crps_map_npz[:max_crps_map_panels]:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Compute global vmin/vmax across models for consistent color scale
@@ -744,8 +1047,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--modules",
         nargs="*",
-        default=["spectra", "hist", "kde", "maps", "metrics", "prob"],
-        help="Subset of modules to run: spectra, hist, kde, maps, metrics, prob",
+        default=["spectra", "hist", "kde", "maps", "metrics", "prob", "vprof"],
+        help="Subset of modules to run: spectra, hist, kde, maps, metrics, prob, vprof",
     )
     p.add_argument(
         "--max-map-panels",
@@ -786,6 +1089,8 @@ def main(argv: list[str] | None = None) -> None:
         intercompare_metrics_csv(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(models, labels, out_root)
+    if "vprof" in mods:
+        intercompare_vertical_profiles(models, labels, out_root)
 
 
 if __name__ == "__main__":

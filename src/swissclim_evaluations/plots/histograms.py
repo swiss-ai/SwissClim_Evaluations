@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from ..helpers import build_output_filename
+
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
     lat_bins = np.arange(-90, 91, 10)
@@ -35,19 +37,45 @@ def run(
     except Exception:
         max_samples = None
     base_seed = int(plotting_cfg.get("random_seed", 42))
+    # Always use identical subsamples for target/prediction (paired subsampling enforced)
     section_output = out_root / "histograms"
+
+    # Config options for 3D handling
+    process_3d = bool(plotting_cfg.get("histograms_include_3d", True))
+    max_levels = plotting_cfg.get("histograms_max_levels", None)
+    try:
+        max_levels = int(max_levels) if max_levels is not None else None
+        if max_levels is not None and max_levels <= 0:
+            max_levels = None
+    except Exception:
+        max_levels = None
 
     # Select only genuine 2D variables (no 'level' dimension)
     variables_2d = [
         v for v in ds_target.data_vars if "level" not in ds_target[v].dims
     ]
-    if not variables_2d:
-        print("[histograms] No 2D variables found – skipping.")
+    variables_3d = [
+        v for v in ds_target.data_vars if "level" in ds_target[v].dims
+    ]
+    if not variables_2d and (not process_3d or not variables_3d):
+        print("[histograms] No eligible variables found – skipping.")
         return
-    print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
+    if variables_2d:
+        print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
+    if process_3d and variables_3d:
+        print(
+            f"[histograms] Processing {len(variables_3d)} 3D variables (per-level)."
+        )
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    for i, variable_name in enumerate(variables_2d):
+    def _plot_variable(
+        da_target_var: xr.DataArray,
+        da_pred_var: xr.DataArray,
+        variable_name: str,
+        level_token: str,
+        qualifier: str,
+    ):
+        i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] variable: {variable_name}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         # Collect combined NPZ data across all bands
@@ -129,18 +157,13 @@ def run(
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
-            da_true = ds_target[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_pred = ds_prediction[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
             # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
             if max_samples is not None:
-                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-                ml_seed = ds_seed + 1
-                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
-                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 1].set_title(
                         f"Lat {lat_min}° to {lat_max}° (No data)"
@@ -214,17 +237,12 @@ def run(
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            da_true = ds_target[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_pred = ds_prediction[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
             if max_samples is not None:
-                ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                ml_seed = ds_seed + 1
-                ds_sample = _subsample_values(da_true, max_samples, ds_seed)
-                ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 0].set_title(
                         f"Lat {lat_min}° to {lat_max}° (No data)"
@@ -289,7 +307,7 @@ def run(
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
 
-        units = ds_target[variable_name].attrs.get("units", "")
+        units = da_target_var.attrs.get("units", "")
         plt.suptitle(
             f"Distribution of {variable_name} ({units}) by latitude bands",
             y=1.02,
@@ -298,33 +316,29 @@ def run(
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{variable_name}_sfc_latbands.png"
+            out_png = section_output / build_output_filename(
+                metric="hist",
+                variable=variable_name,
+                level=level_token,
+                qualifier=qualifier,
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="png",
+            )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[histograms] saved {out_png}")
         if save_npz:
-            # Write one combined NPZ with all band histograms for this variable
-            # Convert list of tuples to stacked arrays for easier downstream use
-            def _stack_counts_bins(pairs):
-                counts = [p[0] for p in pairs]
-                bins = [p[1] for p in pairs]
-                # counts arrays have equal length (bins-1); bins arrays may have equal length
-                return np.stack(counts, axis=0), np.stack(bins, axis=0)
-
-            neg_counts, neg_bins_arr = (
-                _stack_counts_bins(combined["neg_counts"])
-                if combined["neg_counts"]
-                else (np.empty((0,)), np.empty((0,)))
-            )
-            pos_counts, pos_bins_arr = (
-                _stack_counts_bins(combined["pos_counts"])
-                if combined["pos_counts"]
-                else (np.empty((0,)), np.empty((0,)))
-            )
-
-            # The _stack_counts_bins returns stacks of objects; to keep it simple, store ragged lists via allow_pickle
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = (
-                section_output / f"{variable_name}_sfc_latbands_combined.npz"
+            out_npz = section_output / build_output_filename(
+                metric="hist",
+                variable=variable_name,
+                level=level_token,
+                qualifier=f"{qualifier}_combined",
+                init_time_range=None,
+                lead_time_range=None,
+                ensemble=None,
+                ext="npz",
             )
             np.savez(
                 out_npz,
@@ -340,3 +354,35 @@ def run(
             )
             print(f"[histograms] saved {out_npz}")
         plt.close(fig)
+
+    # 2D variables
+    for variable_name in variables_2d:
+        # For 2D variables we now omit the placeholder level token entirely
+        _plot_variable(
+            ds_target[variable_name],
+            ds_prediction[variable_name],
+            variable_name,
+            level_token="",  # build_output_filename will skip empty level
+            qualifier="latbands",
+        )
+
+    # 3D variables per level
+    if process_3d:
+        for variable_name in variables_3d:
+            da_t = ds_target[variable_name]
+            da_p = ds_prediction[variable_name]
+            levels = list(da_t["level"].values)
+            if max_levels is not None:
+                levels = levels[:max_levels]
+            for lvl in levels:
+                # Select single level slice (dropping level dimension for logic reuse)
+                da_t_lvl = da_t.sel(level=lvl)
+                da_p_lvl = da_p.sel(level=lvl)
+                lvl_clean = str(lvl).replace(".", "_")
+                _plot_variable(
+                    da_t_lvl,
+                    da_p_lvl,
+                    variable_name,
+                    level_token=str(lvl_clean),
+                    qualifier="latbands",
+                )

@@ -197,6 +197,8 @@ def run(
     - deterministic/metrics.csv
     - deterministic/metrics_standardized.csv
     """
+    from ..helpers import build_output_filename
+
     section_output = out_root / "deterministic"
     n_points = (
         min(10_000_000, ds_target[list(ds_target.data_vars)[0]].size)
@@ -232,9 +234,74 @@ def run(
         f"{c} (Stdized)" for c in standardized_metrics.columns
     ]
 
+    # Derive init/lead time ranges for naming (if present)
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds.coords and "init_time" not in ds.dims:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt_init(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt_init(start), _fmt_init(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds.coords and "lead_time" not in ds.dims:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            # Convert timedelta64 -> hours
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            start_h = int(hours.min())
+            end_h = int(hours.max())
+
+            def _fmt_lead(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt_lead(start_h), _fmt_lead(end_h))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
     section_output.mkdir(parents=True, exist_ok=True)
-    out_csv = section_output / "metrics.csv"
-    out_csv_std = section_output / "metrics_standardized.csv"
+    out_csv = section_output / build_output_filename(
+        metric="deterministic_metrics",
+        variable=None,
+        level=None,
+        qualifier="averaged" if (init_range or lead_range) else None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="csv",
+    )
+    out_csv_std = section_output / build_output_filename(
+        metric="deterministic_metrics",
+        variable=None,
+        level=None,
+        qualifier="standardized"
+        if (init_range or lead_range)
+        else "standardized",
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="csv",
+    )
     regular_metrics.to_csv(out_csv)
     standardized_metrics.to_csv(out_csv_std)
     print(f"[deterministic] saved {out_csv}")

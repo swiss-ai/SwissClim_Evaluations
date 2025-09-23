@@ -21,7 +21,7 @@ from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
-from ..helpers import time_chunks
+from ..helpers import build_output_filename, time_chunks
 
 
 def _crps_e1(da_target, da_prediction):
@@ -46,6 +46,10 @@ def crps_e1(
 
 def _crps_e2(da_prediction):
     M: int = da_prediction.shape[-1]
+    # When M < 2, e2 component is undefined (would divide by zero). Return 0 so CRPS reduces to MAE.
+    if M < 2:
+        # Shape should broadcast to target shape with ensemble dim removed
+        return np.zeros(da_prediction.shape[:-1], dtype=da_prediction.dtype)
     e_2 = np.sum(
         np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
@@ -66,7 +70,12 @@ def crps_e2(da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
 
 def _crps_ensemble_fair(da_target, da_prediction):
     M: int = da_prediction.shape[-1]
-    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
+    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / max(
+        M, 1
+    )
+    if M < 2:
+        # Fair CRPS falls back to MAE when only one ensemble member.
+        return e_1
     e_2 = np.sum(
         np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
@@ -257,6 +266,50 @@ def run_probabilistic(
 
     crps_rows: list[dict[str, Any]] = []
 
+    # Extract time ranges for common naming
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
     for var in variables:
         # Extract and align targets and predictions along shared coordinates
         da_target = ds_target[var]
@@ -285,7 +338,16 @@ def run_probabilistic(
             name_prefix=None,
         )
         counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
-        pit_npz = section_output / f"{var}_pit_hist.npz"
+        pit_npz = section_output / build_output_filename(
+            metric="pit_hist",
+            variable=var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=None,
+            ext="npz",
+        )
         np.savez(
             pit_npz,
             counts=counts,
@@ -293,8 +355,26 @@ def run_probabilistic(
         )
         print(f"[probabilistic] saved {pit_npz}")
         # Always save PIT and CRPS fields for reproducibility
-        pit_nc = section_output / f"{var}_pit.nc"
-        crps_nc = section_output / f"{var}_crps.nc"
+        pit_nc = section_output / build_output_filename(
+            metric="pit_field",
+            variable=var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=None,
+            ext="nc",
+        )
+        crps_nc = section_output / build_output_filename(
+            metric="crps_field",
+            variable=var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=None,
+            ext="nc",
+        )
         pit_da.to_netcdf(pit_nc)
         crps_da.to_netcdf(crps_nc)
         print(f"[probabilistic] saved {pit_nc}")
@@ -302,7 +382,16 @@ def run_probabilistic(
 
     if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
-        out_csv = section_output / "crps_summary.csv"
+        out_csv = section_output / build_output_filename(
+            metric="crps_summary",
+            variable=None,
+            level=None,
+            qualifier="averaged" if (init_range or lead_range) else None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=None,
+            ext="csv",
+        )
         df.to_csv(out_csv)
         print("CRPS summary (per variable):")
         print(df.head())
@@ -400,12 +489,73 @@ def plot_probabilistic(
     cbar.set_label(f"CRPS — {base_var}")
     ax.set_title(f"CRPS map (mean over time): {base_var}")
 
+    # Attempt time range extraction for plots
+    def _extract_init_range_plot(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range_plot(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range_plot = _extract_init_range_plot(ds_prediction)
+    lead_range_plot = _extract_lead_range_plot(ds_prediction)
     if save_fig:
-        out_png = section / f"crps_map_{base_var}.png"
+        out_png = section / build_output_filename(
+            metric="crps_map",
+            variable=base_var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range_plot,
+            lead_time_range=lead_range_plot,
+            ensemble=None,
+            ext="png",
+        )
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         print(f"[probabilistic-plots] saved {out_png}")
     if save_npz:
-        out_npz = section / f"crps_map_{base_var}.npz"
+        out_npz = section / build_output_filename(
+            metric="crps_map",
+            variable=base_var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range_plot,
+            lead_time_range=lead_range_plot,
+            ensemble=None,
+            ext="npz",
+        )
         np.savez(
             out_npz,
             crps=crps_map.values,
@@ -558,19 +708,115 @@ def run_probabilistic_wbx(
     ds_targ = ds_target[common_vars]
 
     # CSV summaries using WBX metrics (SpreadSkillRatio, CRPSEnsemble)
-    ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
-    ssr_df = _wbx_metric_to_df(
-        ssr_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="SSR"
+    m_ens = int(ds_pred.dims.get("ensemble", 0))
+    if m_ens < 2:
+        # Provide graceful fallbacks: SSR undefined, CRPS compute via local fallback already.
+        print(
+            "[probabilistic] Ensemble size <2 → skipping WBX SpreadSkillRatio and using local CRPS only."
+        )
+        # Write placeholder SSR CSV
+        ssr_csv = section / "spread_skill_ratio.csv"
+        pd.DataFrame([], columns=["variable", "SSR"]).to_csv(
+            ssr_csv, index=False
+        )
+        print(f"[probabilistic] wrote empty placeholder {ssr_csv}")
+        # Use local CRPS (deterministic MAE surrogate) for summary
+        rows = []
+        for v in ds_pred.data_vars:
+            da_t = ds_targ[v]
+            da_p = ds_pred[v]
+            crps_da = crps_ensemble(da_t, da_p, ensemble_dim="ensemble")
+            val = float(_reduce_mean_all(crps_da).compute().item())
+            rows.append({"variable": v, "CRPS": val})
+        crps_df = (
+            pd.DataFrame(rows).set_index("variable")
+            if rows
+            else pd.DataFrame(columns=["CRPS"])
+        )
+        crps_csv = section / "crps_ensemble.csv"
+        crps_df.to_csv(crps_csv)
+        print(f"[probabilistic] saved {crps_csv}")
+    else:
+        ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
+        ssr_df = _wbx_metric_to_df(
+            ssr_metric,
+            ds_prediction=ds_pred,
+            ds_target=ds_targ,
+            value_col="SSR",
+        )
+
+    # Extract time ranges for naming
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
+    ssr_csv = section / build_output_filename(
+        metric="spread_skill_ratio",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="csv",
     )
-    ssr_csv = section / "spread_skill_ratio.csv"
-    ssr_df.to_csv(ssr_csv)
-    print(f"[probabilistic] saved {ssr_csv}")
+    if m_ens >= 2:
+        ssr_df.to_csv(ssr_csv)
+        print(f"[probabilistic] saved {ssr_csv}")
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
     crps_df = _wbx_metric_to_df(
         crps_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="CRPS"
     )
-    crps_csv = section / "crps_ensemble.csv"
+    crps_csv = section / build_output_filename(
+        metric="crps_ensemble",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="csv",
+    )
     crps_df.to_csv(crps_csv)
     print(f"[probabilistic] saved {crps_csv}")
 
@@ -618,10 +864,13 @@ def run_probabilistic_wbx(
         bin_by=temporal_bin_by,
     )
 
-    metrics = {
-        "CRPS": CRPSEnsemble(ensemble_dim="ensemble"),
-        "SSR": SpreadSkillRatio(ensemble_dim="ensemble"),
-    }
+    metrics = {}
+    if m_ens >= 2:
+        metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
+        metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
+    else:
+        # Only compute CRPS via local fallback for temporal/spatial aggregation
+        metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
 
     variables = [v for v in ds_pred.data_vars]
     pred_map = {v: ds_pred[v] for v in variables}
@@ -656,8 +905,26 @@ def run_probabilistic_wbx(
 
     enc_t = _build_time_encoding(temporal_results)
     enc_s = _build_time_encoding(spatial_results)
-    temporal_fn = section / "probabilistic_metrics_temporal.nc"
-    spatial_fn = section / "probabilistic_metrics_spatial.nc"
+    temporal_fn = section / build_output_filename(
+        metric="prob_metrics_temporal",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="nc",
+    )
+    spatial_fn = section / build_output_filename(
+        metric="prob_metrics_spatial",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=None,
+        ext="nc",
+    )
     temporal_results.to_netcdf(temporal_fn, engine="scipy", encoding=enc_t)
     spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
     print("Wrote:", temporal_fn)
@@ -720,7 +987,16 @@ def run_probabilistic_wbx(
                 )
                 ax.set_title(f"CRPS map: {base_var}")
                 # Avoid clashing with non-WBX CRPS map by using a distinct filename
-                out_png = section / f"crps_map_wbx_{base_var}.png"
+                out_png = section / build_output_filename(
+                    metric="crps_map_wbx",
+                    variable=base_var,
+                    level=None,
+                    qualifier=None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=None,
+                    ext="png",
+                )
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
                 print(f"[probabilistic] saved {out_png}")
                 plt.close(fig)

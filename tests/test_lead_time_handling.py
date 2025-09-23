@@ -92,11 +92,17 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
 
     # Verify outputs exist
     prob_dir = out_root / "probabilistic"
-    assert (prob_dir / "crps_summary.csv").exists()
+    # Must have CRPS summary with init/lead time ranges (simplified schema)
+    assert any(
+        f.name.startswith("crps_summary_averaged_init")
+        and "lead" in f.name
+        and f.name.endswith("_ensnone.csv")
+        for f in prob_dir.glob("crps_summary_*.csv")
+    ), "Expected CRPS summary file with init/lead time tokens under new schema"
 
-    # Load saved PIT/CRPS to check dims
-    pit_nc = prob_dir / "2m_temperature_pit.nc"
-    crps_nc = prob_dir / "2m_temperature_crps.nc"
+    # Load suffixed PIT/CRPS (pick first match)
+    pit_nc = next(prob_dir.glob("pit_field_2m_temperature_*.nc"))
+    crps_nc = next(prob_dir.glob("crps_field_2m_temperature_*.nc"))
     assert pit_nc.exists() and crps_nc.exists()
 
     pit = xr.load_dataarray(pit_nc)
