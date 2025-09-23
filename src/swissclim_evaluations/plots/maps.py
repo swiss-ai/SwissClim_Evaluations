@@ -176,6 +176,7 @@ def run(
                 dpi=dpi * 2,
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 squeeze=False,
+                constrained_layout=True,
             )
 
             ds_var = ds_target[var]
@@ -193,13 +194,15 @@ def run(
                 ds_ml_var = ds_ml_var.isel(init_time=time_index)
             if "lead_time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
 
             for idx, level in enumerate(levels):
-                ax_ds = axes[idx, 0]
+                level_val = int(level.values) if hasattr(level, "values") else int(level)
+                ax_ds, ax_ds_ml = axes[idx]
                 ds_var_lev = ds_var.sel(level=level)
                 ds_ml_var_lev = ds_ml_var.sel(level=level)
+
+                vmin = min(float(ds_var_lev.min()), float(ds_ml_var_lev.min()))
+                vmax = max(float(ds_var_lev.max()), float(ds_ml_var_lev.max()))
 
                 im_ds = ds_var_lev.plot(
                     ax=ax_ds,
@@ -211,9 +214,8 @@ def run(
                 )
                 ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds.coastlines(linewidth=0.5)
-                ax_ds.set_title(f"Ground Truth - Level {level}")
+                ax_ds.set_title(f"Ground Truth - Level {level_val}")
 
-                ax_ds_ml = axes[idx, 1]
                 ds_ml_var_lev.plot(
                     ax=ax_ds_ml,
                     cmap="viridis",
@@ -224,15 +226,13 @@ def run(
                 )
                 ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds_ml.coastlines(linewidth=0.5)
-                ax_ds_ml.set_title(f"Model - Level {level}")
+                ax_ds_ml.set_title(f"Model - Level {level_val}")
 
-            cbar_ax = plt.gcf().add_axes([0.15, 0.05, 0.7, 0.02])
-            plt.colorbar(
-                im_ds,
-                cax=cbar_ax,
-                orientation="horizontal",
-                label=ds_target[var].attrs.get("units", ""),
-            )
+                fig.colorbar(
+                    im_ds, ax=[ax_ds, ax_ds_ml], orientation="horizontal",
+                    fraction=0.05, pad=0.07,
+                    label=f"{ds_target[var].attrs.get('units', '')} (level {level_val})",
+                )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
