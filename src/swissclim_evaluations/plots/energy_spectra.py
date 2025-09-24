@@ -586,7 +586,11 @@ def run(
             )
             df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
             df_lsd.insert(0, "variable", var)
-            df_lsd.insert(1, "level", int(level))
+            # Safely add/overwrite level column (can already exist if retained as scalar coord)
+            if "level" in df_lsd.columns:
+                df_lsd["level"] = int(level)
+            else:
+                df_lsd.insert(1, "level", int(level))
             detailed_rows_3d.append(df_lsd)
             summary_levels[var].append(float(lsd_da.mean().values))
             if "init_time" in lsd_da.dims:
@@ -596,7 +600,10 @@ def run(
                     name="lsd_mean"
                 ).reset_index()
                 df_init.insert(0, "variable", var)
-                df_init.insert(1, "level", int(level))
+                if "level" in df_init.columns:
+                    df_init["level"] = int(level)
+                else:
+                    df_init.insert(1, "level", int(level))
                 per_init_rows_3d.append(df_init)
 
     if variables_3d:
