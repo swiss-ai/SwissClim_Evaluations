@@ -662,11 +662,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
             dt = time.time() - _t
             module_timings.append(("maps", dt))
-            module_results.append({"name": "maps", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "maps",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover - robustness
             dt = time.time() - _t
             c.error(f"maps failed: {ex}")
-            module_results.append({"name": "maps", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "maps",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
@@ -684,11 +694,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             hist_mod.run(ds_target, ds_prediction, out_root, plotting)
             dt = time.time() - _t
             module_timings.append(("histograms", dt))
-            module_results.append({"name": "histograms", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "histograms",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"histograms failed: {ex}")
-            module_results.append({"name": "histograms", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "histograms",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -715,11 +735,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("wd_kde", dt))
-            module_results.append({"name": "wd_kde", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "wd_kde",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"wd_kde failed: {ex}")
-            module_results.append({"name": "wd_kde", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "wd_kde",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
@@ -747,11 +777,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("energy_spectra", dt))
-            module_results.append({"name": "energy_spectra", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"energy_spectra failed: {ex}")
-            module_results.append({"name": "energy_spectra", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
@@ -775,11 +815,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("vertical_profiles", dt))
-            module_results.append({"name": "vertical_profiles", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"vertical_profiles failed: {ex}")
-            module_results.append({"name": "vertical_profiles", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -806,11 +856,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("deterministic", dt))
-            module_results.append({"name": "deterministic", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "deterministic",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"deterministic failed: {ex}")
-            module_results.append({"name": "deterministic", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "deterministic",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
@@ -825,14 +885,26 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
-            ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
+            ets_mod.run(
+                ds_target, ds_prediction, out_root, cfg.get("metrics", {})
+            )
             dt = time.time() - _t
             module_timings.append(("ets", dt))
-            module_results.append({"name": "ets", "status": "success", "seconds": dt, "error": None})
+            module_results.append({
+                "name": "ets",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"ets failed: {ex}")
-            module_results.append({"name": "ets", "status": "failed", "seconds": dt, "error": str(ex)})
+            module_results.append({
+                "name": "ets",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
@@ -860,24 +932,46 @@ def run_selected(cfg: dict[str, Any]) -> None:
             # Xarray-based CRPS/PIT + plots
             _t = time.time()
             try:
-                run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
+                run_probabilistic(
+                    ds_target, ds_prediction, out_root, plotting, cfg
+                )
                 dt = time.time() - _t
                 module_timings.append(("probabilistic:xarray", dt))
-                module_results.append({"name": "probabilistic:xarray", "status": "success", "seconds": dt, "error": None})
+                module_results.append({
+                    "name": "probabilistic:xarray",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
             except Exception as ex:  # pragma: no cover
                 dt = time.time() - _t
                 c.error(f"probabilistic:xarray failed: {ex}")
-                module_results.append({"name": "probabilistic:xarray", "status": "failed", "seconds": dt, "error": str(ex)})
+                module_results.append({
+                    "name": "probabilistic:xarray",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
             _t = time.time()
             try:
                 plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
                 dt = time.time() - _t
                 module_timings.append(("probabilistic:plots", dt))
-                module_results.append({"name": "probabilistic:plots", "status": "success", "seconds": dt, "error": None})
+                module_results.append({
+                    "name": "probabilistic:plots",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
             except Exception as ex:  # pragma: no cover
                 dt = time.time() - _t
                 c.error(f"probabilistic:plots failed: {ex}")
-                module_results.append({"name": "probabilistic:plots", "status": "failed", "seconds": dt, "error": str(ex)})
+                module_results.append({
+                    "name": "probabilistic:plots",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
             # WeatherBenchX-based summaries and aggregates
             _t = time.time()
             try:
@@ -886,62 +980,93 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 )
                 dt = time.time() - _t
                 module_timings.append(("probabilistic:wbx", dt))
-                module_results.append({"name": "probabilistic:wbx", "status": "success", "seconds": dt, "error": None})
+                module_results.append({
+                    "name": "probabilistic:wbx",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
             except Exception as ex:  # pragma: no cover
                 dt = time.time() - _t
                 c.error(f"probabilistic:wbx failed: {ex}")
-                module_results.append({"name": "probabilistic:wbx", "status": "failed", "seconds": dt, "error": str(ex)})
+                module_results.append({
+                    "name": "probabilistic:wbx",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
 
     # Final completion message + timings summary
     elapsed = time.time() - t0
     try:
         from .console import timings_summary as _timings
+
         if module_timings:
             _timings(module_timings, elapsed)
     except Exception:
         pass
     # Module results summary (pass/fail)
     try:
-        if 'module_results' in locals() and module_results:
+        if "module_results" in locals() and module_results:
             # Build a text table (avoid adding dependency). Use rich if available.
-            from .console import USE_RICH, console as _rc  # type: ignore
-            successes = sum(1 for r in module_results if r['status'] == 'success')
-            failures = [r for r in module_results if r['status'] == 'failed']
-            skipped = [r for r in module_results if r['status'] == 'skipped']
+            from .console import USE_RICH  # type: ignore
+            from .console import console as _rc
+
+            successes = sum(
+                1 for r in module_results if r["status"] == "success"
+            )
+            failures = [r for r in module_results if r["status"] == "failed"]
+            skipped = [r for r in module_results if r["status"] == "skipped"]
             if USE_RICH:
                 try:  # pragma: no cover
-                    from rich.table import Table  # type: ignore
                     from rich import box  # type: ignore
+                    from rich.table import Table  # type: ignore
+
                     tbl = Table(title="Module Results", box=box.SIMPLE_HEAVY)
                     tbl.add_column("Module", style="bold")
                     tbl.add_column("Status")
                     tbl.add_column("Time (s)", justify="right")
                     tbl.add_column("Error")
                     for r in module_results:
-                        status = r['status']
+                        status = r["status"]
                         style = {
-                            'success': 'green',
-                            'failed': 'red',
-                            'skipped': 'yellow'
-                        }.get(status, 'white')
-                        err = (r.get('error') or '')
+                            "success": "green",
+                            "failed": "red",
+                            "skipped": "yellow",
+                        }.get(status, "white")
+                        err = r.get("error") or ""
                         if len(err) > 80:
-                            err = err[:77] + '...'
-                        tbl.add_row(r['name'], f"[{style}]{status}[/]", f"{r['seconds']:.2f}", err)
+                            err = err[:77] + "..."
+                        tbl.add_row(
+                            r["name"],
+                            f"[{style}]{status}[/]",
+                            f"{r['seconds']:.2f}",
+                            err,
+                        )
                     _rc.print(tbl)
                 except Exception:
                     print("Module Results:")
                     for r in module_results:
-                        print(f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)" + (f" error={r['error']}" if r['error'] else ""))
+                        print(
+                            f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                            + (f" error={r['error']}" if r["error"] else "")
+                        )
             else:
                 print("Module Results:")
                 for r in module_results:
-                    print(f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)" + (f" error={r['error']}" if r['error'] else ""))
+                    print(
+                        f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                        + (f" error={r['error']}" if r["error"] else "")
+                    )
             if failures:
                 from . import console as c2
-                c2.warn(f"{len(failures)} module(s) failed: {', '.join(r['name'] for r in failures)}")
+
+                c2.warn(
+                    f"{len(failures)} module(s) failed: {', '.join(r['name'] for r in failures)}"
+                )
             else:
                 from . import console as c2
+
                 c2.success(f"All {successes} module(s) succeeded.")
     except Exception:
         pass
