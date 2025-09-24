@@ -467,7 +467,12 @@ def run(
     summary_rows_2d: list[dict] = []
     per_init_rows_2d: list[pd.DataFrame] = []
 
-    for var in variables_2d:
+    try:
+        from ..progress import iter_progress  # type: ignore
+        _iter_es_2d = iter_progress(variables_2d, module="energy_spectra", total=len(variables_2d))
+    except Exception:  # pragma: no cover
+        _iter_es_2d = variables_2d
+    for var in _iter_es_2d:
         print(f"[energy_spectra] (metrics) 2D variable: {var}")
         lsd_da = _plot_energy_spectra(
             ds_target_full,
@@ -561,7 +566,12 @@ def run(
     detailed_rows_3d: list[pd.DataFrame] = []
     summary_levels: dict[str, list[float]] = {v: [] for v in variables_3d}
     per_init_rows_3d: list[pd.DataFrame] = []
-    for var in variables_3d:
+    try:
+        from ..progress import iter_progress  # type: ignore
+        _iter_es_3d = iter_progress(variables_3d, module="energy_spectra", total=len(variables_3d))
+    except Exception:  # pragma: no cover
+        _iter_es_3d = variables_3d
+    for var in _iter_es_3d:
         print(f"[energy_spectra] (metrics) 3D variable: {var}")
         for level in levels:
             lsd_da = _plot_energy_spectra(
@@ -692,7 +702,12 @@ def run(
             pass
 
     if save_figures or save_plot_data:
-        for var in variables_2d:
+        try:
+            from ..progress import iter_progress  # type: ignore
+            _iter_plot2d = iter_progress(variables_2d, module="energy_spectra", total=len(variables_2d))
+        except Exception:  # pragma: no cover
+            _iter_plot2d = variables_2d
+        for var in _iter_plot2d:
             _ = _plot_energy_spectra(
                 ds_target_plot,
                 ds_prediction_plot,
@@ -713,7 +728,12 @@ def run(
                 save_plot_data=save_plot_data,
                 save_figure=save_figures,
             )
-        for var in variables_3d:
+        try:
+            from ..progress import iter_progress  # type: ignore
+            _iter_plot3d = iter_progress(variables_3d, module="energy_spectra", total=len(variables_3d))
+        except Exception:  # pragma: no cover
+            _iter_plot3d = variables_3d
+        for var in _iter_plot3d:
             for level in levels:
                 _ = _plot_energy_spectra(
                     ds_target_plot,

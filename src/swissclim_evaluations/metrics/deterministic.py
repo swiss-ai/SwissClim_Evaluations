@@ -98,7 +98,16 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
-    for var in variables:
+    # Wrap per-variable loop with progress bar
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter = iter_progress(
+            variables, module="deterministic", total=len(variables)
+        )
+    except Exception:  # pragma: no cover - fallback if progress unavailable
+        _iter = variables
+    for var in _iter:
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
         # Precompute stats only if required

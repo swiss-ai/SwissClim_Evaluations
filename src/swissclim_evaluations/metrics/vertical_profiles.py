@@ -138,7 +138,15 @@ def run(
     lead_range = _extract_lead_range(ds_prediction)
 
     fig_count = 0
-    for var in variables_3d:
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_vprof = iter_progress(
+            variables_3d, module="vertical_profiles", total=len(variables_3d)
+        )
+    except Exception:  # pragma: no cover
+        _iter_vprof = variables_3d
+    for var in _iter_vprof:
         print(f"[vertical_profiles] variable: {var}")
         level_coord = ds_target[var].coords.get("level", None)
         if level_coord is None or int(level_coord.size) == 0:

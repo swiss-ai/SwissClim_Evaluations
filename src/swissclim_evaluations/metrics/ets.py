@@ -16,10 +16,19 @@ def _calculate_ets_for_thresholds(
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
-    for var in variables:
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_vars = iter_progress(
+            variables, module="ets", total=len(variables)
+        )
+    except Exception:  # pragma: no cover
+        _iter_vars = variables
+    for var in _iter_vars:
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
         metrics_dict[var] = {}
+        # Nested threshold loop; lightweight progress (avoid nested rich bars) -> plain iteration
         for threshold in thresholds:
             # Dask-friendly quantile over all dims
             quantile = float(

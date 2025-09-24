@@ -282,7 +282,15 @@ def run(
         plt.close(fig)
 
     # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
-    for variable_name in variables_2d:
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_kde2d = iter_progress(
+            variables_2d, module="wd_kde", total=len(variables_2d)
+        )
+    except Exception:  # pragma: no cover
+        _iter_kde2d = variables_2d
+    for variable_name in _iter_kde2d:
         # Omit placeholder level token for 2D variables
         _process_variable(
             variable_name,
@@ -293,7 +301,15 @@ def run(
 
     # 3D standardized variables per level
     if process_3d:
-        for variable_name in variables_3d:
+        try:
+            from ..progress import iter_progress  # type: ignore
+
+            _iter_kde3d = iter_progress(
+                variables_3d, module="wd_kde", total=len(variables_3d)
+            )
+        except Exception:  # pragma: no cover
+            _iter_kde3d = variables_3d
+        for variable_name in _iter_kde3d:
             da_t_std = ds_target_std[variable_name]
             da_p_std = ds_prediction_std[variable_name]
             levels = list(da_t_std["level"].values)

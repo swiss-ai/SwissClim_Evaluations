@@ -103,7 +103,15 @@ def run(
         ensemble_members = [None]
 
     # 2D maps (one figure per ensemble member if present)
-    for i, var in enumerate(variables_2d):
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_vars2d = iter_progress(
+            variables_2d, module="maps", total=len(variables_2d)
+        )
+    except Exception:  # pragma: no cover
+        _iter_vars2d = variables_2d
+    for i, var in enumerate(_iter_vars2d):
         print(f"[maps] 2D variable: {var}")
         for ens in ensemble_members:
             fig, axes = plt.subplots(
@@ -238,7 +246,15 @@ def run(
             plt.close(fig)
 
     # 3D maps per level
-    for i, var in enumerate(variables_3d):
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_vars3d = iter_progress(
+            variables_3d, module="maps", total=len(variables_3d)
+        )
+    except Exception:  # pragma: no cover
+        _iter_vars3d = variables_3d
+    for i, var in enumerate(_iter_vars3d):
         print(f"[maps] 3D variable: {var}")
         levels = list(ds_target[var].coords.get("level", []))
         if not levels:

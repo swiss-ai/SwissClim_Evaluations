@@ -356,7 +356,15 @@ def run(
         plt.close(fig)
 
     # 2D variables
-    for variable_name in variables_2d:
+    try:
+        from ..progress import iter_progress  # type: ignore
+
+        _iter_hist2d = iter_progress(
+            variables_2d, module="histograms", total=len(variables_2d)
+        )
+    except Exception:  # pragma: no cover
+        _iter_hist2d = variables_2d
+    for variable_name in _iter_hist2d:
         # For 2D variables we now omit the placeholder level token entirely
         _plot_variable(
             ds_target[variable_name],
@@ -368,7 +376,15 @@ def run(
 
     # 3D variables per level
     if process_3d:
-        for variable_name in variables_3d:
+        try:
+            from ..progress import iter_progress  # type: ignore
+
+            _iter_hist3d = iter_progress(
+                variables_3d, module="histograms", total=len(variables_3d)
+            )
+        except Exception:  # pragma: no cover
+            _iter_hist3d = variables_3d
+        for variable_name in _iter_hist3d:
             da_t = ds_target[variable_name]
             da_p = ds_prediction[variable_name]
             levels = list(da_t["level"].values)
