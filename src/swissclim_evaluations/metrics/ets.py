@@ -47,6 +47,19 @@ def run(
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
+    reduce_ens_mean = True
+    try:
+        rem = ets_cfg.get("reduce_ensemble_mean")
+        if rem is not None:
+            reduce_ens_mean = bool(rem)
+    except Exception:
+        reduce_ens_mean = True
+
+    if reduce_ens_mean:
+        if "ensemble" in ds_prediction.dims:
+            ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)
+        if "ensemble" in ds_target.dims:
+            ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
     df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
 
     # Quick console feedback

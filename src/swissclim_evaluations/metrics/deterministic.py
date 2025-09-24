@@ -209,10 +209,32 @@ def run(
     include = None
     std_include = None
     fss_cfg: dict[str, Any] | None = None
+    reduce_ens_mean = True
     if metrics_cfg and isinstance(metrics_cfg.get("deterministic"), dict):
-        include = metrics_cfg["deterministic"].get("include")
-        std_include = metrics_cfg["deterministic"].get("standardized_include")
-        fss_cfg = metrics_cfg["deterministic"].get("fss")
+        det_cfg = metrics_cfg["deterministic"]
+        include = det_cfg.get("include")
+        std_include = det_cfg.get("standardized_include")
+        fss_cfg = det_cfg.get("fss")
+        # Flag: reduce ensemble to mean before computing metrics
+        try:
+            rem = det_cfg.get("reduce_ensemble_mean")
+            if rem is not None:
+                reduce_ens_mean = bool(rem)
+        except Exception:
+            reduce_ens_mean = True
+
+    # Optionally reduce ensemble dimension to its mean for deterministic metrics
+    if reduce_ens_mean:
+        if "ensemble" in ds_prediction.dims:
+            ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)
+        if "ensemble" in ds_target.dims:
+            ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
+        if "ensemble" in ds_prediction_std.dims:
+            ds_prediction_std = ds_prediction_std.mean(
+                dim="ensemble", keep_attrs=True
+            )
+        if "ensemble" in ds_target_std.dims:
+            ds_target_std = ds_target_std.mean(dim="ensemble", keep_attrs=True)
 
     regular_metrics = _calculate_all_metrics(
         ds_target,

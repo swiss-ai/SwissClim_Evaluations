@@ -751,9 +751,25 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("deterministic", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            c.info(
-                f"Ensemble present (size={ens_size}) → metrics computed on deterministic reduction."
-            )
+            # Look up planned reduction flag
+            reduce_flag = True
+            try:
+                det_cfg = (cfg.get("metrics", {}) or {}).get(
+                    "deterministic", {}
+                )
+                rf = det_cfg.get("reduce_ensemble_mean")
+                if rf is not None:
+                    reduce_flag = bool(rf)
+            except Exception:
+                reduce_flag = True
+            if reduce_flag:
+                c.info(
+                    f"Ensemble present (size={ens_size}) → reducing to ensemble mean for deterministic metrics (config: reduce_ensemble_mean=true)."
+                )
+            else:
+                c.warn(
+                    f"Ensemble present (size={ens_size}) → computing metrics per member (config: reduce_ensemble_mean=false)."
+                )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -774,9 +790,22 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("ets", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
-            c.info(
-                f"Ensemble present (size={ens_size}) → ETS computed on deterministic reduction."
-            )
+            reduce_flag = True
+            try:
+                ets_cfg = (cfg.get("metrics", {}) or {}).get("ets", {})
+                rf = ets_cfg.get("reduce_ensemble_mean")
+                if rf is not None:
+                    reduce_flag = bool(rf)
+            except Exception:
+                reduce_flag = True
+            if reduce_flag:
+                c.info(
+                    f"Ensemble present (size={ens_size}) → reducing to ensemble mean for ETS (config: reduce_ensemble_mean=true)."
+                )
+            else:
+                c.warn(
+                    f"Ensemble present (size={ens_size}) → computing ETS per member (config: reduce_ensemble_mean=false)."
+                )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -824,6 +853,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     elapsed = time.time() - t0
     try:
         from .console import timings_summary as _timings
+
         if module_timings:
             _timings(module_timings, elapsed)
     except Exception:
