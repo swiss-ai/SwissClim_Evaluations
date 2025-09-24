@@ -245,7 +245,13 @@ def run(
         for i in range(half):
             # South (row 0)
             ax_s = axes[0, i]
-            curve_s = combined.sel(hemisphere="south").isel(band=i).values
+            # Some xarray versions keep a length-1 dimension when selecting a
+            # single coordinate (hemisphere/band). Squeeze defensively so we
+            # always have shape (n_levels,) for plotting.
+            curve_s_da = (
+                combined.sel(hemisphere="south").isel(band=i).squeeze(drop=True)
+            )
+            curve_s = np.asarray(curve_s_da.values).squeeze()
             ax_s.plot(curve_s, level_values)
             lat_min_neg, lat_max_neg = south_meta[i]
             ax_s.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
@@ -255,7 +261,10 @@ def run(
             ax_s.set_xlim(gmin_val, gmax_val)
             # North (row 1)
             ax_n = axes[1, i]
-            curve_n = combined.sel(hemisphere="north").isel(band=i).values
+            curve_n_da = (
+                combined.sel(hemisphere="north").isel(band=i).squeeze(drop=True)
+            )
+            curve_n = np.asarray(curve_n_da.values).squeeze()
             lat_min_pos, lat_max_pos = north_meta[i]
             ax_n.plot(curve_n, level_values)
             ax_n.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
