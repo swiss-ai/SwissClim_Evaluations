@@ -5,16 +5,20 @@ from pandas.core.indexes.interval import Interval
 
 
 def histogram(
-    ds: xr.Dataset, bins: int | np.ndarray, dims: list[str] | None = None, bindim: str | None = None
+    ds: xr.Dataset,
+    bins: int | np.ndarray,
+    dims: list[str] | None = None,
+    bindim: str | None = None,
 ) -> xr.Dataset:
     """
     Compute the histogram of the data along the given dimension.
 
     Notes
     -----
-    `da.histogram` must be used instead of `np.histogram` to support chunked arrays.
+    Use `da.histogram` instead of `np.histogram` to support chunked arrays.
     """
-    bins = bins if isinstance(bins, (list, np.ndarray)) else np.linspace(0, 1, bins + 1)
+    # Use union pattern form for instanceof (ruff UP038)
+    bins = bins if isinstance(bins, list | np.ndarray) else np.linspace(0, 1, bins + 1)
     other_dims = list(set(ds.dims) - set(dims))
     other_dims = [dim for dim in ds.dims if dim in other_dims]
     stackdims = {"core_dims": dims, "other_dims": other_dims}

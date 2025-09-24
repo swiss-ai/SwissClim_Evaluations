@@ -28,13 +28,24 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
 
     if "ensemble" not in ds_prediction.dims:
         if ensemble_member is not None and not probabilistic_enabled:
-            return f"Ensemble: deterministic mode with ensemble_member={ensemble_member} → selected single member; 'ensemble' removed."
-        return "Ensemble: no 'ensemble' dimension present (either source is single-member or reduced deterministically)."
+            return (
+                "Ensemble: deterministic mode with "
+                f"ensemble_member={ensemble_member} → selected single member; "
+                "'ensemble' removed."
+            )
+        return (
+            "Ensemble: no 'ensemble' dimension present (either source is "
+            "single-member or reduced deterministically)."
+        )
     # ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
     if probabilistic_enabled:
-        return f"Ensemble: probabilistic modules enabled → ensemble (size={ens_size})."
-    return f"Ensemble: deterministic mode without explicit member → expected reduction to mean, but 'ensemble' still present (size={ens_size})."
+        return "Ensemble: probabilistic modules enabled → ensemble (size=" f"{ens_size})."
+    return (
+        "Ensemble: deterministic mode without explicit member → expected "
+        "reduction to mean, but 'ensemble' still present (size="
+        f"{ens_size})."
+    )
 
 
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
@@ -58,16 +69,18 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         missing = [lv for lv in requested if lv not in available]
         if missing and check_missing:
             raise KeyError(
-                f"Requested pressure levels not found: {missing}. Available: {sorted(available)}"
+                "Requested pressure levels not found: " f"{missing}. Available: {sorted(available)}"
             )
         if present:
             ds = ds.sel(level=present)
         else:
-            # No overlap; keep dataset unchanged but warn to stdout for visibility.
+            # No overlap; keep dataset unchanged but warn to stdout.
             if requested:
                 c.warn(
                     "None of the requested pressure levels are present; "
-                    f"requested={requested}, available={sorted(available)}. Skipping level selection."
+                    "requested="
+                    f"{requested}, available={sorted(available)}. "
+                    "Skipping level selection."
                 )
     if latitudes is not None:
         ds = ds.sel(latitude=slice(*latitudes))
@@ -92,17 +105,22 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             missing = [x for x in req if x not in available]
             if missing and check_missing:
                 raise KeyError(
-                    f"Requested timestamps not found in {dim_name}: {missing[:6]}{' ...' if len(missing) > 6 else ''}"
+                    "Requested timestamps not found in "
+                    f"{dim_name}: {missing[:6]}"
+                    f"{' ...' if len(missing) > 6 else ''}"
                 )
             if missing and not check_missing and len(missing) > 0:
                 c.warn(
-                    f"Some requested timestamps are missing in {dim_name}: {len(missing)} missing; proceeding with {len(present)} present."
+                    "Some requested timestamps are missing in "
+                    f"{dim_name}: {len(missing)} missing; proceeding with "
+                    f"{len(present)} present."
                 )
             if present:
                 ds = ds.sel({dim_name: present})
         # If neither init_time nor time exist, ignore silently
     elif datetimes is not None:
-        # Support either a single [start,end] or a list of multiple "start:end" ranges or [[start,end], ...]
+        # Support either a single [start,end] or a list of multiple
+        # "start:end" ranges or [[start,end], ...]
         dim_name = (
             "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
         )
@@ -110,9 +128,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             return ds
 
         def _parse_ranges(values) -> list[tuple[str | None, str | None]]:
-            if not isinstance(values, (list, tuple)):
+            if not isinstance(values, list | tuple):
                 return []
-            # Case: exactly two entries without ':' → treat as single [start, end]
+            # Case: exactly two entries without ':' → single [start, end]
             if (
                 len(values) == 2
                 and all(isinstance(v, str) for v in values)
@@ -121,7 +139,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 return [(values[0], values[1])]
             ranges: list[tuple[str | None, str | None]] = []
             for it in values:
-                if isinstance(it, (list, tuple)) and len(it) == 2:
+                if isinstance(it, (list, tuple)) and len(it) == 2:  # noqa: UP038 (tuple intentional)
                     s, e = it[0], it[1]
                     ranges.append(
                         (
@@ -139,7 +157,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
 
         ranges = _parse_ranges(datetimes)
         if not ranges:
-            # Fallback to original behavior if we couldn't parse anything meaningful
+            # Fallback to original behavior if parsing produced nothing
             if len(datetimes) >= 2:
                 ds = ds.sel(**{dim_name: slice(datetimes[0], datetimes[1])})
             return ds
@@ -164,7 +182,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 raise KeyError(msg)
             c.warn(msg + " Keeping dataset unchanged.")
             return ds
-        # isel by positions retains labels and avoids building a long explicit label list
+        # isel by positions retains labels and avoids large explicit lists
         idx = np.nonzero(mask)[0]
         ds = ds.isel(**{dim_name: idx})
     return ds
@@ -174,7 +192,8 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
     """Downsample temporal axes to the requested hourly resolution.
 
     Preference order:
-    - If both init_time and lead_time exist, stride along lead_time if it is evenly spaced.
+    - If both init_time and lead_time exist, stride along lead_time if it is
+        evenly spaced.
     - Else, stride along init_time if present.
     - Else, no-op.
     """
@@ -188,7 +207,8 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
         factor = max(1, hours // step_ns)
         return ds.isel(lead_time=slice(None, None, factor))
     if "init_time" in ds.dims and ds.init_time.size >= 2:
-        # Only stride if cadence appears uniform; otherwise, leave as-is to avoid dropping irregular labels.
+        # Only stride if cadence appears uniform; else leave to avoid
+        # dropping irregular labels.
         try:
             vals = ds.init_time.values.astype("datetime64[h]").astype("int64")
             diffs = np.diff(vals)
@@ -202,7 +222,8 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
             return ds.isel(init_time=slice(None, None, factor))
         else:
             c.warn(
-                "Requested temporal downsampling on irregular init_time cadence → skipping stride (no-op)."
+                "Requested temporal downsampling on irregular init_time cadence "
+                "→ skipping stride (no-op)."
             )
             return ds
     return ds
@@ -232,11 +253,12 @@ def _select_plot_datetime(
     ds_prediction: xr.Dataset,
     cfg: dict[str, Any],
 ) -> tuple[xr.Dataset, xr.Dataset]:
-    """If plotting.plot_datetime is set, select that init_time for plotting datasets.
+    """Select a single init_time for plotting if configured.
 
-    Validates that the requested datetime lies within selection.datetimes range (if provided)
-    and matches an available init_time label. Returns filtered copies with a length-1
-    init_time dimension. If not set, defaults to selecting the first available init_time.
+    Validates that requested datetime lies within selection.datetimes (if
+    provided) and matches an available init_time label. Returns filtered
+    copies with a length-1 init_time. If not set, defaults to the first
+    available init_time.
     """
     plot_dt_str = (cfg.get("plotting", {}) or {}).get("plot_datetime")
     if not plot_dt_str:
@@ -259,18 +281,19 @@ def _select_plot_datetime(
         end = _parse_iso_datetime(bounds[1])
         if not (start <= plot_dt <= end):
             raise ValueError(
-                f"plot_datetime={plot_dt_str} must lie within selection.datetimes={bounds}"
+                "plot_datetime=" f"{plot_dt_str} must lie within selection.datetimes={bounds}"
             )
 
     if "init_time" not in ds_prediction.dims:
         raise ValueError("plot_datetime requires datasets with 'init_time' dimension.")
 
-    # Ensure exact label present in predictions (targets are aligned to ML labels)
+    # Ensure exact label present (targets already aligned)
     available = ds_prediction["init_time"].values
     if plot_dt not in available:
         raise ValueError(
             "Requested plot_datetime not found in predictions init_time. "
-            f"Requested={plot_dt_str}. Available examples: {available[:8]} (total {available.size})."
+            f"Requested={plot_dt_str}. Available examples: {available[:8]} "
+            f"(total {available.size})."
         )
 
     ds_target_plot = (
@@ -287,8 +310,9 @@ def _select_plot_ensemble(
 ) -> tuple[xr.Dataset, xr.Dataset]:
     """Optionally select specific ensemble members for plotting datasets.
 
-    plotting.plot_ensemble_members: list of integer indices. If provided, subset
-    the 'ensemble' dimension in predictions and predictions_std to those indices.
+    plotting.plot_ensemble_members: list of integer indices. If provided,
+    subset the 'ensemble' dimension in predictions and predictions_std to
+    those indices.
     Targets are unaffected (typically non-ensemble). If 'ensemble' is absent and
     a list is provided, raise a ValueError.
     """
@@ -297,14 +321,15 @@ def _select_plot_ensemble(
         return ds_prediction, ds_prediction_std
     if "ensemble" not in ds_prediction.dims:
         raise ValueError(
-            "plot_ensemble_members specified but 'ensemble' dim not present in predictions."
+            "plot_ensemble_members specified but 'ensemble' dim not present " "in predictions."
         )
     # Validate indices
     ens_size = int(ds_prediction.sizes.get("ensemble", 0))
     idx = [int(m) for m in members]
     if any((m < 0 or m >= ens_size) for m in idx):
         raise ValueError(
-            f"plot_ensemble_members indices out of range. Requested={idx}, available range=0..{ens_size - 1}."
+            "plot_ensemble_members indices out of range. Requested="
+            f"{idx}, available range=0..{ens_size - 1}."
         )
     ds_prediction = ds_prediction.isel(ensemble=idx)
     if "ensemble" in ds_prediction_std.dims:
@@ -351,7 +376,7 @@ def prepare_datasets(
         ds_prediction, dataset_name="ml", first_lead_only=True
     )
 
-    # Handle optional ensemble dimension according to config and selected modules
+    # Handle optional ensemble dimension based on config & modules
     modules_cfg = cfg.get("modules", {})
     probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
@@ -371,7 +396,8 @@ def prepare_datasets(
     ds_target = _select_variables(ds_target, variables_2d, variables_3d)
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
 
-    # Align by valid_time using stack/unstack to ensure identical (init_time, lead_time) dims
+    # Align by valid_time using stack/unstack to ensure identical
+    # (init_time, lead_time) dims
     # Cases:
     # 1) targets have (init_time, lead_time) → compute valid_time from both
     # 2) targets only have time (continuous) → use that as valid_time
@@ -411,16 +437,17 @@ def prepare_datasets(
             nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
             ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
         elif "time" in ds_target.dims:
-            # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
+            # Convert time to stacked structure with dummy lead_time=0
             tvals = ds_target["time"].values.astype("datetime64[ns]")
-            # Build a pair index aligned to each time with synthetic init_time=time and lead_time=0
+            # Pair index aligned to each time with synthetic init_time=time
             ds_tgt_stacked = ds_target.expand_dims({"lead_time": [np.timedelta64(0, "ns")]})
             ds_tgt_stacked = ds_tgt_stacked.rename({"time": "init_time"})
             ds_tgt_stacked = ds_tgt_stacked.stack(pair=("init_time", "lead_time"))
             ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=("pair", tvals))
         else:
             raise ValueError(
-                "Targets must have either ('init_time','lead_time') or 'time' dimension for alignment."
+                "Targets must have either ('init_time','lead_time') or 'time' "
+                "dimension for alignment."
             )
 
         # Intersect valid_time and align order to predictions
@@ -430,7 +457,8 @@ def prepare_datasets(
         )
         if common_valid.size == 0:
             raise ValueError(
-                "No overlapping valid times between ground_truth (time/init+lead) and predictions (init+lead) after selection."
+                "No overlapping valid times between ground_truth (time/init+lead)"
+                "and predictions (init+lead) after selection."
             )
         ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
         nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
@@ -445,12 +473,13 @@ def prepare_datasets(
             index_map.setdefault(vt, i)
         try:
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
-        except KeyError:
+        except KeyError as err:
             raise ValueError(
-                "Internal alignment error: ML valid_time not found in targets after intersection."
-            )
+                "Internal alignment error: ML valid_time not found in targets "
+                "after intersection."
+            ) from err
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
-        # Replace pair labels on targets to match predictions exactly for clean unstack
+        # Replace pair labels to match predictions for clean unstack
         to_drop = [n for n in ("pair", "init_time", "lead_time") if n in ds_tgt_stacked.coords]
         if to_drop:
             ds_tgt_stacked = ds_tgt_stacked.drop_vars(to_drop)
@@ -481,7 +510,7 @@ def prepare_datasets(
                 da = ds[var]
                 try:
                     nan_sum = da.isnull().sum()
-                    # nan_sum is a 0-D DataArray (possibly dask-backed) → compute
+                    # nan_sum is 0-D DataArray (maybe dask) → compute
                     count = int(nan_sum.compute())  # type: ignore[arg-type]
                     if count > 0:
                         missing_counts[var] = count
@@ -531,10 +560,18 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
     module_timings: list[tuple[str, float]] = []
-    ds_target, ds_prediction, ds_target_std, ds_prediction_std = prepare_datasets(cfg)
+    (
+        ds_target,
+        ds_prediction,
+        ds_target_std,
+        ds_prediction_std,
+    ) = prepare_datasets(cfg)
 
     # Derive per-plot datasets if a specific plot datetime is requested
-    ds_target_plot, ds_prediction_plot = _select_plot_datetime(ds_target, ds_prediction, cfg)
+    (
+        ds_target_plot,
+        ds_prediction_plot,
+    ) = _select_plot_datetime(ds_target, ds_prediction, cfg)
     # For maps only: optionally subset ensemble members and/or a single datetime
     # Other modules use full datasets (no plot-time/ensemble filtering)
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
@@ -554,7 +591,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
         vars_3d = []
         vars_2d = all_vars
     c.panel(
-        f"Output: [bold]{out_root}[/]\nMode: [bold]{mode}[/]\nVariables → 2D: [bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]",
+        (
+            f"Output: [bold]{out_root}[/]\nMode: [bold]{mode}[/]\nVariables → 2D: "
+            f"[bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]"
+        ),
         title="Run Overview",
         style="cyan",
     )
@@ -591,7 +631,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
             ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
             if ens_plot < ens_full:
                 c.info(
-                    f"Ensemble present (selected size={ens_plot} of total {ens_full}) → generating maps for selected members."
+                    "Ensemble present (selected size="
+                    f"{ens_plot} of total {ens_full}) → generating maps for "
+                    "selected members."
                 )
             else:
                 c.info(f"Ensemble present (size={ens_full}) → generating maps for all members.")
@@ -664,7 +706,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
             c.info(
-                f"Ensemble present (size={ens_size}) → profiles shown for deterministic reduction only."
+                "Ensemble present (size="
+                f"{ens_size}) → profiles shown for deterministic reduction only."
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
@@ -731,7 +774,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             ens_size = ds_prediction.sizes.get("ensemble")
             c.success(
-                f"Ensemble present (size={ens_size}) → running both xarray and WBX probabilistic metrics."
+                "Ensemble present (size="
+                f"{ens_size}) → running both xarray and WBX probabilistic metrics."
             )
         else:
             c.warn("No ensemble dimension → skipping probabilistic metrics (requires 'ensemble').")
@@ -768,7 +812,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         if USE_RICH:
             c.panel(
-                f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
+                (
+                    f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: "
+                    f"[bold]{out_root}[/]"
+                ),
                 title="✅ Finished",
                 style="green",
             )

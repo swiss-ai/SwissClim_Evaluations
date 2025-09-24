@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
+import numpy as np  # retained for final serialization (NPZ) & minimal list ops
 import xarray as xr
 
 from ..helpers import build_output_filename
@@ -24,9 +24,10 @@ def _compute_nmae(
     lat_slice: slice,
     level_values: Sequence[int | float],
 ) -> xr.DataArray:
-    """Compute NMAE per level (percentage) for a latitude slice lazily with xarray.
+    """Compute NMAE per level (%) for a latitude slice lazily with xarray.
 
-    NMAE_k = MAE_k / Δ_k * 100, with Δ_k the range of true values over all non-level dims.
+    NMAE_k = MAE_k / Δ_k * 100, with Δ_k the range of true values over all
+    non-level dims.
     Returns a DataArray with dimension 'level'.
     If there are no selected values, returns a level-aligned DataArray of NaNs.
     """
@@ -149,20 +150,21 @@ def run(
         south_meta = []  # (lat_min, lat_max)
         north_meta = []
         half = n_bands // 2
-        # Detect latitude ordering once (ERA5 typically descending 90 -> -90). We adapt slice direction
-        # instead of sorting (cheaper and preserves original memory layout / lazy dask graph).
+        # Detect latitude ordering once (ERA5 often descending 90 -> -90); we
+        # adapt slice direction rather than sorting (cheaper; preserves layout).
         try:
             lat_vals = ds_target[var].latitude
             lat_desc = bool(lat_vals[0] > lat_vals[-1])
         except Exception:
             lat_desc = False
 
-        def _lat_slice(lo: float, hi: float) -> slice:
-            """Return a slice selecting [lo, hi] irrespective of coordinate order.
-            lo < hi in logical (ascending) definition coming from _lat_bands().
-            If coordinate is descending we invert endpoints so that .sel() matches data.
+        def _lat_slice(lo: float, hi: float, *, _desc: bool = lat_desc) -> slice:  # bind lat_desc
+            """Return slice selecting [lo, hi] irrespective of order.
+
+            Logical ascending bounds from _lat_bands(); if coordinates are
+            descending invert to keep .sel() correct.
             """
-            return slice(hi, lo) if lat_desc else slice(lo, hi)
+            return slice(hi, lo) if _desc else slice(lo, hi)
 
         for i in range(half):
             # South bands (negative latitudes in array order)
@@ -204,19 +206,17 @@ def run(
         # Materialize full combined array once; then derive global x-range.
         combined = combined.compute()
         vals = combined.values
-        # Mask of finite values (ignores NaN/inf). If none are finite, skip gracefully.
+        # Mask of finite values (ignore NaN/inf). If none finite, skip.
         finite_mask = np.isfinite(vals)
         if not finite_mask.any():
-            print(
-                f"[vertical_profiles] skipping {var}: no finite NMAE values (all selections empty)."
-            )
+            print(f"[vertical_profiles] skipping {var}: no finite NMAE values (empty selections).")
             plt.close("all")
             continue
-        # Compute global range only on finite subset to avoid RuntimeWarning from all-NaN slices.
+        # Global range only on finite subset (avoid all-NaN warnings).
         finite_vals = vals[finite_mask]
         gmin_val = float(finite_vals.min())
         gmax_val = float(finite_vals.max())
-        # If degenerate (all identical), expand range slightly so matplotlib doesn't complain.
+        # If degenerate expand range slightly so matplotlib does not complain.
         if gmin_val == gmax_val:
             pad = 1e-6 if gmin_val == 0 else abs(gmin_val) * 1e-6
             gmin_val -= pad

@@ -101,7 +101,7 @@ def run(
         ensemble_members = [None]
 
     # 2D maps (one figure per ensemble member if present)
-    for i, var in enumerate(variables_2d):
+    for _i, var in enumerate(variables_2d):  # unused index (B007)
         print(f"[maps] 2D variable: {var}")
         for ens in ensemble_members:
             fig, axes = plt.subplots(
@@ -185,7 +185,8 @@ def run(
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
                 plt.suptitle(
-                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - "
+                    f"{time_selected.dt.hour.values} UTC"
                 )
             elif title_extra:
                 plt.suptitle(f"{var}{title_extra}")
@@ -233,7 +234,7 @@ def run(
             plt.close(fig)
 
     # 3D maps per level
-    for i, var in enumerate(variables_3d):
+    for _i, var in enumerate(variables_3d):  # unused index (B007)
         print(f"[maps] 3D variable: {var}")
         levels = list(ds_target[var].coords.get("level", []))
         if not levels:
@@ -329,7 +330,8 @@ def run(
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
                 plt.suptitle(
-                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - {time_selected.dt.hour.values} UTC"
+                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - "
+                    f"{time_selected.dt.hour.values} UTC"
                 )
             elif title_extra:
                 plt.suptitle(f"{var}{title_extra}")

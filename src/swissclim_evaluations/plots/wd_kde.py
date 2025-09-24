@@ -199,7 +199,8 @@ def run(
                 combined["pos_lat_max"].append(float(lat_max))
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
         plt.suptitle(
-            f"Normalized Distribution of {var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
+            f"Normalized Distribution of {var_name} ({level_token}) by latitude bands\n"
+            f"Mean Wasserstein distance: {mean_w:.3f}",
             y=1.02,
         )
         plt.tight_layout()
@@ -247,7 +248,7 @@ def run(
             print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
 
-    # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
+    # 2D standardized variables (run once per variable; previous bug: mis-indented recursion)
     for variable_name in variables_2d:
         # Omit placeholder level token for 2D variables
         _process_variable(

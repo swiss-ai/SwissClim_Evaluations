@@ -145,7 +145,7 @@ def run(
             lat_min = lat_bins[j + 1]
             da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
             da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
-            # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
+            # If subsampling enabled, compute edges on subsamples (not full arrays)
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
                 ds_sample = _subsample_values(da_true, max_samples, seed)

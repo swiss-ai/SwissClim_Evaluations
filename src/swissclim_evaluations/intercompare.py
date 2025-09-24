@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -71,11 +72,10 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
 def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Overlay vertical profile NMAE (or legacy relative error) curves across models.
 
-    For each variable present in all model folders we create per-lat-band figure
-    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS (ground truth) not expressly stored.
-    The NPZ files only contain metric curves already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
-
-    We therefore only plot model curves. If legacy rel_error files are used, label plots accordingly.
+    Create per-lat-band figure (9 south + 9 north => 9 rows x 2 cols). Ground
+    truth curves not explicitly stored; NPZ hold curves already reduced vs level
+    (baseline implicit). Only model curves are plotted; legacy rel_error files
+    are labeled accordingly.
     """
     basenames = _find_vertical_profile_files(models)
     if not basenames:
@@ -192,7 +192,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 spec_ds = datas[0].get("spectrum_ds")
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-                try:
+                with contextlib.suppress(Exception):
                     ax.loglog(
                         wn[2:-2],
                         np.asarray(spec_ds)[2:-2],
@@ -200,8 +200,6 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                         lw=2.0,
                         label="Ground Truth",
                     )
-                except Exception:
-                    pass
             colors = sns.color_palette("tab10", n_colors=len(models))
             for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
@@ -239,7 +237,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             plt.close(fig)
 
     # Collect NPZ patterns (new first, fallback to legacy)
-    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by build_output_filename outputs
+    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
+    # build_output_filename outputs
     # Fallback to legacy glob if any remain
     # New simplified assumption: spectra NPZ basenames already uniform.
     # Retain backward compatibility not required; only support existing saved spectrum npz.
@@ -352,15 +351,9 @@ def intercompare_histograms(
         # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
         # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
         stem = base[:-4] if base.endswith(".npz") else base
-        if stem.startswith("hist_"):
-            var_part = stem[len("hist_") :]
-        else:
-            var_part = stem
+        var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem
         # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
-        if "_ens" in var_part:
-            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
-        else:
-            var_part_no_ens = var_part
+        var_part_no_ens = var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
         # Remove suffix beginning with '_latbands_combined'
         if "_latbands_combined" in var_part_no_ens:
             var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
@@ -430,15 +423,9 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         plt.tight_layout(rect=(0, 0.05, 1, 1))
         # Extract variable/level part.
         stem = base[:-4] if base.endswith(".npz") else base
-        if stem.startswith("wd_kde_"):
-            var_part = stem[len("wd_kde_") :]
-        else:
-            var_part = stem
+        var_part = stem[len("wd_kde_") :] if stem.startswith("wd_kde_") else stem
         # Remove trailing ensemble token if present
-        if "_ens" in var_part:
-            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
-        else:
-            var_part_no_ens = var_part
+        var_part_no_ens = var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
         # Remove '_combined' suffix (may appear with preceding level token)
         if var_part_no_ens.endswith("_combined"):
             var_part_no_ens = var_part_no_ens[: -len("_combined")]

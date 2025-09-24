@@ -150,7 +150,7 @@ def _plot_single_spectrum(
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
     ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
     ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
-    props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
+    props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}
     ax.text(
         0.5,
         0.05,
@@ -193,7 +193,8 @@ def _plot_single_spectrum(
         0.2,
         0.1,
     ]
-    # Keep only wavelengths >= fundamental (≈ circumference) lowered tolerance and <= min resolvable small scale
+    # Keep only wavelengths >= fundamental (≈ circumference) & <= min resolvable
+    # small scale (with slight tolerance)
     wl_min_possible = 1.0 / k_max
     wl_max_possible = 1.0 / k_min
     valid_wl = [
@@ -540,7 +541,7 @@ def run(
                 ),
                 index=False,
             )
-        print("[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)")
+            print("[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)")
 
     # 3D variables
     detailed_rows_3d: list[pd.DataFrame] = []
@@ -653,9 +654,7 @@ def run(
                     ds_target_plot = ds_target_full.sel(init_time=[plot_dt])
                 print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
         except Exception as e:  # pragma: no cover
-            print(
-                f"[energy_spectra] Warning: plot_datetime failed ({e}); using full dataset for plots."
-            )
+            print(f"[energy_spectra] Warning: plot_datetime failed ({e}); using full dataset.")
     elif (not plot_dt_str) and ("init_time" in ds_prediction_full.dims):
         # Default: plot only first init_time to avoid generating very large number of figures
         try:
@@ -666,8 +665,10 @@ def run(
                 and first_dt in ds_target_full["init_time"].values
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
+            first_dt_str = np.datetime_as_string(first_dt, unit="h")
             print(
-                f"[energy_spectra] Plotting only first init_time: {np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+                "[energy_spectra] Plotting only first init_time: "
+                f"{first_dt_str} (metrics cover full range)"
             )
         except Exception:
             pass

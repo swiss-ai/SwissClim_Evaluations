@@ -49,7 +49,7 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["tests/_smoke_data.py"]
+extend-exclude = ["tests/_smoke_data.py", "notebooks/*.ipynb"]
 
 [tool.ruff.lint]
 select = [

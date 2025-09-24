@@ -1,3 +1,4 @@
+import contextlib
 import warnings
 
 import numpy as np
@@ -30,7 +31,11 @@ DESIRED_CHUNKS: dict[str, int] = {
 }
 
 
-def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) -> bool:
+def _chunks_match(
+    chunks: tuple[int, ...] | None,
+    desired: int,
+    dim_len: int,
+) -> bool:
     """Return True if an existing chunk pattern matches the desired size.
 
     Only supports desired sizes of 1 (all chunks size 1) or -1 (single full chunk).
@@ -42,7 +47,7 @@ def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) ->
         return all(c == 1 for c in chunks)
     if desired == -1:
         return len(chunks) == 1 and chunks[0] == dim_len
-    # For other values (not used in policy), be conservative and require exact matches
+    # Other values (not used in policy) -> be conservative and require exact matches
     return all(c == desired for c in chunks[:-1]) and (
         chunks[-1] == desired or chunks[-1] <= desired
     )
@@ -55,8 +60,8 @@ def enforce_chunking(
 ) -> xr.Dataset:
     """Ensure the dataset uses the desired Dask chunking pattern.
 
-    If existing chunks differ (or dataset is not chunked), rechunk and warn that this may
-    increase memory usage and runtime.
+    If existing chunks differ (or dataset is not chunked), rechunk and warn this may increase
+    memory usage and runtime.
     """
     policy = desired_policy or DESIRED_CHUNKS
     # Build chunk map only for dimensions present
@@ -68,7 +73,8 @@ def enforce_chunking(
 
     # Determine if rechunking is necessary by inspecting existing chunks across variables
     needs_rechunk = False
-    # xarray Dataset may not expose a unified chunks mapping; inspect the first variable that has the dim
+    # xarray Dataset may not expose a unified chunks mapping; inspect first
+    # variable that has the dim
     for dim, desired in policy.items():
         if dim not in ds.dims:
             continue
@@ -99,6 +105,7 @@ def enforce_chunking(
         warnings.warn(
             f"Rechunking {name} to policy {policy}. This may increase memory usage and runtime.",
             RuntimeWarning,
+            stacklevel=2,
         )
         return ds.chunk(chunk_map)
     return ds
@@ -109,11 +116,12 @@ def standardize_dims(
 ) -> xr.Dataset:
     """Standardize dataset dims and coords for this pipeline.
 
-    - Normalize alias names (initial_time->init_time, number/member->ensemble, prediction_timedelta->lead_time, etc.).
+        - Normalize alias names (initial_time->init_time, number/member->ensemble,
+            prediction_timedelta->lead_time).
     - Convert legacy 'time' -> 'init_time' and add a singleton zero 'lead_time' if absent.
     - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
     - Ensure spatial dims latitude/longitude exist.
-    - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
+    - Do NOT add synthetic 'level' dimension; only retain if truly present in data.
     - Accept schemas with or without optional 'level' / 'ensemble' dims.
     """
     # Normalize alias dimension/coordinate names first
@@ -135,7 +143,8 @@ def standardize_dims(
     # Forbid any use of valid_time
     if "valid_time" in ds.dims or "valid_time" in ds.coords:
         raise ValueError(
-            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not allowed."
+            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not "
+            "allowed."
         )
 
     # Convert legacy time -> init_time while keeping an index for label-based selection
@@ -144,11 +153,8 @@ def standardize_dims(
             # Rename both the dimension and its coordinate in one go
             ds = ds.rename({"time": "init_time"})
             # On newer xarray, rename drops the xindex; restore it if possible
-            try:  # xarray>=2024.10
+            with contextlib.suppress(Exception):  # xarray>=2024.10 or already indexed
                 ds = ds.set_xindex("init_time")
-            except Exception:
-                # Older versions or if already indexed; safe to ignore
-                pass
         else:
             # Fallback: only dimension exists (no coord var)
             ds = ds.rename_dims({"time": "init_time"})
@@ -170,15 +176,14 @@ def standardize_dims(
                 lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
             )
         # Optional policy: restrict to first lead_time (no forecasting)
-        # If first_lead_only is None, we apply it by default (True) to ensure consistency
-        if first_lead_only is None or bool(first_lead_only):
-            if int(ds.lead_time.size) > 1:
-                # Keep coordinate label and dimension length 1
-                lead0 = ds["lead_time"].values[0]
-                try:
-                    ds = ds.sel(lead_time=[lead0])
-                except Exception:
-                    ds = ds.isel(lead_time=0, drop=False)
+        # If first_lead_only is None, apply by default (True) to ensure consistency
+        if (first_lead_only is None or bool(first_lead_only)) and int(ds.lead_time.size) > 1:
+            # Keep coordinate label and dimension length 1
+            lead0 = ds["lead_time"].values[0]
+            try:
+                ds = ds.sel(lead_time=[lead0])
+            except Exception:
+                ds = ds.isel(lead_time=0, drop=False)
 
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
@@ -196,7 +201,8 @@ def standardize_dims(
     if missing_core:
         raise ValueError(
             f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time) plus optional level/ensemble."
+            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
+            "level/ensemble."
         )
     # Validate that no unsupported dims remain
     bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]

@@ -147,7 +147,7 @@ def _add_metric_prefix(da_or_ds: xr.Dataset | xr.DataArray, prefix: str):
     # Accept both Dataset and DataArray; for DataArray, rename the variable name if present
     if isinstance(da_or_ds, xr.DataArray):
         name = da_or_ds.name or "value"
-        return da_or_ds.rename(f"{prefix}.{name}")
+        return da_or_ds.rename(f"{prefix}.{name}")  # bind var
     else:
         return da_or_ds.rename({var: f"{prefix}.{var}" for var in da_or_ds.data_vars})
 
@@ -171,6 +171,7 @@ def _common_dims_for_reduce(da: xr.DataArray) -> list[str]:
 
 
 def _reduce_mean_all(da: xr.DataArray) -> xr.DataArray:
+    """Mean over common dims (skipna)."""
     dims = _common_dims_for_reduce(da)
     return da.mean(dim=dims, skipna=True)
 
@@ -178,21 +179,19 @@ def _reduce_mean_all(da: xr.DataArray) -> xr.DataArray:
 def _pit_histogram_dask(
     da: xr.DataArray, bins: int = 50, density: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute PIT histogram using dask.array.histogram.
-    Returns (counts, edges). If density=True, return density values.
+    """Compute PIT histogram via dask.
+
+    Returns (counts, edges). If density, normalizes to density units.
     """
     edges = np.linspace(0.0, 1.0, bins + 1)
-    # Use dask-backed data when available; otherwise wrap numpy data lazily
     data = getattr(da, "data", da)
-    darr = dsa.asarray(data)
-    darr = darr.ravel()
+    darr = dsa.asarray(data).ravel()
     darr = darr[~dsa.isnan(darr)]
     counts = dsa.histogram(darr, bins=np.asarray(edges))[0].compute().astype(np.float64)
     if density:
         total = counts.sum()
         if total > 0:
-            bin_width = 1.0 / bins
-            counts = counts / (total * bin_width)
+            counts = counts / (total * (1.0 / bins))
     return counts, edges
 
 
@@ -210,7 +209,8 @@ def _iter_time_chunks(
             lead_chunk,
         ):
             idx = {"init_time": init_chunk_vals, "lead_time": lead_chunk_vals}
-            # Assumes CLI aligned targets and predictions by init_time/lead_time intersection already.
+            # Assumes CLI previously aligned targets & predictions by the
+            # (init_time, lead_time) intersection.
             yield (ds_target.sel(**idx).load(), ds_prediction.sel(**idx).load())
     elif "time" in ds_prediction.dims:
         yield ds_target, ds_prediction
@@ -230,20 +230,21 @@ def run_probabilistic(
     Outputs:
     - crps_summary.csv (mean across common dims)
     - {var}_pit_hist.npz (counts, edges)
-    - Optional: {var}_pit.nc and {var}_crps.nc when plotting.output_mode is 'npz' or 'both'
+    - Optional: {var}_pit.nc and {var}_crps.nc when output_mode is 'npz'/'both'
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
-    # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
+    # Always export numeric artifacts (independent of plotting mode)
 
     if "ensemble" not in ds_prediction.dims:
-        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
+        print("[probabilistic] Skipping: dataset has no 'ensemble' dimension.")
         return
 
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and "
+            "predictions; nothing to do."
         )
         return
 
@@ -390,7 +391,7 @@ def _select_base_variable_for_plot(
     common = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not common:
         raise ValueError(
-            "No common variables between targets and predictions for probabilistic plots."
+            "No common variables between targets and predictions for " "probabilistic plots."
         )
     return common[0]
 
@@ -405,9 +406,10 @@ def plot_probabilistic(
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
-    """Generate probabilistic plots (CRPS map and PIT histogram) and save to disk.
+    """Generate probabilistic plots (CRPS map & PIT histogram) and save.
 
-    Saves under out_root/probabilistic as PNGs and optionally NPZ with data if output_mode is 'npz' or 'both'.
+    Artifacts saved under probabilistic/ as PNGs and optionally NPZ when
+    output_mode is 'npz' or 'both'.
     """
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -580,11 +582,11 @@ def _wbx_metric_to_df(
     """Compute a WeatherBenchX PerVariableMetric into a tidy DataFrame.
 
     Steps:
-    - Compute each required statistic via statistic.compute(predictions, targets)
-      to get mapping var -> DataArray.
-    - Reduce each DataArray by taking mean over common dims.
-    - Call metric.values_from_mean_statistics(mean_stats) to obtain final values.
-    - Return DataFrame with index 'variable' and a single column 'value_col'.
+    - Compute each required statistic via statistic.compute(predictions,
+        targets) → mapping var -> DataArray.
+    - Reduce each DataArray (mean over common dims).
+    - Call metric.values_from_mean_statistics(mean_stats) for final values.
+    - Return DataFrame indexed by variable with column value_col.
     """
     # Build var->DataArray mappings using only common variables
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
@@ -594,16 +596,13 @@ def _wbx_metric_to_df(
     # Compute and average statistics per variable
     mean_stats: dict[str, dict[Hashable, xr.DataArray]] = {}
     dims_all = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "level",
-            "ensemble",
-        ]
+        "time",
+        "init_time",
+        "lead_time",
+        "latitude",
+        "longitude",
+        "level",
+        "ensemble",
     ]
     for stat_name, stat in metric.statistics.items():
         stat_vals = stat.compute(predictions=pred_map, targets=targ_map)
@@ -629,7 +628,7 @@ def run_probabilistic_wbx(
     plotting_cfg: dict[str, Any],
     all_cfg: dict[str, Any],
 ) -> None:
-    """Compute WBX temporal/spatial metrics, CSV summaries, and optional CRPS map.
+    """Compute WBX temporal/spatial metrics & optional CRPS map.
 
     Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
@@ -638,7 +637,7 @@ def run_probabilistic_wbx(
     - probabilistic_metrics_spatial.nc
     - Optional: crps_map_<var>.png if output_mode enables plotting
     """
-    # Write WBX artifacts into the same probabilistic folder to avoid split outputs
+    # Write WBX artifacts into same probabilistic folder (avoid splits)
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
 
@@ -646,13 +645,14 @@ def run_probabilistic_wbx(
     from weatherbenchX import aggregation, binning, weighting
 
     if "ensemble" not in ds_prediction.dims:
-        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
+        print("[probabilistic] Skipping: dataset has no 'ensemble' dimension.")
         return
 
     common_vars = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not common_vars:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and "
+            "predictions; nothing to do."
         )
         return
     ds_pred = ds_prediction[common_vars]
@@ -661,9 +661,9 @@ def run_probabilistic_wbx(
     # CSV summaries using WBX metrics (SpreadSkillRatio, CRPSEnsemble)
     m_ens = int(ds_pred.dims.get("ensemble", 0))
     if m_ens < 2:
-        # Provide graceful fallbacks: SSR undefined, CRPS compute via local fallback already.
+        # Fallback: SSR undefined (<2 members); use local CRPS only.
         print(
-            "[probabilistic] Ensemble size <2 → skipping WBX SpreadSkillRatio and using local CRPS only."
+            "[probabilistic] Ensemble size <2 → skip WBX SpreadSkillRatio; " "use local CRPS only."
         )
         # Write placeholder SSR CSV
         ssr_csv = section / "spread_skill_ratio.csv"
@@ -811,7 +811,7 @@ def run_probabilistic_wbx(
         # Only compute CRPS via local fallback for temporal/spatial aggregation
         metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
 
-    variables = [v for v in ds_pred.data_vars]
+    variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
     targ_map = {v: ds_targ[v] for v in variables}
     # Temporal results: reduce spatial dims, keep time dims
@@ -917,7 +917,7 @@ def run_probabilistic_wbx(
                 )
                 plt.colorbar(mesh, ax=ax, orientation="vertical", label=crps_name)
                 ax.set_title(f"CRPS map: {base_var}")
-                # Avoid clashing with non-WBX CRPS map by using a distinct filename
+                # Use distinct filename to avoid clash with non-WBX variant
                 out_png = section / build_output_filename(
                     metric="crps_map_wbx",
                     variable=base_var,
@@ -934,10 +934,7 @@ def run_probabilistic_wbx(
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:
-    if isinstance(da_or_ds, xr.DataArray):
-        ds = da_or_ds.to_dataset(name="value")
-    else:
-        ds = da_or_ds
+    ds = da_or_ds.to_dataset(name="value") if isinstance(da_or_ds, xr.DataArray) else da_or_ds
     dims = [
         d
         for d in [

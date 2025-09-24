@@ -115,7 +115,7 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
 
 
 def test_multiple_datetime_ranges_selection(tmp_path: Path, monkeypatch):
-    # Target continuous, predictions hourly; select two disjoint ranges over init_time and verify alignment
+    # Select two disjoint ranges over init_time and verify alignment
     ds_tgt = _build_continuous_target()
     # Predictions with hourly inits 0..6
     init = np.array(

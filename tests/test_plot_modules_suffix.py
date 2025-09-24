@@ -81,7 +81,7 @@ def test_maps_histograms_wd_kde_suffixed_outputs(tmp_path: Path):
     assert any(
         f.name.startswith("map_") and f.name.endswith(".npz") for f in maps_dir.glob("map_*.npz")
     ), "Expected standardized map npz outputs"
-    # New schema: no 'full' token and no placeholder level token. Filenames end with 'combined_ensnone.npz'
+    # No 'full' token or placeholder level token; filenames end with 'combined_ensnone.npz'
     assert any(
         f.name.startswith("hist_") and f.name.endswith("combined_ensnone.npz")
         for f in hist_dir.glob("hist_*combined*.npz")

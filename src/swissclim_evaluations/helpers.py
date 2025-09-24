@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 
 import numpy as np
@@ -5,7 +6,7 @@ import xarray as xr
 
 
 def _fmt_init(ts: np.ndarray) -> tuple[str, str]:
-    """Format init_time array (datetime64) to YYYYMMDDHH strings (hour precision)."""
+    """Format init_time datetime64 array to YYYYMMDDHH strings (hour precision)."""
     if ts.size == 0:
         return ("", "")
     start = np.datetime64(ts.min()).astype("datetime64[h]")
@@ -29,7 +30,7 @@ def time_range_suffix(ds: xr.Dataset) -> str:
     Patterns required by tests:
       - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
       - Only one dim present → single segment without separator.
-    Datetime formatted as YYYYMMDDHH (no separators). Lead times in hours (ints).
+    Datetime formatted as YYYYMMDDHH (no separators). Lead times in hours.
     """
     segments: list[str] = []
     if "init_time" in ds.coords:
@@ -70,8 +71,10 @@ def build_output_filename(
         variable: Variable name. If list or None -> omitted.
         level: Pressure level value; omitted if None.
         qualifier: Optional extra discriminator (averaged, combined, plot, spectrum, etc.).
-        init_time_range: (start, end) hour timestamps as YYYYMMDDHH; if provided encoded as init<start>-<end>.
-        lead_time_range: (start, end) lead hours (already zero-padded); encoded as lead<start>-<end>.
+        init_time_range: (start, end) hour timestamps as YYYYMMDDHH; encoded as
+            init<start>-<end> if provided.
+        lead_time_range: (start, end) lead hours (already zero-padded); encoded
+            as lead<start>-<end>.
         ensemble: Index, 'mean', or None (becomes ensnone).
         ext: File extension without leading dot.
     Returns:
@@ -109,12 +112,15 @@ def build_output_filename(
 """Helper utilities for chunking over init and lead times."""
 
 
-def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None):
-    # Accept non-contiguous init_times; just slice by chunk size without assuming uniform spacing
-    try:
+def time_chunks(
+    init_times,
+    lead_times,
+    init_time_chunk_size=None,
+    lead_time_chunk_size=None,
+):
+    # Accept non-contiguous init_times; slice by chunk size without assuming uniform spacing
+    with contextlib.suppress(Exception):
         init_times = init_times.astype("datetime64[ns]")
-    except Exception:
-        pass
     total_init = len(init_times)
     step_i = init_time_chunk_size or total_init
     init_time_chunks = [init_times[i : i + step_i] for i in range(0, total_init, step_i)]
@@ -122,10 +128,8 @@ def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chu
     if isinstance(lead_times, slice):
         lead_time_chunks = [lead_times]
     else:
-        try:
+        with contextlib.suppress(Exception):
             lead_times = lead_times.astype("timedelta64[ns]")
-        except Exception:
-            pass
         total_lead = len(lead_times)
         step_l = lead_time_chunk_size or total_lead
         lead_time_chunks = [lead_times[i : i + step_l] for i in range(0, total_lead, step_l)]

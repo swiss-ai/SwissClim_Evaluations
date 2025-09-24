@@ -57,7 +57,7 @@ def _calculate_all_metrics(
             try:
                 if isinstance(ws, int):
                     fss_window_size = (max(1, int(ws)), max(1, int(ws)))
-                elif isinstance(ws, Iterable) and not isinstance(ws, (str, bytes)):
+                elif isinstance(ws, Iterable) and not isinstance(ws, (str | bytes)):
                     ws_list = list(ws)  # type: ignore[arg-type]
                     if len(ws_list) >= 2:
                         fss_window_size = (

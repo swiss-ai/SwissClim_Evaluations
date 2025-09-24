@@ -30,7 +30,7 @@ def test_deterministic_smoke(tmp_path: Path):
     )
 
     det_dir = out_root / "deterministic"
-    # New schema: no 'multi' or 'full' tokens; expect plain deterministic_metrics_*.csv with ensemble token
+    # No 'multi' or 'full' tokens; expect deterministic_metrics_*.csv with ensemble token
     assert any(
         f.name == "deterministic_metrics_ensnone.csv"
         or f.name == "deterministic_metrics_standardized_ensnone.csv"
@@ -57,7 +57,7 @@ def test_probabilistic_smoke(tmp_path: Path):
 
     prob_dir = out_root / "probabilistic"
     # at least one pit histogram and crps summary should exist
-    # New schema: summary may include init/lead tokens if ranges present else just crps_summary_ensnone.csv
+    # Summary may include init/lead tokens if ranges present else just crps_summary_ensnone.csv
     assert any(
         f.name == "crps_summary_ensnone.csv"
         or (f.name.startswith("crps_summary_averaged_init") and f.name.endswith("_ensnone.csv"))

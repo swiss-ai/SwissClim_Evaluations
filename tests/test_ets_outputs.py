@@ -46,7 +46,8 @@ def test_ets_outputs(tmp_path: Path):
     assert ets_dir.exists()
     # New standardized naming pattern via build_output_filename
     # New schema: no 'multi', 'none', or 'full' placeholders.
-    # Expect patterns like: ets_metrics_ensnone.csv OR ets_metrics_averaged_init...._ensnone.csv when init range present.
+    # Expect patterns like: ets_metrics_ensnone.csv OR
+    # ets_metrics_averaged_init...._ensnone.csv when init range present.
     assert any(
         f.name.startswith("ets_metrics_ensnone.csv")
         or (f.name.startswith("ets_metrics_averaged_init") and f.name.endswith("_ensnone.csv"))
