@@ -32,6 +32,9 @@ dependencies = [
     "xrscipy>=0.8.2",
 ]
 
+[project.optional-dependencies]
+dev = ["ruff>=0.6.8", "pre-commit>=3.8"]
+
 [tool.uv.sources]
 weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
 
@@ -42,3 +45,33 @@ swissclim-evaluations-compare = "swissclim_evaluations.intercompare:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["tests/_smoke_data.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    # List any rules to ignore here if noise appears, keep initially empty
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["swissclim_evaluations"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+skip-magic-trailing-comma = false
+line-ending = "lf"

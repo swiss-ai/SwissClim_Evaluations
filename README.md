@@ -484,6 +484,37 @@ pytest -q
 
 Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
 
+### Dev environment (linting & formatting)
+
+This project uses Ruff for both linting and formatting, managed via an optional "dev" extra
+and pre-commit hooks.
+
+Install dev extra with uv:
+
+```bash
+uv sync --extra dev
+```
+
+or with uv pip:
+
+```bash
+uv pip install -e '.[dev]'
+```
+
+#### Pre-commit hooks
+
+Enable once (installs the Git hooks):
+
+```bash
+pre-commit install
+```
+
+and then run manually on all files:
+
+```bash
+pre-commit run --all-files
+```
+
 ### Naming conventions
 
 - targets: the ground-truth/reference dataset (e.g., ERA5). Public APIs now consistently use the parameter name `targets`.
