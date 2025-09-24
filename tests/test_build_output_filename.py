@@ -17,22 +17,16 @@ def test_with_variable_and_level_and_qualifier():
         ensemble=0,
         ext="png",
     )
-    assert fn == (
-        "map_temperature_500_averaged_init2023010100-2023010200_lead000h-024h_ens0.png"
-    )
+    assert fn == ("map_temperature_500_averaged_init2023010100-2023010200_lead000h-024h_ens0.png")
 
 
 def test_omit_variable_when_list():
-    fn = build_output_filename(
-        metric="crps_summary", variable=["a", "b"], ensemble="mean"
-    )
+    fn = build_output_filename(metric="crps_summary", variable=["a", "b"], ensemble="mean")
     assert fn == "crps_summary_ensmean.csv"
 
 
 def test_ensemble_number():
-    fn = build_output_filename(
-        metric="hist", variable="u10", ensemble=3, ext="npz"
-    )
+    fn = build_output_filename(metric="hist", variable="u10", ensemble=3, ext="npz")
     assert fn == "hist_u10_ens3.npz"
 
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
@@ -29,16 +30,8 @@ def _compute_nmae(
     Returns a DataArray with dimension 'level'.
     If there are no selected values, returns a level-aligned DataArray of NaNs.
     """
-    sub_true = (
-        true_da.sel(latitude=lat_slice)
-        .sel(level=level_values)
-        .astype("float32")
-    )
-    sub_pred = (
-        pred_da.sel(latitude=lat_slice)
-        .sel(level=level_values)
-        .astype("float32")
-    )
+    sub_true = true_da.sel(latitude=lat_slice).sel(level=level_values).astype("float32")
+    sub_pred = pred_da.sel(latitude=lat_slice).sel(level=level_values).astype("float32")
     if sub_true.size == 0:
         return xr.DataArray(
             np.full((len(level_values),), np.nan, dtype="float32"),
@@ -88,9 +81,7 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "vertical_profiles"
 
-    variables_3d = [
-        v for v in ds_target.data_vars if "level" in ds_target[v].dims
-    ]
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
 
     # Extract time ranges for naming
@@ -206,15 +197,9 @@ def run(
             north_meta.append((lat_min_pos, lat_max_pos))
 
         band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
-        south_da = xr.concat(south_curves, dim=band_idx).assign_coords(
-            band=band_idx
-        )
-        north_da = xr.concat(north_curves, dim=band_idx).assign_coords(
-            band=band_idx
-        )
-        hemisphere = xr.DataArray(
-            ["south", "north"], dims=["hemisphere"], name="hemisphere"
-        )
+        south_da = xr.concat(south_curves, dim=band_idx).assign_coords(band=band_idx)
+        north_da = xr.concat(north_curves, dim=band_idx).assign_coords(band=band_idx)
+        hemisphere = xr.DataArray(["south", "north"], dims=["hemisphere"], name="hemisphere")
         combined = xr.concat([south_da, north_da], dim=hemisphere)
         # Materialize full combined array once; then derive global x-range.
         combined = combined.compute()
@@ -239,9 +224,7 @@ def run(
 
         # Plot
         n_cols = 2
-        fig, axes = plt.subplots(
-            n_cols, half, figsize=(24, 10), dpi=dpi * 2, sharey=True
-        )
+        fig, axes = plt.subplots(n_cols, half, figsize=(24, 10), dpi=dpi * 2, sharey=True)
         for i in range(half):
             # South (row 0)
             ax_s = axes[0, i]

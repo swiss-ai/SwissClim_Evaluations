@@ -9,11 +9,13 @@ from swissclim_evaluations.metrics.ets import run as run_ets
 
 
 def _make_simple_dataset():
-    time = np.array([
-        np.datetime64("2023-05-01T00"),
-        np.datetime64("2023-05-01T06"),
-        np.datetime64("2023-05-01T12"),
-    ])
+    time = np.array(
+        [
+            np.datetime64("2023-05-01T00"),
+            np.datetime64("2023-05-01T06"),
+            np.datetime64("2023-05-01T12"),
+        ]
+    )
     lat = np.linspace(40, 42, 3)
     lon = np.linspace(7, 9, 4)
     shape = (time.size, lat.size, lon.size)
@@ -47,9 +49,6 @@ def test_ets_outputs(tmp_path: Path):
     # Expect patterns like: ets_metrics_ensnone.csv OR ets_metrics_averaged_init...._ensnone.csv when init range present.
     assert any(
         f.name.startswith("ets_metrics_ensnone.csv")
-        or (
-            f.name.startswith("ets_metrics_averaged_init")
-            and f.name.endswith("_ensnone.csv")
-        )
+        or (f.name.startswith("ets_metrics_averaged_init") and f.name.endswith("_ensnone.csv"))
         for f in ets_dir.glob("ets_metrics*.csv")
     )

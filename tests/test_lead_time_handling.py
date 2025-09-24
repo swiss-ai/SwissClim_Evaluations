@@ -15,9 +15,7 @@ def _make_multi_lead_datasets():
         [np.datetime64("2023-01-01T00"), np.datetime64("2023-01-01T06")],
         dtype="datetime64[ns]",
     )
-    lead = np.array([0, 6, 12], dtype="timedelta64[h]").astype(
-        "timedelta64[ns]"
-    )
+    lead = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
     lat = np.linspace(46.0, 47.0, 2)
     lon = np.linspace(7.0, 8.0, 2)
     ens = np.arange(4)

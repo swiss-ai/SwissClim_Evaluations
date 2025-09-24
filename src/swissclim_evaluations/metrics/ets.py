@@ -22,16 +22,10 @@ def _calculate_ets_for_thresholds(
         metrics_dict[var] = {}
         for threshold in thresholds:
             # Dask-friendly quantile over all dims
-            quantile = float(
-                da_target.quantile(threshold / 100.0, skipna=True)
-                .compute()
-                .item()
-            )
+            quantile = float(da_target.quantile(threshold / 100.0, skipna=True).compute().item())
             obs_events = da_target >= quantile  # targets events
             fcst_events = da_prediction >= quantile  # predictions events
-            bcm = BinaryContingencyManager(
-                fcst_events=fcst_events, obs_events=obs_events
-            )
+            bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
             basic_cm = bcm.transform(reduce_dims="all")
             ets_score = basic_cm.equitable_threat_score()
             metrics_dict[var][f"ETS {threshold}%"] = float(ets_score.values)

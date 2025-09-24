@@ -11,10 +11,12 @@ from swissclim_evaluations.plots.wd_kde import run as run_wd_kde
 
 
 def _make_basic_ds(include_level: bool = False):
-    time = np.array([
-        np.datetime64("2025-01-01T00"),
-        np.datetime64("2025-01-01T06"),
-    ])
+    time = np.array(
+        [
+            np.datetime64("2025-01-01T00"),
+            np.datetime64("2025-01-01T06"),
+        ]
+    )
     lat = np.linspace(-20, 20, 5)
     lon = np.linspace(0, 30, 6)
     rng = np.random.default_rng(0)
@@ -30,12 +32,14 @@ def _make_basic_ds(include_level: bool = False):
     )
     if include_level:
         level = np.array([1000, 850])
-        data_3d = rng.standard_normal((
-            time.size,
-            level.size,
-            lat.size,
-            lon.size,
-        ))
+        data_3d = rng.standard_normal(
+            (
+                time.size,
+                level.size,
+                lat.size,
+                lon.size,
+            )
+        )
         ds["temperature"] = (
             ["time", "level", "latitude", "longitude"],
             data_3d,
@@ -58,9 +62,7 @@ def test_maps_histograms_wd_kde_suffixed_outputs(tmp_path: Path):
     }
 
     run_maps(ds_target, ds_prediction, out_root=out_root, plotting_cfg=plot_cfg)
-    run_histograms(
-        ds_target, ds_prediction, out_root=out_root, plotting_cfg=plot_cfg
-    )
+    run_histograms(ds_target, ds_prediction, out_root=out_root, plotting_cfg=plot_cfg)
     run_wd_kde(
         ds_target,
         ds_prediction,
@@ -77,8 +79,7 @@ def test_maps_histograms_wd_kde_suffixed_outputs(tmp_path: Path):
 
     # Standardized naming: hist_* latbands combined, wd_kde_* combined, map_* files
     assert any(
-        f.name.startswith("map_") and f.name.endswith(".npz")
-        for f in maps_dir.glob("map_*.npz")
+        f.name.startswith("map_") and f.name.endswith(".npz") for f in maps_dir.glob("map_*.npz")
     ), "Expected standardized map npz outputs"
     # New schema: no 'full' token and no placeholder level token. Filenames end with 'combined_ensnone.npz'
     assert any(

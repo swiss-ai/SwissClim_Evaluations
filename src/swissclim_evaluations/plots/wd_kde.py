@@ -45,7 +45,7 @@ def run(
     wasserstein_rows: list[dict[str, float | str]] = []
 
     process_3d = bool(plotting_cfg.get("wd_kde_include_3d", True))
-    max_levels = plotting_cfg.get("wd_kde_max_levels", None)
+    max_levels = plotting_cfg.get("wd_kde_max_levels")
     try:
         max_levels = int(max_levels) if max_levels is not None else None
         if max_levels is not None and max_levels <= 0:
@@ -54,25 +54,15 @@ def run(
         max_levels = None
 
     # Select only genuine 2D variables (no 'level' dimension) and 3D ones
-    variables_2d = [
-        v
-        for v in ds_target_std.data_vars
-        if "level" not in ds_target_std[v].dims
-    ]
-    variables_3d = [
-        v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims
-    ]
+    variables_2d = [v for v in ds_target_std.data_vars if "level" not in ds_target_std[v].dims]
+    variables_3d = [v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
         print("[wd_kde] No eligible variables found – skipping.")
         return
     if variables_2d:
-        print(
-            f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized)."
-        )
+        print(f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized).")
     if process_3d and variables_3d:
-        print(
-            f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized)."
-        )
+        print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
     def _process_variable(
@@ -82,9 +72,7 @@ def run(
         level_token: str,
     ):
         # local copy of loop body (with minor modifications to accept arrays directly)
-        def _subsample_values(
-            da: xr.DataArray, k: int, seed: int
-        ) -> np.ndarray:
+        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
             size = int(getattr(da, "size", 0) or 0)
             if size == 0:
                 return np.array([], dtype=float)
@@ -131,28 +119,23 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            seed = (
-                base_seed
-                + (hash(var_name + level_token) % 1000) * 1000
-                + (j + 1) * 10
-                + 1
-            )
+            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 1
             ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=seed
-            )
+            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
             if ds_flat.size == 0 or ml_flat.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "south",
-                "lat_min": float(lat_min),
-                "lat_max": float(lat_max),
-                "wasserstein": float(w),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "south",
+                    "lat_min": float(lat_min),
+                    "lat_max": float(lat_max),
+                    "wasserstein": float(w),
+                }
+            )
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -160,15 +143,9 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 1].plot(
-                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
-            )
-            axs[j, 1].plot(
-                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
-            )
-            axs[j, 1].set_title(
-                f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
-            )
+            axs[j, 1].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
+            axs[j, 1].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 1].legend()
             if save_npz:
                 combined["neg_x"].append(x_eval)
@@ -186,28 +163,23 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            seed = (
-                base_seed
-                + (hash(var_name + level_token) % 1000) * 1000
-                + (j + 1) * 10
-                + 2
-            )
+            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 2
             ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=seed
-            )
+            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
             if ds_flat.size == 0 or ml_flat.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "north",
-                "lat_min": float(lat_min),
-                "lat_max": float(lat_max),
-                "wasserstein": float(w),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "north",
+                    "lat_min": float(lat_min),
+                    "lat_max": float(lat_max),
+                    "wasserstein": float(w),
+                }
+            )
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -215,15 +187,9 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 0].plot(
-                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
-            )
-            axs[j, 0].plot(
-                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
-            )
-            axs[j, 0].set_title(
-                f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
-            )
+            axs[j, 0].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
+            axs[j, 0].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 0].legend()
             if save_npz:
                 combined["pos_x"].append(x_eval)
@@ -350,6 +316,4 @@ def run(
                 "wasserstein",
             ]
         ).to_csv(out_csv, index=False)
-        print(
-            "[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV"
-        )
+        print("[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV")

@@ -11,10 +11,12 @@ from swissclim_evaluations.metrics.vertical_profiles import (
 
 
 def _make_3d_dataset():
-    init_time = np.array([
-        np.datetime64("2023-01-01T00"),
-        np.datetime64("2023-01-01T12"),
-    ])
+    init_time = np.array(
+        [
+            np.datetime64("2023-01-01T00"),
+            np.datetime64("2023-01-01T12"),
+        ]
+    )
     level = np.array([1000, 850, 500])
     # Cover broad latitude extent so band slicing finds data
     lat = np.linspace(-90, 90, 19)

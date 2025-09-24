@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -59,29 +60,35 @@ def calculate_energy_spectra(
     # physical spacing along longitude
     dx_km = EARTH_CIRCUMFERENCE_KM / n_lon
     da_fft["wavenumber"] = ("wavenumber", np.fft.rfftfreq(n_lon, d=dx_km))
-    da_fft["wavenumber"].attrs.update({
-        "units": "cycles km^-1",
-        "long_name": "zonal wavenumber (cycles per km)",
-        "note": "Not angular wavenumber; no 2π factor",
-    })
+    da_fft["wavenumber"].attrs.update(
+        {
+            "units": "cycles km^-1",
+            "long_name": "zonal wavenumber (cycles per km)",
+            "note": "Not angular wavenumber; no 2π factor",
+        }
+    )
 
     # Drop the zero wavenumber (mean) component for log scaling clarity
     da_fft = da_fft.isel(wavenumber=slice(1, None))
     # Assign wavelength coordinate using raw numpy values to avoid ambiguity errors
     da_fft["wavelength"] = ("wavenumber", 1.0 / da_fft["wavenumber"].values)
-    da_fft["wavelength"].attrs.update({
-        "units": "km",
-        "long_name": "zonal wavelength",
-    })
+    da_fft["wavelength"].attrs.update(
+        {
+            "units": "km",
+            "long_name": "zonal wavelength",
+        }
+    )
     da_fft["wavenumber_m"] = (
         "wavenumber",
         da_fft["wavenumber"].values / 1000.0,
     )
-    da_fft["wavenumber_m"].attrs.update({
-        "units": "cycles m^-1",
-        "long_name": "zonal wavenumber (cycles per meter)",
-        "note": "wavenumber / 1000",
-    })
+    da_fft["wavenumber_m"].attrs.update(
+        {
+            "units": "cycles m^-1",
+            "long_name": "zonal wavenumber (cycles per meter)",
+            "note": "wavenumber / 1000",
+        }
+    )
 
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
@@ -107,18 +114,14 @@ def calculate_energy_spectra(
     return da_power
 
 
-def calculate_log_spectral_distance(
-    spectrum1: np.ndarray, spectrum2: np.ndarray
-) -> float:
+def calculate_log_spectral_distance(spectrum1: np.ndarray, spectrum2: np.ndarray) -> float:
     eps = 1e-10
     log_spec1 = np.log10(spectrum1 + eps)
     log_spec2 = np.log10(spectrum2 + eps)
     return float(np.sqrt(np.mean((log_spec1 - log_spec2) ** 2)))
 
 
-def _compute_lsd_da(
-    spec_target: xr.DataArray, spec_pred: xr.DataArray
-) -> xr.DataArray:
+def _compute_lsd_da(spec_target: xr.DataArray, spec_pred: xr.DataArray) -> xr.DataArray:
     """Vectorized Log Spectral Distance along wavenumber (no averaging over time dims)."""
     eps = 1e-10
     log_t = np.log10(spec_target + eps)
@@ -194,9 +197,7 @@ def _plot_single_spectrum(
     wl_min_possible = 1.0 / k_max
     wl_max_possible = 1.0 / k_min
     valid_wl = [
-        wl
-        for wl in wavelength_candidates
-        if wl_min_possible <= wl <= wl_max_possible * 1.01
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
     ]
     # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
     k_ticks = np.array([1.0 / wl for wl in valid_wl])
@@ -226,9 +227,7 @@ def _plot_single_spectrum(
     ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
 
     lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(
-        f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24
-    )
+    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -284,9 +283,7 @@ def _plot_energy_spectra(
     )
 
     # Align (only wavenumber differs potentially)
-    spectrum_target, spectrum_pred = xr.align(
-        spectrum_target, spectrum_pred, join="inner"
-    )
+    spectrum_target, spectrum_pred = xr.align(spectrum_target, spectrum_pred, join="inner")
 
     # Compute LSD per time slice (vectorized)
     lsd_da = _compute_lsd_da(spectrum_target, spectrum_pred)
@@ -341,14 +338,12 @@ def _plot_energy_spectra(
 
     for idx, key in enumerate(coords_df):
         sel_kwargs = {dim: key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(**{
-            d: spectrum_target.get_index(d).get_loc(sel_kwargs[d])
-            for d in time_dims
-        })
-        spec_p_1d = spectrum_pred.isel(**{
-            d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d])
-            for d in time_dims
-        })
+        spec_t_1d = spectrum_target.isel(
+            **{d: spectrum_target.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+        )
+        spec_p_1d = spectrum_pred.isel(
+            **{d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+        )
         wn = spec_t_1d["wavenumber"].values
         arr_t = spec_t_1d.values
         arr_p = spec_p_1d.values
@@ -364,12 +359,8 @@ def _plot_energy_spectra(
             except Exception:
                 try:
                     # pandas Timestamp path
-                    init_np = np.datetime64(
-                        getattr(init_raw, "to_datetime64")()
-                    )
-                    init_label = np.datetime_as_string(
-                        init_np.astype("datetime64[h]"), unit="h"
-                    )
+                    init_np = np.datetime64(init_raw.to_datetime64())
+                    init_label = np.datetime_as_string(init_np.astype("datetime64[h]"), unit="h")
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
@@ -443,14 +434,8 @@ def run(
 
     # --- Determine variables & levels ---------------------------------------------
     if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:
-        variables_3d = [
-            v
-            for v in ds_target_full.data_vars
-            if "level" in ds_target_full[v].dims
-        ]
-        variables_2d = [
-            v for v in ds_target_full.data_vars if v not in variables_3d
-        ]
+        variables_3d = [v for v in ds_target_full.data_vars if "level" in ds_target_full[v].dims]
+        variables_2d = [v for v in ds_target_full.data_vars if v not in variables_3d]
         levels = select_cfg.get("levels") or list(ds_target_full.level.values)
     else:
         variables_3d = []
@@ -492,10 +477,12 @@ def run(
         df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
         df_lsd.insert(0, "variable", var)
         detailed_rows_2d.append(df_lsd)
-        summary_rows_2d.append({
-            "variable": var,
-            "lsd_mean": float(lsd_da.mean().values),
-        })
+        summary_rows_2d.append(
+            {
+                "variable": var,
+                "lsd_mean": float(lsd_da.mean().values),
+            }
+        )
         if "init_time" in lsd_da.dims:
             mean_over = [d for d in lsd_da.dims if d not in ("init_time",)]
             lsd_by_init = lsd_da.mean(dim=mean_over)
@@ -553,9 +540,7 @@ def run(
                 ),
                 index=False,
             )
-        print(
-            "[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)"
-        )
+        print("[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)")
 
     # 3D variables
     detailed_rows_3d: list[pd.DataFrame] = []
@@ -592,9 +577,7 @@ def run(
             if "init_time" in lsd_da.dims:
                 mean_over = [d for d in lsd_da.dims if d not in ("init_time",)]
                 lsd_by_init = lsd_da.mean(dim=mean_over)
-                df_init = lsd_by_init.to_dataframe(
-                    name="lsd_mean"
-                ).reset_index()
+                df_init = lsd_by_init.to_dataframe(name="lsd_mean").reset_index()
                 df_init.insert(0, "variable", var)
                 df_init.insert(1, "level", int(level))
                 per_init_rows_3d.append(df_init)
@@ -652,9 +635,7 @@ def run(
                 ),
                 index=False,
             )
-        print(
-            "[energy_spectra] saved 3D LSD metrics (detailed, summary, per-init_time)"
-        )
+        print("[energy_spectra] saved 3D LSD metrics (detailed, summary, per-init_time)")
 
     # --- Plotting subset (figures only) -------------------------------------------
     ds_target_plot = ds_target_full

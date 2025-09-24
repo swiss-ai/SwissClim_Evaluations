@@ -122,9 +122,7 @@ def panel(content: str, title: str | None = None, style: str = "") -> None:
 def dims_table(ds) -> None:
     """Render a tiny table of dataset dimensions and sizes."""
     if not USE_RICH:
-        console.print(
-            "dims: " + ", ".join(f"{k}={v}" for k, v in ds.dims.items())
-        )
+        console.print("dims: " + ", ".join(f"{k}={v}" for k, v in ds.dims.items()))
         return
     tbl = Table(box=box.SIMPLE_HEAVY)
     tbl.add_column("Dim", style="bold")

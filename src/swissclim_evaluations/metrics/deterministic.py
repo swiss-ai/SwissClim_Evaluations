@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,7 @@ def _calculate_all_metrics(
     # - window_size = 9x9 grid cells
     auto_window_size = _window_size(ds_target)
     fss_quantile = 0.90
-    fss_window_size: Tuple[int, int] = (9, 9)
+    fss_window_size: tuple[int, int] = (9, 9)
     # Optional absolute thresholds (either a single float for all vars or per-variable mapping)
     fss_threshold_global: float | None = None
     fss_thresholds_per_var: dict[str, float] | None = None
@@ -56,9 +57,7 @@ def _calculate_all_metrics(
             try:
                 if isinstance(ws, int):
                     fss_window_size = (max(1, int(ws)), max(1, int(ws)))
-                elif isinstance(ws, Iterable) and not isinstance(
-                    ws, (str, bytes)
-                ):
+                elif isinstance(ws, Iterable) and not isinstance(ws, (str, bytes)):
                     ws_list = list(ws)  # type: ignore[arg-type]
                     if len(ws_list) >= 2:
                         fss_window_size = (
@@ -79,9 +78,7 @@ def _calculate_all_metrics(
         th_map = fss_cfg.get("thresholds")
         if isinstance(th_map, dict):
             try:
-                fss_thresholds_per_var = {
-                    str(k): float(v) for k, v in th_map.items()
-                }
+                fss_thresholds_per_var = {str(k): float(v) for k, v in th_map.items()}
             except Exception:
                 fss_thresholds_per_var = None
 
@@ -160,17 +157,11 @@ def _calculate_all_metrics(
             mean_abs = float(np.abs(y_true).mean().compute())
 
             if (include is None) or ("Relative MAE" in metrics_to_compute):
-                row["Relative MAE"] = (
-                    (mae_val / mean_abs) if mean_abs else float("nan")
-                )
+                row["Relative MAE"] = (mae_val / mean_abs) if mean_abs else float("nan")
             if (include is None) or ("Relative L1" in metrics_to_compute):
-                row["Relative L1"] = (
-                    (mae_val / l1_norm) if l1_norm else float("nan")
-                )
+                row["Relative L1"] = (mae_val / l1_norm) if l1_norm else float("nan")
             if (include is None) or ("Relative L2" in metrics_to_compute):
-                row["Relative L2"] = (
-                    (rmse_val / l2_norm) if l2_norm else float("nan")
-                )
+                row["Relative L2"] = (rmse_val / l2_norm) if l2_norm else float("nan")
 
         # Finally, if include list is provided, filter to those keys
         if include is not None:
@@ -201,9 +192,7 @@ def run(
 
     section_output = out_root / "deterministic"
     n_points = (
-        min(10_000_000, ds_target[list(ds_target.data_vars)[0]].size)
-        if ds_target.data_vars
-        else 0
+        min(10_000_000, ds_target[list(ds_target.data_vars)[0]].size) if ds_target.data_vars else 0
     )
 
     include = None
@@ -230,9 +219,7 @@ def run(
         include=std_include,
         fss_cfg=fss_cfg,
     )
-    standardized_metrics.columns = [
-        f"{c} (Stdized)" for c in standardized_metrics.columns
-    ]
+    standardized_metrics.columns = [f"{c} (Stdized)" for c in standardized_metrics.columns]
 
     # Derive init/lead time ranges for naming (if present)
     def _extract_init_range(ds: xr.Dataset):
@@ -294,9 +281,7 @@ def run(
         metric="deterministic_metrics",
         variable=None,
         level=None,
-        qualifier="standardized"
-        if (init_range or lead_range)
-        else "standardized",
+        qualifier="standardized" if (init_range or lead_range) else "standardized",
         init_time_range=init_range,
         lead_time_range=lead_range,
         ensemble=None,
@@ -314,9 +299,7 @@ def run(
     except Exception:
         pass
     try:
-        print(
-            "Deterministic standardized metrics (targets vs predictions) — first 5 rows:"
-        )
+        print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
         print(standardized_metrics.head())
     except Exception:
         pass

@@ -60,10 +60,7 @@ def test_probabilistic_smoke(tmp_path: Path):
     # New schema: summary may include init/lead tokens if ranges present else just crps_summary_ensnone.csv
     assert any(
         f.name == "crps_summary_ensnone.csv"
-        or (
-            f.name.startswith("crps_summary_averaged_init")
-            and f.name.endswith("_ensnone.csv")
-        )
+        or (f.name.startswith("crps_summary_averaged_init") and f.name.endswith("_ensnone.csv"))
         for f in prob_dir.glob("crps_summary*.csv")
     )
     pit_files = list(prob_dir.glob("pit_hist_*_ensnone.npz"))

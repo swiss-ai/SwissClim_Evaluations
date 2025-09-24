@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -34,11 +34,7 @@ def _common_files(models: list[Path], rel_glob: str) -> list[str]:
     sets: list[set[str]] = []
     for m in models:
         files = (
-            list(
-                (m / rel_glob.split("/")[0]).glob(
-                    "/".join(rel_glob.split("/")[1:])
-                )
-            )
+            list((m / rel_glob.split("/")[0]).glob("/".join(rel_glob.split("/")[1:])))
             if "/" in rel_glob
             else list(m.glob(rel_glob))
         )
@@ -72,9 +68,7 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
     return sorted(common)
 
 
-def intercompare_vertical_profiles(
-    models: list[Path], labels: list[str], out_root: Path
-) -> None:
+def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Overlay vertical profile NMAE (or legacy relative error) curves across models.
 
     For each variable present in all model folders we create per-lat-band figure
@@ -85,9 +79,7 @@ def intercompare_vertical_profiles(
     """
     basenames = _find_vertical_profile_files(models)
     if not basenames:
-        print(
-            "[intercompare][vprof] no common vertical profile NPZ files found; skipping"
-        )
+        print("[intercompare][vprof] no common vertical profile NPZ files found; skipping")
         return
     dst = _ensure_dir(out_root / "vertical_profiles")
     color_palette = sns.color_palette("tab10", n_colors=len(models))
@@ -113,36 +105,26 @@ def intercompare_vertical_profiles(
         level_values = payloads[0].get("level")
         if level_values is None:
             continue
-        fig, axs = plt.subplots(
-            bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True
-        )
+        fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
         for j in range(bands):
             axn = axs[j, 0]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+            for c, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 arr = np.asarray(pay.get(key_pos))
                 if arr is None or arr.shape[0] <= j:
                     continue
-                axn.plot(
-                    arr[j], level_values, label=lab, color=color_palette[c]
-                )
+                axn.plot(arr[j], level_values, label=lab, color=color_palette[c])
             if pos_lat_min is not None and pos_lat_max is not None:
-                axn.set_title(
-                    f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
-                )
+                axn.set_title(f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)")
             axn.invert_yaxis()
             axn.set_xlabel("NMAE (%)")
             axsou = axs[j, 1]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+            for c, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 arr = np.asarray(pay.get(key_neg))
                 if arr is None or arr.shape[0] <= j:
                     continue
-                axsou.plot(
-                    arr[j], level_values, label=lab, color=color_palette[c]
-                )
+                axsou.plot(arr[j], level_values, label=lab, color=color_palette[c])
             if neg_lat_min is not None and neg_lat_max is not None:
-                axsou.set_title(
-                    f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
-                )
+                axsou.set_title(f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)")
             axsou.invert_yaxis()
             axsou.set_xlabel("NMAE (%)")
         handles, labels_leg = axs[0, 0].get_legend_handles_labels()
@@ -153,37 +135,39 @@ def intercompare_vertical_profiles(
                 loc="lower center",
                 ncol=min(6, len(models)),
             )
-        var = base.replace("_pl_nmae_combined.npz", "").replace(
-            "_pl_rel_error_combined.npz", ""
-        )
+        var = base.replace("_pl_nmae_combined.npz", "").replace("_pl_rel_error_combined.npz", "")
         fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
         plt.tight_layout(rect=(0, 0.04, 1, 1))
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
         rows = []
-        for lab, pay in zip(labels, payloads):
+        for lab, pay in zip(labels, payloads, strict=False):
             neg_arr = np.asarray(pay.get(key_neg))
             pos_arr = np.asarray(pay.get(key_pos))
             if neg_arr is None or pos_arr is None:
                 continue
             for j in range(bands):
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(np.nanmean(pos_arr[j])),
-                    "metric": "NMAE",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])),
-                    "metric": "NMAE",
-                })
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(np.nanmean(pos_arr[j])),
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])),
+                        "metric": "NMAE",
+                    }
+                )
         if rows:
             df = pd.DataFrame(rows)
             out_csv = dst / base.replace(".npz", "_summary.csv")
@@ -191,9 +175,7 @@ def intercompare_vertical_profiles(
             print(f"[intercompare] saved {out_csv}")
 
 
-def intercompare_energy_spectra(
-    models: list[Path], labels: list[str], out_root: Path
-) -> None:
+def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root: Path) -> None:
     src_rel = Path("energy_spectra")
     dst = _ensure_dir(out_root / "energy_spectra")
 
@@ -221,7 +203,7 @@ def intercompare_energy_spectra(
                 except Exception:
                     pass
             colors = sns.color_palette("tab10", n_colors=len(models))
-            for i, (lab, dat) in enumerate(zip(labels, datas)):
+            for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
                 if specm is None:
                     specm = dat.get("spectrum_ml")
@@ -265,9 +247,7 @@ def intercompare_energy_spectra(
     # e.g. '..._spectrum_ensnone.npz'.
     surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
     if not surf:
-        print(
-            "[intercompare][spectra] no common spectrum NPZ files found; skipping plotting"
-        )
+        print("[intercompare][spectra] no common spectrum NPZ files found; skipping plotting")
     else:
         # Decide surface vs pressure level by presence of _<digits>hPa_
         surface_files = [b for b in surf if "hPa" not in b]
@@ -279,7 +259,7 @@ def intercompare_energy_spectra(
 
     # Combine LSD summary across models (2D averaged only current naming)
     lsd_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("lsd_2d_metrics_*averaged*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -295,9 +275,7 @@ def intercompare_energy_spectra(
         pd.concat(lsd_rows, ignore_index=True).to_csv(out_csv, index=False)
 
 
-def _plot_hist_counts(
-    ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str
-):
+def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
     # Draw as stairs to avoid bar clutter across models and ensure proper alignment
     counts = np.asarray(counts, dtype=float)
     edges = np.asarray(edges, dtype=float)
@@ -312,13 +290,9 @@ def intercompare_histograms(
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-    common = _common_files(
-        models, str(src_rel / "hist_*latbands_combined*.npz")
-    )
+    common = _common_files(models, str(src_rel / "hist_*latbands_combined*.npz"))
     if not common:
-        print(
-            "[intercompare][hist] no common histogram NPZ files found; skipping"
-        )
+        print("[intercompare][hist] no common histogram NPZ files found; skipping")
         return
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
     for base in common:
@@ -339,16 +313,12 @@ def intercompare_histograms(
             # Each element is (counts_ds, counts_ml)
             counts_ds = ds_ml_pairs[0]
             bins_ds = payloads[0]["neg_bins"][j]
-            _plot_hist_counts(
-                ax, bins_ds, counts_ds, label="Ground Truth", color="k"
-            )
+            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
             # Plot each model ML
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["neg_counts"][j][1]
                 bins_ml = pay["neg_bins"][j]
-                _plot_hist_counts(
-                    ax, bins_ml, counts_ml, label=lab, color=colors[i]
-                )
+                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
             lat_min = float(lat_neg_min[j])
             lat_max = float(lat_neg_max[j])
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
@@ -359,15 +329,11 @@ def intercompare_histograms(
             ds_ml_pairs = payloads[0]["pos_counts"][j]
             counts_ds = ds_ml_pairs[0]
             bins_ds = payloads[0]["pos_bins"][j]
-            _plot_hist_counts(
-                ax, bins_ds, counts_ds, label="Ground Truth", color="k"
-            )
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["pos_counts"][j][1]
                 bins_ml = pay["pos_bins"][j]
-                _plot_hist_counts(
-                    ax, bins_ml, counts_ml, label=lab, color=colors[i]
-                )
+                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
             lat_min = float(lat_pos_min[j])
             lat_max = float(lat_pos_max[j])
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
@@ -405,16 +371,12 @@ def intercompare_histograms(
         plt.close(fig)
 
 
-def intercompare_wd_kde(
-    models: list[Path], labels: list[str], out_root: Path
-) -> None:
+def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -> None:
     src_rel = Path("wd_kde")
     dst = _ensure_dir(out_root / "wd_kde")
     common = _common_files(models, str(src_rel / "wd_kde_*combined*.npz"))
     if not common:
-        print(
-            "[intercompare][wd_kde] no common wd_kde NPZ files found; skipping"
-        )
+        print("[intercompare][wd_kde] no common wd_kde NPZ files found; skipping")
         return
     colors = sns.color_palette("tab10", n_colors=len(models))
     for base in common:
@@ -429,7 +391,7 @@ def intercompare_wd_kde(
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
                     pay["neg_kde_ml"][j],
@@ -446,7 +408,7 @@ def intercompare_wd_kde(
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],
                     pay["pos_kde_ml"][j],
@@ -488,7 +450,7 @@ def intercompare_wd_kde(
 
     # Combine averaged Wasserstein summary across models if present
     frames_w: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("wd_kde_wasserstein_averaged_*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -544,10 +506,7 @@ def intercompare_maps(
         n_levels = nwp.shape[0] if _is_3d(nwp) else 1
         if any(
             (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
-            or (
-                (not _is_3d(nwp))
-                and (not isinstance(m, np.ndarray) or m.ndim != 2)
-            )
+            or ((not _is_3d(nwp)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
             for m in mls
         ):
             print(f"[intercompare][maps] shape mismatch for {key}; skipping")
@@ -556,22 +515,10 @@ def intercompare_maps(
             nwp_slice = nwp[lvl] if n_levels > 1 else nwp
             ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
             try:
-                vmin = float(
-                    np.nanmin(
-                        [np.nanmin(nwp_slice)]
-                        + [np.nanmin(x) for x in ml_slices]
-                    )
-                )
-                vmax = float(
-                    np.nanmax(
-                        [np.nanmax(nwp_slice)]
-                        + [np.nanmax(x) for x in ml_slices]
-                    )
-                )
+                vmin = float(np.nanmin([np.nanmin(nwp_slice)] + [np.nanmin(x) for x in ml_slices]))
+                vmax = float(np.nanmax([np.nanmax(nwp_slice)] + [np.nanmax(x) for x in ml_slices]))
             except ValueError:
-                print(
-                    f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping"
-                )
+                print(f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping")
                 continue
             ncols = 1 + len(models)
             fig, axes = plt.subplots(
@@ -597,15 +544,12 @@ def intercompare_maps(
             title_base = "Ground Truth"
             if n_levels > 1:
                 level_vals = payloads[0].get("level")
-                if (
-                    isinstance(level_vals, np.ndarray)
-                    and len(level_vals) == n_levels
-                ):
+                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
                     title_base += f" (level {int(level_vals[lvl])})"
                 else:
                     title_base += f" (level {lvl})"
             axes[0].set_title(title_base)
-            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices):
+            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
                 ax.pcolormesh(
                     lons,
                     lats,
@@ -619,9 +563,7 @@ def intercompare_maps(
                 ax.coastlines(linewidth=0.5)
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
             cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
-            plt.colorbar(
-                im0, cax=cbar_ax, orientation="horizontal", label="Value"
-            )
+            plt.colorbar(im0, cax=cbar_ax, orientation="horizontal", label="Value")
             plt.tight_layout(rect=(0, 0.1, 1, 1))
             suffix = f"_level{lvl}" if n_levels > 1 else ""
             out_png = dst / (key + suffix + "_compare.png")
@@ -629,25 +571,20 @@ def intercompare_maps(
             plt.close(fig)
 
 
-def intercompare_metrics_csv(
-    models: list[Path], labels: list[str], out_root: Path
-) -> None:
+def intercompare_metrics_csv(models: list[Path], labels: list[str], out_root: Path) -> None:
     # Deterministic metrics
     dst_det = _ensure_dir(out_root / "deterministic")
     frames: list[pd.DataFrame] = []
     frames_std: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         # New schema: deterministic_metrics*.csv (may have qualifiers/time tokens)
-        candidates = sorted(
-            (m / "deterministic").glob("deterministic_metrics*.csv")
-        )
+        candidates = sorted((m / "deterministic").glob("deterministic_metrics*.csv"))
         # Prefer exact base (no averaged/time tokens) for primary combined table
         f = next(
             (
                 c
                 for c in candidates
-                if c.name == "deterministic_metrics_ensnone.csv"
-                or c.name.endswith("ensmean.csv")
+                if c.name == "deterministic_metrics_ensnone.csv" or c.name.endswith("ensmean.csv")
             ),
             (m / "deterministic" / "deterministic_metrics_ensnone.csv"),
         )
@@ -666,17 +603,10 @@ def intercompare_metrics_csv(
         fstd = next(
             (
                 c
-                for c in (m / "deterministic").glob(
-                    "deterministic_metrics_standardized*.csv"
-                )
-                if c.name.endswith("ensnone.csv")
-                or c.name.endswith("ensmean.csv")
+                for c in (m / "deterministic").glob("deterministic_metrics_standardized*.csv")
+                if c.name.endswith("ensnone.csv") or c.name.endswith("ensmean.csv")
             ),
-            (
-                m
-                / "deterministic"
-                / "deterministic_metrics_standardized_ensnone.csv"
-            ),
+            (m / "deterministic" / "deterministic_metrics_standardized_ensnone.csv"),
         )
         if fstd.is_file():
             df = pd.read_csv(fstd)
@@ -696,13 +626,9 @@ def intercompare_metrics_csv(
             if metric in comb.columns:
                 tmp = comb.copy()
                 tmp[metric] = pd.to_numeric(tmp[metric], errors="coerce")
-                pivot = tmp.pivot(
-                    index="variable", columns="model", values=metric
-                )
+                pivot = tmp.pivot(index="variable", columns="model", values=metric)
                 # Drop rows/columns that are entirely NaN
-                pivot = pivot.dropna(axis=0, how="all").dropna(
-                    axis=1, how="all"
-                )
+                pivot = pivot.dropna(axis=0, how="all").dropna(axis=1, how="all")
                 out_png = dst_det / f"{metric}_compare.png"
                 if pivot.empty or pivot.notna().sum().sum() == 0:
                     # Save a one-panel message so users see why it's empty
@@ -734,7 +660,7 @@ def intercompare_metrics_csv(
     # ETS
     dst_ets = _ensure_dir(out_root / "ets")
     frames_ets: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         # ets_metrics*.csv new naming
         for f in (m / "ets").glob("ets_metrics*.csv"):
             try:
@@ -748,9 +674,7 @@ def intercompare_metrics_csv(
         comb.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
 
 
-def _plot_step_from_hist(
-    ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str
-):
+def _plot_step_from_hist(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
     counts = np.asarray(counts, dtype=float)
     edges = np.asarray(edges, dtype=float)
     ax.stairs(counts, edges, label=label, color=color)
@@ -767,7 +691,7 @@ def intercompare_probabilistic(
 
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("crps_summary*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -785,32 +709,26 @@ def intercompare_probabilistic(
         ("crps_ensemble.csv", "crps_ensemble_combined.csv"),
     ):
         frames: list[pd.DataFrame] = []
-        for lab, m in zip(labels, models):
+        for lab, m in zip(labels, models, strict=False):
             f = m / src_rel / basename
             if f.is_file():
                 df = pd.read_csv(f)
                 df.insert(0, "model", lab)
                 frames.append(df)
         if frames:
-            pd.concat(frames, ignore_index=True).to_csv(
-                dst / outname, index=False
-            )
+            pd.concat(frames, ignore_index=True).to_csv(dst / outname, index=False)
 
     # 3) Overlay PIT histograms by variable
     common_pit = _common_files(models, str(src_rel / "pit_hist_*.npz"))
     colors = sns.color_palette("tab10", n_colors=len(models))
     if not common_pit:
-        print(
-            "[intercompare][prob] no common PIT histogram NPZ files found; skipping PIT overlays"
-        )
+        print("[intercompare][prob] no common PIT histogram NPZ files found; skipping PIT overlays")
     for base in common_pit:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
         # Uniform reference line at y=1
-        ax.axhline(
-            1.0, color="brown", linestyle="--", linewidth=1, label="Uniform"
-        )
-        for i, (lab, pay) in enumerate(zip(labels, payloads)):
+        ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
             counts = pay.get("counts")
             edges = pay.get("edges")
             if counts is None or edges is None:
@@ -829,9 +747,7 @@ def intercompare_probabilistic(
     # 4) Panel CRPS maps from saved NPZ (if available)
     common_crps_map_npz = _common_files(models, str(src_rel / "crps_map_*.npz"))
     if not common_crps_map_npz:
-        print(
-            "[intercompare][prob] no common CRPS map NPZ files found; skipping CRPS map panels"
-        )
+        print("[intercompare][prob] no common CRPS map NPZ files found; skipping CRPS map panels")
     for base in common_crps_map_npz[:max_crps_map_panels]:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Compute global vmin/vmax across models for consistent color scale
@@ -852,7 +768,7 @@ def intercompare_probabilistic(
         )
         if ncols == 1:
             axes = [axes]
-        for ax, lab, arr in zip(axes, labels, arrays):
+        for ax, lab, arr in zip(axes, labels, arrays, strict=False):
             mesh = ax.pcolormesh(
                 lons,
                 lats,
@@ -875,7 +791,7 @@ def intercompare_probabilistic(
     # 5) Combine spatial/temporal WBX NetCDF aggregates into tidy CSVs and simple plots
     # Spatial aggregates
     spatial_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         f = m / src_rel / "probabilistic_metrics_spatial.nc"
         if f.is_file():
             try:
@@ -885,8 +801,7 @@ def intercompare_probabilistic(
                 value_cols = [
                     c
                     for c in df.columns
-                    if isinstance(c, str)
-                    and (c.startswith("CRPS.") or c.startswith("SSR."))
+                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
                 ]
                 if not value_cols:
                     continue
@@ -922,19 +837,14 @@ def intercompare_probabilistic(
             obj_cols = [
                 c
                 for c in spatial_df.columns
-                if spatial_df[c].dtype == object
-                and c not in ("metric", "variable", "model")
+                if spatial_df[c].dtype == object and c not in ("metric", "variable", "model")
             ]
             region_col = obj_cols[0] if obj_cols else None
         if region_col:
             for metric in sorted(spatial_df["metric"].unique()):
                 tmp = spatial_df[spatial_df["metric"] == metric].copy()
-                tmp = tmp.groupby([region_col, "model"], as_index=False)[
-                    "value"
-                ].mean()
-                pivot = tmp.pivot(
-                    index=region_col, columns="model", values="value"
-                ).sort_index()
+                tmp = tmp.groupby([region_col, "model"], as_index=False)["value"].mean()
+                pivot = tmp.pivot(index=region_col, columns="model", values="value").sort_index()
                 if not pivot.empty and pivot.notna().sum().sum() > 0:
                     ax = pivot.plot(kind="bar", figsize=(12, 6))
                     ax.set_title(f"{metric} (spatial aggregates)")
@@ -947,7 +857,7 @@ def intercompare_probabilistic(
 
     # Temporal aggregates
     temporal_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         f = m / src_rel / "probabilistic_metrics_temporal.nc"
         if f.is_file():
             try:
@@ -956,8 +866,7 @@ def intercompare_probabilistic(
                 value_cols = [
                     c
                     for c in df.columns
-                    if isinstance(c, str)
-                    and (c.startswith("CRPS.") or c.startswith("SSR."))
+                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
                 ]
                 if not value_cols:
                     continue
@@ -993,25 +902,20 @@ def intercompare_probabilistic(
             obj_cols = [
                 c
                 for c in temporal_df.columns
-                if temporal_df[c].dtype == object
-                and c not in ("metric", "variable", "model")
+                if temporal_df[c].dtype == object and c not in ("metric", "variable", "model")
             ]
             timebin_col = obj_cols[0] if obj_cols else None
         if timebin_col:
             for metric in sorted(temporal_df["metric"].unique()):
                 tmp = temporal_df[temporal_df["metric"] == metric].copy()
-                tmp = tmp.groupby([timebin_col, "model"], as_index=False)[
-                    "value"
-                ].mean()
+                tmp = tmp.groupby([timebin_col, "model"], as_index=False)["value"].mean()
                 # Ensure categorical ordering if seasons
                 if timebin_col == "season":
                     order = ["DJF", "MAM", "JJA", "SON"]
                     tmp[timebin_col] = pd.Categorical(
                         tmp[timebin_col], categories=order, ordered=True
                     )
-                piv = tmp.pivot(
-                    index=timebin_col, columns="model", values="value"
-                ).sort_index()
+                piv = tmp.pivot(index=timebin_col, columns="model", values="value").sort_index()
                 if not piv.empty and piv.notna().sum().sum() > 0:
                     ax = piv.plot(kind="line", marker="o", figsize=(10, 4))
                     ax.set_title(f"{metric} (temporal aggregates)")
@@ -1082,9 +986,7 @@ def main(argv: list[str] | None = None) -> None:
     if "kde" in mods:
         intercompare_wd_kde(models, labels, out_root)
     if "maps" in mods:
-        intercompare_maps(
-            models, labels, out_root, max_panels=int(args.max_map_panels)
-        )
+        intercompare_maps(models, labels, out_root, max_panels=int(args.max_map_panels))
     if "metrics" in mods:
         intercompare_metrics_csv(models, labels, out_root)
     if "prob" in mods:

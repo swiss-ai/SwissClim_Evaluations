@@ -30,9 +30,7 @@ DESIRED_CHUNKS: dict[str, int] = {
 }
 
 
-def _chunks_match(
-    chunks: tuple[int, ...] | None, desired: int, dim_len: int
-) -> bool:
+def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) -> bool:
     """Return True if an existing chunk pattern matches the desired size.
 
     Only supports desired sizes of 1 (all chunks size 1) or -1 (single full chunk).
@@ -158,24 +156,18 @@ def standardize_dims(
     # Ensure latitude/longitude present
     for d in ("latitude", "longitude"):
         if d not in ds.dims:
-            raise ValueError(
-                f"Dataset '{dataset_name}' is missing required spatial dim '{d}'."
-            )
+            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
 
     # Ensure lead_time exists; add singleton zero if absent when init_time exists
     if "init_time" in ds.dims and "lead_time" not in ds.dims:
-        zero_lead = np.array([0], dtype="timedelta64[h]").astype(
-            "timedelta64[ns]"
-        )
+        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
         ds = ds.expand_dims({"lead_time": zero_lead})
     # Coerce lead_time dtype to timedelta64[ns]
     if "lead_time" in ds.dims:
         lt = ds["lead_time"].values
         if not np.issubdtype(lt.dtype, np.timedelta64):
             ds = ds.assign_coords(
-                lead_time=np.array(lt, dtype="timedelta64[h]").astype(
-                    "timedelta64[ns]"
-                )
+                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
             )
         # Optional policy: restrict to first lead_time (no forecasting)
         # If first_lead_only is None, we apply it by default (True) to ensure consistency

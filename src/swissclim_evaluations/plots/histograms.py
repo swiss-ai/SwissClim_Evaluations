@@ -29,7 +29,7 @@ def run(
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     # Optional subsampling  to avoid loading full arrays.
-    max_samples = plotting_cfg.get("histogram_max_samples", None)
+    max_samples = plotting_cfg.get("histogram_max_samples")
     try:
         max_samples = int(max_samples) if max_samples is not None else None
         if max_samples <= 0:
@@ -42,7 +42,7 @@ def run(
 
     # Config options for 3D handling
     process_3d = bool(plotting_cfg.get("histograms_include_3d", True))
-    max_levels = plotting_cfg.get("histograms_max_levels", None)
+    max_levels = plotting_cfg.get("histograms_max_levels")
     try:
         max_levels = int(max_levels) if max_levels is not None else None
         if max_levels is not None and max_levels <= 0:
@@ -51,21 +51,15 @@ def run(
         max_levels = None
 
     # Select only genuine 2D variables (no 'level' dimension)
-    variables_2d = [
-        v for v in ds_target.data_vars if "level" not in ds_target[v].dims
-    ]
-    variables_3d = [
-        v for v in ds_target.data_vars if "level" in ds_target[v].dims
-    ]
+    variables_2d = [v for v in ds_target.data_vars if "level" not in ds_target[v].dims]
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
         print("[histograms] No eligible variables found – skipping.")
         return
     if variables_2d:
         print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
     if process_3d and variables_3d:
-        print(
-            f"[histograms] Processing {len(variables_3d)} 3D variables (per-level)."
-        )
+        print(f"[histograms] Processing {len(variables_3d)} 3D variables (per-level).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
     def _plot_variable(
@@ -91,9 +85,7 @@ def run(
         }
 
         # Helper to choose common bin edges without loading full arrays
-        def _choose_edges(
-            da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000
-        ):
+        def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
             """Choose common bin edges based on robust quantiles over both arrays.
             Falls back to [-1, 1] if bounds are degenerate.
             """
@@ -102,11 +94,7 @@ def run(
                 q = both.quantile([0.001, 0.999], skipna=True).compute()
                 vmin = float(q.isel(quantile=0).item())
                 vmax = float(q.isel(quantile=1).item())
-                if (
-                    not np.isfinite(vmin)
-                    or not np.isfinite(vmax)
-                    or vmin == vmax
-                ):
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                     vmin, vmax = -1.0, 1.0
             except Exception:
                 vmin, vmax = -1.0, 1.0
@@ -124,9 +112,7 @@ def run(
             return counts
 
         # Helper subsampling function
-        def _subsample_values(
-            da: xr.DataArray, k: int, seed: int
-        ) -> np.ndarray:
+        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
             if k is None:
                 # No subsampling requested; compute only the flattened, finite array
                 arr = np.asarray(da.compute().values).ravel()
@@ -165,30 +151,20 @@ def run(
                 ds_sample = _subsample_values(da_true, max_samples, seed)
                 ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 1].set_title(
-                        f"Lat {lat_min}° to {lat_max}° (No data)"
-                    )
+                    axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                     continue
                 # Determine edges from combined sample quantiles
                 try:
                     both = np.concatenate([ds_sample, ml_sample])
                     qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if (
-                        not np.isfinite(qlow)
-                        or not np.isfinite(qhigh)
-                        or qlow == qhigh
-                    ):
+                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
                         qlow, qhigh = -1.0, 1.0
                 except Exception:
                     qlow, qhigh = -1.0, 1.0
                 edges = np.linspace(qlow, qhigh, 1001)
                 # Histogram on subsamples using dask.histogram for consistency
-                dsa_ds = dsa.from_array(
-                    ds_sample, chunks=ds_sample.shape[0] // 4 or 1
-                )
-                dsa_ml = dsa.from_array(
-                    ml_sample, chunks=ml_sample.shape[0] // 4 or 1
-                )
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
                 counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
                 counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
             else:
@@ -198,13 +174,9 @@ def run(
                 counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             # Convert to density
             width = np.diff(edges)
-            bin_area = (
-                counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-            )
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
-            bin_area_ml = (
-                counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            )
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
             counts_ml = counts_ml / bin_area_ml
             axs[j, 1].bar(
                 edges[:-1],
@@ -244,28 +216,18 @@ def run(
                 ds_sample = _subsample_values(da_true, max_samples, seed)
                 ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 0].set_title(
-                        f"Lat {lat_min}° to {lat_max}° (No data)"
-                    )
+                    axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                     continue
                 try:
                     both = np.concatenate([ds_sample, ml_sample])
                     qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if (
-                        not np.isfinite(qlow)
-                        or not np.isfinite(qhigh)
-                        or qlow == qhigh
-                    ):
+                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
                         qlow, qhigh = -1.0, 1.0
                 except Exception:
                     qlow, qhigh = -1.0, 1.0
                 edges = np.linspace(qlow, qhigh, 1001)
-                dsa_ds = dsa.from_array(
-                    ds_sample, chunks=ds_sample.shape[0] // 4 or 1
-                )
-                dsa_ml = dsa.from_array(
-                    ml_sample, chunks=ml_sample.shape[0] // 4 or 1
-                )
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
                 counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
                 counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
             else:
@@ -273,13 +235,9 @@ def run(
                 counts_ds = _dask_hist(da_true, edges).compute().astype(float)
                 counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             width = np.diff(edges)
-            bin_area = (
-                counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-            )
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
-            bin_area_ml = (
-                counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            )
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
             counts_ml = counts_ml / bin_area_ml
             axs[j, 0].bar(
                 edges[:-1],

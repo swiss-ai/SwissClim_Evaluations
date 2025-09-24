@@ -12,12 +12,7 @@ def _fmt_init(ts: np.ndarray) -> tuple[str, str]:
     end = np.datetime64(ts.max()).astype("datetime64[h]")
 
     def _fmt(x):
-        return (
-            np.datetime_as_string(x, unit="h")
-            .replace("-", "")
-            .replace(":", "")
-            .replace("T", "")
-        )
+        return np.datetime_as_string(x, unit="h").replace("-", "").replace(":", "").replace("T", "")
 
     return _fmt(start), _fmt(end)
 
@@ -114,9 +109,7 @@ def build_output_filename(
 """Helper utilities for chunking over init and lead times."""
 
 
-def time_chunks(
-    init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None
-):
+def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None):
     # Accept non-contiguous init_times; just slice by chunk size without assuming uniform spacing
     try:
         init_times = init_times.astype("datetime64[ns]")
@@ -124,9 +117,7 @@ def time_chunks(
         pass
     total_init = len(init_times)
     step_i = init_time_chunk_size or total_init
-    init_time_chunks = [
-        init_times[i : i + step_i] for i in range(0, total_init, step_i)
-    ]
+    init_time_chunks = [init_times[i : i + step_i] for i in range(0, total_init, step_i)]
 
     if isinstance(lead_times, slice):
         lead_time_chunks = [lead_times]
@@ -137,8 +128,6 @@ def time_chunks(
             pass
         total_lead = len(lead_times)
         step_l = lead_time_chunk_size or total_lead
-        lead_time_chunks = [
-            lead_times[i : i + step_l] for i in range(0, total_lead, step_l)
-        ]
+        lead_time_chunks = [lead_times[i : i + step_l] for i in range(0, total_lead, step_l)]
 
     return itertools.product(init_time_chunks, lead_time_chunks)

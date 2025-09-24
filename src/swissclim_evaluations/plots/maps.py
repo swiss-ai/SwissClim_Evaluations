@@ -84,9 +84,7 @@ def run(
 
     # Determine variables
     if "level" in ds_target.dims and int(ds_target.level.size) > 1:
-        variables_3d = [
-            v for v in ds_target.data_vars if "level" in ds_target[v].dims
-        ]
+        variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
         variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
     else:
         variables_3d = []
@@ -137,10 +135,7 @@ def run(
             for dim_drop in ("time", "init_time", "lead_time"):
                 if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
                     ds_var = ds_var.isel({dim_drop: 0})
-                if (
-                    dim_drop in ds_ml_var.dims
-                    and ds_ml_var.sizes[dim_drop] == 1
-                ):
+                if dim_drop in ds_ml_var.dims and ds_ml_var.sizes[dim_drop] == 1:
                     ds_ml_var = ds_ml_var.isel({dim_drop: 0})
             ds_var = ds_var.squeeze()
             ds_ml_var = ds_ml_var.squeeze()
@@ -279,11 +274,7 @@ def run(
                 ds_ml_var = ds_ml_var.isel(time=time_index)
 
             for idx, level in enumerate(levels):
-                level_val = (
-                    int(level.values)
-                    if hasattr(level, "values")
-                    else int(level)
-                )
+                level_val = int(level.values) if hasattr(level, "values") else int(level)
                 ax_ds, ax_ds_ml = axes[idx]
                 ds_var_lev = ds_var.sel(level=level)
                 ds_ml_var_lev = ds_ml_var.sel(level=level)
