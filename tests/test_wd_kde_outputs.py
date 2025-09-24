@@ -15,7 +15,7 @@ def test_wd_kde_wasserstein_exports(tmp_path: Path):
     tgt_std = (ds_target - ds_target.mean()) / ds_target.std()
     pred_std = (ds_prediction - ds_target.mean()) / ds_target.std()
 
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_wd_kde(
         ds_target=ds_target,
         ds_prediction=ds_prediction,

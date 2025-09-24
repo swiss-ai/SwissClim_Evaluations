@@ -41,14 +41,21 @@ def _make_3d_dataset():
     return tgt, pred
 
 
-def test_vertical_profiles_outputs(tmp_path: Path):
+def test_vertical_profiles_outputs(tmp_path: Path, monkeypatch):
+    # Use four latitude bands -> half=2 so axes indexing axes[0,i] works like original path.
+    import swissclim_evaluations.metrics.vertical_profiles as _vp_mod
+
+    monkeypatch.setattr(
+        _vp_mod, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4)
+    )
+
     ds_target, ds_prediction = _make_3d_dataset()
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_vertical_profiles(
         ds_target=ds_target,
         ds_prediction=ds_prediction,
         out_root=out_root,
-        plotting_cfg={"output_mode": "npz"},  # save NPZ but skip PNG for speed
+        plotting_cfg={"output_mode": "npz"},
         select_cfg={},
     )
     vp_dir = out_root / "vertical_profiles"
