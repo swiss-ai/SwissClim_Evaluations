@@ -185,11 +185,20 @@ selection:
     # "v_component_of_wind",
   ]
 
-  # ensemble_member:
-  #   Integer index to pre-select a single member before any module runs.
-  #   Leave null (recommended) to keep all members and let per‑module modes decide handling.
-  #   If set, other members are discarded (no mean/pooled/prob/members expansion possible later).
-  ensemble_member: null
+  # ensemble_members:
+  #   Optional pre-selection of ensemble members BEFORE any module logic runs.
+  #   Accepts:
+  #     - null        : keep all members (recommended) and let per‑module modes decide.
+  #     - int         : select exactly one member; 'ensemble' dim is dropped and per‑module
+  #                     ensemble modes (mean/members/pooled) are ignored (single-member path).
+  #     - list[int]   : select multiple members; keeps 'ensemble' dim with just those indices.
+  #                     Per‑module ensemble modes still apply but only over retained members.
+  #   Notes:
+  #     - A single-element list acts like the int form (dimension dropped).
+  #     - Indices are zero-based.
+  #     - Prefer plotting.plot_ensemble_members to restrict plotting without discarding
+  #       members for metrics.
+  ensemble_members: null
 
   # Per-module ensemble modes (override defaults if needed):
   #   mean     → reduce to mean (ensmean)

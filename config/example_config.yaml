@@ -68,11 +68,21 @@ selection:
     # "v_component_of_wind",
   ]
 
-  # ensemble_member:
-  #   Integer index to pre-select a single member before any module runs.
-  #   Leave null (recommended) to keep all members and let per‑module modes decide handling.
-  #   If set, other members are discarded (no mean/pooled/prob/members expansion possible later).
-  ensemble_member: null
+  # Optional pre-selection of ensemble members BEFORE any module logic runs.
+  #   Accepts:
+  #     - null  : keep all members (recommended) and let per‑module ensemble modes decide.
+  #     - int   : select exactly one member; 'ensemble' dimension is dropped and ALL per-module
+  #               ensemble modes (mean/members/pooled/prob) become invalid except probabilistic
+  #               which will still use the single deterministic path.
+  #     - list[int]: select multiple members; the dataset is subset to those members but the
+  #               'ensemble' dimension is preserved (length = len(list)). Per‑module ensemble
+  #               modes still function but operate only over the retained subset.
+  #   Notes:
+  #     - Providing a single-element list behaves like the int form (dimension is dropped).
+  #     - Indices are zero-based.
+  #     - Use plotting.plot_ensemble_members for restricting WHICH members are plotted in
+  #       members-capable modules without discarding others for metrics.
+    ensemble_members: null
 
   # Per-module ensemble modes (override defaults if needed):
   #   mean     → reduce to mean (ensmean)

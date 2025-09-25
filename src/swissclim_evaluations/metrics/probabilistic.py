@@ -78,6 +78,26 @@ def _crps_ensemble_fair(da_target, da_prediction):
 
 def crps_ensemble(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     """Compute the fair CRPS for ensemble predictions vs targets."""
+    # Ensure ensemble dimension lives in a single chunk to avoid Dask providing
+    # singleton blocks to gufunc core (which can trigger M=1 checks inside the
+    # function even when global size >1).
+    try:
+        if hasattr(da_prediction.data, "chunks"):
+            # Rechunk only along ensemble dim; keep others unchanged.
+            current = da_prediction.data.chunks
+            if ensemble_dim in da_prediction.dims:
+                axis = da_prediction.dims.index(ensemble_dim)
+                if len(current[axis]) > 1:  # multiple chunks along ensemble dim
+                    da_prediction = da_prediction.chunk({ensemble_dim: -1})
+            # Mirror target chunking for broadcasting safety
+            if (
+                hasattr(da_target.data, "chunks")
+                and ensemble_dim in da_target.dims
+                and len(da_target.data.chunks[da_target.dims.index(ensemble_dim)]) > 1
+            ):
+                da_target = da_target.chunk({ensemble_dim: -1})
+    except Exception:
+        pass  # Best effort; fall back silently
     res = xr.apply_ufunc(
         _crps_ensemble_fair,
         da_target,
@@ -85,6 +105,7 @@ def crps_ensemble(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix)
 
@@ -104,6 +125,7 @@ def probability_integral_transform(
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 
@@ -121,6 +143,7 @@ def ensemble_mean_se(da_target, da_prediction, name_prefix: str = "EnsembleMeanS
         input_core_dims=[[], ["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix)
 
@@ -137,6 +160,7 @@ def ensemble_std(da_prediction, name_prefix: str = "EnsembleSTD"):
         input_core_dims=[["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 

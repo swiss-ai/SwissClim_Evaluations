@@ -232,25 +232,73 @@ def land_sea_mask(path: str) -> xr.DataArray:
 
 def apply_ensemble_policy(
     ds: xr.Dataset,
-    ensemble_member: int | None,
-    probabilistic_enabled: bool,
+    ensemble_members: int | list[int] | None = None,
+    probabilistic_enabled: bool = False,
+    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
-    Rules:
-      - If no 'ensemble' dim: return unchanged.
-      - If probabilistic modules are enabled: keep full ensemble regardless of
-        `ensemble_member` (probabilistic metrics will use it).
-      - Else if `ensemble_member` is provided: select that member and drop dim.
-      - Else (probabilistic disabled and no member specified): use mean over ensemble.
+    Extended semantics (backward compatible):
+    - ensemble_members can be:
+          * None: keep all members (unless probabilistic disabled → may later be reduced
+                    by per‑module logic; here we do NOT pre-reduce to mean anymore to allow
+                    downstream flexibility). NOTE: previous behaviour reduced to mean here;
+                    to preserve existing expectations, we only change behaviour when
+                    probabilistic_enabled is False and historical callers relied on mean.
+                    For backward compatibility we keep the old reduction to mean when
+                    probabilistic_disabled and no selection requested.
+          * int: select that single member and drop the 'ensemble' dimension.
+          * list[int]: subset to those members. If length==1, drop dim (acts like int). If
+                       length>1 keep 'ensemble' dim with the chosen subset.
+      - If probabilistic modules are enabled we NEVER drop or subset unless multiple
+        explicit members were requested (so probabilistic metrics still see full set
+        unless user intentionally restricts it). This preserves previous rule of ignoring
+        single-member selection in probabilistic mode.
     """
+    # Backward compatibility: allow legacy 'ensemble_member' kw
+    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
+        ensemble_members = legacy_kwargs.pop("ensemble_member")
+        warnings.warn(
+            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if legacy_kwargs:
+        warnings.warn(
+            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     if "ensemble" not in ds.dims:
         return ds
-    # Probabilistic path: always keep full ensemble, ignore requested member.
+
+    # Normalize list vs int
+    indices_list: list[int] | None
+    if ensemble_members is None:
+        indices_list = None
+    elif isinstance(ensemble_members, list):
+        indices_list = [int(i) for i in ensemble_members]
+    else:
+        indices_list = [int(ensemble_members)]
+
     if probabilistic_enabled:
-        return ds
-    # Deterministic path with explicit member selection
-    if ensemble_member is not None:
-        return ds.isel(ensemble=int(ensemble_member), drop=True)
-    # Deterministic path without member: use ensemble mean
+        # In probabilistic mode only respect explicit multi-member subsetting; ignore single
+        # int (previous behaviour) but allow user-specified list to intentionally reduce.
+        if indices_list is None:
+            return ds
+        if len(indices_list) == 1:
+            # Keep full set to avoid accidental collapse; match previous behaviour of ignoring
+            # single selection. (Could alternatively drop; chosen for safety.)
+            return ds
+        return ds.isel(ensemble=indices_list)
+
+    # Deterministic mode
+    if indices_list is not None:
+        if len(indices_list) == 1:
+            return ds.isel(ensemble=indices_list[0], drop=True)
+        # subset but keep ensemble dimension
+        return ds.isel(ensemble=indices_list)
+
+    # No explicit selection: preserve legacy behaviour -> reduce to mean
     return ds.mean(dim="ensemble", keep_attrs=True)

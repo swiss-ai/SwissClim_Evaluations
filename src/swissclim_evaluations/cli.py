@@ -29,13 +29,39 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
     sel = cfg.get("selection", {})
     modules_cfg = cfg.get("modules", {})
     probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    ensemble_member = sel.get("ensemble_member")
+    # Prefer new plural key; fall back to legacy singular.
+    if "ensemble_members" in sel:
+        ensemble_members = sel.get("ensemble_members")
+    else:
+        ensemble_members = sel.get("ensemble_member")
+        if ensemble_members is not None:
+            c.warn(
+                "Config key 'selection.ensemble_member' is deprecated; "
+                "use 'selection.ensemble_members'."
+            )
+    # Normalize ensemble_members to int | list[int] | None for apply_ensemble_policy
+    if isinstance(ensemble_members, list):
+        try:
+            ensemble_members = [int(i) for i in ensemble_members]
+        except Exception:
+            c.warn("Invalid values in ensemble_members list; ignoring selection.")
+            ensemble_members = None
+        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
+            ensemble_members = ensemble_members[0]
+    # Normalize possible list/int forms for messaging only
+    if isinstance(ensemble_members, list):
+        if len(ensemble_members) == 1:
+            ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
+        else:
+            ensemble_member_norm = [int(i) for i in ensemble_members]
+    else:
+        ensemble_member_norm = ensemble_members
 
     if "ensemble" not in ds_prediction.dims:
-        if ensemble_member is not None and not probabilistic_enabled:
+        if ensemble_member_norm is not None and not probabilistic_enabled:
             return (
                 "Ensemble: deterministic mode with "
-                f"ensemble_member={ensemble_member} → selected single member; "
+                f"ensemble_members={ensemble_member_norm} → selected single member; "
                 "'ensemble' removed."
             )
         return (
@@ -49,9 +75,22 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
             "Ensemble: probabilistic mode active "
             f"(size={ens_size}) → token=ensprob for probabilistic outputs."
         )
+    # Deterministic paths
+    if ensemble_member_norm is None:
+        return (
+            "Ensemble: deterministic mode without explicit member → reduced to mean (ensmean)."
+            if "ensemble" not in ds_prediction.dims or ens_size == 0
+            else "Ensemble: deterministic mode without explicit member; original size="
+            f"{ens_size} (reduced internally where applicable)."
+        )
+    if isinstance(ensemble_member_norm, list):
+        return (
+            "Ensemble: deterministic mode with subset members="
+            f"{ensemble_member_norm} (size={len(ensemble_member_norm)} retained)."
+        )
     return (
-        "Ensemble: deterministic mode without explicit member → expected reduction to mean, "
-        f"but 'ensemble' still present (size={ens_size})."
+        "Ensemble: deterministic mode with ensemble_members="
+        f"{ensemble_member_norm} → single member path."
     )
 
 
@@ -355,7 +394,25 @@ def prepare_datasets(
     variables_2d = sel.get("variables_2d")
     variables_3d = sel.get("variables_3d")
     hours = sel.get("temporal_resolution_hours")
-    ensemble_member = sel.get("ensemble_member")
+    # Handle ensemble selection (new plural key) with backward compatibility for legacy singular
+    if "ensemble_members" in sel:
+        ensemble_members = sel.get("ensemble_members")
+    else:
+        ensemble_members = sel.get("ensemble_member")
+        if ensemble_members is not None:
+            c.warn(
+                "Config key 'selection.ensemble_member' is deprecated; "
+                "use 'selection.ensemble_members'."
+            )
+    # Normalize to int | list[int] | None
+    if isinstance(ensemble_members, list):
+        try:
+            ensemble_members = [int(i) for i in ensemble_members]
+        except Exception:
+            c.warn("Invalid values in ensemble_members list; ignoring selection.")
+            ensemble_members = None
+        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
+            ensemble_members = ensemble_members[0]
 
     # Open datasets from paths with optional variable selection
     var_list = None
@@ -381,12 +438,12 @@ def prepare_datasets(
     probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
-        ensemble_member=ensemble_member,
+        ensemble_members=ensemble_members,
         probabilistic_enabled=probabilistic_enabled,
     )
     ds_target = data_mod.apply_ensemble_policy(
         ds_target,
-        ensemble_member=None,
+        ensemble_members=None,
         probabilistic_enabled=probabilistic_enabled,
     )
 
