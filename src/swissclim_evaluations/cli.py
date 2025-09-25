@@ -996,16 +996,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     "error": str(ex),
                 })
 
-    # Final completion message + timings summary
+    # Final completion message + timings summary + module results summary (pass/fail)
     elapsed = time.time() - t0
-    try:
-        from .console import timings_summary as _timings
-
-        if module_timings:
-            _timings(module_timings, elapsed)
-    except Exception:
-        pass
-    # Module results summary (pass/fail)
     try:
         if "module_results" in locals() and module_results:
             # Build a text table (avoid adding dependency). Use rich if available.
