@@ -20,10 +20,21 @@ RUN apt-get update && \
 WORKDIR /app
 ADD . /app
 
-# Create and sync the environment with uv (resolves from pyproject.toml)
-RUN uv sync
-
-# Make uv's Python the default
-ENV PATH="/app/.venv/bin:$PATH"
-
-CMD ["python"]
+## Create environment outside /app (bind-mounted at runtime) so it persists.
+ENV VIRTUAL_ENV=/opt/venv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+# NOTE:
+# 1) Virtual env location: We place the venv at /opt/venv instead of the project tree (/app/.venv).
+#    At runtime /app is bind-mounted from the host (EDF/Enroot), which would hide any venv baked
+#    into the image under /app/.venv. Locating it outside the mount keeps the environment immutable
+#    and available regardless of host overlays.
+# 2) Wrapper vs symlink: Plain symlinks (/usr/local/bin/python -> /opt/venv/bin/python) intermittently
+#    failed to trigger venv detection (pyvenv.cfg not found) in this container+overlay setup, leading
+#    to missing packages. Lightweight wrapper scripts exec the canonical interpreter path so Python
+#    always resolves the correct sys.prefix.
+RUN uv venv "$VIRTUAL_ENV" \
+    && uv sync \
+    && for bin in python python3 pip pip3; do \
+    printf '#!/bin/sh\nexec /opt/venv/bin/%s "$@"\n' "$bin" > /usr/local/bin/$bin; \
+    chmod +x /usr/local/bin/$bin; \
+    done
