@@ -579,6 +579,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
     module_timings: list[tuple[str, float]] = []
+    # Track per-module outcomes: name, status(success|failed|skipped), seconds, optional error
+    module_results: list[dict[str, Any]] = []
     ds_target, ds_prediction, ds_target_std, ds_prediction_std = (
         prepare_datasets(cfg)
     )
@@ -656,8 +658,25 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
-        module_timings.append(("maps", time.time() - _t))
+        try:
+            maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
+            dt = time.time() - _t
+            module_timings.append(("maps", dt))
+            module_results.append({
+                "name": "maps",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover - robustness
+            dt = time.time() - _t
+            c.error(f"maps failed: {ex}")
+            module_results.append({
+                "name": "maps",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
@@ -671,8 +690,25 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        hist_mod.run(ds_target, ds_prediction, out_root, plotting)
-        module_timings.append(("histograms", time.time() - _t))
+        try:
+            hist_mod.run(ds_target, ds_prediction, out_root, plotting)
+            dt = time.time() - _t
+            module_timings.append(("histograms", dt))
+            module_results.append({
+                "name": "histograms",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"histograms failed: {ex}")
+            module_results.append({
+                "name": "histograms",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -688,15 +724,32 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic standardized inputs.")
         _t = time.time()
-        wd_mod.run(
-            ds_target,
-            ds_prediction,
-            ds_target_std,
-            ds_prediction_std,
-            out_root,
-            plotting,
-        )
-        module_timings.append(("wd_kde", time.time() - _t))
+        try:
+            wd_mod.run(
+                ds_target,
+                ds_prediction,
+                ds_target_std,
+                ds_prediction_std,
+                out_root,
+                plotting,
+            )
+            dt = time.time() - _t
+            module_timings.append(("wd_kde", dt))
+            module_results.append({
+                "name": "wd_kde",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"wd_kde failed: {ex}")
+            module_results.append({
+                "name": "wd_kde",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
@@ -714,14 +767,31 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        es_mod.run(
-            ds_target,
-            ds_prediction,
-            out_root,
-            plotting,
-            cfg.get("selection", {}),
-        )
-        module_timings.append(("energy_spectra", time.time() - _t))
+        try:
+            es_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                cfg.get("selection", {}),
+            )
+            dt = time.time() - _t
+            module_timings.append(("energy_spectra", dt))
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"energy_spectra failed: {ex}")
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
@@ -735,14 +805,31 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        vp_mod.run(
-            ds_target,
-            ds_prediction,
-            out_root,
-            plotting,
-            cfg.get("selection", {}),
-        )
-        module_timings.append(("vertical_profiles", time.time() - _t))
+        try:
+            vp_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                cfg.get("selection", {}),
+            )
+            dt = time.time() - _t
+            module_timings.append(("vertical_profiles", dt))
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"vertical_profiles failed: {ex}")
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -773,16 +860,33 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        det_mod.run(
-            ds_target,
-            ds_prediction,
-            ds_target_std,
-            ds_prediction_std,
-            out_root,
-            plotting,
-            cfg.get("metrics", {}),
-        )
-        module_timings.append(("deterministic", time.time() - _t))
+        try:
+            det_mod.run(
+                ds_target,
+                ds_prediction,
+                ds_target_std,
+                ds_prediction_std,
+                out_root,
+                plotting,
+                cfg.get("metrics", {}),
+            )
+            dt = time.time() - _t
+            module_timings.append(("deterministic", dt))
+            module_results.append({
+                "name": "deterministic",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"deterministic failed: {ex}")
+            module_results.append({
+                "name": "deterministic",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
@@ -809,8 +913,27 @@ def run_selected(cfg: dict[str, Any]) -> None:
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        ets_mod.run(ds_target, ds_prediction, out_root, cfg.get("metrics", {}))
-        module_timings.append(("ets", time.time() - _t))
+        try:
+            ets_mod.run(
+                ds_target, ds_prediction, out_root, cfg.get("metrics", {})
+            )
+            dt = time.time() - _t
+            module_timings.append(("ets", dt))
+            module_results.append({
+                "name": "ets",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"ets failed: {ex}")
+            module_results.append({
+                "name": "ets",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
@@ -837,25 +960,135 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             # Xarray-based CRPS/PIT + plots
             _t = time.time()
-            run_probabilistic(ds_target, ds_prediction, out_root, plotting, cfg)
-            module_timings.append(("probabilistic:xarray", time.time() - _t))
+            try:
+                run_probabilistic(
+                    ds_target, ds_prediction, out_root, plotting, cfg
+                )
+                dt = time.time() - _t
+                module_timings.append(("probabilistic:xarray", dt))
+                module_results.append({
+                    "name": "probabilistic:xarray",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
+            except Exception as ex:  # pragma: no cover
+                dt = time.time() - _t
+                c.error(f"probabilistic:xarray failed: {ex}")
+                module_results.append({
+                    "name": "probabilistic:xarray",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
             _t = time.time()
-            plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
-            module_timings.append(("probabilistic:plots", time.time() - _t))
+            try:
+                plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+                dt = time.time() - _t
+                module_timings.append(("probabilistic:plots", dt))
+                module_results.append({
+                    "name": "probabilistic:plots",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
+            except Exception as ex:  # pragma: no cover
+                dt = time.time() - _t
+                c.error(f"probabilistic:plots failed: {ex}")
+                module_results.append({
+                    "name": "probabilistic:plots",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
             # WeatherBenchX-based summaries and aggregates
             _t = time.time()
-            run_probabilistic_wbx(
-                ds_target, ds_prediction, out_root, plotting, cfg
-            )
-            module_timings.append(("probabilistic:wbx", time.time() - _t))
+            try:
+                run_probabilistic_wbx(
+                    ds_target, ds_prediction, out_root, plotting, cfg
+                )
+                dt = time.time() - _t
+                module_timings.append(("probabilistic:wbx", dt))
+                module_results.append({
+                    "name": "probabilistic:wbx",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                })
+            except Exception as ex:  # pragma: no cover
+                dt = time.time() - _t
+                c.error(f"probabilistic:wbx failed: {ex}")
+                module_results.append({
+                    "name": "probabilistic:wbx",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                })
 
-    # Final completion message + timings summary
+    # Final completion message + timings summary + module results summary (pass/fail)
     elapsed = time.time() - t0
     try:
-        from .console import timings_summary as _timings
+        if "module_results" in locals() and module_results:
+            # Build a text table (avoid adding dependency). Use rich if available.
+            from .console import USE_RICH  # type: ignore
+            from .console import console as _rc
 
-        if module_timings:
-            _timings(module_timings, elapsed)
+            successes = sum(
+                1 for r in module_results if r["status"] == "success"
+            )
+            failures = [r for r in module_results if r["status"] == "failed"]
+            skipped = [r for r in module_results if r["status"] == "skipped"]
+            if USE_RICH:
+                try:  # pragma: no cover
+                    from rich import box  # type: ignore
+                    from rich.table import Table  # type: ignore
+
+                    tbl = Table(title="Module Results", box=box.SIMPLE_HEAVY)
+                    tbl.add_column("Module", style="bold")
+                    tbl.add_column("Status")
+                    tbl.add_column("Time (s)", justify="right")
+                    tbl.add_column("Error")
+                    for r in module_results:
+                        status = r["status"]
+                        style = {
+                            "success": "green",
+                            "failed": "red",
+                            "skipped": "yellow",
+                        }.get(status, "white")
+                        err = r.get("error") or ""
+                        if len(err) > 80:
+                            err = err[:77] + "..."
+                        tbl.add_row(
+                            r["name"],
+                            f"[{style}]{status}[/]",
+                            f"{r['seconds']:.2f}",
+                            err,
+                        )
+                    _rc.print(tbl)
+                except Exception:
+                    print("Module Results:")
+                    for r in module_results:
+                        print(
+                            f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                            + (f" error={r['error']}" if r["error"] else "")
+                        )
+            else:
+                print("Module Results:")
+                for r in module_results:
+                    print(
+                        f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                        + (f" error={r['error']}" if r["error"] else "")
+                    )
+            if failures:
+                from . import console as c2
+
+                c2.warn(
+                    f"{len(failures)} module(s) failed: {', '.join(r['name'] for r in failures)}"
+                )
+            else:
+                from . import console as c2
+
+                c2.success(f"All {successes} module(s) succeeded.")
     except Exception:
         pass
     # Always print a plain-text completion line so logs are readable without Rich

@@ -13,7 +13,7 @@ def test_deterministic_smoke(tmp_path: Path):
     targets_std = (targets - targets.mean()) / targets.std()
     predictions_std = (predictions - targets.mean()) / targets.std()
 
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_deterministic(
         ds_target=targets,
         ds_prediction=predictions,
@@ -41,7 +41,7 @@ def test_deterministic_smoke(tmp_path: Path):
 def test_probabilistic_smoke(tmp_path: Path):
     targets, predictions = make_synthetic_datasets(with_ensemble=True)
 
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_probabilistic(
         ds_target=targets,
         ds_prediction=predictions,

@@ -33,7 +33,7 @@ def _make_simple_dataset():
 
 def test_ets_outputs(tmp_path: Path):
     ds_target, ds_prediction = _make_simple_dataset()
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_ets(
         ds_target=ds_target,
         ds_prediction=ds_prediction,
