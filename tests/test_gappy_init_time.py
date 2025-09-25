@@ -95,7 +95,7 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
         "paths": {
             "nwp": "unused",
             "ml": "unused",
-            "output_root": str(tmp_path / "out"),
+            "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},
         "selection": {
@@ -177,7 +177,7 @@ def test_multiple_datetime_ranges_selection(tmp_path: Path, monkeypatch):
         "paths": {
             "nwp": "unused",
             "ml": "unused",
-            "output_root": str(tmp_path / "out"),
+            "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},
         "selection": {
