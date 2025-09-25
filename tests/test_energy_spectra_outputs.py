@@ -13,7 +13,7 @@ def test_energy_spectra_creates_suffixed_csvs(tmp_path: Path):
         with_ensemble=False, time=3
     )
 
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_energy_spectra(
         ds_target=ds_target,
         ds_prediction=ds_prediction,

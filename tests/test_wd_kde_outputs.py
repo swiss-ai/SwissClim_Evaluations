@@ -8,22 +8,25 @@ from ._smoke_data import make_synthetic_datasets
 
 
 def test_wd_kde_wasserstein_exports(tmp_path: Path):
-    # Use synthetic 2D dataset (time, lat, lon)
+    # Use minimal synthetic dataset (1 time) to exercise code path quickly
     ds_target, ds_prediction = make_synthetic_datasets(
-        with_ensemble=False, time=2
+        with_ensemble=False, time=1, lat=3, lon=4
     )
-    # Standardized copies (mirror real pipeline)
     tgt_std = (ds_target - ds_target.mean()) / ds_target.std()
     pred_std = (ds_prediction - ds_target.mean()) / ds_target.std()
 
-    out_root = tmp_path / "out"
+    out_root = tmp_path / "output"
     run_wd_kde(
         ds_target=ds_target,
         ds_prediction=ds_prediction,
         ds_target_std=tgt_std,
         ds_prediction_std=pred_std,
         out_root=out_root,
-        plotting_cfg={"output_mode": "npz", "kde_max_samples": 1000},
+        plotting_cfg={
+            "output_mode": "npz",
+            "kde_max_samples": 100,
+            "wd_kde_include_3d": False,  # only 2D variables here anyway
+        },
     )
 
     wd_dir = out_root / "wd_kde"
