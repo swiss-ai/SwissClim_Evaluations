@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -69,13 +69,15 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
 
 
 def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_root: Path) -> None:
-    """Overlay vertical profile NMAE (or legacy relative error) curves across models.
+    """Overlay vertical profile NMAE (or legacy relative error) curves.
 
     For each variable present in all model folders we create per-lat-band figure
-    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS (ground truth) not expressly stored.
-    The NPZ files only contain metric curves already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
+    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS
+    (ground truth) not expressly stored. The NPZ files only contain metric curves
+    already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
 
-    We therefore only plot model curves. If legacy rel_error files are used, label plots accordingly.
+    We therefore only plot model curves. If legacy rel_error files are used we
+    label plots accordingly.
     """
     basenames = _find_vertical_profile_files(models)
     if not basenames:
@@ -108,7 +110,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
         for j in range(bands):
             axn = axs[j, 0]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+            for c, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 arr = np.asarray(pay.get(key_pos))
                 if arr is None or arr.shape[0] <= j:
                     continue
@@ -118,7 +120,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             axn.invert_yaxis()
             axn.set_xlabel("NMAE (%)")
             axsou = axs[j, 1]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
+            for c, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 arr = np.asarray(pay.get(key_neg))
                 if arr is None or arr.shape[0] <= j:
                     continue
@@ -142,28 +144,32 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
         rows = []
-        for lab, pay in zip(labels, payloads):
+        for lab, pay in zip(labels, payloads, strict=False):
             neg_arr = np.asarray(pay.get(key_neg))
             pos_arr = np.asarray(pay.get(key_pos))
             if neg_arr is None or pos_arr is None:
                 continue
             for j in range(bands):
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(np.nanmean(pos_arr[j])),
-                    "metric": "NMAE",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])),
-                    "metric": "NMAE",
-                })
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(np.nanmean(pos_arr[j])),
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])),
+                        "metric": "NMAE",
+                    }
+                )
         if rows:
             df = pd.DataFrame(rows)
             out_csv = dst / base.replace(".npz", "_summary.csv")
@@ -188,7 +194,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 spec_ds = datas[0].get("spectrum_ds")
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-                try:
+                try:  # noqa: SIM105 (allow explicit clarity)
                     ax.loglog(
                         wn[2:-2],
                         np.asarray(spec_ds)[2:-2],
@@ -196,10 +202,10 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                         lw=2.0,
                         label="Ground Truth",
                     )
-                except Exception:
+                except Exception:  # pragma: no cover
                     pass
             colors = sns.color_palette("tab10", n_colors=len(models))
-            for i, (lab, dat) in enumerate(zip(labels, datas)):
+            for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
                 if specm is None:
                     specm = dat.get("spectrum_ml")
@@ -235,7 +241,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             plt.close(fig)
 
     # Collect NPZ patterns (new first, fallback to legacy)
-    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by build_output_filename outputs
+    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
+    # build_output_filename outputs
     # Fallback to legacy glob if any remain
     # New simplified assumption: spectra NPZ basenames already uniform.
     # Retain backward compatibility not required; only support existing saved spectrum npz.
@@ -255,7 +262,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
     # Combine LSD summary across models (2D averaged only current naming)
     lsd_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("lsd_2d_metrics_*averaged*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -311,7 +318,7 @@ def intercompare_histograms(
             bins_ds = payloads[0]["neg_bins"][j]
             _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
             # Plot each model ML
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["neg_counts"][j][1]
                 bins_ml = pay["neg_bins"][j]
                 _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
@@ -326,7 +333,7 @@ def intercompare_histograms(
             counts_ds = ds_ml_pairs[0]
             bins_ds = payloads[0]["pos_bins"][j]
             _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["pos_counts"][j][1]
                 bins_ml = pay["pos_bins"][j]
                 _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
@@ -348,15 +355,11 @@ def intercompare_histograms(
         # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
         # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
         stem = base[:-4] if base.endswith(".npz") else base
-        if stem.startswith("hist_"):
-            var_part = stem[len("hist_") :]
-        else:
-            var_part = stem
+        var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
         # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
-        if "_ens" in var_part:
-            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
-        else:
-            var_part_no_ens = var_part
+        var_part_no_ens = (
+            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+        )  # SIM108
         # Remove suffix beginning with '_latbands_combined'
         if "_latbands_combined" in var_part_no_ens:
             var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
@@ -387,7 +390,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
                     pay["neg_kde_ml"][j],
@@ -404,7 +407,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],
                     pay["pos_kde_ml"][j],
@@ -426,15 +429,11 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         plt.tight_layout(rect=(0, 0.05, 1, 1))
         # Extract variable/level part.
         stem = base[:-4] if base.endswith(".npz") else base
-        if stem.startswith("wd_kde_"):
-            var_part = stem[len("wd_kde_") :]
-        else:
-            var_part = stem
+        var_part = stem[len("wd_kde_") :] if stem.startswith("wd_kde_") else stem  # SIM108
         # Remove trailing ensemble token if present
-        if "_ens" in var_part:
-            var_part_no_ens = var_part.rsplit("_ens", 1)[0]
-        else:
-            var_part_no_ens = var_part
+        var_part_no_ens = (
+            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+        )  # SIM108
         # Remove '_combined' suffix (may appear with preceding level token)
         if var_part_no_ens.endswith("_combined"):
             var_part_no_ens = var_part_no_ens[: -len("_combined")]
@@ -446,7 +445,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
     # Combine averaged Wasserstein summary across models if present
     frames_w: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("wd_kde_wasserstein_averaged_*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -545,7 +544,7 @@ def intercompare_maps(
                 else:
                     title_base += f" (level {lvl})"
             axes[0].set_title(title_base)
-            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices):
+            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
                 ax.pcolormesh(
                     lons,
                     lats,
@@ -572,7 +571,7 @@ def intercompare_metrics_csv(models: list[Path], labels: list[str], out_root: Pa
     dst_det = _ensure_dir(out_root / "deterministic")
     frames: list[pd.DataFrame] = []
     frames_std: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         # New schema: deterministic_metrics*.csv (may have qualifiers/time tokens)
         candidates = sorted((m / "deterministic").glob("deterministic_metrics*.csv"))
         # Prefer exact base (no averaged/time tokens) for primary combined table
@@ -676,7 +675,7 @@ def intercompare_metrics_csv(models: list[Path], labels: list[str], out_root: Pa
     # ETS
     dst_ets = _ensure_dir(out_root / "ets")
     frames_ets: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         # ets_metrics*.csv new naming
         for f in (m / "ets").glob("ets_metrics*.csv"):
             try:
@@ -707,7 +706,7 @@ def intercompare_probabilistic(
 
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("crps_summary*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -725,7 +724,7 @@ def intercompare_probabilistic(
         ("crps_ensemble.csv", "crps_ensemble_combined.csv"),
     ):
         frames: list[pd.DataFrame] = []
-        for lab, m in zip(labels, models):
+        for lab, m in zip(labels, models, strict=False):
             f = m / src_rel / basename
             if f.is_file():
                 df = pd.read_csv(f)
@@ -744,7 +743,7 @@ def intercompare_probabilistic(
         fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
         # Uniform reference line at y=1
         ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
-        for i, (lab, pay) in enumerate(zip(labels, payloads)):
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
             counts = pay.get("counts")
             edges = pay.get("edges")
             if counts is None or edges is None:
@@ -784,7 +783,7 @@ def intercompare_probabilistic(
         )
         if ncols == 1:
             axes = [axes]
-        for ax, lab, arr in zip(axes, labels, arrays):
+        for ax, lab, arr in zip(axes, labels, arrays, strict=False):
             mesh = ax.pcolormesh(
                 lons,
                 lats,
@@ -807,7 +806,7 @@ def intercompare_probabilistic(
     # 5) Combine spatial/temporal WBX NetCDF aggregates into tidy CSVs and simple plots
     # Spatial aggregates
     spatial_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         f = m / src_rel / "probabilistic_metrics_spatial.nc"
         if f.is_file():
             try:
@@ -873,7 +872,7 @@ def intercompare_probabilistic(
 
     # Temporal aggregates
     temporal_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
+    for lab, m in zip(labels, models, strict=False):
         f = m / src_rel / "probabilistic_metrics_temporal.nc"
         if f.is_file():
             try:

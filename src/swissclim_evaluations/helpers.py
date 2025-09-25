@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 
 import numpy as np
@@ -35,7 +36,7 @@ def aggregate_member_dfs(dfs):
     out = dfs[0][[]].copy()
     for i, col in enumerate(list(numeric_cols)):
         out[col] = mean_arr[:, i]
-    return out[list(sorted(numeric_cols))]
+    return out[sorted(numeric_cols)]
 
 
 def _fmt_init(ts: np.ndarray) -> tuple[str, str]:
@@ -96,20 +97,19 @@ def build_output_filename(
     ensemble: str | int | None = None,
     ext: str = "csv",
 ) -> str:
-    """
-    Build standardized output filename for metrics, plots, arrays.
+    """Build standardized output filename.
+
     Always includes ensemble token (ensnone if not present).
     Args:
-        metric: Short identifier for artifact family.
-        variable: Variable name. If list or None -> omitted.
-        level: Pressure level value; omitted if None.
-        qualifier: Optional extra discriminator (averaged, combined, plot, spectrum, etc.).
-        init_time_range: (start, end) hour timestamps as YYYYMMDDHH; if provided encoded as init<start>-<end>.
-        lead_time_range: (start, end) lead hours (already zero-padded); encoded as lead<start>-<end>.
-        ensemble: Index, 'mean', or None (becomes ensnone).
-        ext: File extension without leading dot.
-    Returns:
-        Filename string.
+        metric: Short identifier.
+        variable: Variable name; list/None omitted.
+        level: Pressure level value.
+        qualifier: Extra discriminator (averaged, combined, plot, spectrum, etc.).
+        init_time_range: (start,end) timestamps YYYYMMDDHH → init<start>-<end>.
+        lead_time_range: (start,end) lead hours → lead<start>-<end>.
+        ensemble: Index, 'mean', or None.
+        ext: File extension without dot.
+    Returns: Filename string.
     """
     parts: list[str] = [metric]
     # Variable: omit if aggregate (None or list)
@@ -147,11 +147,9 @@ def build_output_filename(
 
 
 def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None):
-    # Accept non-contiguous init_times; just slice by chunk size without assuming uniform spacing
-    try:
+    # Accept non-contiguous init_times; slice by chunk size without assuming uniform spacing
+    with contextlib.suppress(Exception):
         init_times = init_times.astype("datetime64[ns]")
-    except Exception:
-        pass
     total_init = len(init_times)
     step_i = init_time_chunk_size or total_init
     init_time_chunks = [init_times[i : i + step_i] for i in range(0, total_init, step_i)]
@@ -159,10 +157,8 @@ def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chu
     if isinstance(lead_times, slice):
         lead_time_chunks = [lead_times]
     else:
-        try:
+        with contextlib.suppress(Exception):
             lead_times = lead_times.astype("timedelta64[ns]")
-        except Exception:
-            pass
         total_lead = len(lead_times)
         step_l = lead_time_chunk_size or total_lead
         lead_time_chunks = [lead_times[i : i + step_l] for i in range(0, total_lead, step_l)]
@@ -208,7 +204,7 @@ def resolve_ensemble_mode(
     if base not in _VALID_MODES:
         base = _DEFAULT_ENSEMBLE_MODES.get(module, "none")
     if not has_ens:
-        # If no ensemble dim, everything collapses to none except probabilistic which should skip upstream.
+        # If no ensemble dim, collapse to none (probabilistic handled upstream).
         return "none"
     if module == "probabilistic":
         # Force prob; other modes invalid here.
@@ -241,7 +237,8 @@ def format_ensemble_log(module: str, mode: str, ens_size: int, selection: str | 
     """Generate a standardized ensemble handling log line.
 
     Args:
-        module: module name (maps, histograms, wd_kde, energy_spectra, vertical_profiles, deterministic, ets, probabilistic)
+        module: module name (maps, histograms, wd_kde, energy_spectra, vertical_profiles,
+            deterministic, ets, probabilistic)
         mode: resolved ensemble mode (none|mean|pooled|prob|members)
         ens_size: number of ensemble members (if present)
         selection: optional description of subset (e.g. "selected 3 of 8")
@@ -270,8 +267,8 @@ def validate_and_normalize_ensemble_config(
     Behaviour:
       * Accept typo 'member' → normalize to 'members'.
       * Lower-case values; unknown modes replaced by module default with warning.
-      * If ensemble dimension present and user sets 'none' (except for probabilistic where it's invalid anyway),
-        replace with module default (mean/pooled/members/prob) and warn.
+            * If ensemble dimension present and user sets 'none' (except probabilistic), replace
+                with module default (mean/pooled/members/prob) and warn.
       * If ensemble dim absent, any non-'none' mode downgraded to 'none' with warning.
 
     Returns (normalized_config, warnings_list).
@@ -299,7 +296,9 @@ def validate_and_normalize_ensemble_config(
             if val == "none" and module != "probabilistic":
                 default = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
                 warnings.append(
-                    f"[ensemble-fallback] ensemble.{module}='none' while ensemble dimension exists → using '{default}' instead."
+                    "[ensemble-fallback] ensemble."
+                    f"{module}='none' while ensemble dimension exists → using "
+                    f"'{default}' instead."
                 )
                 val = default
         else:

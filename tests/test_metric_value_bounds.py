@@ -20,10 +20,12 @@ from swissclim_evaluations.plots.energy_spectra import run as run_energy_spectra
 
 
 def _basic_2d():
-    time = np.array([
-        np.datetime64("2025-01-01T00"),
-        np.datetime64("2025-01-01T06"),
-    ])
+    time = np.array(
+        [
+            np.datetime64("2025-01-01T00"),
+            np.datetime64("2025-01-01T06"),
+        ]
+    )
     lat = np.linspace(-10, 10, 5)
     lon = np.linspace(0, 20, 6)
     rng = np.random.default_rng(0)
@@ -37,22 +39,26 @@ def _basic_2d():
 
 
 def _basic_3d():
-    init = np.array([
-        np.datetime64("2025-01-01T00"),
-        np.datetime64("2025-01-01T12"),
-    ])
+    init = np.array(
+        [
+            np.datetime64("2025-01-01T00"),
+            np.datetime64("2025-01-01T12"),
+        ]
+    )
     lead = np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]")
     level = np.array([1000, 850, 500])
     lat = np.linspace(-30, 30, 7)
     lon = np.linspace(0, 10, 8)
     rng = np.random.default_rng(1)
-    data = rng.standard_normal((
-        init.size,
-        lead.size,
-        level.size,
-        lat.size,
-        lon.size,
-    ))
+    data = rng.standard_normal(
+        (
+            init.size,
+            lead.size,
+            level.size,
+            lat.size,
+            lon.size,
+        )
+    )
     ds_t = xr.Dataset(
         {
             "temperature": (
@@ -82,9 +88,11 @@ def test_lsd_non_negative(tmp_path: Path):
         plotting_cfg={"output_mode": "npz"},
         select_cfg={},
     )
-    # Locate LSD metrics CSV/NPZ presence indirectly by filename pattern; LSD metric arrays are in memory but
+    # Locate LSD metrics CSV/NPZ presence indirectly by filename pattern; LSD
+    # metric arrays are in memory but
     # we rely on absence of exception and plausible derived naming already tested elsewhere.
-    # For direct value check, recompute small slice manually via helper: use function from module for LSD.
+    # For direct value check, recompute small slice manually via helper:
+    # use function from module for LSD.
     from swissclim_evaluations.plots.energy_spectra import (
         calculate_energy_spectra,
         calculate_log_spectral_distance,
@@ -139,11 +147,7 @@ def test_vertical_profiles_nmae_bounds(tmp_path: Path, monkeypatch):
         plotting_cfg={"output_mode": "npz"},
         select_cfg={},
     )
-    npz = next(
-        (out / "vertical_profiles").glob(
-            "vprof_nmae_temperature_multi_combined_*.npz"
-        )
-    )
+    npz = next((out / "vertical_profiles").glob("vprof_nmae_temperature_multi_combined_*.npz"))
     data = np.load(npz)
     # Arrays may include zeros for NaN fills; ensure within [0,100]
     for key in ("nmae_neg", "nmae_pos"):

@@ -50,11 +50,13 @@ def test_golden_plot_filenames(tmp_path: Path):
     maps_dir = out / "maps"
     hist_dir = out / "histograms"
     kde_dir = out / "wd_kde"
-    got = sorted([
-        *(f.name for f in maps_dir.iterdir()),
-        *(f.name for f in hist_dir.iterdir()),
-        *(f.name for f in kde_dir.iterdir()),
-    ])
+    got = sorted(
+        [
+            *(f.name for f in maps_dir.iterdir()),
+            *(f.name for f in hist_dir.iterdir()),
+            *(f.name for f in kde_dir.iterdir()),
+        ]
+    )
     # Expected: single variable, no levels, combined histogram / wd_kde npz + map file(s)
     # Ensemble marker ensnone always present as there is no ensemble dimension.
     expected_contains = [

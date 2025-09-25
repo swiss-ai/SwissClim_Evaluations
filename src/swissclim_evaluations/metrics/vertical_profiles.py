@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
@@ -141,7 +142,8 @@ def run(
         raise ValueError("ensemble_mode=prob invalid for vertical_profiles")
     if resolved_mode == "none" and has_ens:
         raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; choose mean|pooled|members"
+            "ensemble_mode=none requested but 'ensemble' dimension present; "
+            "choose mean|pooled|members"
         )
 
     def _iter_members():
@@ -185,20 +187,24 @@ def run(
         south_meta = []  # (lat_min, lat_max)
         north_meta = []
         half = n_bands // 2
-        # Detect latitude ordering once (ERA5 typically descending 90 -> -90). We adapt slice direction
-        # instead of sorting (cheaper and preserves original memory layout / lazy dask graph).
+
+        # Detect latitude ordering once (ERA5 often descending 90 -> -90). We
+        # adapt slice direction instead of sorting (cheaper and preserves
+        # original layout / lazy dask graph).
         try:
             lat_vals = ds_target[var].latitude
             lat_desc = bool(lat_vals[0] > lat_vals[-1])
         except Exception:
             lat_desc = False
 
-        def _lat_slice(lo: float, hi: float) -> slice:
+        def _lat_slice(lo: float, hi: float, *, _lat_desc: bool = lat_desc) -> slice:  # bind order
             """Return a slice selecting [lo, hi] irrespective of coordinate order.
-            lo < hi in logical (ascending) definition coming from _lat_bands().
-            If coordinate is descending we invert endpoints so that .sel() matches data.
+
+            lo < hi follows logical ascending definition from _lat_bands(). If
+            coordinate is descending we invert endpoints so that .sel() matches
+            data without an explicit sort.
             """
-            return slice(hi, lo) if lat_desc else slice(lo, hi)
+            return slice(hi, lo) if _lat_desc else slice(lo, hi)
 
         for i in range(half):
             # South bands (negative latitudes in array order)
@@ -258,40 +264,55 @@ def run(
             gmin_val -= pad
             gmax_val += pad
 
-        def _emit(ens_token_local: str | None, member_index: int | None = None):
+        def _emit(
+            ens_token_local: str | None,
+            member_index: int | None = None,
+            *,
+            _combined=combined,
+            _south_meta=south_meta,
+            _north_meta=north_meta,
+            _lvl_vals=level_values,
+            _gmin=gmin_val,
+            _gmax=gmax_val,
+            _var_name=var,
+            _half=half,
+        ) -> None:
+            """Emit plot/NPZ for current (or overridden) combined NMAE data.
+
+            Defaulted keyword arguments bind loop variables (Ruff B023 safe).
+            """
             n_cols = 2
-            fig, axes = plt.subplots(n_cols, half, figsize=(24, 10), dpi=dpi * 2, sharey=True)
-            for i in range(half):
-                ax_s = axes[0, i]
-                curve_s_da = combined.sel(hemisphere="south").isel(band=i).squeeze(drop=True)
+            fig, axes = plt.subplots(n_cols, _half, figsize=(24, 10), dpi=dpi * 2, sharey=True)
+            for bi in range(_half):
+                ax_s = axes[0, bi]
+                curve_s_da = _combined.sel(hemisphere="south").isel(band=bi).squeeze(drop=True)
                 curve_s = np.asarray(curve_s_da.values).squeeze()
-                lat_min_neg, lat_max_neg = south_meta[i]
-                ax_s.plot(curve_s, level_values)
+                lat_min_neg, lat_max_neg = _south_meta[bi]
+                ax_s.plot(curve_s, _lvl_vals)
                 ax_s.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
                 ax_s.set_xlabel("NMAE (%)")
                 ax_s.set_ylabel("Level")
                 ax_s.invert_yaxis()
-                ax_s.set_xlim(gmin_val, gmax_val)
-                ax_n = axes[1, i]
-                curve_n_da = combined.sel(hemisphere="north").isel(band=i).squeeze(drop=True)
+                ax_s.set_xlim(_gmin, _gmax)
+                ax_n = axes[1, bi]
+                curve_n_da = _combined.sel(hemisphere="north").isel(band=bi).squeeze(drop=True)
                 curve_n = np.asarray(curve_n_da.values).squeeze()
-                lat_min_pos, lat_max_pos = north_meta[i]
-                ax_n.plot(curve_n, level_values)
+                lat_min_pos, lat_max_pos = _north_meta[bi]
+                ax_n.plot(curve_n, _lvl_vals)
                 ax_n.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
                 ax_n.set_xlabel("NMAE (%)")
                 ax_n.set_ylabel("Level")
                 ax_n.invert_yaxis()
-                ax_n.set_xlim(gmin_val, gmax_val)
+                ax_n.set_xlim(_gmin, _gmax)
             plt.gca().invert_yaxis()
             title_extra = f" member={member_index}" if member_index is not None else ""
-            plt.suptitle(f"Vertical Profiles of NMAE for {var} (band-wise){title_extra}")
+            plt.suptitle(f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}")
             plt.tight_layout()
             if save_fig:
-                # Ensure directory exists (defensive in case of external cleanup or race)
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=var,
+                    variable=_var_name,
                     level="multi",
                     qualifier="plot",
                     init_time_range=init_range,
@@ -305,7 +326,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_npz = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=var,
+                    variable=_var_name,
                     level="multi",
                     qualifier="combined",
                     init_time_range=init_range,
@@ -313,18 +334,18 @@ def run(
                     ensemble=ens_token_local,
                     ext="npz",
                 )
-                south_vals = combined.sel(hemisphere="south").values
-                north_vals = combined.sel(hemisphere="north").values
-                neg_min = np.asarray([m[0] for m in south_meta])
-                neg_max = np.asarray([m[1] for m in south_meta])
-                pos_min = np.asarray([m[0] for m in north_meta])
-                pos_max = np.asarray([m[1] for m in north_meta])
+                south_vals = _combined.sel(hemisphere="south").values
+                north_vals = _combined.sel(hemisphere="north").values
+                neg_min = np.asarray([m[0] for m in _south_meta])
+                neg_max = np.asarray([m[1] for m in _south_meta])
+                pos_min = np.asarray([m[0] for m in _north_meta])
+                pos_max = np.asarray([m[1] for m in _north_meta])
                 np.savez(
                     out_npz,
                     nmae_neg=south_vals,
                     nmae_pos=north_vals,
-                    band=np.arange(half),
-                    level=np.asarray(level_values),
+                    band=np.arange(_half),
+                    level=np.asarray(_lvl_vals),
                     neg_lat_min=neg_min,
                     neg_lat_max=neg_max,
                     pos_lat_min=pos_min,
@@ -362,10 +383,10 @@ def run(
                 )
                 combined_m = xr.concat([south_da_m, north_da_m], dim=hemisphere)
                 combined_m = combined_m.compute()
-                combined = combined_m  # reuse variable name for plotting
                 _emit(
                     ensemble_mode_to_token("members", member_index),
                     member_index=member_index,
+                    _combined=combined_m,
                 )
         else:
             _emit(ens_token)

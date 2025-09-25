@@ -25,12 +25,14 @@ def _make_ensemble():
                 ["time", "latitude", "longitude", "ensemble"],
                 base[..., None]
                 + 0.1
-                * rng.standard_normal((
-                    time.size,
-                    lat.size,
-                    lon.size,
-                    ens.size,
-                )),
+                * rng.standard_normal(
+                    (
+                        time.size,
+                        lat.size,
+                        lon.size,
+                        ens.size,
+                    )
+                ),
             )
         },
         coords={
@@ -49,7 +51,8 @@ def test_maps_ensemble_filenames(tmp_path: Path):
     run_maps(tgt, pred, out_root=out, plotting_cfg={"output_mode": "npz"})
     maps_dir = out / "maps"
     files = list(maps_dir.glob("map_t2m_*.npz"))
-    # Expect one file per ensemble member plus ensnone when generation logic repeats (depending on code path produce just ens indices)
+    # Expect one file per ensemble member plus ensnone when generation logic
+    # repeats (depending on code path produce just ens indices)
     # Safest: ensure at least one ensemble-specific file present.
     assert any("_ens0" in f.name or f.name.endswith("_ens0.npz") for f in files)
     assert any("_ens1" in f.name or f.name.endswith("_ens1.npz") for f in files)

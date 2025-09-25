@@ -9,9 +9,7 @@ from ._smoke_data import make_synthetic_datasets
 
 def test_wd_kde_wasserstein_exports(tmp_path: Path):
     # Use minimal synthetic dataset (1 time) to exercise code path quickly
-    ds_target, ds_prediction = make_synthetic_datasets(
-        with_ensemble=False, time=1, lat=3, lon=4
-    )
+    ds_target, ds_prediction = make_synthetic_datasets(with_ensemble=False, time=1, lat=3, lon=4)
     tgt_std = (ds_target - ds_target.mean()) / ds_target.std()
     pred_std = (ds_prediction - ds_target.mean()) / ds_target.std()
 

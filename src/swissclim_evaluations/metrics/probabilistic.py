@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Hashable, Mapping
 from pathlib import Path
-from typing import Any, Hashable, Mapping
+from typing import Any
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -12,12 +13,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble as WBXCRPSEnsemble,
-)
 
 # Use official WeatherBenchX metrics instead of local copies
 from weatherbenchX.metrics.probabilistic import (
+    CRPSEnsemble as WBXCRPSEnsemble,
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
@@ -209,7 +208,7 @@ def _iter_time_chunks(
             lead_chunk,
         ):
             idx = {"init_time": init_chunk_vals, "lead_time": lead_chunk_vals}
-            # Assumes CLI aligned targets and predictions by init_time/lead_time intersection already.
+            # Assumes upstream CLI aligned datasets by init_time/lead_time intersection.
             yield (ds_target.sel(**idx).load(), ds_prediction.sel(**idx).load())
     elif "time" in ds_prediction.dims:
         yield ds_target, ds_prediction
@@ -243,7 +242,8 @@ def run_probabilistic(
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; "
+            "nothing to do."
         )
         return
 
@@ -410,9 +410,10 @@ def plot_probabilistic(
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
-    """Generate probabilistic plots (CRPS map and PIT histogram) and save to disk.
+    """Generate probabilistic plots (CRPS map + PIT histogram).
 
-    Saves under out_root/probabilistic as PNGs and optionally NPZ with data if output_mode is 'npz' or 'both'.
+    Saves under out_root/probabilistic. If output_mode in {'npz','both'} also
+    writes NPZ data artifacts.
     """
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -619,16 +620,13 @@ def _wbx_metric_to_df(
     # Compute and average statistics per variable
     mean_stats: dict[str, dict[Hashable, xr.DataArray]] = {}
     dims_all = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "level",
-            "ensemble",
-        ]
+        "time",
+        "init_time",
+        "lead_time",
+        "latitude",
+        "longitude",
+        "level",
+        "ensemble",
     ]
     for stat_name, stat in metric.statistics.items():
         stat_vals = stat.compute(predictions=pred_map, targets=targ_map)
@@ -677,7 +675,8 @@ def run_probabilistic_wbx(
     common_vars = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not common_vars:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; "
+            "nothing to do."
         )
         return
     ds_pred = ds_prediction[common_vars]
@@ -829,7 +828,7 @@ def run_probabilistic_wbx(
     metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
     metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
 
-    variables = [v for v in ds_pred.data_vars]
+    variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
     targ_map = {v: ds_targ[v] for v in variables}
     # Temporal results: reduce spatial dims, keep time dims
@@ -952,10 +951,7 @@ def run_probabilistic_wbx(
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:
-    if isinstance(da_or_ds, xr.DataArray):
-        ds = da_or_ds.to_dataset(name="value")
-    else:
-        ds = da_or_ds
+    ds = da_or_ds.to_dataset(name="value") if isinstance(da_or_ds, xr.DataArray) else da_or_ds
     dims = [
         d
         for d in [

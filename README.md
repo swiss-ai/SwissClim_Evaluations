@@ -151,7 +151,7 @@ selection:
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
-    "2023-04-02T00:2023-04-08T23", 
+    "2023-04-02T00:2023-04-08T23",
     "2023-07-02T00:2023-07-08T23",
     "2023-10-02T00:2023-10-08T23",
     # "2024-01-02T00:2024-01-08T23",
@@ -539,6 +539,37 @@ pytest -q
 ```
 
 Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
+
+### Dev environment (linting & formatting)
+
+This project uses Ruff for both linting and formatting, managed via an optional "dev" extra
+and pre-commit hooks.
+
+Install dev extra with uv:
+
+```bash
+uv sync --extra dev
+```
+
+or with uv pip:
+
+```bash
+uv pip install -e '.[dev]'
+```
+
+#### Pre-commit hooks
+
+Enable once (installs the Git hooks):
+
+```bash
+pre-commit install
+```
+
+and then run manually on all files:
+
+```bash
+pre-commit run --all-files
+```
 
 ### Naming conventions
 

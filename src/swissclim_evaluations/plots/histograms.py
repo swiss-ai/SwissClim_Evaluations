@@ -30,7 +30,7 @@ def run(
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     # Optional subsampling  to avoid loading full arrays.
-    max_samples = plotting_cfg.get("histogram_max_samples", None)
+    max_samples = plotting_cfg.get("histogram_max_samples")
     try:
         max_samples = int(max_samples) if max_samples is not None else None
         if max_samples <= 0:
@@ -43,7 +43,7 @@ def run(
 
     # Config options for 3D handling
     process_3d = bool(plotting_cfg.get("histograms_include_3d", True))
-    max_levels = plotting_cfg.get("histograms_max_levels", None)
+    max_levels = plotting_cfg.get("histograms_max_levels")
     try:
         max_levels = int(max_levels) if max_levels is not None else None
         if max_levels is not None and max_levels <= 0:
@@ -68,7 +68,8 @@ def run(
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "none" and has_ens:
         raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; choose mean|pooled|members"
+            "ensemble_mode=none requested but 'ensemble' dimension present; "
+            "choose mean|pooled|members"
         )
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for histograms")
@@ -157,7 +158,7 @@ def run(
             lat_min = lat_bins[j + 1]
             da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
             da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
-            # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
+            # If subsampling enabled, compute edges on subsampled arrays
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
                 ds_sample = _subsample_values(da_true, max_samples, seed)

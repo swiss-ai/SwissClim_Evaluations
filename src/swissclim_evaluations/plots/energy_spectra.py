@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -59,29 +60,35 @@ def calculate_energy_spectra(
     # physical spacing along longitude
     dx_km = EARTH_CIRCUMFERENCE_KM / n_lon
     da_fft["wavenumber"] = ("wavenumber", np.fft.rfftfreq(n_lon, d=dx_km))
-    da_fft["wavenumber"].attrs.update({
-        "units": "cycles km^-1",
-        "long_name": "zonal wavenumber (cycles per km)",
-        "note": "Not angular wavenumber; no 2π factor",
-    })
+    da_fft["wavenumber"].attrs.update(
+        {
+            "units": "cycles km^-1",
+            "long_name": "zonal wavenumber (cycles per km)",
+            "note": "Not angular wavenumber; no 2π factor",
+        }
+    )
 
     # Drop the zero wavenumber (mean) component for log scaling clarity
     da_fft = da_fft.isel(wavenumber=slice(1, None))
     # Assign wavelength coordinate using raw numpy values to avoid ambiguity errors
     da_fft["wavelength"] = ("wavenumber", 1.0 / da_fft["wavenumber"].values)
-    da_fft["wavelength"].attrs.update({
-        "units": "km",
-        "long_name": "zonal wavelength",
-    })
+    da_fft["wavelength"].attrs.update(
+        {
+            "units": "km",
+            "long_name": "zonal wavelength",
+        }
+    )
     da_fft["wavenumber_m"] = (
         "wavenumber",
         da_fft["wavenumber"].values / 1000.0,
     )
-    da_fft["wavenumber_m"].attrs.update({
-        "units": "cycles m^-1",
-        "long_name": "zonal wavenumber (cycles per meter)",
-        "note": "wavenumber / 1000",
-    })
+    da_fft["wavenumber_m"].attrs.update(
+        {
+            "units": "cycles m^-1",
+            "long_name": "zonal wavenumber (cycles per meter)",
+            "note": "wavenumber / 1000",
+        }
+    )
 
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
@@ -143,7 +150,7 @@ def _plot_single_spectrum(
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
     ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
     ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
-    props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
+    props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
         0.05,
@@ -186,7 +193,7 @@ def _plot_single_spectrum(
         0.2,
         0.1,
     ]
-    # Keep only wavelengths >= fundamental (≈ circumference) lowered tolerance and <= min resolvable small scale
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
     wl_min_possible = 1.0 / k_max
     wl_max_possible = 1.0 / k_min
     valid_wl = [
@@ -281,7 +288,7 @@ def _plot_energy_spectra(
 
     # Compute LSD per time slice (vectorized)
     lsd_da = _compute_lsd_da(spectrum_target, spectrum_pred)
-    # Ensemble token: if an ensemble dimension existed in either input and we averaged it, mark ensmean
+    # Ensemble token: mark ensmean if we averaged an ensemble dimension
     ens_token = override_ensemble_token or (
         "mean" if (("ensemble" in da_target.dims) or ("ensemble" in da_prediction.dims)) else None
     )
@@ -336,12 +343,12 @@ def _plot_energy_spectra(
 
     for idx, key in enumerate(coords_df):
         sel_kwargs = {dim: key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(**{
-            d: spectrum_target.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims
-        })
-        spec_p_1d = spectrum_pred.isel(**{
-            d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims
-        })
+        spec_t_1d = spectrum_target.isel(
+            **{d: spectrum_target.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+        )
+        spec_p_1d = spectrum_pred.isel(
+            **{d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+        )
         wn = spec_t_1d["wavenumber"].values
         arr_t = spec_t_1d.values
         arr_p = spec_p_1d.values
@@ -357,7 +364,7 @@ def _plot_energy_spectra(
             except Exception:
                 try:
                     # pandas Timestamp path
-                    init_np = np.datetime64(getattr(init_raw, "to_datetime64")())
+                    init_np = np.datetime64(init_raw.to_datetime64())
                     init_label = np.datetime_as_string(init_np.astype("datetime64[h]"), unit="h")
                 except Exception:
                     init_label = str(init_raw)
@@ -442,16 +449,14 @@ def run(
         members_indices = list(
             range(
                 int(
-                    (
-                        ds_prediction_full.sizes.get("ensemble")
-                        or ds_prediction_full.sizes.get("ensemble", 0)
-                    )
+                    ds_prediction_full.sizes.get("ensemble")
+                    or ds_prediction_full.sizes.get("ensemble", 0)
                 )
             )
         )
     if resolved_mode == "none" and has_ens:
         resolved_mode = "mean"  # historical behaviour (mean reduction)
-    # Track if we are in members mode for metrics naming (per-member metrics currently aggregated without token)
+    # Track members mode for metrics naming (per-member metrics aggregated without token)
     metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target_full.dims:
@@ -551,15 +556,21 @@ def run(
                 per_init_rows_2d.append(df_init)
         # Summary row: non-members -> single lsd_da; members -> mean of member means
         if members_indices is None:
-            summary_rows_2d.append({
-                "variable": var,
-                "lsd_mean": float(detailed_rows_2d[-1]["lsd"].mean()),  # last corresponds to var
-            })
+            summary_rows_2d.append(
+                {
+                    "variable": var,
+                    "lsd_mean": float(
+                        detailed_rows_2d[-1]["lsd"].mean()
+                    ),  # last corresponds to var
+                }
+            )
         elif member_means:
-            summary_rows_2d.append({
-                "variable": var,
-                "lsd_mean": float(sum(member_means) / len(member_means)),
-            })
+            summary_rows_2d.append(
+                {
+                    "variable": var,
+                    "lsd_mean": float(sum(member_means) / len(member_means)),
+                }
+            )
 
     if detailed_rows_2d:
         # Per-lead_time if lead_time dim present else per-init_time (else drop 'per' file)
@@ -745,7 +756,8 @@ def run(
                 print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
         except Exception as e:  # pragma: no cover
             print(
-                f"[energy_spectra] Warning: plot_datetime failed ({e}); using full dataset for plots."
+                "[energy_spectra] Warning: plot_datetime failed ("
+                f"{e}); using full dataset for plots."
             )
     elif (not plot_dt_str) and ("init_time" in ds_prediction_full.dims):
         # Default: plot only first init_time to avoid generating very large number of figures
@@ -758,7 +770,8 @@ def run(
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
             print(
-                f"[energy_spectra] Plotting only first init_time: {np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+                "[energy_spectra] Plotting only first init_time: "
+                f"{np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
             )
         except Exception:
             pass
@@ -766,7 +779,7 @@ def run(
     if save_figures or save_plot_data:
         for ctx in _member_contexts():
             token_ctx = ctx["token"]
-            # Select plotting subset dataset (only for non-member context). For members we already sliced.
+            # Select plotting subset dataset (non-member context). For members we already sliced.
             if ctx["member"] is None:
                 ds_tgt_plot_ctx = ds_target_plot
                 ds_pred_plot_ctx = ds_prediction_plot

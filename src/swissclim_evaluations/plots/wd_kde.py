@@ -50,7 +50,7 @@ def run(
     wasserstein_rows: list[dict[str, float | str]] = []
 
     process_3d = bool(plotting_cfg.get("wd_kde_include_3d", True))
-    max_levels = plotting_cfg.get("wd_kde_max_levels", None)
+    max_levels = plotting_cfg.get("wd_kde_max_levels")
     try:
         max_levels = int(max_levels) if max_levels is not None else None
         if max_levels is not None and max_levels <= 0:
@@ -78,7 +78,8 @@ def run(
     if resolved_mode == "none" and has_ens:
         # Force user to choose pooling semantics instead of implicitly ignoring ensemble
         raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; choose mean|pooled|members"
+            "ensemble_mode=none requested but 'ensemble' dimension present; "
+            "choose mean|pooled|members"
         )
 
     def _iter_members():
@@ -177,13 +178,15 @@ def run(
                 continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "south",
-                "lat_min": float(lat_min),
-                "lat_max": float(lat_max),
-                "wasserstein": float(w),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "south",
+                    "lat_min": float(lat_min),
+                    "lat_max": float(lat_max),
+                    "wasserstein": float(w),
+                }
+            )
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -219,13 +222,15 @@ def run(
                 continue
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "north",
-                "lat_min": float(lat_min),
-                "lat_max": float(lat_max),
-                "wasserstein": float(w),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "north",
+                    "lat_min": float(lat_min),
+                    "lat_max": float(lat_max),
+                    "wasserstein": float(w),
+                }
+            )
             kde_ds = gaussian_kde(ds_flat)
             kde_ml = gaussian_kde(ml_flat)
             x_eval = np.linspace(
@@ -245,7 +250,9 @@ def run(
                 combined["pos_lat_max"].append(float(lat_max))
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
         plt.suptitle(
-            f"Normalized Distribution of {var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: {mean_w:.3f}",
+            "Normalized Distribution of "
+            f"{var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: "
+            f"{mean_w:.3f}",
             y=1.02,
         )
         plt.tight_layout()
@@ -293,7 +300,7 @@ def run(
             print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
 
-    # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
+    # 2D standardized variables (run once per variable; avoid prior recursion issue)
     if resolved_mode == "members" and has_ens:
         for member_index, tgt_m, pred_m in _iter_members():
             token_m = ensemble_mode_to_token("members", member_index)

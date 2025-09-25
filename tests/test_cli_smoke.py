@@ -33,9 +33,7 @@ def _synthetic_prepared():  # returns (ds_target, ds_prediction, ds_target_std, 
 
 def test_cli_main_smoke(monkeypatch, tmp_path: Path):
     # Monkeypatch the heavy dataset preparation to return tiny in-memory datasets.
-    monkeypatch.setattr(
-        cli_mod, "prepare_datasets", lambda cfg: _synthetic_prepared()
-    )
+    monkeypatch.setattr(cli_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
     # Create minimal config enabling only maps (which is stubbed by tests/conftest.py)
     cfg_text = (
         "paths:\n"  # paths are ignored due to monkeypatch

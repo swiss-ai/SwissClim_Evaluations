@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -72,13 +73,15 @@ def _fast_plot_algorithms(monkeypatch):
                 ext="npz",
             )
             np.savez(out_npz, mean_w=np.array([0.0]))
-            rows.append({
-                "variable": var,
-                "hemisphere": "both",
-                "lat_min": -90,
-                "lat_max": 90,
-                "wasserstein": 0.0,
-            })
+            rows.append(
+                {
+                    "variable": var,
+                    "hemisphere": "both",
+                    "lat_min": -90,
+                    "lat_max": 90,
+                    "wasserstein": 0.0,
+                }
+            )
         if rows:
             csv_path = section / build_output_filename(
                 metric="wd_kde_wasserstein",
@@ -226,9 +229,7 @@ def _fast_plots(monkeypatch):
     def _fast_subplots(nrows=1, ncols=1, *a, squeeze=True, **k):
         if nrows == 1 and ncols == 1:
             axes = _DummyAxis()
-        elif (
-            nrows == 1
-        ):  # return 1D list like real matplotlib for single row multi-col
+        elif nrows == 1:  # return 1D list like real matplotlib for single row multi-col
             axes = [_DummyAxis() for _ in range(ncols)]
         elif ncols == 1:  # multi-row single column -> 1D list
             axes = [_DummyAxis() for _ in range(nrows)]
@@ -246,9 +247,7 @@ def _fast_plots(monkeypatch):
         "figure",
         lambda *a, **k: _DummyFig(_np.empty((1, 1), dtype=object)),
     )
-    monkeypatch.setattr(
-        plt, "gcf", lambda: _DummyFig(_np.empty((1, 1), dtype=object))
-    )
+    monkeypatch.setattr(plt, "gcf", lambda: _DummyFig(_np.empty((1, 1), dtype=object)))
     monkeypatch.setattr(plt, "colorbar", lambda *a, **k: None)
     monkeypatch.setattr(plt, "savefig", lambda *a, **k: None)
     monkeypatch.setattr(plt, "close", lambda *a, **k: None)
@@ -275,12 +274,8 @@ def _fast_plots(monkeypatch):
         import swissclim_evaluations.plots.histograms as _hist
         import swissclim_evaluations.plots.wd_kde as _kde
 
-        monkeypatch.setattr(
-            _hist, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4, 2)
-        )
-        monkeypatch.setattr(
-            _kde, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4, 2)
-        )
+        monkeypatch.setattr(_hist, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4, 2))
+        monkeypatch.setattr(_kde, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4, 2))
     except Exception:
         pass
     try:
@@ -322,23 +317,17 @@ def _isolate_default_output_root():
         return p
 
     # Monkeypatch by direct assignment (session scope)
-    try:
+    with contextlib.suppress(Exception):
         _cli._ensure_output = _redirecting_ensure_output  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
     yield
 
     # Cleanup temp base
-    try:
+    with contextlib.suppress(Exception):
         shutil.rmtree(base, ignore_errors=True)
-    except Exception:
-        pass
 
     # Defensive: remove any accidental 'output' dir left in repo root
     repo_output = Path(__file__).resolve().parents[1] / "output"
     if repo_output.exists():
-        try:
+        with contextlib.suppress(Exception):
             shutil.rmtree(repo_output, ignore_errors=True)
-        except Exception:
-            pass
