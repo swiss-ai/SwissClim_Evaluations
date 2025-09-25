@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,7 @@ def _calculate_all_metrics(
     # - window_size = 9x9 grid cells
     auto_window_size = _window_size(ds_target)
     fss_quantile = 0.90
-    fss_window_size: Tuple[int, int] = (9, 9)
+    fss_window_size: tuple[int, int] = (9, 9)
     # Optional absolute thresholds (either a single float for all vars or per-variable mapping)
     fss_threshold_global: float | None = None
     fss_thresholds_per_var: dict[str, float] | None = None
@@ -56,7 +57,7 @@ def _calculate_all_metrics(
             try:
                 if isinstance(ws, int):
                     fss_window_size = (max(1, int(ws)), max(1, int(ws)))
-                elif isinstance(ws, Iterable) and not isinstance(ws, (str, bytes)):
+                elif isinstance(ws, Iterable) and not isinstance(ws, str | bytes):  # ruff UP038
                     ws_list = list(ws)  # type: ignore[arg-type]
                     if len(ws_list) >= 2:
                         fss_window_size = (
@@ -227,7 +228,8 @@ def run(
         or ("ensemble" in ds_target_std.dims)
     )
 
-    # Resolve ensemble handling (deterministic defaults to mean). Members mode currently unsupported for metrics aggregation.
+    # Resolve ensemble handling (deterministic defaults to mean). Members mode currently
+    # unsupported for metrics aggregation.
     resolved_mode = resolve_ensemble_mode("deterministic", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "prob":

@@ -11,10 +11,12 @@ from swissclim_evaluations.metrics.vertical_profiles import (
 
 
 def _make_3d_dataset():
-    init_time = np.array([
-        np.datetime64("2023-01-01T00"),
-        np.datetime64("2023-01-01T12"),
-    ])
+    init_time = np.array(
+        [
+            np.datetime64("2023-01-01T00"),
+            np.datetime64("2023-01-01T12"),
+        ]
+    )
     level = np.array([1000, 850, 500])
     # Cover broad latitude extent so band slicing finds data
     lat = np.linspace(-90, 90, 19)
@@ -45,9 +47,7 @@ def test_vertical_profiles_outputs(tmp_path: Path, monkeypatch):
     # Use four latitude bands -> half=2 so axes indexing axes[0,i] works like original path.
     import swissclim_evaluations.metrics.vertical_profiles as _vp_mod
 
-    monkeypatch.setattr(
-        _vp_mod, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4)
-    )
+    monkeypatch.setattr(_vp_mod, "_lat_bands", lambda: ([-90, -30, 0, 30, 90], 4))
 
     ds_target, ds_prediction = _make_3d_dataset()
     out_root = tmp_path / "output"

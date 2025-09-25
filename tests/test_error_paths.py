@@ -34,13 +34,15 @@ def _ds_vertical_profiles_empty_band():
     lat = np.linspace(-2, 2, 5)  # narrow subset
     lon = np.linspace(0, 3, 4)
     rng = np.random.default_rng(1)
-    data = rng.standard_normal((
-        init.size,
-        lead.size,
-        level.size,
-        lat.size,
-        lon.size,
-    ))
+    data = rng.standard_normal(
+        (
+            init.size,
+            lead.size,
+            level.size,
+            lat.size,
+            lon.size,
+        )
+    )
     tgt = xr.Dataset(
         {
             "temperature": (
@@ -64,9 +66,7 @@ def test_energy_spectra_missing_longitude(tmp_path: Path):
     ds = _ds_no_longitude()
     # Wrap in minimal dataset arguments expected by run (needs prediction dataset too)
     with pytest.raises(ValueError):
-        run_energy_spectra(
-            ds, ds, out_root=tmp_path / "output", plotting_cfg={}, select_cfg={}
-        )
+        run_energy_spectra(ds, ds, out_root=tmp_path / "output", plotting_cfg={}, select_cfg={})
 
 
 def test_vertical_profiles_empty_band_outputs(tmp_path: Path, monkeypatch):
@@ -115,8 +115,8 @@ def test_vertical_profiles_empty_band_outputs(tmp_path: Path, monkeypatch):
     )
     vp_dir = out / "vertical_profiles"
     assert vp_dir.exists()
-    # There should be at least one NPZ (may be more if multiple variables); allow any matching prefix
+    # There should be at least one NPZ (may be more if multiple variables);
+    # allow any matching prefix
     assert any(
-        f.name.startswith("vprof_nmae_") and f.suffix == ".npz"
-        for f in vp_dir.iterdir()
+        f.name.startswith("vprof_nmae_") and f.suffix == ".npz" for f in vp_dir.iterdir()
     ), "Expected vprof_nmae*.npz even with empty bands"

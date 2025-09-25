@@ -3,8 +3,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from swissclim_evaluations.metrics import deterministic as det_mod
-from swissclim_evaluations.metrics import ets as ets_mod
+from swissclim_evaluations.metrics import deterministic as det_mod, ets as ets_mod
 
 
 def _make_multi_member(n_members=3):

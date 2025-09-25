@@ -20,7 +20,7 @@ fi
 
 # load required modules
 module load gcc
-module load cmake 
+module load cmake
 
 # install uv if not already installed
 if ! command -v uv > /dev/null; then
@@ -32,7 +32,7 @@ fi
 
 echo "🔧 Creating environment..."
 uv venv --prompt=swissclim-eval --python=3.11.9
-uv sync 
+uv sync
 
 # activate environment
 source .venv/bin/activate

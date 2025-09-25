@@ -9,9 +9,7 @@ from ._smoke_data import make_synthetic_datasets
 
 def test_energy_spectra_creates_suffixed_csvs(tmp_path: Path):
     # Reuse 2D synthetic data (time, lat, lon)
-    ds_target, ds_prediction = make_synthetic_datasets(
-        with_ensemble=False, time=3
-    )
+    ds_target, ds_prediction = make_synthetic_datasets(with_ensemble=False, time=3)
 
     out_root = tmp_path / "output"
     run_energy_spectra(

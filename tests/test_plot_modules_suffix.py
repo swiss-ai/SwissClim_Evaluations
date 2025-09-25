@@ -10,9 +10,11 @@ from swissclim_evaluations.plots.maps import run as run_maps
 
 def _make_basic_ds(include_level: bool = False):
     # Use minimal sizes for speed (still exercises 2D + optional 3D paths)
-    time = np.array([
-        np.datetime64("2025-01-01T00"),
-    ])
+    time = np.array(
+        [
+            np.datetime64("2025-01-01T00"),
+        ]
+    )
     lat = np.linspace(-10, 10, 3)
     lon = np.linspace(0, 20, 4)
     rng = np.random.default_rng(0)
@@ -28,12 +30,14 @@ def _make_basic_ds(include_level: bool = False):
     )
     if include_level:
         level = np.array([1000])  # single level sufficient for coverage
-        data_3d = rng.standard_normal((
-            time.size,
-            level.size,
-            lat.size,
-            lon.size,
-        ))
+        data_3d = rng.standard_normal(
+            (
+                time.size,
+                level.size,
+                lat.size,
+                lon.size,
+            )
+        )
         ds["temperature"] = (
             ["time", "level", "latitude", "longitude"],
             data_3d,
@@ -65,9 +69,7 @@ def test_maps_histograms_wd_kde_suffixed_outputs(tmp_path: Path):
     import swissclim_evaluations.plots.histograms as hist_mod
     import swissclim_evaluations.plots.wd_kde as kde_mod
 
-    hist_mod.run(
-        ds_target, ds_prediction, out_root=out_root, plotting_cfg=plot_cfg
-    )
+    hist_mod.run(ds_target, ds_prediction, out_root=out_root, plotting_cfg=plot_cfg)
     kde_mod.run(
         ds_target,
         ds_prediction,
@@ -85,6 +87,4 @@ def test_maps_histograms_wd_kde_suffixed_outputs(tmp_path: Path):
     # Light existence smoke checks (detailed naming covered in golden & output_naming tests)
     assert any(f.name.startswith("map_") for f in maps_dir.glob("map_*.npz"))
     assert any(f.name.startswith("hist_") for f in hist_dir.glob("hist_*.npz"))
-    assert any(
-        f.name.startswith("wd_kde_") for f in kde_dir.glob("wd_kde_*.npz")
-    )
+    assert any(f.name.startswith("wd_kde_") for f in kde_dir.glob("wd_kde_*.npz"))

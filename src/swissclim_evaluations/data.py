@@ -1,3 +1,4 @@
+import contextlib
 import warnings
 
 import numpy as np
@@ -30,9 +31,7 @@ DESIRED_CHUNKS: dict[str, int] = {
 }
 
 
-def _chunks_match(
-    chunks: tuple[int, ...] | None, desired: int, dim_len: int
-) -> bool:
+def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) -> bool:
     """Return True if an existing chunk pattern matches the desired size.
 
     Only supports desired sizes of 1 (all chunks size 1) or -1 (single full chunk).
@@ -70,7 +69,7 @@ def enforce_chunking(
 
     # Determine if rechunking is necessary by inspecting existing chunks across variables
     needs_rechunk = False
-    # xarray Dataset may not expose a unified chunks mapping; inspect the first variable that has the dim
+    # xarray Dataset may not expose a unified chunks mapping; inspect first variable with the dim
     for dim, desired in policy.items():
         if dim not in ds.dims:
             continue
@@ -99,8 +98,9 @@ def enforce_chunking(
     if needs_rechunk:
         name = dataset_name or "dataset"
         warnings.warn(
-            f"Rechunking {name} to policy {policy}. This may increase memory usage and runtime.",
+            (f"Rechunking {name} to policy {policy}. This may increase memory usage and runtime."),
             RuntimeWarning,
+            stacklevel=2,
         )
         return ds.chunk(chunk_map)
     return ds
@@ -111,8 +111,9 @@ def standardize_dims(
 ) -> xr.Dataset:
     """Standardize dataset dims and coords for this pipeline.
 
-    - Normalize alias names (initial_time->init_time, number/member->ensemble, prediction_timedelta->lead_time, etc.).
-    - Convert legacy 'time' -> 'init_time' and add a singleton zero 'lead_time' if absent.
+        - Normalize alias names (initial_time->init_time, number/member->ensemble,
+            prediction_timedelta->lead_time, etc.).
+        - Convert legacy 'time' -> 'init_time' and add singleton zero 'lead_time' if absent.
     - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
     - Ensure spatial dims latitude/longitude exist.
     - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
@@ -137,7 +138,8 @@ def standardize_dims(
     # Forbid any use of valid_time
     if "valid_time" in ds.dims or "valid_time" in ds.coords:
         raise ValueError(
-            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not allowed."
+            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); "
+            "'valid_time' is not allowed."
         )
 
     # Convert legacy time -> init_time while keeping an index for label-based selection
@@ -146,11 +148,8 @@ def standardize_dims(
             # Rename both the dimension and its coordinate in one go
             ds = ds.rename({"time": "init_time"})
             # On newer xarray, rename drops the xindex; restore it if possible
-            try:  # xarray>=2024.10
+            with contextlib.suppress(Exception):  # xarray>=2024.10
                 ds = ds.set_xindex("init_time")
-            except Exception:
-                # Older versions or if already indexed; safe to ignore
-                pass
         else:
             # Fallback: only dimension exists (no coord var)
             ds = ds.rename_dims({"time": "init_time"})
@@ -158,35 +157,28 @@ def standardize_dims(
     # Ensure latitude/longitude present
     for d in ("latitude", "longitude"):
         if d not in ds.dims:
-            raise ValueError(
-                f"Dataset '{dataset_name}' is missing required spatial dim '{d}'."
-            )
+            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
 
     # Ensure lead_time exists; add singleton zero if absent when init_time exists
     if "init_time" in ds.dims and "lead_time" not in ds.dims:
-        zero_lead = np.array([0], dtype="timedelta64[h]").astype(
-            "timedelta64[ns]"
-        )
+        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
         ds = ds.expand_dims({"lead_time": zero_lead})
     # Coerce lead_time dtype to timedelta64[ns]
     if "lead_time" in ds.dims:
         lt = ds["lead_time"].values
         if not np.issubdtype(lt.dtype, np.timedelta64):
             ds = ds.assign_coords(
-                lead_time=np.array(lt, dtype="timedelta64[h]").astype(
-                    "timedelta64[ns]"
-                )
+                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
             )
-        # Optional policy: restrict to first lead_time (no forecasting)
-        # If first_lead_only is None, we apply it by default (True) to ensure consistency
-        if first_lead_only is None or bool(first_lead_only):
-            if int(ds.lead_time.size) > 1:
-                # Keep coordinate label and dimension length 1
-                lead0 = ds["lead_time"].values[0]
-                try:
-                    ds = ds.sel(lead_time=[lead0])
-                except Exception:
-                    ds = ds.isel(lead_time=0, drop=False)
+        # Optional policy: restrict to first lead_time (no forecasting). Default True when None.
+        if (first_lead_only is None or bool(first_lead_only)) and int(
+            ds.lead_time.size
+        ) > 1:  # SIM102
+            lead0 = ds["lead_time"].values[0]
+            with contextlib.suppress(Exception):
+                ds = ds.sel(lead_time=[lead0])
+            if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
+                ds = ds.isel(lead_time=0, drop=False)
 
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
@@ -204,7 +196,8 @@ def standardize_dims(
     if missing_core:
         raise ValueError(
             f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time) plus optional level/ensemble."
+            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
+            "level/ensemble."
         )
     # Validate that no unsupported dims remain
     bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]

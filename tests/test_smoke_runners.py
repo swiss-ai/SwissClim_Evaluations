@@ -30,7 +30,8 @@ def test_deterministic_smoke(tmp_path: Path):
     )
 
     det_dir = out_root / "deterministic"
-    # New schema: no 'multi' or 'full' tokens; expect plain deterministic_metrics_*.csv with ensemble token
+    # New schema: no 'multi' or 'full' tokens; expect plain
+    # deterministic_metrics_*.csv with ensemble token
     # When input has no ensemble dimension we still expect 'ensnone'.
     assert any(
         n in {"deterministic_metrics_ensnone.csv", "deterministic_metrics_standardized_ensnone.csv"}
@@ -39,7 +40,8 @@ def test_deterministic_smoke(tmp_path: Path):
 
 
 def test_deterministic_smoke_with_ensemble_mean(tmp_path: Path):
-    """When an ensemble dimension is present and reduction is enabled, filenames should use 'ensmean'."""
+    """When an ensemble dimension is present and reduction is enabled,
+    filenames should use 'ensmean'."""
     targets, predictions = make_synthetic_datasets(with_ensemble=True)
     targets_std = (targets - targets.mean()) / targets.std()
     predictions_std = (predictions - targets.mean()) / targets.std()
@@ -85,7 +87,8 @@ def test_probabilistic_smoke(tmp_path: Path):
 
     prob_dir = out_root / "probabilistic"
     # at least one pit histogram and crps summary should exist
-    # New schema: summary may include init/lead tokens if ranges present else just crps_summary_ensnone.csv
+    # New schema: summary may include init/lead tokens if ranges present else
+    # just crps_summary_ensnone.csv
     assert any(
         f.name == "crps_summary_ensprob.csv"
         or (f.name.startswith("crps_summary_averaged_init") and f.name.endswith("_ensprob.csv"))

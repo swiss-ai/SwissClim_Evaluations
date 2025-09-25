@@ -34,7 +34,7 @@ selection:
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
-    "2023-04-02T00:2023-04-08T23", 
+    "2023-04-02T00:2023-04-08T23",
     "2023-07-02T00:2023-07-08T23",
     "2023-10-02T00:2023-10-08T23",
     # "2024-01-02T00:2024-01-08T23",
