@@ -118,7 +118,6 @@ The YAML is the single source of truth. Use the commented example directly:
 # Global configuration for SwissClim Evaluations
 #
 # Tip: All paths should be absolute or relative to the repository root.
-# Python: 3.11 (uv, conda, and container setups)
 
 paths:
   # Path to your model predictions in Zarr format (root directory).
@@ -150,7 +149,16 @@ selection:
   #   3) Explicit non-contiguous timestamps:
   #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
   # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
-  datetimes: ["2023-01-02T12", "2023-01-03T00"]
+  datetimes: [
+    "2023-01-02T00:2023-01-08T23",
+    "2023-04-02T00:2023-04-08T23", 
+    "2023-07-02T00:2023-07-08T23",
+    "2023-10-02T00:2023-10-08T23",
+    # "2024-01-02T00:2024-01-08T23",
+    # "2024-04-02T00:2024-04-08T23",
+    # "2024-07-02T00:2024-07-08T23",
+    # "2024-10-02T00:2024-10-08T23"
+  ]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
   # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
@@ -173,15 +181,32 @@ selection:
     # "geopotential",
     # "specific_humidity",
     # "temperature",
-    # "u_component_of_wind",
+    "u_component_of_wind",
     # "v_component_of_wind",
   ]
 
-  # For ML datasets with an 'ensemble' dimension:
-  #   - Set to an integer index to select a single member for deterministic runs.
-  #   - Leave as null/omit to use the ensemble mean when probabilistic modules are disabled.
-  #   - When probabilistic modules are enabled, ensemble is kept regardless.
-  ensemble_member: 0
+  # ensemble_member:
+  #   Integer index to pre-select a single member before any module runs.
+  #   Leave null (recommended) to keep all members and let per‑module modes decide handling.
+  #   If set, other members are discarded (no mean/pooled/prob/members expansion possible later).
+  ensemble_member: null
+
+  # Per-module ensemble modes (override defaults if needed):
+  #   mean     → reduce to mean (ensmean)
+  #   pooled   → pooled sample (enspooled)
+  #   prob     → probabilistic semantics (ensprob; probabilistic module only)
+  #   members  → per-member outputs (ens0..ensN)
+  #   none     → no ensemble handling (only if dataset lacks ensemble dim)
+  ensemble:
+    deterministic: mean      # mean | members | none*
+    ets: mean                # mean | members | none*
+    probabilistic: prob      # prob (only valid choice; module forces prob)
+    energy_spectra: mean     # mean | members | pooled | none*
+    vertical_profiles: mean  # mean | members | none*
+    histograms: pooled       # pooled | members | mean | none*
+    wd_kde: pooled           # pooled | members | mean | none*
+    maps: members            # members | mean | none*
+    # * 'none' only if dataset truly has no ensemble dimension.
 
   # If true, raise an error when requested pressure levels are missing from the data.
   check_missing: false
@@ -194,8 +219,9 @@ plotting:
   # Example: "2023-01-03T12". Leave null/omit to plot the first available init_time.
   plot_datetime: null
 
-  # Plot specific ensemble members (indices)
-  # Provide a list of integers. Leave null/omit to plot all ensemble members present.
+  # Plot specific ensemble members (indices) for figure/NPZ exports in members-capable modules (e.g. maps, spectra).
+  # Provide a list of integers to restrict outputs to that subset; leave null/omit to include all members.
+  # Ignored when the module's ensemble mode is not 'members' (e.g. maps set to mean).
   # Example: [0, 3, 7]
   plot_ensemble_members: null
 
@@ -207,10 +233,11 @@ plotting:
   # Note: Provide as a plain integer (no underscores) in YAML.
   kde_max_samples: 200000
 
-  # Maximum number of samples per latitude band for histograms (2D variables only).
+  # Maximum number of samples per latitude band for histograms.
   # When provided, histograms are built from a deterministic subsample (mirrors wd_kde logic)
-  # rather than the full arrays. Set to null/omit to use full data. Typical: 50_000–200_000.
+  # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
   histogram_max_samples: 200000
+
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only
@@ -229,37 +256,33 @@ modules:
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
-  probabilistic: true       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
   #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
+  # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
-  # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
+    # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
     # Fractional Skill Score (FSS) configuration
-    # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
-    # - window_size: integer (square window) or two-element list [height, width]
-    # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
-    # Optional: use absolute thresholds instead of quantiles:
-    #   - threshold: single float applied to all variables (units must match each variable)
-    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
     fss:
       quantile: 0.95
-      window_size: 9            # Example: square window of 9x9
-      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
-      # thresholds:              # Example: per-variable thresholds (units must match dataset)
-      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
-      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
+      window_size: 9
+      # threshold: 10.0
+      # thresholds:
+      #   "total_precipitation": 1.0
+      #   "10m_u_component_of_wind": 10.0
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
+  # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
-    thresholds: [50, 60, 70, 80, 90]
+    thresholds: [50, 70, 90]
 ```
 
 </details>
@@ -306,27 +329,27 @@ The evaluation generates organized results for each enabled module:
 Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
-- Optional qualifier (`averaged`, `standardized`, `standardized_averaged`)
+- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof)
 - Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
-- Ensemble token (always; `ens<idx>` or `ensnone` / `ensmean`)
+- Ensemble token (always; see "Ensemble Tokens" below)
 
-Examples:
+Examples (mean reduction vs members):
 
 ```text
-deterministic_metrics_ensnone.csv
-deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensnone.csv
-deterministic_metrics_standardized_ensnone.csv
+deterministic_metrics_ensmean.csv
+deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensmean.csv
+deterministic_metrics_standardized_ensmean.csv
+deterministic_metrics_ens0.csv            # members mode example (member 0)
 ```
 
 ### Extreme Threshold Statistics (ETS)
 
-ETS filenames follow the same minimal pattern as deterministic metrics.
-
-Examples:
+ETS filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
 
 ```text
-ets_metrics_ensnone.csv
-ets_metrics_averaged_init2023010200-2023010412_ensnone.csv
+ets_metrics_ensmean.csv
+ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
+ets_metrics_init_time_ens0.csv   # members mode per-member file
 ```
 
 ### Energy Spectra Analysis
@@ -339,23 +362,30 @@ is exported per init_time/lead_time and summarized. Outputs:
 - LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
 - LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
 - LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_time_<range>.csv`
-- LSD averaged (3D levels wide): `energy_spectra/lsd_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
+- LSD averaged (3D levels wide): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
 - LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
 
-### Distribution Analysis
+### Distribution Analysis (Histograms & KDE / Wasserstein)
 
-Histogram and KDE outputs drop placeholder tokens. For 2D variables no level token appears; for 3D variables the numeric level is included.
+Histogram and KDE outputs encode:
 
-Examples:
+- Prefix: `hist_` or `wd_kde_`
+- Variable + optional level token
+- Latitudinal aggregation token (`latbands` or `_latbands_combined` / `_latbands_kde_combined`)
+- Optional time-range tokens
+- Ensemble token
+
+Examples (pooled vs members):
 
 ```text
-hist_2m_temperature_latbands_ensnone.npz
-hist_temperature_500_latbands_combined_ensnone.npz
-wd_kde_2m_temperature_latbands_combined_ensnone.npz
-wd_kde_wasserstein_averaged_ensnone.csv
+hist_2m_temperature_latbands_enspooled.npz
+hist_temperature_500_latbands_combined_enspooled.npz
+wd_kde_2m_temperature_latbands_kde_combined_enspooled.npz
+wd_kde_wasserstein_averaged_enspooled.csv
+wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mode)
 ```
 
-If time ranges are present (e.g. for long aggregations) they appear just before the ensemble token similar to metrics: `..._init2023010200-2023010412_lead000h-036h_ensnone.npz`.
+Time ranges (if present) appear just before the ensemble token: `..._init2023010200-2023010412_lead000h-036h_enspooled.npz`.
 
 ### Vertical Structure (3D variables only)
 
@@ -368,28 +398,42 @@ Outputs (suffixed):
 
 ### Spatial Maps
 
-Examples:
+Maps include the selected (or single) init/lead span and ensemble token. In members mode one PNG (and/or NPZ if `output_mode` includes it) per member is produced.
 
 ```text
-map_10m_u_component_of_wind_init2023010200-2023010412_ens0.png
-map_temperature_500_init2023010200-2023010412_ens0.png
+map_10m_u_component_of_wind_init2023010200-2023010412_ens0.png   # member 0
+map_temperature_500_init2023010200-2023010412_ensmean.png        # mean reduction
+map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (output_mode=npz/both)
 ```
 
-### Probabilistic Verification (combined)
+### Probabilistic Verification (combined xarray + WeatherBenchX)
 
-Current minimal pattern (per variable):
+All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
+
+Per-variable artifacts:
 
 ```text
-pit_hist_2m_temperature_ensnone.npz
-pit_field_2m_temperature_ensnone.nc
-crps_field_2m_temperature_ensnone.nc
+pit_hist_2m_temperature_ensprob.npz
+pit_field_2m_temperature_ensprob.nc
+crps_field_2m_temperature_ensprob.nc
+crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
+crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map
 ```
 
-Aggregated summaries:
+WBX summary tables / fields:
 
 ```text
-crps_summary_ensnone.csv
-crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensnone.csv
+spread_skill_ratio_ensprob.csv
+crps_ensemble_ensprob.csv
+probabilistic_metrics_temporal_ensprob.nc
+probabilistic_metrics_spatial_ensprob.nc
+```
+
+Aggregated CRPS summaries (xarray based):
+
+```text
+crps_summary_ensprob.csv
+crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 ```
 
 ### Details for probabilistic outputs

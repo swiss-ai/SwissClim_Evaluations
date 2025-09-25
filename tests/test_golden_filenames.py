@@ -34,9 +34,18 @@ def test_golden_plot_filenames(tmp_path: Path):
     tgt, pred, tgt_std, pred_std = _datasets()
     out = tmp_path / "output"
     cfg = {"output_mode": "npz", "random_seed": 1}
-    run_maps(tgt, pred, out_root=out, plotting_cfg=cfg)
-    run_histograms(tgt, pred, out_root=out, plotting_cfg=cfg)
-    run_wd_kde(tgt, pred, tgt_std, pred_std, out_root=out, plotting_cfg=cfg)
+    run_maps(tgt, pred, out_root=out, plotting_cfg=cfg, ensemble_mode="none")
+    # histograms default to pooled (pooled vs none behave same without ensemble dim -> ensnone)
+    run_histograms(tgt, pred, out_root=out, plotting_cfg=cfg, ensemble_mode="pooled")
+    run_wd_kde(
+        tgt,
+        pred,
+        tgt_std,
+        pred_std,
+        out_root=out,
+        plotting_cfg=cfg,
+        ensemble_mode="pooled",
+    )
 
     maps_dir = out / "maps"
     hist_dir = out / "histograms"
@@ -50,7 +59,6 @@ def test_golden_plot_filenames(tmp_path: Path):
     # Ensemble marker ensnone always present as there is no ensemble dimension.
     expected_contains = [
         "map_u10_ensnone.npz",
-        # hist + wd_kde use '_combined_ensnone' endings (pattern asserted strictly here)
     ]
     for token in expected_contains:
         assert token in got, f"Missing expected file {token}. Got: {got}"

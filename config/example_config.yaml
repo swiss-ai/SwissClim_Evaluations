@@ -68,11 +68,28 @@ selection:
     # "v_component_of_wind",
   ]
 
-  # For ML datasets with an 'ensemble' dimension:
-  #   - Set to an integer index to select a single member for deterministic runs.
-  #   - Leave as null/omit to use the ensemble mean when probabilistic modules are disabled.
-  #   - When probabilistic modules are enabled, ensemble is kept regardless.
-  ensemble_member: 0
+  # ensemble_member:
+  #   Integer index to pre-select a single member before any module runs.
+  #   Leave null (recommended) to keep all members and let per‑module modes decide handling.
+  #   If set, other members are discarded (no mean/pooled/prob/members expansion possible later).
+  ensemble_member: null
+
+  # Per-module ensemble modes (override defaults if needed):
+  #   mean     → reduce to mean (ensmean)
+  #   pooled   → pooled sample (enspooled)
+  #   prob     → probabilistic semantics (ensprob; probabilistic module only)
+  #   members  → per-member outputs (ens0..ensN)
+  #   none     → no ensemble handling (only if dataset lacks ensemble dim)
+  ensemble:
+    maps: members            # members | mean | none*
+    histograms: pooled       # pooled | members | mean | none*
+    wd_kde: pooled           # pooled | members | mean | none*
+    energy_spectra: mean     # mean | members | pooled | none*
+    vertical_profiles: mean  # mean | members | none*
+    deterministic: mean      # mean | members | none*
+    ets: mean                # mean | members | none*
+    probabilistic: prob      # prob (only valid choice; module forces prob)
+    # * 'none' only if dataset truly has no ensemble dimension.
 
   # If true, raise an error when requested pressure levels are missing from the data.
   check_missing: false
@@ -85,8 +102,9 @@ plotting:
   # Example: "2023-01-03T12". Leave null/omit to plot the first available init_time.
   plot_datetime: null
 
-  # Plot specific ensemble members (indices)
-  # Provide a list of integers. Leave null/omit to plot all ensemble members present.
+  # Plot specific ensemble members (indices) for figure/NPZ exports in members-capable modules (e.g. maps, spectra).
+  # Provide a list of integers to restrict outputs to that subset; leave null/omit to include all members.
+  # Ignored when the module's ensemble mode is not 'members' (e.g. maps set to mean).
   # Example: [0, 3, 7]
   plot_ensemble_members: null
 
@@ -128,9 +146,10 @@ metrics:
   # Available metric names:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
   #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
+  # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
-  # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
+    # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
     # Fractional Skill Score (FSS) configuration
@@ -150,5 +169,6 @@ metrics:
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
+  # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
     thresholds: [50, 70, 90]
