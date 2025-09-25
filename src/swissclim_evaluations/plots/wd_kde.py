@@ -8,7 +8,11 @@ import numpy as np
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
-from ..helpers import build_output_filename
+from ..helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    resolve_ensemble_mode,
+)
 
 
 def _lat_bands():
@@ -25,6 +29,7 @@ def run(
     ds_prediction_std: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
+    ensemble_mode: str | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -54,37 +59,70 @@ def run(
         max_levels = None
 
     # Select only genuine 2D variables (no 'level' dimension) and 3D ones
-    variables_2d = [
-        v
-        for v in ds_target_std.data_vars
-        if "level" not in ds_target_std[v].dims
-    ]
-    variables_3d = [
-        v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims
-    ]
+    variables_2d = [v for v in ds_target_std.data_vars if "level" not in ds_target_std[v].dims]
+    variables_3d = [v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
         print("[wd_kde] No eligible variables found – skipping.")
         return
     if variables_2d:
-        print(
-            f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized)."
-        )
+        print(f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized).")
     if process_3d and variables_3d:
-        print(
-            f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized)."
-        )
+        print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
     lat_bins, n_bands, n_rows = _lat_bands()
+
+    # Resolve ensemble handling (pooled/mean/members/none). Prob not allowed here.
+    resolved_mode = resolve_ensemble_mode("wd_kde", ensemble_mode, ds_target_std, ds_prediction_std)
+    has_ens = "ensemble" in ds_prediction_std.dims
+    if resolved_mode == "prob":
+        raise ValueError("ensemble_mode=prob invalid for wd_kde")
+    if resolved_mode == "none" and has_ens:
+        # Force user to choose pooling semantics instead of implicitly ignoring ensemble
+        raise ValueError(
+            "ensemble_mode=none requested but 'ensemble' dimension present; choose mean|pooled|members"
+        )
+
+    def _iter_members():
+        if not has_ens:
+            yield None, ds_target_std, ds_prediction_std
+        else:
+            for i in range(int(ds_prediction_std.sizes["ensemble"])):
+                tgt_m = (
+                    ds_target_std.isel(ensemble=i)
+                    if "ensemble" in ds_target_std.dims
+                    else ds_target_std
+                )
+                pred_m = ds_prediction_std.isel(ensemble=i)
+                yield i, tgt_m, pred_m
+
+    # Establish dataset views depending on mode
+    if resolved_mode == "mean" and has_ens:
+        ds_target_std_eff = (
+            ds_target_std.mean(dim="ensemble")
+            if "ensemble" in ds_target_std.dims
+            else ds_target_std
+        )
+        ds_prediction_std_eff = ds_prediction_std.mean(dim="ensemble")
+        ens_token_base = ensemble_mode_to_token("mean")
+    elif resolved_mode in ("pooled", "none"):
+        ds_target_std_eff = ds_target_std
+        ds_prediction_std_eff = ds_prediction_std
+        ens_token_base = (
+            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
+        )
+    else:  # members
+        ds_target_std_eff = ds_target_std  # used only for 2D variable discovery
+        ds_prediction_std_eff = ds_prediction_std
+        ens_token_base = None  # per-member inside loop
 
     def _process_variable(
         var_name: str,
         da_t_std: xr.DataArray,
         da_p_std: xr.DataArray,
         level_token: str,
+        ens_token: str | None,
     ):
         # local copy of loop body (with minor modifications to accept arrays directly)
-        def _subsample_values(
-            da: xr.DataArray, k: int, seed: int
-        ) -> np.ndarray:
+        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
             size = int(getattr(da, "size", 0) or 0)
             if size == 0:
                 return np.array([], dtype=float)
@@ -131,16 +169,9 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            seed = (
-                base_seed
-                + (hash(var_name + level_token) % 1000) * 1000
-                + (j + 1) * 10
-                + 1
-            )
+            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 1
             ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=seed
-            )
+            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
             if ds_flat.size == 0 or ml_flat.size == 0:
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
@@ -160,15 +191,9 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 1].plot(
-                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
-            )
-            axs[j, 1].plot(
-                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
-            )
-            axs[j, 1].set_title(
-                f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
-            )
+            axs[j, 1].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
+            axs[j, 1].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 1].legend()
             if save_npz:
                 combined["neg_x"].append(x_eval)
@@ -186,16 +211,9 @@ def run(
             if da_target_slice.size == 0 or da_prediction_slice.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
-            seed = (
-                base_seed
-                + (hash(var_name + level_token) % 1000) * 1000
-                + (j + 1) * 10
-                + 2
-            )
+            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 2
             ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(
-                da_prediction_slice, max_samples, seed=seed
-            )
+            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
             if ds_flat.size == 0 or ml_flat.size == 0:
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
@@ -215,15 +233,9 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 0].plot(
-                x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth"
-            )
-            axs[j, 0].plot(
-                x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction"
-            )
-            axs[j, 0].set_title(
-                f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})"
-            )
+            axs[j, 0].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
+            axs[j, 0].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 0].legend()
             if save_npz:
                 combined["pos_x"].append(x_eval)
@@ -246,7 +258,7 @@ def run(
                 qualifier="plot",
                 init_time_range=None,
                 lead_time_range=None,
-                ensemble=None,
+                ensemble=ens_token,
                 ext="png",
             )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -260,7 +272,7 @@ def run(
                 qualifier="combined",
                 init_time_range=None,
                 lead_time_range=None,
-                ensemble=None,
+                ensemble=ens_token,
                 ext="npz",
             )
             np.savez(
@@ -282,35 +294,71 @@ def run(
         plt.close(fig)
 
     # 2D standardized variables (run once per variable – was previously mis-indented causing recursion)
-    for variable_name in variables_2d:
-        # Omit placeholder level token for 2D variables
-        _process_variable(
-            variable_name,
-            ds_target_std[variable_name],
-            ds_prediction_std[variable_name],
-            level_token="",  # empty -> skipped in filename
-        )
+    if resolved_mode == "members" and has_ens:
+        for member_index, tgt_m, pred_m in _iter_members():
+            token_m = ensemble_mode_to_token("members", member_index)
+            for variable_name in variables_2d:
+                _process_variable(
+                    variable_name,
+                    tgt_m[variable_name],
+                    pred_m[variable_name],
+                    level_token="",
+                    ens_token=token_m,
+                )
+    else:
+        for variable_name in variables_2d:
+            _process_variable(
+                variable_name,
+                ds_target_std_eff[variable_name],
+                ds_prediction_std_eff[variable_name],
+                level_token="",
+                ens_token=ens_token_base,
+            )
 
     # 3D standardized variables per level
     if process_3d:
         for variable_name in variables_3d:
-            da_t_std = ds_target_std[variable_name]
-            da_p_std = ds_prediction_std[variable_name]
+            da_t_std = ds_target_std_eff[variable_name]
+            da_p_std = ds_prediction_std_eff[variable_name]
             levels = list(da_t_std["level"].values)
             if max_levels is not None:
                 levels = levels[:max_levels]
             for lvl in levels:
                 lvl_clean = str(lvl).replace(".", "_")
-                da_t_lvl = da_t_std.sel(level=lvl)
-                da_p_lvl = da_p_std.sel(level=lvl)
-                _process_variable(
-                    variable_name,
-                    da_t_lvl,
-                    da_p_lvl,
-                    level_token=str(lvl_clean),
-                )
+                if resolved_mode == "members" and has_ens:
+                    for member_index, tgt_m, pred_m in _iter_members():
+                        token_m = ensemble_mode_to_token("members", member_index)
+                        _process_variable(
+                            variable_name,
+                            (
+                                tgt_m[variable_name].sel(level=lvl)
+                                if "ensemble" in tgt_m[variable_name].dims
+                                else tgt_m.sel(level=lvl)
+                            ),
+                            pred_m[variable_name].sel(level=lvl),
+                            level_token=str(lvl_clean),
+                            ens_token=token_m,
+                        )
+                else:
+                    da_t_lvl = da_t_std.sel(level=lvl)
+                    da_p_lvl = da_p_std.sel(level=lvl)
+                    _process_variable(
+                        variable_name,
+                        da_t_lvl,
+                        da_p_lvl,
+                        level_token=str(lvl_clean),
+                        ens_token=ens_token_base,
+                    )
 
     # After processing all variables, write Wasserstein distances CSV summary
+    if resolved_mode == "members" and has_ens:
+        # No aggregated Wasserstein summary when per-member artifacts produced (could add later)
+        wasserstein_rows = []
+
+    ens_token = ens_token_base
+    if resolved_mode == "members" and has_ens:
+        ens_token = None  # per-member tokens used inside loops already
+
     if wasserstein_rows:
         import pandas as _pd
 
@@ -322,7 +370,7 @@ def run(
             qualifier="averaged",
             init_time_range=None,
             lead_time_range=None,
-            ensemble=None,
+            ensemble=ens_token,
             ext="csv",
         )
         df_w.to_csv(out_csv, index=False)
@@ -338,7 +386,7 @@ def run(
             qualifier="averaged",
             init_time_range=None,
             lead_time_range=None,
-            ensemble=None,
+            ensemble=ens_token,
             ext="csv",
         )
         _pd.DataFrame(
@@ -350,6 +398,4 @@ def run(
                 "wasserstein",
             ]
         ).to_csv(out_csv, index=False)
-        print(
-            "[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV"
-        )
+        print("[wd_kde] WARNING: No Wasserstein rows collected; emitted empty CSV")

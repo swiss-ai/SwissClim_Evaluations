@@ -9,7 +9,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..helpers import build_output_filename
+from ..helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    resolve_ensemble_mode,
+)
 
 
 def run(
@@ -17,6 +21,7 @@ def run(
     ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
+    ensemble_mode: str | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -84,9 +89,7 @@ def run(
 
     # Determine variables
     if "level" in ds_target.dims and int(ds_target.level.size) > 1:
-        variables_3d = [
-            v for v in ds_target.data_vars if "level" in ds_target[v].dims
-        ]
+        variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
         variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
     else:
         variables_3d = []
@@ -94,13 +97,34 @@ def run(
 
     # Assume no missing data per project requirement; use direct min/max.
 
-    # Determine ensemble members (if any) from predictions preference; fall back to targets
-    if "ensemble" in ds_prediction.dims:
-        ensemble_members = list(range(ds_prediction.sizes["ensemble"]))
-    elif "ensemble" in ds_target.dims:
-        ensemble_members = list(range(ds_target.sizes["ensemble"]))
+    # Resolve ensemble handling (maps: mean/pooled/members/none). Prob invalid.
+    resolved_mode = resolve_ensemble_mode("maps", ensemble_mode, ds_target, ds_prediction)
+    has_ens = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
+    if resolved_mode == "prob":
+        raise ValueError("ensemble_mode=prob invalid for maps")
+    if resolved_mode == "none" and has_ens:
+        resolved_mode = "mean"  # degrade to historical behaviour
+
+    if resolved_mode == "mean" and has_ens:
+        if "ensemble" in ds_target.dims:
+            ds_target = ds_target.mean(dim="ensemble")
+        if "ensemble" in ds_prediction.dims:
+            ds_prediction = ds_prediction.mean(dim="ensemble")
+        ensemble_members = [None]
+        ens_token_global = ensemble_mode_to_token("mean")
+    elif resolved_mode == "pooled" and has_ens:
+        ensemble_members = [None]
+        ens_token_global = ensemble_mode_to_token("pooled")
+    elif resolved_mode == "members" and has_ens:
+        # enumerate members; token set per iteration
+        if "ensemble" in ds_prediction.dims:
+            ensemble_members = list(range(ds_prediction.sizes["ensemble"]))
+        else:
+            ensemble_members = list(range(ds_target.sizes["ensemble"]))
+        ens_token_global = None
     else:
         ensemble_members = [None]
+        ens_token_global = None
 
     # 2D maps (one figure per ensemble member if present)
     for i, var in enumerate(variables_2d):
@@ -137,10 +161,7 @@ def run(
             for dim_drop in ("time", "init_time", "lead_time"):
                 if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
                     ds_var = ds_var.isel({dim_drop: 0})
-                if (
-                    dim_drop in ds_ml_var.dims
-                    and ds_ml_var.sizes[dim_drop] == 1
-                ):
+                if dim_drop in ds_ml_var.dims and ds_ml_var.sizes[dim_drop] == 1:
                     ds_ml_var = ds_ml_var.isel({dim_drop: 0})
             ds_var = ds_var.squeeze()
             ds_ml_var = ds_ml_var.squeeze()
@@ -195,6 +216,12 @@ def run(
             elif title_extra:
                 plt.suptitle(f"{var}{title_extra}")
 
+            # Determine filename ensemble token
+            ens_token = (
+                ensemble_mode_to_token("members", ens)
+                if (resolved_mode == "members" and ens is not None)
+                else ens_token_global
+            )
             if save_fig:
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
@@ -204,7 +231,7 @@ def run(
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
-                    ensemble=(ens if ens is not None else None),
+                    ensemble=ens_token,
                     ext="png",
                 )
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -218,7 +245,7 @@ def run(
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
-                    ensemble=(ens if ens is not None else None),
+                    ensemble=ens_token,
                     ext="npz",
                 )
                 np.savez(
@@ -279,11 +306,7 @@ def run(
                 ds_ml_var = ds_ml_var.isel(time=time_index)
 
             for idx, level in enumerate(levels):
-                level_val = (
-                    int(level.values)
-                    if hasattr(level, "values")
-                    else int(level)
-                )
+                level_val = int(level.values) if hasattr(level, "values") else int(level)
                 ax_ds, ax_ds_ml = axes[idx]
                 ds_var_lev = ds_var.sel(level=level)
                 ds_ml_var_lev = ds_ml_var.sel(level=level)
@@ -344,6 +367,11 @@ def run(
                 plt.suptitle(f"{var}{title_extra}")
             plt.subplots_adjust(bottom=0.1, top=0.95, hspace=0.05, wspace=0.05)
 
+            ens_token = (
+                ensemble_mode_to_token("members", ens)
+                if (resolved_mode == "members" and ens is not None)
+                else ens_token_global
+            )
             if save_fig:
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
@@ -353,7 +381,7 @@ def run(
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
-                    ensemble=(ens if ens is not None else None),
+                    ensemble=ens_token,
                     ext="png",
                 )
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -367,7 +395,7 @@ def run(
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
-                    ensemble=(ens if ens is not None else None),
+                    ensemble=ens_token,
                     ext="npz",
                 )
                 np.savez(

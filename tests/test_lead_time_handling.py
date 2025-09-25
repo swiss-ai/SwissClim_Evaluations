@@ -15,9 +15,7 @@ def _make_multi_lead_datasets():
         [np.datetime64("2023-01-01T00"), np.datetime64("2023-01-01T06")],
         dtype="datetime64[ns]",
     )
-    lead = np.array([0, 6, 12], dtype="timedelta64[h]").astype(
-        "timedelta64[ns]"
-    )
+    lead = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
     lat = np.linspace(46.0, 47.0, 2)
     lon = np.linspace(7.0, 8.0, 2)
     ens = np.arange(4)
@@ -96,9 +94,9 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
     assert any(
         f.name.startswith("crps_summary_averaged_init")
         and "lead" in f.name
-        and f.name.endswith("_ensnone.csv")
+        and f.name.endswith("_ensprob.csv")
         for f in prob_dir.glob("crps_summary_*.csv")
-    ), "Expected CRPS summary file with init/lead time tokens under new schema"
+    ), "Expected CRPS summary file with init/lead time tokens (ensprob) under new schema"
 
     # Load suffixed PIT/CRPS (pick first match)
     pit_nc = next(prob_dir.glob("pit_field_2m_temperature_*.nc"))

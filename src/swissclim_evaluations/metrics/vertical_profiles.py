@@ -7,7 +7,11 @@ import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
 
-from ..helpers import build_output_filename
+from ..helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    resolve_ensemble_mode,
+)
 
 
 def _lat_bands() -> tuple[list[float], int]:
@@ -29,16 +33,8 @@ def _compute_nmae(
     Returns a DataArray with dimension 'level'.
     If there are no selected values, returns a level-aligned DataArray of NaNs.
     """
-    sub_true = (
-        true_da.sel(latitude=lat_slice)
-        .sel(level=level_values)
-        .astype("float32")
-    )
-    sub_pred = (
-        pred_da.sel(latitude=lat_slice)
-        .sel(level=level_values)
-        .astype("float32")
-    )
+    sub_true = true_da.sel(latitude=lat_slice).sel(level=level_values).astype("float32")
+    sub_pred = pred_da.sel(latitude=lat_slice).sel(level=level_values).astype("float32")
     if sub_true.size == 0:
         return xr.DataArray(
             np.full((len(level_values),), np.nan, dtype="float32"),
@@ -81,6 +77,7 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
+    ensemble_mode: str | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -88,9 +85,7 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "vertical_profiles"
 
-    variables_3d = [
-        v for v in ds_target.data_vars if "level" in ds_target[v].dims
-    ]
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
 
     # Extract time ranges for naming
@@ -136,6 +131,38 @@ def run(
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
+
+    # Resolve ensemble handling for vertical profiles (support mean, pooled, members; prob invalid).
+    resolved_mode = resolve_ensemble_mode(
+        "vertical_profiles", ensemble_mode, ds_target, ds_prediction
+    )
+    has_ens = "ensemble" in ds_prediction.dims
+    if resolved_mode == "prob":
+        raise ValueError("ensemble_mode=prob invalid for vertical_profiles")
+    if resolved_mode == "none" and has_ens:
+        raise ValueError(
+            "ensemble_mode=none requested but 'ensemble' dimension present; choose mean|pooled|members"
+        )
+
+    def _iter_members():
+        if not has_ens:
+            yield None, ds_target, ds_prediction
+        else:
+            for i in range(int(ds_prediction.sizes["ensemble"])):
+                tgt_m = ds_target.isel(ensemble=i) if "ensemble" in ds_target.dims else ds_target
+                pred_m = ds_prediction.isel(ensemble=i)
+                yield i, tgt_m, pred_m
+
+    if resolved_mode == "mean" and has_ens:
+        ds_target = ds_target.mean(dim="ensemble") if "ensemble" in ds_target.dims else ds_target
+        ds_prediction = ds_prediction.mean(dim="ensemble")
+        ens_token = ensemble_mode_to_token("mean")
+    elif resolved_mode == "pooled" and has_ens:
+        ens_token = ensemble_mode_to_token("pooled")
+    elif resolved_mode == "members" and has_ens:
+        ens_token = None  # per-member tokens will be used
+    else:
+        ens_token = None
 
     fig_count = 0
     for var in variables_3d:
@@ -206,15 +233,9 @@ def run(
             north_meta.append((lat_min_pos, lat_max_pos))
 
         band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
-        south_da = xr.concat(south_curves, dim=band_idx).assign_coords(
-            band=band_idx
-        )
-        north_da = xr.concat(north_curves, dim=band_idx).assign_coords(
-            band=band_idx
-        )
-        hemisphere = xr.DataArray(
-            ["south", "north"], dims=["hemisphere"], name="hemisphere"
-        )
+        south_da = xr.concat(south_curves, dim=band_idx).assign_coords(band=band_idx)
+        north_da = xr.concat(north_curves, dim=band_idx).assign_coords(band=band_idx)
+        hemisphere = xr.DataArray(["south", "north"], dims=["hemisphere"], name="hemisphere")
         combined = xr.concat([south_da, north_da], dim=hemisphere)
         # Materialize full combined array once; then derive global x-range.
         combined = combined.compute()
@@ -237,89 +258,115 @@ def run(
             gmin_val -= pad
             gmax_val += pad
 
-        # Plot
-        n_cols = 2
-        fig, axes = plt.subplots(
-            n_cols, half, figsize=(24, 10), dpi=dpi * 2, sharey=True
-        )
-        for i in range(half):
-            # South (row 0)
-            ax_s = axes[0, i]
-            # Some xarray versions keep a length-1 dimension when selecting a
-            # single coordinate (hemisphere/band). Squeeze defensively so we
-            # always have shape (n_levels,) for plotting.
-            curve_s_da = (
-                combined.sel(hemisphere="south").isel(band=i).squeeze(drop=True)
-            )
-            curve_s = np.asarray(curve_s_da.values).squeeze()
-            ax_s.plot(curve_s, level_values)
-            lat_min_neg, lat_max_neg = south_meta[i]
-            ax_s.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
-            ax_s.set_xlabel("NMAE (%)")
-            ax_s.set_ylabel("Level")
-            ax_s.invert_yaxis()
-            ax_s.set_xlim(gmin_val, gmax_val)
-            # North (row 1)
-            ax_n = axes[1, i]
-            curve_n_da = (
-                combined.sel(hemisphere="north").isel(band=i).squeeze(drop=True)
-            )
-            curve_n = np.asarray(curve_n_da.values).squeeze()
-            lat_min_pos, lat_max_pos = north_meta[i]
-            ax_n.plot(curve_n, level_values)
-            ax_n.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
-            ax_n.set_xlabel("NMAE (%)")
-            ax_n.set_ylabel("Level")
-            ax_n.invert_yaxis()
-            ax_n.set_xlim(gmin_val, gmax_val)
-        plt.gca().invert_yaxis()
-        plt.suptitle(f"Vertical Profiles of NMAE for {var} (band-wise)")
-        plt.tight_layout()
+        def _emit(ens_token_local: str | None, member_index: int | None = None):
+            n_cols = 2
+            fig, axes = plt.subplots(n_cols, half, figsize=(24, 10), dpi=dpi * 2, sharey=True)
+            for i in range(half):
+                ax_s = axes[0, i]
+                curve_s_da = combined.sel(hemisphere="south").isel(band=i).squeeze(drop=True)
+                curve_s = np.asarray(curve_s_da.values).squeeze()
+                lat_min_neg, lat_max_neg = south_meta[i]
+                ax_s.plot(curve_s, level_values)
+                ax_s.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
+                ax_s.set_xlabel("NMAE (%)")
+                ax_s.set_ylabel("Level")
+                ax_s.invert_yaxis()
+                ax_s.set_xlim(gmin_val, gmax_val)
+                ax_n = axes[1, i]
+                curve_n_da = combined.sel(hemisphere="north").isel(band=i).squeeze(drop=True)
+                curve_n = np.asarray(curve_n_da.values).squeeze()
+                lat_min_pos, lat_max_pos = north_meta[i]
+                ax_n.plot(curve_n, level_values)
+                ax_n.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
+                ax_n.set_xlabel("NMAE (%)")
+                ax_n.set_ylabel("Level")
+                ax_n.invert_yaxis()
+                ax_n.set_xlim(gmin_val, gmax_val)
+            plt.gca().invert_yaxis()
+            title_extra = f" member={member_index}" if member_index is not None else ""
+            plt.suptitle(f"Vertical Profiles of NMAE for {var} (band-wise){title_extra}")
+            plt.tight_layout()
+            if save_fig:
+                # Ensure directory exists (defensive in case of external cleanup or race)
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_png = section_output / build_output_filename(
+                    metric="vprof_nmae",
+                    variable=var,
+                    level="multi",
+                    qualifier="plot",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token_local,
+                    ext="png",
+                )
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[vertical_profiles] saved {out_png}")
+            if save_npz:
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_npz = section_output / build_output_filename(
+                    metric="vprof_nmae",
+                    variable=var,
+                    level="multi",
+                    qualifier="combined",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token_local,
+                    ext="npz",
+                )
+                south_vals = combined.sel(hemisphere="south").values
+                north_vals = combined.sel(hemisphere="north").values
+                neg_min = np.asarray([m[0] for m in south_meta])
+                neg_max = np.asarray([m[1] for m in south_meta])
+                pos_min = np.asarray([m[0] for m in north_meta])
+                pos_max = np.asarray([m[1] for m in north_meta])
+                np.savez(
+                    out_npz,
+                    nmae_neg=south_vals,
+                    nmae_pos=north_vals,
+                    band=np.arange(half),
+                    level=np.asarray(level_values),
+                    neg_lat_min=neg_min,
+                    neg_lat_max=neg_max,
+                    pos_lat_min=pos_min,
+                    pos_lat_max=pos_max,
+                )
+                print(f"[vertical_profiles] saved {out_npz}")
+            plt.close(fig)
 
-        if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / build_output_filename(
-                metric="vprof_nmae",
-                variable=var,
-                level="multi",
-                qualifier="plot",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=None,
-                ext="png",
-            )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[vertical_profiles] saved {out_png}")
-
-        if save_npz:
-            section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = section_output / build_output_filename(
-                metric="vprof_nmae",
-                variable=var,
-                level="multi",
-                qualifier="combined",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=None,
-                ext="npz",
-            )
-            south_vals = combined.sel(hemisphere="south").values
-            north_vals = combined.sel(hemisphere="north").values
-            neg_min = np.asarray([m[0] for m in south_meta])
-            neg_max = np.asarray([m[1] for m in south_meta])
-            pos_min = np.asarray([m[0] for m in north_meta])
-            pos_max = np.asarray([m[1] for m in north_meta])
-            np.savez(
-                out_npz,
-                nmae_neg=south_vals,
-                nmae_pos=north_vals,
-                band=np.arange(half),
-                level=np.asarray(level_values),
-                neg_lat_min=neg_min,
-                neg_lat_max=neg_max,
-                pos_lat_min=pos_min,
-                pos_lat_max=pos_max,
-            )
-            print(f"[vertical_profiles] saved {out_npz}")
-        plt.close(fig)
+        if resolved_mode == "members" and has_ens:
+            for member_index, tgt_m, pred_m in _iter_members():
+                # Recompute combined curves for this member
+                # (Reuse existing logic by calling _compute_nmae per band again)
+                south_curves_m: list[xr.DataArray] = []
+                north_curves_m: list[xr.DataArray] = []
+                for i in range(half):
+                    lat_min_neg, lat_max_neg = south_meta[i]
+                    lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
+                    south_curves_m.append(
+                        _compute_nmae(tgt_m[var], pred_m[var], lat_slice_neg, level_values)
+                    )
+                    idx = -(i + 1)
+                    lat_min_pos = lat_bins[idx]
+                    lat_max_pos = lat_bins[idx - 1]
+                    low = min(lat_min_pos, lat_max_pos)
+                    high = max(lat_min_pos, lat_max_pos)
+                    lat_slice_pos = _lat_slice(low, high)
+                    north_curves_m.append(
+                        _compute_nmae(tgt_m[var], pred_m[var], lat_slice_pos, level_values)
+                    )
+                band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
+                south_da_m = xr.concat(south_curves_m, dim=band_idx).assign_coords(band=band_idx)
+                north_da_m = xr.concat(north_curves_m, dim=band_idx).assign_coords(band=band_idx)
+                hemisphere = xr.DataArray(
+                    ["south", "north"], dims=["hemisphere"], name="hemisphere"
+                )
+                combined_m = xr.concat([south_da_m, north_da_m], dim=hemisphere)
+                combined_m = combined_m.compute()
+                combined = combined_m  # reuse variable name for plotting
+                _emit(
+                    ensemble_mode_to_token("members", member_index),
+                    member_index=member_index,
+                )
+        else:
+            _emit(ens_token)
         fig_count += 1
