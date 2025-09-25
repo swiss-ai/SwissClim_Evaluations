@@ -1,0 +1,30 @@
+{
+    // VS Code debug configurations for SwissClim Evaluations
+    // Use Run and Debug panel → select a configuration → F5.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "SwissClim: Prompt for config path",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "swissclim_evaluations.cli",
+            "justMyCode": false,
+            "args": [
+                "--config",
+                "${input:configPath}"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "configPath",
+            "type": "promptString",
+            "description": "Path to YAML config (e.g., config/my_run.yaml)",
+            "default": "config/my_run.yaml"
+        }
+    ]
+}

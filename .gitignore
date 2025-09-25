@@ -32,7 +32,6 @@ build/
 *.egg-info/
 
 # VSCode-specific files
-.vscode/
 *.code-workspace
 
 # OS-specific files
