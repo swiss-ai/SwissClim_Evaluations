@@ -65,6 +65,9 @@ python -m swissclim_evaluations.cli --config config/my_run.yaml
 
 Outputs appear under paths.output_root (one sub-folder per module).
 
+Note: For reproducibility, the CLI copies the exact YAML config you pass with `--config`
+into the output_root directory at the start of the run (using the original filename).
+
 1. Or submit a batch job (CSCS Alps):
 
 ```bash

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import shutil
 import sys
 import time
 from collections.abc import Iterable
@@ -611,6 +613,34 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
     return p
 
 
+def _maybe_copy_config_to_output(cfg: dict[str, Any], out_root: Path) -> None:
+    """If the CLI provided a config file path, copy it into the output folder.
+
+    - Uses the original basename (e.g., config.yaml) to aid reproducibility.
+    - Overwrites any existing file with the same name to reflect the last run.
+    - Silently skips if the path is missing or invalid.
+    """
+    try:
+        src_path = cfg.get("_config_path")
+        if not src_path:
+            return
+        src = Path(str(src_path))
+        if not src.exists() or not src.is_file():
+            return
+        dst = out_root / src.name
+        try:
+            # Avoid SameFileError if output_root is same folder as config
+            if dst.resolve() == src.resolve():
+                return
+        except Exception:
+            # If resolve fails (e.g., permissions), proceed with copy best-effort
+            pass
+        shutil.copy2(src, dst)
+    except Exception:
+        # Best-effort only; do not fail the run because of a copy issue
+        pass
+
+
 def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
@@ -626,6 +656,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
     out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+    # Persist the exact configuration used for this run into the output directory
+    _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()
@@ -1276,6 +1308,9 @@ def main(argv: list[str] | None = None) -> None:
         pass
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
+    # Record the original config path for reproducibility actions (not part of user schema)
+    with contextlib.suppress(Exception):
+        cfg["_config_path"] = args.config
     run_selected(cfg)
 
 

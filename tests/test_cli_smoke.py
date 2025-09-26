@@ -57,3 +57,5 @@ def test_cli_main_smoke(monkeypatch, tmp_path: Path):
     # Ensure stub produced maps directory (smoke success)
     assert (tmp_path / "output").exists()
     assert (tmp_path / "output" / "maps").exists()
+    # The used config should have been copied into the output root
+    assert (tmp_path / "output" / cfg_file.name).exists()
