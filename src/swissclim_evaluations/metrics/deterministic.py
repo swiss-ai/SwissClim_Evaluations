@@ -175,16 +175,25 @@ def _calculate_all_metrics(
 
         # Relative metrics
         if calc_relative:
-            l1_norm = float(np.abs(y_true).sum().compute())
-            l2_norm = float(((y_true**2).sum().compute()) ** 0.5)
-            mean_abs = float(np.abs(y_true).mean().compute())
+            # Denominator norms on the target
+            l1_norm = float(np.abs(y_true).sum(skipna=True).compute())
+            l2_norm = float(((y_true**2).sum(skipna=True).compute()) ** 0.5)
+            mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
 
+            # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
                 row["Relative MAE"] = (mae_val / mean_abs) if mean_abs else float("nan")
+
+            # True norm-based relative errors: ||e||1 / ||y||1 and ||e||2 / ||y||2
+            err = y_pred - y_true
+            l1_err = float(np.abs(err).sum(skipna=True).compute())
+            l2_err = float(((err**2).sum(skipna=True).compute()) ** 0.5)
+
+            eps = 1e-12
             if (include is None) or ("Relative L1" in metrics_to_compute):
-                row["Relative L1"] = (mae_val / l1_norm) if l1_norm else float("nan")
+                row["Relative L1"] = (l1_err / l1_norm) if (abs(l1_norm) > eps) else float("nan")
             if (include is None) or ("Relative L2" in metrics_to_compute):
-                row["Relative L2"] = (rmse_val / l2_norm) if l2_norm else float("nan")
+                row["Relative L2"] = (l2_err / l2_norm) if (abs(l2_norm) > eps) else float("nan")
 
         # If include provided, trim extra keys
         if include is not None:
