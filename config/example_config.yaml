@@ -5,8 +5,8 @@
 paths:
   # Path to your model predictions in Zarr format (root directory).
   # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
-  # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
+  # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr" # has ensemble
 
   # Path to the reference dataset (ERA5 in WeatherBench2 layout).
   # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
