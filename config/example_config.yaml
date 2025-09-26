@@ -156,7 +156,7 @@ metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
-  #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
+  #   "FSS", "Relative L1", "Relative L2"
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
