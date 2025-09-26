@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -13,8 +14,11 @@ from scores.spatial import fss_2d
 
 
 def _window_size(ds: xr.Dataset) -> tuple[int, int]:
-    max_spatial_dim = max(ds.longitude.size, ds.latitude.size)
-    # Choose a small window relative to grid size, but at least 1
+    """Heuristic FSS window size based on grid shape.
+
+    Uses latitude/longitude dims; pick ~10% of the larger dimension, min 1.
+    """
+    max_spatial_dim = max(int(ds.longitude.size), int(ds.latitude.size))
     ws = max(1, max_spatial_dim // 10)
     return (ws, ws)
 
@@ -27,62 +31,64 @@ def _calculate_all_metrics(
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    # ds_target = ground truth, ds_prediction = model predictions
+    """Compute scalar deterministic metrics per variable.
+
+    Metrics supported:
+      - MAE, RMSE, MSE, Pearson R, FSS
+      - Relative MAE, Relative L1, Relative L2 (when calc_relative=True)
+    """
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
-    # FSS configuration
-    # Typical defaults used in global NWP verification:
-    # - quantile = 0.90 (90th percentile) when no absolute threshold is provided
-    # - window_size = 9x9 grid cells
+
+    # ---- FSS configuration
     auto_window_size = _window_size(ds_target)
     fss_quantile = 0.90
-    fss_window_size: tuple[int, int] = (9, 9)
-    # Optional absolute thresholds (either a single float for all vars or per-variable mapping)
-    fss_threshold_global: float | None = None
+    fss_window_size: tuple[int, int] | None = None
     fss_thresholds_per_var: dict[str, float] | None = None
+    no_event_value: float = 1.0  # perfect score if both fields have no events
+
     if isinstance(fss_cfg, dict):
-        # quantile can be [0,1] or percentile in [0,100]
-        try:
-            if "quantile" in fss_cfg and fss_cfg["quantile"] is not None:
-                q_val = float(fss_cfg["quantile"])  # type: ignore[assignment]
+        # quantile: allow 0-100 as percent or 0-1 as fraction
+        q_raw = fss_cfg.get("quantile")
+        if q_raw is not None:
+            try:
+                q_val = float(q_raw)
                 if q_val > 1.0:
-                    q_val = q_val / 100.0
-                # clamp into (0,1)
-                fss_quantile = min(max(q_val, 0.0), 1.0)
-        except Exception:
-            fss_quantile = 0.90
-        # window_size as int or [h, w]
+                    q_val /= 100.0
+                if 0.0 < q_val < 1.0:
+                    fss_quantile = q_val
+            except Exception:
+                pass
+        # window size: int -> square; iterable -> first two
         ws = fss_cfg.get("window_size")
         if ws is not None:
             try:
                 if isinstance(ws, int):
                     fss_window_size = (max(1, int(ws)), max(1, int(ws)))
-                elif isinstance(ws, Iterable) and not isinstance(ws, str | bytes):  # ruff UP038
-                    ws_list = list(ws)  # type: ignore[arg-type]
+                elif isinstance(ws, Iterable) and not isinstance(ws, (str | bytes)):
+                    ws_list = list(ws)
                     if len(ws_list) >= 2:
                         fss_window_size = (
                             max(1, int(ws_list[0])),
                             max(1, int(ws_list[1])),
                         )
-                # else: keep default (9,9)
             except Exception:
-                # fallback to an automatic heuristic if provided value is invalid
-                fss_window_size = auto_window_size
-        # thresholds: a single float or per-variable dict
-        th = fss_cfg.get("threshold")
-        if th is not None:
-            try:
-                fss_threshold_global = float(th)
-            except Exception:
-                fss_threshold_global = None
+                fss_window_size = None
+        # thresholds: per-variable mapping only
         th_map = fss_cfg.get("thresholds")
         if isinstance(th_map, dict):
-            try:
-                fss_thresholds_per_var = {str(k): float(v) for k, v in th_map.items()}
-            except Exception:
-                fss_thresholds_per_var = None
+            tmp: dict[str, float] = {}
+            for k, v in th_map.items():
+                try:
+                    tmp[str(k)] = float(v)
+                except Exception:
+                    continue
+            if tmp:
+                fss_thresholds_per_var = tmp
 
-    # Determine which metrics to compute. If include is None, compute all.
+    if fss_window_size is None:
+        fss_window_size = auto_window_size
+
     all_metric_names = {
         "MAE",
         "RMSE",
@@ -98,7 +104,6 @@ def _calculate_all_metrics(
     for var in variables:
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
-        # Precompute stats only if required
         row: dict[str, float] = {}
 
         # Base error metrics
@@ -122,36 +127,54 @@ def _calculate_all_metrics(
         if (include is None) or ("Pearson R" in metrics_to_compute):
             row["Pearson R"] = float(pearsonr(y_true, y_pred))
 
-        # FSS (expensive); only compute if requested
+        # FSS
         if (include is None) or ("FSS" in metrics_to_compute):
-            # Determine event threshold preference order:
-            # 1) per-variable absolute threshold (if provided)
-            # 2) global absolute threshold (if provided)
-            # 3) quantile of observed sample (default)
+            # Determine event threshold: explicit per-variable threshold wins, else quantile
             if fss_thresholds_per_var and (var in fss_thresholds_per_var):
                 event_threshold = float(fss_thresholds_per_var[var])
-            elif fss_threshold_global is not None:
-                event_threshold = float(fss_threshold_global)
             else:
                 q_da = y_true.quantile(fss_quantile, skipna=True)
                 event_threshold = float(q_da.compute().item())
             try:
-                fss_val = float(
-                    fss_2d(
-                        y_pred,
-                        y_true,
+                # Early exit: if both fields have no events anywhere → perfect score
+                yt_evt = bool((y_true >= event_threshold).any().compute().item())
+                yp_evt = bool((y_pred >= event_threshold).any().compute().item())
+                if (not yt_evt) and (not yp_evt):
+                    row["FSS"] = no_event_value
+                else:
+                    spatial_dims = ["latitude", "longitude"]
+
+                    # Proper call to fss_2d with config-driven arguments only
+                    out = fss_2d(
+                        y_pred.compute(),
+                        y_true.compute(),
                         event_threshold=event_threshold,
                         window_size=fss_window_size,
-                        spatial_dims=["latitude", "longitude"],
+                        spatial_dims=spatial_dims,
+                        # this has no effect here, unfortunately we need to compute() above
+                        dask="parallelized",
                     )
-                )
-            except Exception:
-                fss_val = float("nan")
-            row["FSS"] = fss_val
+                    # Reduce to scalar
+                    if isinstance(out, xr.DataArray):
+                        try:
+                            evt_t = (y_true >= event_threshold).any(dim=spatial_dims, skipna=True)
+                            evt_p = (y_pred >= event_threshold).any(dim=spatial_dims, skipna=True)
+                            no_evt = (~evt_t) & (~evt_p)
+                            out = out.where(~no_evt, other=1.0)
+                        except Exception:
+                            pass
+                        fss_scalar = float(out.mean(skipna=True).compute().item())
+                    else:
+                        fss_scalar = float(out)
+                    row["FSS"] = fss_scalar
+            except Exception as e:
+                # Surface the error context once while keeping pipeline resilient
+                with contextlib.suppress(Exception):
+                    print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
+                row["FSS"] = float("nan")
 
-        # Relative metrics, only if requested and calc_relative True
+        # Relative metrics
         if calc_relative:
-            # Use xarray reductions (lazy with Dask) and compute only final scalars
             l1_norm = float(np.abs(y_true).sum().compute())
             l2_norm = float(((y_true**2).sum().compute()) ** 0.5)
             mean_abs = float(np.abs(y_true).mean().compute())
@@ -163,14 +186,13 @@ def _calculate_all_metrics(
             if (include is None) or ("Relative L2" in metrics_to_compute):
                 row["Relative L2"] = (rmse_val / l2_norm) if l2_norm else float("nan")
 
-        # Finally, if include list is provided, filter to those keys
+        # If include provided, trim extra keys
         if include is not None:
             row = {k: v for k, v in row.items() if k in include}
 
         metrics_dict[var] = row
 
-    df = pd.DataFrame.from_dict(metrics_dict, orient="index")
-    return df
+    return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
 def run(
@@ -179,68 +201,48 @@ def run(
     ds_target_std: xr.Dataset,
     ds_prediction_std: xr.Dataset,
     out_root: Path,
-    plotting_cfg: dict[str, Any],
-    metrics_cfg: dict[str, Any] | None = None,
+    plotting_cfg: dict[str, Any] | None,
+    metrics_cfg: dict[str, Any] | None,
     ensemble_mode: str | None = None,
 ) -> None:
-    """Compute and store deterministic (formerly objective) metrics.
+    """Compute and write deterministic metrics CSVs.
 
-    Saves CSVs:
-    - deterministic/metrics.csv
-    - deterministic/metrics_standardized.csv
+    Produces two CSV files by default under out_root/deterministic:
+      - deterministic_metrics_[...].csv (relative metrics included)
+      - deterministic_metrics_standardized_[...].csv (on standardized fields)
+
+    When ensemble_mode='members', writes per-member CSVs (ens0..ensN) plus an
+    aggregated 'members_mean' CSV if aggregate_members_mean=True.
     """
-    from ..helpers import (
-        build_output_filename,
-        ensemble_mode_to_token,
-        resolve_ensemble_mode,
-    )
+    cfg = (metrics_cfg or {}).get("deterministic", {})
+    include = cfg.get("include")
+    std_include = cfg.get("standardized_include")
+    fss_cfg = cfg.get("fss", {})
+    reduce_ens_mean = True
+    try:
+        rem = cfg.get("reduce_ensemble_mean")
+        if rem is not None:
+            reduce_ens_mean = bool(rem)
+    except Exception:
+        reduce_ens_mean = True
+    aggregate_members_mean = bool(cfg.get("aggregate_members_mean", True))
 
-    section_output = out_root / "deterministic"
-    n_points = (
-        min(10_000_000, ds_target[list(ds_target.data_vars)[0]].size) if ds_target.data_vars else 0
-    )
+    # Track whether an ensemble dimension was present originally
+    had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
 
-    include = None
-    std_include = None
-    fss_cfg: dict[str, Any] | None = None
-    reduce_ens_mean = True  # legacy flag (still honoured if ensemble_mode not forcing behaviour)
-    if metrics_cfg and isinstance(metrics_cfg.get("deterministic"), dict):
-        det_cfg = metrics_cfg["deterministic"]
-        include = det_cfg.get("include")
-        std_include = det_cfg.get("standardized_include")
-        fss_cfg = det_cfg.get("fss")
-        # Flag: reduce ensemble to mean before computing metrics
-        try:
-            rem = det_cfg.get("reduce_ensemble_mean")
-            if rem is not None:
-                reduce_ens_mean = bool(rem)
-        except Exception:
-            reduce_ens_mean = True
-        aggregate_members_mean = bool(det_cfg.get("aggregate_members_mean", True))
-    else:
-        aggregate_members_mean = True
+    from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
 
-    # Track whether an ensemble dimension existed (to influence filename suffix)
-    had_ensemble_dim = (
-        ("ensemble" in ds_prediction.dims)
-        or ("ensemble" in ds_target.dims)
-        or ("ensemble" in ds_prediction_std.dims)
-        or ("ensemble" in ds_target_std.dims)
-    )
-
-    # Resolve ensemble handling (deterministic defaults to mean). Members mode currently
-    # unsupported for metrics aggregation.
     resolved_mode = resolve_ensemble_mode("deterministic", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for deterministic metrics")
-    # Members mode: produce per-member metrics (standalone CSV per member) plus pooled summary file.
     members_indices: list[int] | None = None
     if resolved_mode == "members" and has_ens:
         members_indices = list(range(int(ds_prediction.sizes["ensemble"])))
     if resolved_mode == "none" and has_ens:
-        # fall back to mean to preserve historical behaviour if user misconfigured
-        resolved_mode = "mean"
+        resolved_mode = "mean"  # match historical behaviour
+
+    # Reduce ensemble by mean if requested
     if resolved_mode == "mean" and has_ens and reduce_ens_mean:
         if "ensemble" in ds_prediction.dims:
             ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)
@@ -250,29 +252,11 @@ def run(
             ds_prediction_std = ds_prediction_std.mean(dim="ensemble", keep_attrs=True)
         if "ensemble" in ds_target_std.dims:
             ds_target_std = ds_target_std.mean(dim="ensemble", keep_attrs=True)
-    elif resolved_mode == "pooled" and has_ens:
-        # No reduction; treat samples across members jointly (same as leaving dim)
-        pass
 
-    regular_metrics = _calculate_all_metrics(
-        ds_target,
-        ds_prediction,
-        calc_relative=True,
-        n_points=n_points,
-        include=include,
-        fss_cfg=fss_cfg,
-    )
-    standardized_metrics = _calculate_all_metrics(
-        ds_target_std,
-        ds_prediction_std,
-        calc_relative=False,
-        n_points=n_points,
-        include=std_include,
-        fss_cfg=fss_cfg,
-    )
-    standardized_metrics.columns = [f"{c} (Stdized)" for c in standardized_metrics.columns]
+    # Compute metrics
+    n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
+    section_output = out_root / "deterministic"
 
-    # Derive init/lead time ranges for naming (if present)
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds.coords and "init_time" not in ds.dims:
             return None
@@ -302,7 +286,6 @@ def run(
             vals = ds["lead_time"].values
             if vals.size == 0:
                 return None
-            # Convert timedelta64 -> hours
             hours = (vals / np.timedelta64(1, "h")).astype(int)
             start_h = int(hours.min())
             end_h = int(hours.max())
@@ -318,16 +301,35 @@ def run(
     lead_range = _extract_lead_range(ds_prediction)
 
     section_output.mkdir(parents=True, exist_ok=True)
-    # Use ensemble token 'ensmean' if we actually reduced an ensemble dimension.
+
+    # Choose ensemble token for aggregate files
     ens_token: str | None = None
     if resolved_mode == "mean" and had_ensemble_dim and reduce_ens_mean:
         ens_token = ensemble_mode_to_token("mean")
     elif resolved_mode == "pooled" and had_ensemble_dim:
         ens_token = ensemble_mode_to_token("pooled")
     elif resolved_mode == "members" and had_ensemble_dim:
-        ens_token = None  # per-member tokens applied below
+        ens_token = None  # per-member handled below
 
     if members_indices is None:
+        # Aggregate (non per-member) outputs
+        regular_metrics = _calculate_all_metrics(
+            ds_target,
+            ds_prediction,
+            calc_relative=True,
+            n_points=n_points,
+            include=include,
+            fss_cfg=fss_cfg,
+        )
+        standardized_metrics = _calculate_all_metrics(
+            ds_target_std,
+            ds_prediction_std,
+            calc_relative=False,
+            n_points=n_points,
+            include=std_include,
+            fss_cfg=fss_cfg,
+        )
+
         out_csv = section_output / build_output_filename(
             metric="deterministic_metrics",
             variable=None,
@@ -342,7 +344,7 @@ def run(
             metric="deterministic_metrics",
             variable=None,
             level=None,
-            qualifier="standardized" if (init_range or lead_range) else "standardized",
+            qualifier="standardized",
             init_time_range=init_range,
             lead_time_range=lead_range,
             ensemble=ens_token,
@@ -352,13 +354,27 @@ def run(
         standardized_metrics.to_csv(out_csv_std)
         print(f"[deterministic] saved {out_csv}")
         print(f"[deterministic] saved {out_csv_std}")
-    else:
-        # Compute per-member metrics
-        from ..helpers import ensemble_mode_to_token as _tok
 
-        pooled_metrics = []
+        # Console summary
+        try:
+            print("Deterministic metrics (targets vs predictions) — first 5 rows:")
+            print(regular_metrics.head())
+        except Exception:
+            pass
+        try:
+            print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
+            print(standardized_metrics.head())
+        except Exception:
+            pass
+    else:
+        # Per-member metrics
+        from ..helpers import aggregate_member_dfs, build_output_filename, ensemble_mode_to_token
+
+        pooled_metrics: list[pd.DataFrame] = []
+        first_reg_df: pd.DataFrame | None = None
+        first_std_df: pd.DataFrame | None = None
         for mi in members_indices:
-            ds_pred_m = ds_prediction_std if resolved_mode == "pooled" else ds_prediction
+            ds_pred_m = ds_prediction
             if "ensemble" in ds_prediction.dims:
                 ds_pred_m = ds_prediction.isel(ensemble=mi)
             ds_pred_m_std = (
@@ -372,6 +388,7 @@ def run(
                 if "ensemble" in ds_target_std.dims
                 else ds_target_std
             )
+
             reg_m = _calculate_all_metrics(
                 ds_tgt_m,
                 ds_pred_m,
@@ -388,8 +405,11 @@ def run(
                 include=std_include,
                 fss_cfg=fss_cfg,
             )
-            std_m.columns = [f"{c} (Stdized)" for c in std_m.columns]
-            token_m = _tok("members", mi)
+            if first_reg_df is None:
+                first_reg_df = reg_m.copy()
+            if first_std_df is None:
+                first_std_df = std_m.copy()
+            token_m = ensemble_mode_to_token("members", mi)
             out_csv_m = section_output / build_output_filename(
                 metric="deterministic_metrics",
                 variable=None,
@@ -404,7 +424,7 @@ def run(
                 metric="deterministic_metrics",
                 variable=None,
                 level=None,
-                qualifier="standardized" if (init_range or lead_range) else "standardized",
+                qualifier="standardized",
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=token_m,
@@ -415,10 +435,9 @@ def run(
             print(f"[deterministic] saved {out_csv_m}")
             print(f"[deterministic] saved {out_csv_m_std}")
             pooled_metrics.append(reg_m)
-        # Aggregate pooled metrics: mean across members of each metric
-        if pooled_metrics and aggregate_members_mean:
-            from ..helpers import aggregate_member_dfs
 
+        # Aggregate pooled metrics across members if requested
+        if pooled_metrics and aggregate_members_mean:
             pooled_df = aggregate_member_dfs(pooled_metrics)
             if not pooled_df.empty:
                 out_csv_pool = section_output / build_output_filename(
@@ -434,14 +453,37 @@ def run(
                 pooled_df.to_csv(out_csv_pool)
                 print(f"[deterministic] saved {out_csv_pool}")
 
-    # Console summary similar to ETS
-    try:
-        print("Deterministic metrics (targets vs predictions) — first 5 rows:")
-        print(regular_metrics.head())
-    except Exception:
-        pass
-    try:
-        print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
-        print(standardized_metrics.head())
-    except Exception:
-        pass
+        # Console previews for members mode
+        try:
+            print("Deterministic metrics (targets vs predictions) — first 5 rows:")
+            df_show = (
+                pooled_df
+                if ("pooled_df" in locals() and pooled_df is not None and not pooled_df.empty)
+                else first_reg_df
+            )
+            if df_show is not None:
+                print(df_show.head())
+        except Exception:
+            pass
+        try:
+            print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
+            if first_std_df is not None:
+                print(first_std_df.head())
+        except Exception:
+            pass
+
+    # Console summary for aggregate mode
+    if members_indices is None:
+        try:
+            print("Deterministic metrics (targets vs predictions) — first 5 rows:", flush=True)
+            print(regular_metrics.head(), flush=True)
+        except Exception:
+            pass
+        try:
+            print(
+                "Deterministic standardized metrics (targets vs predictions) — first 5 rows:",
+                flush=True,
+            )
+            print(standardized_metrics.head(), flush=True)
+        except Exception:
+            pass
