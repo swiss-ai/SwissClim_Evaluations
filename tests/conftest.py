@@ -325,9 +325,3 @@ def _isolate_default_output_root():
     # Cleanup temp base
     with contextlib.suppress(Exception):
         shutil.rmtree(base, ignore_errors=True)
-
-    # Defensive: remove any accidental 'output' dir left in repo root
-    repo_output = Path(__file__).resolve().parents[1] / "output"
-    if repo_output.exists():
-        with contextlib.suppress(Exception):
-            shutil.rmtree(repo_output, ignore_errors=True)
