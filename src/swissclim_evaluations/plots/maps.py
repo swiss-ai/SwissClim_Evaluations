@@ -367,7 +367,8 @@ def run(
                 )
             elif title_extra:
                 plt.suptitle(f"{var}{title_extra}")
-            plt.subplots_adjust(bottom=0.1, top=0.95, hspace=0.05, wspace=0.05)
+            # Use tight layout with rect instead of subplots_adjust to avoid layout engine conflicts
+            plt.tight_layout(rect=(0, 0.05, 1, 0.95))
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)

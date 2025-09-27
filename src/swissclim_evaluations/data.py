@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import warnings
 
 import numpy as np
@@ -29,6 +30,8 @@ DESIRED_CHUNKS: dict[str, int] = {
     "latitude": -1,
     "longitude": -1,
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) -> bool:
@@ -97,10 +100,12 @@ def enforce_chunking(
 
     if needs_rechunk:
         name = dataset_name or "dataset"
-        warnings.warn(
-            (f"Rechunking {name} to policy {policy}. This may increase memory usage and runtime."),
-            RuntimeWarning,
-            stacklevel=2,
+        # Downgrade to log message to avoid noisy warnings during tests; users can enable
+        # logging to see this information. Rechunking remains functional.
+        logger.info(
+            "Rechunking %s to policy %s. This may increase memory usage and runtime.",
+            name,
+            policy,
         )
         return ds.chunk(chunk_map)
     return ds

@@ -150,13 +150,15 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             if neg_arr is None or pos_arr is None:
                 continue
             for j in range(bands):
+                with np.errstate(all="ignore"):
+                    val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
                 rows.append(
                     {
                         "variable": var,
                         "band_index": j,
                         "hemisphere": "north",
                         "model": lab,
-                        "value": float(np.nanmean(pos_arr[j])),
+                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
                         "metric": "NMAE",
                     }
                 )
@@ -166,7 +168,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                         "band_index": j,
                         "hemisphere": "south",
                         "model": lab,
-                        "value": float(np.nanmean(neg_arr[j])),
+                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
                         "metric": "NMAE",
                     }
                 )

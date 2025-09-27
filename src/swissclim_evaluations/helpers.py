@@ -32,7 +32,10 @@ def aggregate_member_dfs(dfs):
     if any(not df.index.equals(base_index) for df in dfs[1:]):
         dfs = [df.reindex(base_index) for df in dfs]
     arr_stack = np.stack([df[list(numeric_cols)].to_numpy(dtype=float) for df in dfs], axis=0)
-    mean_arr = np.nanmean(arr_stack, axis=0)
+    # Guard against all-NaN columns to avoid empty-slice warnings; nanmean already ignores NaNs,
+    # but if an entire column is NaN across all members, keep it as NaN without warning.
+    with np.errstate(all="ignore"):
+        mean_arr = np.nanmean(arr_stack, axis=0)
     out = dfs[0][[]].copy()
     for i, col in enumerate(list(numeric_cols)):
         out[col] = mean_arr[:, i]

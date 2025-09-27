@@ -84,7 +84,13 @@ def run(
     ):
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] variable: {variable_name}")
-        fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
+        fig, axs = plt.subplots(
+            n_rows,
+            2,
+            figsize=(16, 3 * n_rows),
+            dpi=dpi,
+            constrained_layout=True,
+        )
         # Collect combined NPZ data across all bands
         combined = {
             "neg_counts": [],
@@ -283,7 +289,6 @@ def run(
             f"Distribution of {variable_name} ({units}) by latitude bands",
             y=1.02,
         )
-        plt.tight_layout()
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
