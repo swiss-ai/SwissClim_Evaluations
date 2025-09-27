@@ -13,7 +13,7 @@ RUN apt-get update && \
     ca-certificates python3-dev curl git bzip2 g++ build-essential \
     libexpat1 libgdal-dev gdal-bin \
     libsecret-1-0 libnss3 libxkbfile1 libglib2.0-0 libxshmfence1 libdrm2 libgbm1 \
-    openssh-client && \
+    openssh-client zsh && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the project
@@ -23,6 +23,8 @@ ADD . /app
 ## Create environment outside /app (bind-mounted at runtime) so it persists.
 ENV VIRTUAL_ENV=/opt/venv
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+# Preferred interactive shell inside the container
+ENV SHELL=/bin/bash
 # NOTE:
 # 1) Virtual env location: We place the venv at /opt/venv instead of the project tree (/app/.venv).
 #    At runtime /app is bind-mounted from the host (EDF/Enroot), which would hide any venv baked

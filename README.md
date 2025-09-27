@@ -80,8 +80,7 @@ Don't forget to adjust the path to your `config/my_run.yaml` in
 1. Here is a one-liner with `srun` instead of the `launchscript`:
 
 ```bash
-srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=debug --nodes=1 --ntasks=1 --cpu-bind=cores --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'
-
+srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'
 ```
 
 > Prefer a plain virtual environment? Use one of the alternatives below.

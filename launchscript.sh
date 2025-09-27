@@ -1,12 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=swissclim-eval
-#SBATCH --output=logs/swissclim%j.out
-#SBATCH --error=logs/swissclim%j.err
-#SBATCH --time=12:00:00
-#SBATCH --account=a122
-#SBATCH --partition=normal
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --job-name=swissclim-eval      # job name
+#SBATCH --output=logs/swissclim%j.out  # standard output file
+#SBATCH --error=logs/swissclim%j.err   # separate error file
+#SBATCH --time=12:00:00                # time limit hrs:min:sec
+#SBATCH --account=a122                 # project ID
+#SBATCH --partition=normal             # partition name
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
@@ -38,12 +36,11 @@ export SWISSCLIM_COLOR=never
 
 # Ensure Python can import the mounted source directly (no rebuild needed)
 # Uncomment if you want to quickly test local changes without rebuilding the container
-export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
-# Run with SLURM CPU binding inside the container defined by EDF_CONFIG
+# Run inside the container defined by EDF_CONFIG
 export PYTHONUNBUFFERED=1
 srun \
-  --cpu-bind=cores \
   --container-writable \
   --environment="${EDF_CONFIG}" \
   python -u -m swissclim_evaluations.cli --config "${CONFIG_FILE}"
