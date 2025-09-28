@@ -175,7 +175,10 @@ def run(
         if select_cfg.get("levels"):
             requested = select_cfg.get("levels")
             avail = set(level_coord.values.tolist())
-            level_values = [lv for lv in requested if lv in avail]
+            try:
+                level_values = [lv for lv in (requested or []) if lv in avail]
+            except Exception:
+                level_values = []
             if len(level_values) == 0:
                 continue
         else:

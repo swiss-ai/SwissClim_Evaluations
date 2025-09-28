@@ -11,11 +11,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
-    from . import console as c  # type: ignore
+    from . import console as c
 except Exception:  # pragma: no cover
 
     class _DummyConsole:
@@ -342,11 +342,19 @@ def intercompare_energy_spectra(
             ax.set_ylabel("Energy Density (weighted)")
             var = datas[0].get("variable") or "var"
             level = datas[0].get("level") if not surface else None
-            title = (
-                f"Energy Spectra — {var} (sfc)"
-                if surface
-                else f"Energy Spectra — {var} {int(level)} hPa"
-            )
+            level_val: int | None = None
+            try:
+                level_val = int(level) if level is not None else None
+            except Exception:
+                level_val = None
+            if surface:
+                title = f"Energy Spectra — {var} (sfc)"
+            else:
+                title = (
+                    f"Energy Spectra — {var} {level_val} hPa"
+                    if level_val is not None
+                    else f"Energy Spectra — {var}"
+                )
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
             ax.legend(frameon=False)
@@ -445,7 +453,7 @@ def intercompare_histograms(
         lat_neg_max = payloads[0].get("neg_lat_max")
         lat_pos_min = payloads[0].get("pos_lat_min")
         lat_pos_max = payloads[0].get("pos_lat_max")
-        n_rows = len(lat_neg_min)
+        n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
 
         # Right column: southern hemisphere bands
@@ -462,8 +470,16 @@ def intercompare_histograms(
                 counts_ml = pay["neg_counts"][j][1]
                 bins_ml = pay["neg_bins"][j]
                 _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = float(lat_neg_min[j])
-            lat_max = float(lat_neg_max[j])
+            lat_min = (
+                float(lat_neg_min[j])
+                if isinstance(lat_neg_min, (list | np.ndarray))
+                else float("nan")
+            )
+            lat_max = (
+                float(lat_neg_max[j])
+                if isinstance(lat_neg_max, (list | np.ndarray))
+                else float("nan")
+            )
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
 
         # Left column: northern hemisphere bands
@@ -477,8 +493,16 @@ def intercompare_histograms(
                 counts_ml = pay["pos_counts"][j][1]
                 bins_ml = pay["pos_bins"][j]
                 _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = float(lat_pos_min[j])
-            lat_max = float(lat_pos_max[j])
+            lat_min = (
+                float(lat_pos_min[j])
+                if isinstance(lat_pos_min, (list | np.ndarray))
+                else float("nan")
+            )
+            lat_max = (
+                float(lat_pos_max[j])
+                if isinstance(lat_pos_max, (list | np.ndarray))
+                else float("nan")
+            )
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
 
         # Legends: add a single shared legend
@@ -665,7 +689,7 @@ def intercompare_maps(
             continue
         for lvl in range(n_levels):
             nwp_slice = nwp[lvl] if n_levels > 1 else nwp
-            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
+            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls if isinstance(m, np.ndarray)]
             try:
                 vmin = float(np.nanmin([np.nanmin(nwp_slice)] + [np.nanmin(x) for x in ml_slices]))
                 vmax = float(np.nanmax([np.nanmax(nwp_slice)] + [np.nanmax(x) for x in ml_slices]))
@@ -714,7 +738,7 @@ def intercompare_maps(
                 ax.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax.coastlines(linewidth=0.5)
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
-            cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
+            cbar_ax = plt.gcf().add_axes((0.15, 0.08, 0.7, 0.03))
             plt.colorbar(im0, cax=cbar_ax, orientation="horizontal", label="Value")
             plt.tight_layout(rect=(0, 0.1, 1, 1))
             suffix = f"_level{lvl}" if n_levels > 1 else ""
@@ -967,8 +991,8 @@ def intercompare_probabilistic(
         # Require at least two models with arrays
         if sum(1 for a in arrays if a is not None) < 2:
             continue
-        vmin = float(np.nanmin([np.nanmin(a) for a in arrays]))
-        vmax = float(np.nanmax([np.nanmax(a) for a in arrays]))
+        vmin = float(np.nanmin([np.nanmin(a) for a in arrays if a is not None]))
+        vmax = float(np.nanmax([np.nanmax(a) for a in arrays if a is not None]))
         lats = payloads[0].get("latitude")
         lons = payloads[0].get("longitude")
         ncols = len(models)
@@ -994,7 +1018,7 @@ def intercompare_probabilistic(
             ax.coastlines(linewidth=0.5)
             ax.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax.set_title(lab)
-        cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
+        cbar_ax = plt.gcf().add_axes((0.15, 0.08, 0.7, 0.03))
         plt.colorbar(mesh, cax=cbar_ax, orientation="horizontal", label="CRPS")
         plt.tight_layout(rect=(0, 0.1, 1, 1))
         out_png = dst / base.replace(".npz", "_compare.png")

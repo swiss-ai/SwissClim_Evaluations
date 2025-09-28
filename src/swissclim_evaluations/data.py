@@ -2,6 +2,7 @@ import contextlib
 import logging
 import warnings
 from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 import xarray as xr
@@ -86,7 +87,7 @@ def enforce_chunking(
         if rep is None:
             continue
         try:
-            var_chunks = rep.chunks  # type: ignore[attr-defined]
+            var_chunks = rep.chunks
             # DataArray.chunks is a tuple of tuples aligned with .dims
             if var_chunks is None:
                 needs_rechunk = True
@@ -277,12 +278,15 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         return dsets[0]
     # Combine strictly by coords; override attrs to avoid conflicts. Join outer to allow
     # non-overlapping time ranges.
-    combined = xr.combine_by_coords(
-        dsets,
-        combine_attrs="override",
-        data_vars="all",
-        join="outer",
-        compat="no_conflicts",
+    combined: xr.Dataset = cast(
+        xr.Dataset,
+        xr.combine_by_coords(
+            dsets,
+            combine_attrs="override",
+            data_vars="all",
+            join="outer",
+            compat="no_conflicts",
+        ),
     )
     return combined
 

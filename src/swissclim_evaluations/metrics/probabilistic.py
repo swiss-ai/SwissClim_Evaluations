@@ -23,7 +23,7 @@ from weatherbenchX.metrics.probabilistic import (
 from ..helpers import build_output_filename, time_chunks
 
 
-def _crps_e1(da_target, da_prediction):
+def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
     e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
     return e_1
@@ -41,7 +41,7 @@ def crps_e1(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="e
     )
 
 
-def _crps_e2(da_prediction):
+def _crps_e2(da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
     # Require at least 2 members; upstream runner enforces this. Keep explicit check for clarity.
     if M < 2:
@@ -64,7 +64,7 @@ def crps_e2(da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     )
 
 
-def _crps_ensemble_fair(da_target, da_prediction):
+def _crps_ensemble_fair(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
     e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / max(M, 1)
     if M < 2:
@@ -342,12 +342,12 @@ def run_probabilistic(
             da_target,
             da_prediction,
             ensemble_dim="ensemble",
-            name_prefix=None,
+            name_prefix="PIT",
         )
         counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
         pit_npz = section_output / build_output_filename(
             metric="pit_hist",
-            variable=var,
+            variable=str(var),
             level=None,
             qualifier=None,
             init_time_range=init_range,
@@ -364,7 +364,7 @@ def run_probabilistic(
         # Always save PIT and CRPS fields for reproducibility
         pit_nc = section_output / build_output_filename(
             metric="pit_field",
-            variable=var,
+            variable=str(var),
             level=None,
             qualifier=None,
             init_time_range=init_range,
@@ -374,7 +374,7 @@ def run_probabilistic(
         )
         crps_nc = section_output / build_output_filename(
             metric="crps_field",
-            variable=var,
+            variable=str(var),
             level=None,
             qualifier=None,
             init_time_range=init_range,
@@ -421,7 +421,7 @@ def _select_base_variable_for_plot(
         raise ValueError(
             "No common variables between targets and predictions for probabilistic plots."
         )
-    return common[0]
+    return str(common[0])
 
 
 def _time_reduce_dims_for_plot(da: xr.DataArray) -> list[str]:
@@ -567,7 +567,7 @@ def plot_probabilistic(
         ds_target[base_var],
         ds_prediction[base_var],
         ensemble_dim="ensemble",
-        name_prefix=None,
+        name_prefix="PIT",
     )
     counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
 

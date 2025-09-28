@@ -33,7 +33,7 @@ def run(
     max_samples = plotting_cfg.get("histogram_max_samples")
     try:
         max_samples = int(max_samples) if max_samples is not None else None
-        if max_samples <= 0:
+        if max_samples is not None and max_samples <= 0:
             max_samples = None
     except Exception:
         max_samples = None
@@ -92,7 +92,7 @@ def run(
             constrained_layout=True,
         )
         # Collect combined NPZ data across all bands
-        combined = {
+        combined: dict[str, list[np.ndarray | tuple[np.ndarray, np.ndarray] | float]] = {
             "neg_counts": [],
             "neg_bins": [],
             "pos_counts": [],
@@ -146,15 +146,15 @@ def run(
             nd = max(1, len(dims))
             frac = (k / float(size)) ** (1.0 / nd)
             rng = np.random.default_rng(seed)
-            indexers: dict[str, np.ndarray] = {}
+            indexers: dict[str, Any] = {}
             for d in dims:
-                n = int(da.sizes.get(d, 1))
+                n = int(da.sizes.get(str(d), 1))
                 take = max(1, int(np.ceil(frac * n)))
                 take = min(take, n)
                 idx = rng.choice(n, size=take, replace=False)
                 idx.sort()
-                indexers[d] = idx
-            sub = da.isel(**indexers)
+                indexers[str(d)] = np.asarray(idx)
+            sub = da.isel(indexers)
             arr = np.asarray(sub.compute().values).ravel()
             return arr[np.isfinite(arr)]
 
@@ -353,7 +353,7 @@ def run(
             _plot_variable(
                 ds_target_mean[variable_name],
                 ds_prediction_mean[variable_name],
-                variable_name,
+                str(variable_name),
                 level_token="",
                 qualifier="latbands",
                 ens_token=ensemble_mode_to_token("mean"),
@@ -365,7 +365,7 @@ def run(
                 _plot_variable(
                     tgt_m[variable_name],
                     pred_m[variable_name],
-                    variable_name,
+                    str(variable_name),
                     level_token="",
                     qualifier="latbands",
                     ens_token=token,
@@ -378,7 +378,7 @@ def run(
             _plot_variable(
                 ds_target[variable_name],
                 ds_prediction[variable_name],
-                variable_name,
+                str(variable_name),
                 level_token="",
                 qualifier="latbands",
                 ens_token=token,
@@ -405,7 +405,7 @@ def run(
                     _plot_variable(
                         da_t_lvl_mean,
                         da_p_lvl_mean,
-                        variable_name,
+                        str(variable_name),
                         level_token=str(lvl_clean),
                         qualifier="latbands",
                         ens_token=ensemble_mode_to_token("mean"),
@@ -420,7 +420,7 @@ def run(
                                 else tgt_m.sel(level=lvl)
                             ),
                             pred_m[variable_name].sel(level=lvl),
-                            variable_name,
+                            str(variable_name),
                             level_token=str(lvl_clean),
                             qualifier="latbands",
                             ens_token=token,
@@ -434,7 +434,7 @@ def run(
                     _plot_variable(
                         da_t_lvl,
                         da_p_lvl,
-                        variable_name,
+                        str(variable_name),
                         level_token=str(lvl_clean),
                         qualifier="latbands",
                         ens_token=token,

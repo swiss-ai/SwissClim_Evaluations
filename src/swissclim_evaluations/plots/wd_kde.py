@@ -134,22 +134,23 @@ def run(
             nd = max(1, len(dims))
             frac = (k / float(size)) ** (1.0 / nd)
             rng = np.random.default_rng(seed)
-            indexers: dict[str, np.ndarray] = {}
+            indexers: dict[str, Any] = {}
             for d in dims:
-                n = int(da.sizes.get(d, 1))
+                n = int(da.sizes.get(str(d), 1))
                 take = max(1, int(np.ceil(frac * n)))
                 take = min(take, n)
                 idx = rng.choice(n, size=take, replace=False)
                 idx.sort()
-                indexers[d] = idx
-            sub = da.isel(**indexers)
+                # Cast to plain numpy array for mypy/xarray typing compatibility
+                indexers[str(d)] = np.asarray(idx)
+            sub = da.isel(indexers)
             arr = np.asarray(sub.compute().values).ravel()
             return arr[np.isfinite(arr)]
 
         print(f"[wd_kde] variable: {var_name} level={level_token}")
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
-        combined = {
+        combined: dict[str, list[np.ndarray | float]] = {
             "neg_x": [],
             "neg_kde_ds": [],
             "neg_kde_ml": [],
@@ -306,7 +307,7 @@ def run(
             token_m = ensemble_mode_to_token("members", member_index)
             for variable_name in variables_2d:
                 _process_variable(
-                    variable_name,
+                    str(variable_name),
                     tgt_m[variable_name],
                     pred_m[variable_name],
                     level_token="",
@@ -315,7 +316,7 @@ def run(
     else:
         for variable_name in variables_2d:
             _process_variable(
-                variable_name,
+                str(variable_name),
                 ds_target_std_eff[variable_name],
                 ds_prediction_std_eff[variable_name],
                 level_token="",
@@ -336,7 +337,7 @@ def run(
                     for member_index, tgt_m, pred_m in _iter_members():
                         token_m = ensemble_mode_to_token("members", member_index)
                         _process_variable(
-                            variable_name,
+                            str(variable_name),
                             (
                                 tgt_m[variable_name].sel(level=lvl)
                                 if "ensemble" in tgt_m[variable_name].dims
@@ -350,7 +351,7 @@ def run(
                     da_t_lvl = da_t_std.sel(level=lvl)
                     da_p_lvl = da_p_std.sel(level=lvl)
                     _process_variable(
-                        variable_name,
+                        str(variable_name),
                         da_t_lvl,
                         da_p_lvl,
                         level_token=str(lvl_clean),

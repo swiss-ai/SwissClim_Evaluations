@@ -13,7 +13,7 @@ EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
 # Standard wavebands in km (wavelength ranges)
-WAVE_BANDS = [
+WAVE_BANDS: list[dict[str, float | str]] = [
     {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
     {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
     {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
@@ -413,12 +413,12 @@ def _plot_energy_spectra(
     section_output.mkdir(parents=True, exist_ok=True)
 
     for idx, key in enumerate(coords_df):
-        sel_kwargs = {dim: key[i] for i, dim in enumerate(time_dims)}
+        sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
         spec_t_1d = spectrum_target.isel(
-            **{d: spectrum_target.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+            **{str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
         )
         spec_p_1d = spectrum_pred.isel(
-            **{d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d]) for d in time_dims}
+            **{str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
         )
         wn = spec_t_1d["wavenumber"].values
         arr_t = spec_t_1d.values
@@ -597,16 +597,16 @@ def run(
             token_ctx = ctx["token"]
             # Compute spectra once and reuse
             spec_t, spec_p = _compute_spectra_pair(
-                ctx["ds_target"], ctx["ds_prediction"], var, None
+                ctx["ds_target"], ctx["ds_prediction"], str(var), None
             )
             lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
             df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-            df_lsd_ctx.insert(0, "variable", var)
+            df_lsd_ctx.insert(0, "variable", str(var))
             if ctx["member"] is not None:
                 df_lsd_ctx.insert(1, "ensemble_member", ctx["member"])
                 member_means.append(float(lsd_da_ctx.mean().values))
             detailed_rows_2d.append(df_lsd_ctx)
-            last_lsd_dims = lsd_da_ctx.dims
+            last_lsd_dims = tuple(str(d) for d in lsd_da_ctx.dims)
             # Only build per-init rows for non-members case (preserve existing behaviour)
             if (ctx["member"] is None) and ("init_time" in lsd_da_ctx.dims):
                 mean_over = [d for d in lsd_da_ctx.dims if d not in ("init_time",)]
@@ -619,7 +619,7 @@ def run(
             lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)  # dims: band + time-like
             # Align banded LSD dims ordering and build DF
             df_bands = lsd_bands_da.to_dataframe(name="lsd").reset_index()
-            df_bands.insert(0, "variable", var)
+            df_bands.insert(0, "variable", str(var))
             if ctx["member"] is not None:
                 df_bands.insert(1, "ensemble_member", ctx["member"])
             banded_detailed_rows_2d.append(df_bands)
@@ -634,7 +634,7 @@ def run(
         if members_indices is None:
             summary_rows_2d.append(
                 {
-                    "variable": var,
+                    "variable": str(var),
                     "lsd_mean": float(
                         detailed_rows_2d[-1]["lsd"].mean()
                     ),  # last corresponds to var
@@ -643,7 +643,7 @@ def run(
         elif member_means:
             summary_rows_2d.append(
                 {
-                    "variable": var,
+                    "variable": str(var),
                     "lsd_mean": float(sum(member_means) / len(member_means)),
                 }
             )
@@ -766,7 +766,7 @@ def run(
 
     # 3D variables (refactored)
     detailed_rows_3d: list[pd.DataFrame] = []
-    summary_levels: dict[str, list[float]] = {v: [] for v in variables_3d}
+    summary_levels: dict[str, list[float]] = {str(v): [] for v in variables_3d}
     per_init_rows_3d: list[pd.DataFrame] = []
     banded_detailed_rows_3d: list[pd.DataFrame] = []
     banded_summary_rows_3d: list[dict] = []
@@ -774,41 +774,41 @@ def run(
     for var in variables_3d:
         print(f"[energy_spectra] (metrics) 3D variable: {var}")
         for level in levels:
-            member_means: list[float] = []
+            member_means_lvl: list[float] = []
             for ctx in _member_contexts():
                 token_ctx = ctx["token"]
                 # Compute spectra once and reuse
                 spec_t, spec_p = _compute_spectra_pair(
-                    ctx["ds_target"], ctx["ds_prediction"], var, int(level)
+                    ctx["ds_target"], ctx["ds_prediction"], str(var), int(level)
                 )
                 lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
                 df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-                df_lsd_ctx.insert(0, "variable", var)
+                df_lsd_ctx.insert(0, "variable", str(var))
                 if "level" in df_lsd_ctx.columns:
                     df_lsd_ctx["level"] = int(level)
                 else:
                     df_lsd_ctx.insert(1, "level", int(level))
                 detailed_rows_3d.append(df_lsd_ctx)
-                last_lsd_dims = lsd_da_ctx.dims
+                last_lsd_dims = tuple(str(d) for d in lsd_da_ctx.dims)
                 if ctx["member"] is None:
                     # Only per-init collection for non-members
                     if "init_time" in lsd_da_ctx.dims:
                         mean_over = [d for d in lsd_da_ctx.dims if d not in ("init_time",)]
                         _ = lsd_da_ctx.mean(dim=mean_over)  # not used directly but kept for parity
                         df_init = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-                        df_init.insert(0, "variable", var)
+                        df_init.insert(0, "variable", str(var))
                         if "level" in df_init.columns:
                             df_init["level"] = int(level)
                         else:
                             df_init.insert(1, "level", int(level))
                         per_init_rows_3d.append(df_init)
                 else:
-                    member_means.append(float(lsd_da_ctx.mean().values))
+                    member_means_lvl.append(float(lsd_da_ctx.mean().values))
 
                 # Banded LSD for 3D using the same spectra
                 lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
                 df_bands = lsd_bands_da.to_dataframe(name="lsd").reset_index()
-                df_bands.insert(0, "variable", var)
+                df_bands.insert(0, "variable", str(var))
                 if "level" in df_bands.columns:
                     df_bands["level"] = int(level)
                 else:
@@ -820,16 +820,18 @@ def run(
                     mean_over_b = [d for d in lsd_bands_da.dims if d not in ("init_time", "band")]
                     lsd_bi = lsd_bands_da.mean(dim=mean_over_b)
                     df_bi = lsd_bi.to_dataframe(name="lsd_mean").reset_index()
-                    df_bi.insert(0, "variable", var)
+                    df_bi.insert(0, "variable", str(var))
                     if "level" in df_bi.columns:
                         df_bi["level"] = int(level)
                     else:
                         df_bi.insert(1, "level", int(level))
                     banded_per_init_rows_3d.append(df_bi)
             if members_indices is None:
-                summary_levels[var].append(float(detailed_rows_3d[-1]["lsd"].mean()))
-            elif member_means:
-                summary_levels[var].append(float(sum(member_means) / len(member_means)))
+                summary_levels[str(var)].append(float(detailed_rows_3d[-1]["lsd"].mean()))
+            elif member_means_lvl:
+                summary_levels[str(var)].append(
+                    float(sum(member_means_lvl) / len(member_means_lvl))
+                )
 
     if variables_3d:
         if detailed_rows_3d:
@@ -996,12 +998,12 @@ def run(
                 _plot_energy_spectra(
                     ds_tgt_plot_ctx,
                     ds_pred_plot_ctx,
-                    var,
+                    str(var),
                     None,
                     section_output
                     / build_output_filename(
                         metric="lsd",
-                        variable=var,
+                        variable=str(var),
                         level=None,
                         qualifier="spectrum",
                         init_time_range=None,
@@ -1019,12 +1021,12 @@ def run(
                     _plot_energy_spectra(
                         ds_tgt_plot_ctx,
                         ds_pred_plot_ctx,
-                        var,
+                        str(var),
                         int(level),
                         section_output
                         / build_output_filename(
                             metric="lsd",
-                            variable=var,
+                            variable=str(var),
                             level=level,
                             qualifier="spectrum",
                             init_time_range=None,

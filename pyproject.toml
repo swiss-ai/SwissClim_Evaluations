@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.6.8", "pre-commit>=3.8"]
+dev = ["ruff>=0.6.8", "pre-commit>=3.8", "mypy>=1.11.2"]
 
 [tool.uv.sources]
 weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
@@ -75,3 +75,19 @@ indent-style = "space"
 docstring-code-format = true
 skip-magic-trailing-comma = false
 line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+exclude = ["^tests/", "^notebooks/"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+strict_optional = true
+no_implicit_optional = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+allow_redefinition = true
+namespace_packages = true
+explicit_package_bases = true

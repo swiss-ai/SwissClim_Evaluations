@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from . import console as c, data as data_mod
 from .helpers import (
@@ -218,7 +218,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if not ranges:
             # Fallback to original behavior if we couldn't parse anything meaningful
             if len(datetimes) >= 2:
-                ds = ds.sel(**{dim_name: slice(datetimes[0], datetimes[1])})
+                ds = ds.sel({dim_name: slice(datetimes[0], datetimes[1])})
             return ds
 
         vals = ds[dim_name].values.astype("datetime64[ns]")
@@ -243,7 +243,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             return ds
         # isel by positions retains labels and avoids building a long explicit label list
         idx = np.nonzero(mask)[0]
-        ds = ds.isel(**{dim_name: idx})
+    ds = ds.isel({dim_name: idx})
     return ds
 
 
@@ -553,7 +553,9 @@ def prepare_datasets(
         to_drop = [n for n in ("pair", "init_time", "lead_time") if n in ds_tgt_stacked.coords]
         if to_drop:
             ds_tgt_stacked = ds_tgt_stacked.drop_vars(to_drop)
-        ds_tgt_stacked = ds_tgt_stacked.assign_coords(pair=ds_pred_stacked["pair"])  # type: ignore[index]
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
+                pair=ds_pred_stacked["pair"]
+            )  # pairs aligned
 
         # Unstack back to (init_time, lead_time)
         ds_prediction = ds_pred_stacked.unstack("pair")
@@ -581,10 +583,10 @@ def prepare_datasets(
                 try:
                     nan_sum = da.isnull().sum()
                     # nan_sum is a 0-D DataArray (possibly dask-backed) → compute
-                    count = int(nan_sum.compute())  # type: ignore[arg-type]
+                    count = int(nan_sum.compute())
                     if count > 0:
-                        missing_counts[var] = count
-                        totals[var] = int(da.size)
+                        missing_counts[str(var)] = count
+                        totals[str(var)] = int(da.size)
                 except Exception:
                     # Fallback: attempt an 'any' check
                     try:
@@ -592,16 +594,16 @@ def prepare_datasets(
                     except Exception:
                         has_nan = False
                     if has_nan:
-                        missing_counts[var] = -1  # unknown exact count
-                        totals[var] = int(getattr(da, "size", 0) or 0)
+                        missing_counts[str(var)] = -1  # unknown exact count
+                        totals[str(var)] = int(getattr(da, "size", 0) or 0)
             if missing_counts:
                 lines = []
                 for v, cnt in missing_counts.items():
                     tot = totals.get(v, 0)
                     if cnt >= 0 and tot > 0:
-                        lines.append(f"  - {v}: {cnt}/{tot} missing values")
+                        lines.append(f"  - {str(v)}: {cnt}/{tot} missing values")
                     else:
-                        lines.append(f"  - {v}: missing values present (count unavailable)")
+                        lines.append(f"  - {str(v)}: missing values present (count unavailable)")
                 problems.append(f"{name} dataset contains missing data:\n" + "\n".join(lines))
         # Always print the result to the terminal; do not abort here
         if problems:
@@ -740,12 +742,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # printing the Dataset object provides a concise summary (dims/coords/vars)
     try:
         from .console import (
-            USE_RICH,  # type: ignore
-            console as _rc,  # type: ignore
+            USE_RICH,
+            console as _rc,
         )
 
         if USE_RICH:
-            from rich.pretty import Pretty  # type: ignore
+            from rich.pretty import Pretty
 
             _rc.print(Pretty(ds_prediction))
         else:
@@ -778,7 +780,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_full = int(ds_prediction.sizes.get("ensemble"))
+            ens_full = int(ds_prediction.sizes.get("ensemble", 0))
             ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
             use_mode = resolved_modes.get("maps", "members")
             msg = format_ensemble_log(
@@ -826,7 +828,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
                 format_ensemble_log(
                     "histograms", resolved_modes.get("histograms", "pooled"), ens_size
@@ -870,7 +872,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("wd_kde", "run", f"vars_2d={len(vars_2d)} (standardized)")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(format_ensemble_log("wd_kde", resolved_modes.get("wd_kde", "pooled"), ens_size))
         else:
             c.info("No ensemble dimension → deterministic standardized inputs.")
@@ -916,7 +918,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}",
         )
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
                 format_ensemble_log(
                     "energy_spectra", resolved_modes.get("energy_spectra", "mean"), ens_size
@@ -961,7 +963,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
                 format_ensemble_log(
                     "vertical_profiles", resolved_modes.get("vertical_profiles", "mean"), ens_size
@@ -1007,9 +1009,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("deterministic", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size_det: int = int(ds_prediction.sizes.get("ensemble", 0))
             use_mode = resolved_modes.get("deterministic", "mean")
-            c.info(format_ensemble_log("deterministic", use_mode, ens_size))
+            c.info(
+                format_ensemble_log(
+                    "deterministic",
+                    use_mode,
+                    ens_size_det,
+                )
+            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1051,9 +1059,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("ets", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size_ets = int(ds_prediction.sizes.get("ensemble", 0))
             use_mode = resolved_modes.get("ets", "mean")
-            c.info(format_ensemble_log("ets", use_mode, ens_size))
+            c.info(format_ensemble_log("ets", use_mode, ens_size_ets))
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1101,7 +1109,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             "CRPS/PIT (xarray) + WBX SSR/CRPS",
         )
         if "ensemble" in ds_prediction.dims:
-            ens_size = int(ds_prediction.sizes.get("ensemble"))
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             if ens_size < 2:
                 c.warn(
                     "Ensemble size="
@@ -1209,7 +1217,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "module_results" in locals() and module_results:
             # Build a text table (avoid adding dependency). Use rich if available.
             from .console import (
-                USE_RICH,  # type: ignore
+                USE_RICH,
                 console as _rc,
             )
 
@@ -1218,8 +1226,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
             skipped = [r for r in module_results if r["status"] == "skipped"]
             if USE_RICH:
                 try:  # pragma: no cover
-                    from rich import box  # type: ignore
-                    from rich.table import Table  # type: ignore
+                    from rich import box
+                    from rich.table import Table
 
                     tbl = Table(title="Module Results", box=box.SIMPLE_HEAVY)
                     tbl.add_column("Module", style="bold")
@@ -1308,7 +1316,7 @@ def main(argv: list[str] | None = None) -> None:
         pass
     # In non-interactive (no TTY) environments like Slurm, force plain output
     try:
-        from .console import set_color_mode  # type: ignore
+        from .console import set_color_mode
 
         is_tty = False
         try:

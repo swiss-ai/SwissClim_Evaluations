@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +110,7 @@ def run(
             ds_target = ds_target.mean(dim="ensemble")
         if "ensemble" in ds_prediction.dims:
             ds_prediction = ds_prediction.mean(dim="ensemble")
-        ensemble_members = [None]
+        ensemble_members: list[int | None] = [None]
         ens_token_global = ensemble_mode_to_token("mean")
     elif resolved_mode == "pooled" and has_ens:
         ensemble_members = [None]
@@ -119,9 +118,9 @@ def run(
     elif resolved_mode == "members" and has_ens:
         # enumerate members; token set per iteration
         if "ensemble" in ds_prediction.dims:
-            ensemble_members = list(range(ds_prediction.sizes["ensemble"]))
+            ensemble_members = [int(i) for i in range(int(ds_prediction.sizes["ensemble"]))]
         else:
-            ensemble_members = list(range(ds_target.sizes["ensemble"]))
+            ensemble_members = [int(i) for i in range(int(ds_target.sizes["ensemble"]))]
         ens_token_global = None
     else:
         ensemble_members = [None]
@@ -201,7 +200,7 @@ def run(
             axes[1].coastlines(linewidth=0.5)
             axes[1].set_title("Model Prediction")
 
-            cbar_ax = plt.gcf().add_axes([0.15, 0.1, 0.7, 0.02])
+            cbar_ax = plt.gcf().add_axes((0.15, 0.1, 0.7, 0.02))
             plt.colorbar(
                 im0,
                 cax=cbar_ax,
@@ -228,7 +227,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="map",
-                    variable=var,
+                    variable=str(var),
                     level=None,
                     qualifier=None,
                     init_time_range=init_range,
@@ -242,7 +241,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 npz_path = section_output / build_output_filename(
                     metric="map",
-                    variable=var,
+                    variable=str(var),
                     level=None,
                     qualifier=None,
                     init_time_range=init_range,
@@ -254,13 +253,13 @@ def run(
                     npz_path,
                     nwp=ds_var.values,
                     ml=ds_ml_var.values,
-                    latitude=ds_var.coords.get("latitude", None).values
-                    if "latitude" in ds_var.coords
-                    else None,
-                    longitude=ds_var.coords.get("longitude", None).values
-                    if "longitude" in ds_var.coords
-                    else None,
-                    ensemble=ens if ens is not None else -1,
+                    latitude=(
+                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
+                    ),
+                    longitude=(
+                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
+                    ),
+                    ensemble=int(ens) if ens is not None else -1,
                 )
                 print(f"[maps] saved {npz_path}")
 
@@ -370,8 +369,7 @@ def run(
                 plt.suptitle(f"{var}{title_extra}")
             # With constrained_layout=True above, avoid calling tight_layout (incompatible).
             # Adjust padding via constrained layout pads instead.
-            with contextlib.suppress(Exception):
-                fig.set_constrained_layout_pads(h_pad=0.05, w_pad=0.05, hspace=0.06, wspace=0.06)
+            # Leave default constrained_layout behavior; avoid calling private methods for safety
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)
@@ -382,7 +380,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="map",
-                    variable=var,
+                    variable=str(var),
                     level=None,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
@@ -396,7 +394,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 npz_path = section_output / build_output_filename(
                     metric="map",
-                    variable=var,
+                    variable=str(var),
                     level=None,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
@@ -408,16 +406,14 @@ def run(
                     npz_path,
                     nwp=ds_var.values,
                     ml=ds_ml_var.values,
-                    latitude=ds_var.coords.get("latitude", None).values
-                    if "latitude" in ds_var.coords
-                    else None,
-                    longitude=ds_var.coords.get("longitude", None).values
-                    if "longitude" in ds_var.coords
-                    else None,
-                    level=ds_var.coords.get("level", None).values
-                    if "level" in ds_var.coords
-                    else None,
-                    ensemble=ens if ens is not None else -1,
+                    latitude=(
+                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
+                    ),
+                    longitude=(
+                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
+                    ),
+                    level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
+                    ensemble=int(ens) if ens is not None else -1,
                 )
                 print(f"[maps] saved {npz_path}")
             plt.close(fig)
