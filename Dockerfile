@@ -36,6 +36,7 @@ ENV SHELL=/bin/bash
 #    always resolves the correct sys.prefix.
 RUN uv venv "$VIRTUAL_ENV" \
     && uv sync \
+    && uv pip install pip \
     && for bin in python python3 pip pip3; do \
     printf '#!/bin/sh\nexec /opt/venv/bin/%s "$@"\n' "$bin" > /usr/local/bin/$bin; \
     chmod +x /usr/local/bin/$bin; \
