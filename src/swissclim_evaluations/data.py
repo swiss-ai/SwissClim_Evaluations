@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import warnings
+from collections.abc import Sequence
 
 import numpy as np
 import xarray as xr
@@ -213,16 +214,101 @@ def standardize_dims(
     return ds
 
 
-def open_ml(path: str, variables: list[str] | None = None) -> xr.Dataset:
-    """Open model dataset from Zarr and optionally subset variables."""
+def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open multiple Zarr stores and combine lazily by coordinates.
+
+    - Preserves Dask laziness: each store remains a separate dask graph branch.
+    - Requires matching variable schemas (user guarantees same format).
+    - Uses combine_by_coords to concatenate/merge along labeled coords (e.g., time/init_time).
+    """
+    dsets: list[xr.Dataset] = []
+
+    def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
+        """Sort common coordinate dims to a consistent monotonic order.
+
+        This avoids xarray.combine_by_coords errors when shards have different
+        coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
+        lazy with Dask-backed arrays and preserves graph structure.
+        """
+        sort_prefs: dict[str, bool] = {
+            "level": True,  # ascending (e.g., 50, 100, ..., 1000)
+            "latitude": False,  # ERA5 typically descending 90 -> -90
+            "longitude": True,  # 0..360 ascending
+            "init_time": True,  # chronological
+            "time": True,  # chronological
+            "lead_time": True,  # increasing timedelta
+        }
+        for dim, asc in sort_prefs.items():
+            if dim in ds.dims:
+                with contextlib.suppress(Exception):
+                    ds = ds.sortby(dim, ascending=asc)
+        return ds
+
+    for p in paths:
+        ds_i = xr.open_zarr(p, decode_timedelta=True)
+        if variables:
+            # Subselect only variables present in this shard to reduce metadata
+            keep = [v for v in variables if v in ds_i.data_vars]
+            if keep:
+                ds_i = ds_i[keep]
+        ds_i = _ensure_monotonic(ds_i)
+        dsets.append(ds_i)
+
+    # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
+    # non-monotonic global indexes during combine_by_coords.
+    try:
+        levels_list = [
+            ds.coords["level"].values
+            for ds in dsets
+            if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
+        ]
+        if levels_list:
+            import numpy as _np
+
+            canon_level = _np.unique(_np.concatenate(levels_list))
+            canon_level.sort()
+            dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
+    except Exception:
+        # Best-effort; if harmonization fails, proceed and let combine raise a clearer error
+        pass
+    if not dsets:
+        raise ValueError("No Zarr paths provided.")
+    if len(dsets) == 1:
+        return dsets[0]
+    # Combine strictly by coords; override attrs to avoid conflicts. Join outer to allow
+    # non-overlapping time ranges.
+    combined = xr.combine_by_coords(
+        dsets,
+        combine_attrs="override",
+        data_vars="all",
+        join="outer",
+        compat="no_conflicts",
+    )
+    return combined
+
+
+def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open model dataset(s) from Zarr and optionally subset variables.
+
+    Accepts a single path or a list/sequence of paths. When multiple paths are given,
+    they are combined lazily by coordinates without materializing data.
+    """
+    if isinstance(path, (list | tuple)):
+        return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
     return ds
 
 
-def era5(path: str, variables: list[str] | None = None) -> xr.Dataset:
-    """Open ERA5 dataset from Zarr and optionally subset variables."""
+def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open ERA5 dataset(s) from Zarr and optionally subset variables.
+
+    Accepts a single path or a list/sequence of paths. When multiple paths are given,
+    they are combined lazily by coordinates without materializing data.
+    """
+    if isinstance(path, (list | tuple)):
+        return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]

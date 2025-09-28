@@ -3,14 +3,19 @@
 # Tip: All paths should be absolute or relative to the repository root.
 
 paths:
-  # Path to your model predictions in Zarr format (root directory).
-  # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
+  # Path(s) to your model predictions in Zarr format (root directory).
+  # Accepts a single string or a list of strings. When a list is provided, the
+  # archives are combined lazily by coordinates (no data is materialized; Dask
+  # graphs remain intact). All stores must follow the same variable/dimension schema.
   ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
-  # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr" # has ensemble
 
-  # Path to the reference dataset (ERA5 in WeatherBench2 layout).
-  # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
-  nwp: "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr"
+  # Path(s) to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Accepts a single string or a list of strings. When multiple stores are provided,
+  # they are combined lazily by coordinates.
+  nwp: [
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
+  ]
 
   # Where outputs are written; a subfolder per module will be created here.
   output_root: "output/verification_esfm"
@@ -36,12 +41,12 @@ selection:
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     "2023-04-02T00:2023-04-08T23",
-    # "2023-07-02T00:2023-07-08T23",
-    # "2023-10-02T00:2023-10-08T23",
-    # "2024-01-02T00:2024-01-08T23",
-    # "2024-04-02T00:2024-04-08T23",
-    # "2024-07-02T00:2024-07-08T23",
-    # "2024-10-02T00:2024-10-08T23"
+    "2023-07-02T00:2023-07-08T23",
+    "2023-10-02T00:2023-10-08T23",
+    "2024-01-02T00:2024-01-08T23",
+    "2024-04-02T00:2024-04-08T23",
+    "2024-07-02T00:2024-07-08T23",
+    "2024-10-02T00:2024-10-08T23"
   ]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
