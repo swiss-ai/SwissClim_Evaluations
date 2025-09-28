@@ -122,13 +122,19 @@ The YAML is the single source of truth. Use the commented example directly:
 # Tip: All paths should be absolute or relative to the repository root.
 
 paths:
-  # Path to your model predictions in Zarr format (root directory).
-  # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
+  # Path(s) to your model predictions in Zarr format (root directory).
+  # Accepts a single string or a list of strings. When a list is provided, the
+  # archives are combined lazily by coordinates (no data is materialized; Dask
+  # graphs remain intact). All stores must follow the same variable/dimension schema.
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
 
-  # Path to the reference dataset (ERA5 in WeatherBench2 layout).
-  # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
-  nwp: "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr"
+  # Path(s) to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Accepts a single string or a list of strings. When multiple stores are provided,
+  # they are combined lazily by coordinates.
+  nwp: [
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
+  ]
 
   # Where outputs are written; a subfolder per module will be created here.
   output_root: "output/verification_esfm"
@@ -156,10 +162,10 @@ selection:
     "2023-04-02T00:2023-04-08T23",
     "2023-07-02T00:2023-07-08T23",
     "2023-10-02T00:2023-10-08T23",
-    # "2024-01-02T00:2024-01-08T23",
-    # "2024-04-02T00:2024-04-08T23",
-    # "2024-07-02T00:2024-07-08T23",
-    # "2024-10-02T00:2024-10-08T23"
+    "2024-01-02T00:2024-01-08T23",
+    "2024-04-02T00:2024-04-08T23",
+    "2024-07-02T00:2024-07-08T23",
+    "2024-10-02T00:2024-10-08T23"
   ]
 
   # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
@@ -187,19 +193,20 @@ selection:
     # "v_component_of_wind",
   ]
 
-  # ensemble_members:
-  #   Optional pre-selection of ensemble members BEFORE any module logic runs.
+  # Optional pre-selection of ensemble members BEFORE any module logic runs.
   #   Accepts:
-  #     - null        : keep all members (recommended) and let per‑module modes decide.
-  #     - int         : select exactly one member; 'ensemble' dim is dropped and per‑module
-  #                     ensemble modes (mean/members/pooled) are ignored (single-member path).
-  #     - list[int]   : select multiple members; keeps 'ensemble' dim with just those indices.
-  #                     Per‑module ensemble modes still apply but only over retained members.
+  #     - null  : keep all members (recommended) and let per‑module ensemble modes decide.
+  #     - int   : select exactly one member; 'ensemble' dimension is dropped and ALL per-module
+  #               ensemble modes (mean/members/pooled/prob) become invalid except probabilistic
+  #               which will still use the single deterministic path.
+  #     - list[int]: select multiple members; the dataset is subset to those members but the
+  #               'ensemble' dimension is preserved (length = len(list)). Per‑module ensemble
+  #               modes still function but operate only over the retained subset.
   #   Notes:
-  #     - A single-element list acts like the int form (dimension dropped).
+  #     - Providing a single-element list behaves like the int form (dimension is dropped).
   #     - Indices are zero-based.
-  #     - Prefer plotting.plot_ensemble_members to restrict plotting without discarding
-  #       members for metrics.
+  #     - Use plotting.plot_ensemble_members for restricting WHICH members are plotted in
+  #       members-capable modules without discarding others for metrics.
   ensemble_members: null
 
   # Per-module ensemble modes (override defaults if needed):
@@ -209,14 +216,14 @@ selection:
   #   members  → per-member outputs (ens0..ensN)
   #   none     → no ensemble handling (only if dataset lacks ensemble dim)
   ensemble:
+    maps: members            # members | mean | none*
+    histograms: pooled       # pooled | members | mean | none*
+    wd_kde: pooled           # pooled | members | mean | none*
+    energy_spectra: mean     # mean | members | pooled | none*
+    vertical_profiles: mean  # mean | members | none*
     deterministic: mean      # mean | members | none*
     ets: mean                # mean | members | none*
     probabilistic: prob      # prob (only valid choice; module forces prob)
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    histograms: pooled       # pooled | members | mean | none*
-    wd_kde: pooled           # pooled | members | mean | none*
-    maps: members            # members | mean | none*
     # * 'none' only if dataset truly has no ensemble dimension.
 
   # If true, raise an error when requested pressure levels are missing from the data.
@@ -273,7 +280,7 @@ metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
-  #   "FSS", "Wasserstein", "Relative L1", "Relative L2"
+  #   "FSS", "Relative L1", "Relative L2"
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
@@ -281,13 +288,19 @@ metrics:
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
     # Fractional Skill Score (FSS) configuration
+    # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
+    # - window_size: integer (square window) or two-element list [height, width]
+    # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
+    # Optional: use absolute thresholds instead of quantiles:
+    #   - threshold: single float applied to all variables (units must match each variable)
+    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
     fss:
       quantile: 0.95
-      window_size: 9
-      # threshold: 10.0
-      # thresholds:
-      #   "total_precipitation": 1.0
-      #   "10m_u_component_of_wind": 10.0
+      window_size: 9            # Example: square window of 9x9
+      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
+      # thresholds:              # Example: per-variable thresholds (units must match dataset)
+      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
+      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
