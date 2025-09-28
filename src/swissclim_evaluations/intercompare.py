@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -703,6 +704,7 @@ def intercompare_maps(
                 figsize=(6 * ncols, 4),
                 dpi=160,
                 subplot_kw={"projection": ccrs.PlateCarree()},
+                constrained_layout=True,
             )
             if ncols == 1:
                 axes = [axes]
@@ -738,9 +740,17 @@ def intercompare_maps(
                 ax.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax.coastlines(linewidth=0.5)
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
-            cbar_ax = plt.gcf().add_axes((0.15, 0.08, 0.7, 0.03))
-            plt.colorbar(im0, cax=cbar_ax, orientation="horizontal", label="Value")
-            plt.tight_layout(rect=(0, 0.1, 1, 1))
+            # Use a constrained-layout-friendly colorbar spanning all axes
+            cbar = fig.colorbar(
+                im0,
+                ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                orientation="horizontal",
+                fraction=0.05,
+                pad=0.08,
+            )
+            with contextlib.suppress(Exception):
+                cbar.set_label("Value")
+            # No tight_layout here; constrained_layout handles spacing
             suffix = f"_level{lvl}" if n_levels > 1 else ""
             out_png = dst / (key + suffix + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -1002,6 +1012,7 @@ def intercompare_probabilistic(
             figsize=(6 * ncols, 4),
             dpi=160,
             subplot_kw={"projection": ccrs.PlateCarree()},
+            constrained_layout=True,
         )
         if ncols == 1:
             axes = [axes]
@@ -1018,9 +1029,17 @@ def intercompare_probabilistic(
             ax.coastlines(linewidth=0.5)
             ax.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax.set_title(lab)
-        cbar_ax = plt.gcf().add_axes((0.15, 0.08, 0.7, 0.03))
-        plt.colorbar(mesh, cax=cbar_ax, orientation="horizontal", label="CRPS")
-        plt.tight_layout(rect=(0, 0.1, 1, 1))
+        # Use a constrained-layout-friendly colorbar spanning all axes
+        cbar = fig.colorbar(
+            mesh,
+            ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+            orientation="horizontal",
+            fraction=0.05,
+            pad=0.08,
+        )
+        with contextlib.suppress(Exception):
+            cbar.set_label("CRPS")
+        # No tight_layout here; constrained_layout handles spacing
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)

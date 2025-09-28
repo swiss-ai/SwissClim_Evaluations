@@ -243,7 +243,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             return ds
         # isel by positions retains labels and avoids building a long explicit label list
         idx = np.nonzero(mask)[0]
-    ds = ds.isel({dim_name: idx})
+        ds = ds.isel({dim_name: idx})
+        return ds
+    # No datetime filtering requested → return as-is
     return ds
 
 

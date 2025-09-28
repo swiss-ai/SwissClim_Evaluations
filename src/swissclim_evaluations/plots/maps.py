@@ -136,6 +136,7 @@ def run(
                 figsize=(14, 4),
                 dpi=dpi * 2,
                 subplot_kw={"projection": ccrs.PlateCarree()},
+                constrained_layout=True,
             )
 
             ds_var = ds_target[var]
@@ -200,13 +201,21 @@ def run(
             axes[1].coastlines(linewidth=0.5)
             axes[1].set_title("Model Prediction")
 
-            cbar_ax = plt.gcf().add_axes((0.15, 0.1, 0.7, 0.02))
-            plt.colorbar(
+            # Use a colorbar compatible with constrained_layout, spanning both axes
+            cb = fig.colorbar(
                 im0,
-                cax=cbar_ax,
+                ax=axes,
                 orientation="horizontal",
-                label=ds_target[var].attrs.get("units", ""),
+                fraction=0.05,
+                pad=0.08,
             )
+            # In test mode, colorbar may be a dummy (None); guard the label call
+            try:
+                if cb is not None:
+                    cb.set_label(ds_target[var].attrs.get("units", ""))
+            except Exception:
+                # Non-fatal: continue without setting label
+                pass
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
