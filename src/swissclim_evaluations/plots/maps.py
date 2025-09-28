@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -367,8 +368,10 @@ def run(
                 )
             elif title_extra:
                 plt.suptitle(f"{var}{title_extra}")
-            # Use tight layout with rect instead of subplots_adjust to avoid layout engine conflicts
-            plt.tight_layout(rect=(0, 0.05, 1, 0.95))
+            # With constrained_layout=True above, avoid calling tight_layout (incompatible).
+            # Adjust padding via constrained layout pads instead.
+            with contextlib.suppress(Exception):
+                fig.set_constrained_layout_pads(h_pad=0.05, w_pad=0.05, hspace=0.06, wspace=0.06)
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)
