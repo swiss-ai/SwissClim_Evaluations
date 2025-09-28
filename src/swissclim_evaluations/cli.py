@@ -21,6 +21,19 @@ from .helpers import (
     validate_and_normalize_ensemble_config,
 )
 
+# Public: expected module subdirectories produced by the evaluation pipeline
+# These names correspond to folders created under each model output directory.
+EXPECTED_SUBDIRS: set[str] = {
+    "deterministic",
+    "probabilistic",
+    "energy_spectra",
+    "ets",
+    "histograms",
+    "wd_kde",
+    "maps",
+    "vertical_profiles",
+}
+
 
 def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
     with open(path) as f:

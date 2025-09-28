@@ -368,13 +368,14 @@ ets_metrics_init_time_ens0.csv   # members mode per-member file
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
 is exported per init_time/lead_time and summarized. Outputs:
 
-- Figures / NPZ (subset init_time for plotting) : `energy_spectra/{var}_{level?}_{init}_{lead}_spectrum.(png|npz)`
-- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_time_<range>.csv` (one row per remaining time slice)
+- Figures / NPZ (subset init_time for plotting) : `energy_spectra/lsd_<variable>[_<level>]_spectrum[_init...][_lead...]_ens*.{png|npz}`
+- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_init_time_<range>.csv` or `per_lead_time` depending on dims
 - LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
 - LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
-- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_time_<range>.csv`
+- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
 - LSD averaged (3D levels wide): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
 - LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
+- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged, and init_time summaries.
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
@@ -391,7 +392,7 @@ Examples (pooled vs members):
 ```text
 hist_2m_temperature_latbands_enspooled.npz
 hist_temperature_500_latbands_combined_enspooled.npz
-wd_kde_2m_temperature_latbands_kde_combined_enspooled.npz
+wd_kde_2m_temperature_combined_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
 wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mode)
 ```
@@ -400,12 +401,11 @@ Time ranges (if present) appear just before the ensemble token: `..._init2023010
 
 ### Vertical Structure (3D variables only)
 
-Outputs (suffixed):
+Outputs (standardized naming):
 
-- Plot: `vertical_profiles/{var}_pl_nmae_<range>.png`
-- Combined band data (NPZ): `vertical_profiles/{var}_pl_nmae_combined_<range>.npz`
-- Averaged summary: `vertical_profiles/vertical_profiles_nmae_averaged_<range>.csv`
-- Init-time summary: `vertical_profiles/vertical_profiles_nmae_init_time_<range>.csv`
+- Plot: `vertical_profiles/vprof_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
+- Combined band data (NPZ): `vertical_profiles/vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Summaries (CSV) may be produced by intercomparison rather than the module itself.
 
 ### Spatial Maps
 
@@ -436,8 +436,8 @@ WBX summary tables / fields:
 ```text
 spread_skill_ratio_ensprob.csv
 crps_ensemble_ensprob.csv
-probabilistic_metrics_temporal_ensprob.nc
-probabilistic_metrics_spatial_ensprob.nc
+prob_metrics_temporal_ensprob.nc
+prob_metrics_spatial_ensprob.nc
 ```
 
 Aggregated CRPS summaries (xarray based):
@@ -482,47 +482,28 @@ Notebook tips
 
 ## Intercomparison of Saved Artifacts
 
-This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons.
-
-Expected structure per model (created by the main runner, updated naming):
-
-- output/modelA/
-  - `maps/*_<range>.npz`, `maps/*_pl_<range>.npz`
-  - `histograms/*_<range>_latbands_combined.npz`, `histograms/*_pl*_ <range> _latbands_combined.npz`
-  - `wd_kde/*_<range>_latbands_kde_combined.npz`, `wd_kde/*_pl*_ <range> _latbands_kde_combined.npz`
-    - `energy_spectra/*.npz`, `energy_spectra/lsd_2d_metrics_per_time_*.csv`, `energy_spectra/lsd_3d_metrics_per_time_*.csv`, `energy_spectra/lsd_2d_metrics_averaged_*.csv`, `energy_spectra/lsd_metrics_averaged_*.csv`
-    - `deterministic/metrics_averaged_*.csv`, `deterministic/metrics_standardized_averaged_*.csv`, `deterministic/metrics_init_time_*.csv`
-    - `ets/ets_metrics_averaged_*.csv`, `ets/ets_metrics_init_time_*.csv`
-    - `vertical_profiles/*_pl_nmae_<range>.png`, `vertical_profiles/*_pl_nmae_combined_<range>.npz`, `vertical_profiles/vertical_profiles_nmae_averaged_*.csv`, `vertical_profiles/vertical_profiles_nmae_init_time_*.csv`
-    - probabilistic/
-      - `crps_summary_averaged_*.csv`, `crps_summary_init_time_*.csv`, `spread_skill_ratio_*.csv`, `crps_ensemble_*.csv`
-    - `{var}_pit_hist_*.npz`, `{var}_pit_*.nc`, `{var}_crps_*.nc`
-    - `probabilistic_metrics_temporal_*.nc`, `probabilistic_metrics_spatial_*.nc`
-    - `crps_map_{var}_*.png`, `crps_map_wbx_{var}_*.png` (if plotting enabled)
+This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons. A separate config is available for intercomparison.
 
 Run the intercomparison:
 
 ```bash
-python -m swissclim_evaluations.intercompare output/modelA output/modelB \
-  --labels ModelA ModelB \
-  --out output/intercomparison \
-  --modules spectra hist kde maps metrics prob vprof \
-  --max-map-panels 4
+python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
 ```
 
 Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
 
 What gets combined:
 
-- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_2d_metrics_combined.csv`.
+- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_2d_metrics_combined.csv` and `lsd_bands_2d_metrics_averaged_combined.csv` when available.
 - histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
 - wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
 - maps: panel maps with DS in the first column and each model as subsequent columns.
 - deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
 - ets: merged CSV (`ets_metrics_combined.csv`).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
-  - Additionally merges WBX spatial and temporal aggregates (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
-- vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/{var}_pl_nmae_combined_compare.png` — plus per-variable summary tables (`{var}_pl_nmae_combined_summary.csv`) listing mean metric by band, hemisphere, and model.
+  - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+  - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
+- vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/vprof_nmae_<variable>_multi_combined_compare.png` — plus per-variable summary tables (`vprof_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model. Legacy `*_pl_nmae_combined*` files are still supported as input.
 
 ## Development
 
