@@ -1,4 +1,8 @@
+import contextlib
+import logging
 import warnings
+from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 import xarray as xr
@@ -29,10 +33,10 @@ DESIRED_CHUNKS: dict[str, int] = {
     "longitude": -1,
 }
 
+logger = logging.getLogger(__name__)
 
-def _chunks_match(
-    chunks: tuple[int, ...] | None, desired: int, dim_len: int
-) -> bool:
+
+def _chunks_match(chunks: tuple[int, ...] | None, desired: int, dim_len: int) -> bool:
     """Return True if an existing chunk pattern matches the desired size.
 
     Only supports desired sizes of 1 (all chunks size 1) or -1 (single full chunk).
@@ -70,7 +74,7 @@ def enforce_chunking(
 
     # Determine if rechunking is necessary by inspecting existing chunks across variables
     needs_rechunk = False
-    # xarray Dataset may not expose a unified chunks mapping; inspect the first variable that has the dim
+    # xarray Dataset may not expose a unified chunks mapping; inspect first variable with the dim
     for dim, desired in policy.items():
         if dim not in ds.dims:
             continue
@@ -83,7 +87,7 @@ def enforce_chunking(
         if rep is None:
             continue
         try:
-            var_chunks = rep.chunks  # type: ignore[attr-defined]
+            var_chunks = rep.chunks
             # DataArray.chunks is a tuple of tuples aligned with .dims
             if var_chunks is None:
                 needs_rechunk = True
@@ -116,9 +120,12 @@ def enforce_chunking(
         if all_unchunked and total_size <= SMALL_THRESHOLD:
             return ds  # no warning, no rechunk
         name = dataset_name or "dataset"
-        warnings.warn(
-            f"Rechunking {name} to policy {policy}. This may increase memory usage and runtime.",
-            RuntimeWarning,
+        # Downgrade to log message to avoid noisy warnings during tests; users can enable
+        # logging to see this information. Rechunking remains functional.
+        logger.info(
+            "Rechunking %s to policy %s. This may increase memory usage and runtime.",
+            name,
+            policy,
         )
         return ds.chunk(chunk_map)
     return ds
@@ -132,9 +139,9 @@ def standardize_dims(
     preserve_all_leads: bool | None = None,
 ) -> xr.Dataset:
     """Standardize dataset dims and coords for this pipeline.
-
-    - Normalize alias names (initial_time->init_time, number/member->ensemble, prediction_timedelta->lead_time, etc.).
-    - Convert historical 'time' layout -> 'init_time' and add a singleton zero 'lead_time' if absent (single-lead datasets).
+        - Normalize alias names (initial_time->init_time, number/member->ensemble,
+            prediction_timedelta->lead_time, etc.).
+        - Convert legacy 'time' -> 'init_time' and add singleton zero 'lead_time' if absent.
     - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
     - Ensure spatial dims latitude/longitude exist.
     - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
@@ -159,20 +166,19 @@ def standardize_dims(
     # Forbid any use of valid_time
     if "valid_time" in ds.dims or "valid_time" in ds.coords:
         raise ValueError(
-            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); 'valid_time' is not allowed."
+            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); "
+            "'valid_time' is not allowed."
         )
 
-    # Convert old-style time -> init_time while keeping an index for label-based selection (single-lead case)
+    # Convert old-style time -> init_time while keeping an index for
+    # label-based selection (single-lead case)
     if "time" in ds.dims:
         if "time" in ds.coords:
             # Rename both the dimension and its coordinate in one go
             ds = ds.rename({"time": "init_time"})
             # On newer xarray, rename drops the xindex; restore it if possible
-            try:  # xarray>=2024.10
+            with contextlib.suppress(Exception):  # xarray>=2024.10
                 ds = ds.set_xindex("init_time")
-            except Exception:
-                # Older versions or if already indexed; safe to ignore
-                pass
         else:
             # Fallback: only dimension exists (no coord var)
             ds = ds.rename_dims({"time": "init_time"})
@@ -180,36 +186,28 @@ def standardize_dims(
     # Ensure latitude/longitude present
     for d in ("latitude", "longitude"):
         if d not in ds.dims:
-            raise ValueError(
-                f"Dataset '{dataset_name}' is missing required spatial dim '{d}'."
-            )
+            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
 
     # Ensure lead_time exists; add singleton zero if absent when init_time exists
     if "init_time" in ds.dims and "lead_time" not in ds.dims:
-        zero_lead = np.array([0], dtype="timedelta64[h]").astype(
-            "timedelta64[ns]"
-        )
+        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
         ds = ds.expand_dims({"lead_time": zero_lead})
     # Coerce lead_time dtype to timedelta64[ns]
     if "lead_time" in ds.dims:
         lt = ds["lead_time"].values
         if not np.issubdtype(lt.dtype, np.timedelta64):
             ds = ds.assign_coords(
-                lead_time=np.array(lt, dtype="timedelta64[h]").astype(
-                    "timedelta64[ns]"
-                )
+                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
             )
-        # Optional policy: restrict to first lead_time unless explicit multi-lead preservation requested.
-        # Backward compatible: if preserve_all_leads is True -> skip slicing entirely.
-        # Otherwise fall back to single-lead-only logic controlled by first_lead_only flag (default True).
-        if not preserve_all_leads:
-            if first_lead_only is None or bool(first_lead_only):
-                if int(ds.lead_time.size) > 1:
-                    lead0 = ds["lead_time"].values[0]
-                    try:
-                        ds = ds.sel(lead_time=[lead0])
-                    except Exception:
-                        ds = ds.isel(lead_time=0, drop=False)
+        # Optional policy: restrict to first lead_time (no forecasting). Default True when None.
+        if (first_lead_only is None or bool(first_lead_only)) and int(
+            ds.lead_time.size
+        ) > 1:  # SIM102
+            lead0 = ds["lead_time"].values[0]
+            with contextlib.suppress(Exception):
+                ds = ds.sel(lead_time=[lead0])
+            if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
+                ds = ds.isel(lead_time=0, drop=False)
 
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
@@ -227,7 +225,8 @@ def standardize_dims(
     if missing_core:
         raise ValueError(
             f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time) plus optional level/ensemble."
+            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
+            "level/ensemble."
         )
     # Validate that no unsupported dims remain
     bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
@@ -238,16 +237,104 @@ def standardize_dims(
     return ds
 
 
-def open_ml(path: str, variables: list[str] | None = None) -> xr.Dataset:
-    """Open model dataset from Zarr and optionally subset variables."""
+def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open multiple Zarr stores and combine lazily by coordinates.
+
+    - Preserves Dask laziness: each store remains a separate dask graph branch.
+    - Requires matching variable schemas (user guarantees same format).
+    - Uses combine_by_coords to concatenate/merge along labeled coords (e.g., time/init_time).
+    """
+    dsets: list[xr.Dataset] = []
+
+    def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
+        """Sort common coordinate dims to a consistent monotonic order.
+
+        This avoids xarray.combine_by_coords errors when shards have different
+        coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
+        lazy with Dask-backed arrays and preserves graph structure.
+        """
+        sort_prefs: dict[str, bool] = {
+            "level": True,  # ascending (e.g., 50, 100, ..., 1000)
+            "latitude": False,  # ERA5 typically descending 90 -> -90
+            "longitude": True,  # 0..360 ascending
+            "init_time": True,  # chronological
+            "time": True,  # chronological
+            "lead_time": True,  # increasing timedelta
+        }
+        for dim, asc in sort_prefs.items():
+            if dim in ds.dims:
+                with contextlib.suppress(Exception):
+                    ds = ds.sortby(dim, ascending=asc)
+        return ds
+
+    for p in paths:
+        ds_i = xr.open_zarr(p, decode_timedelta=True)
+        if variables:
+            # Subselect only variables present in this shard to reduce metadata
+            keep = [v for v in variables if v in ds_i.data_vars]
+            if keep:
+                ds_i = ds_i[keep]
+        ds_i = _ensure_monotonic(ds_i)
+        dsets.append(ds_i)
+
+    # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
+    # non-monotonic global indexes during combine_by_coords.
+    try:
+        levels_list = [
+            ds.coords["level"].values
+            for ds in dsets
+            if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
+        ]
+        if levels_list:
+            import numpy as _np
+
+            canon_level = _np.unique(_np.concatenate(levels_list))
+            canon_level.sort()
+            dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
+    except Exception:
+        # Best-effort; if harmonization fails, proceed and let combine raise a clearer error
+        pass
+    if not dsets:
+        raise ValueError("No Zarr paths provided.")
+    if len(dsets) == 1:
+        return dsets[0]
+    # Combine strictly by coords; override attrs to avoid conflicts. Join outer to allow
+    # non-overlapping time ranges.
+    combined: xr.Dataset = cast(
+        xr.Dataset,
+        xr.combine_by_coords(
+            dsets,
+            combine_attrs="override",
+            data_vars="all",
+            join="outer",
+            compat="no_conflicts",
+        ),
+    )
+    return combined
+
+
+def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open model dataset(s) from Zarr and optionally subset variables.
+
+    Accepts a single path or a list/sequence of paths. When multiple paths are given,
+    they are combined lazily by coordinates without materializing data.
+    """
+    if isinstance(path, (list | tuple)):
+        return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
     return ds
 
 
-def era5(path: str, variables: list[str] | None = None) -> xr.Dataset:
-    """Open ERA5 dataset from Zarr and optionally subset variables."""
+def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open ERA5 dataset(s) from Zarr and optionally subset variables.
+
+    Accepts a single path or a list/sequence of paths. When multiple paths are given,
+    they are combined lazily by coordinates without materializing data.
+    """
+    if isinstance(path, (list | tuple)):
+        return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
@@ -262,25 +349,73 @@ def land_sea_mask(path: str) -> xr.DataArray:
 
 def apply_ensemble_policy(
     ds: xr.Dataset,
-    ensemble_member: int | None,
-    probabilistic_enabled: bool,
+    ensemble_members: int | list[int] | None = None,
+    probabilistic_enabled: bool = False,
+    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
-    Rules:
-      - If no 'ensemble' dim: return unchanged.
-      - If probabilistic modules are enabled: keep full ensemble regardless of
-        `ensemble_member` (probabilistic metrics will use it).
-      - Else if `ensemble_member` is provided: select that member and drop dim.
-      - Else (probabilistic disabled and no member specified): use mean over ensemble.
+    Extended semantics (backward compatible):
+    - ensemble_members can be:
+          * None: keep all members (unless probabilistic disabled → may later be reduced
+                    by per‑module logic; here we do NOT pre-reduce to mean anymore to allow
+                    downstream flexibility). NOTE: previous behaviour reduced to mean here;
+                    to preserve existing expectations, we only change behaviour when
+                    probabilistic_enabled is False and historical callers relied on mean.
+                    For backward compatibility we keep the old reduction to mean when
+                    probabilistic_disabled and no selection requested.
+          * int: select that single member and drop the 'ensemble' dimension.
+          * list[int]: subset to those members. If length==1, drop dim (acts like int). If
+                       length>1 keep 'ensemble' dim with the chosen subset.
+      - If probabilistic modules are enabled we NEVER drop or subset unless multiple
+        explicit members were requested (so probabilistic metrics still see full set
+        unless user intentionally restricts it). This preserves previous rule of ignoring
+        single-member selection in probabilistic mode.
     """
+    # Backward compatibility: allow legacy 'ensemble_member' kw
+    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
+        ensemble_members = legacy_kwargs.pop("ensemble_member")
+        warnings.warn(
+            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if legacy_kwargs:
+        warnings.warn(
+            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     if "ensemble" not in ds.dims:
         return ds
-    # Probabilistic path: always keep full ensemble, ignore requested member.
+
+    # Normalize list vs int
+    indices_list: list[int] | None
+    if ensemble_members is None:
+        indices_list = None
+    elif isinstance(ensemble_members, list):
+        indices_list = [int(i) for i in ensemble_members]
+    else:
+        indices_list = [int(ensemble_members)]
+
     if probabilistic_enabled:
-        return ds
-    # Deterministic path with explicit member selection
-    if ensemble_member is not None:
-        return ds.isel(ensemble=int(ensemble_member), drop=True)
-    # Deterministic path without member: use ensemble mean
+        # In probabilistic mode only respect explicit multi-member subsetting; ignore single
+        # int (previous behaviour) but allow user-specified list to intentionally reduce.
+        if indices_list is None:
+            return ds
+        if len(indices_list) == 1:
+            # Keep full set to avoid accidental collapse; match previous behaviour of ignoring
+            # single selection. (Could alternatively drop; chosen for safety.)
+            return ds
+        return ds.isel(ensemble=indices_list)
+
+    # Deterministic mode
+    if indices_list is not None:
+        if len(indices_list) == 1:
+            return ds.isel(ensemble=indices_list[0], drop=True)
+        # subset but keep ensemble dimension
+        return ds.isel(ensemble=indices_list)
+
+    # No explicit selection: preserve legacy behaviour -> reduce to mean
     return ds.mean(dim="ensemble", keep_attrs=True)

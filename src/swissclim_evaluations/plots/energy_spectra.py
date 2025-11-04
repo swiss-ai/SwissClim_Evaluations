@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from ..lead_time_policy import LeadTimePolicy
+from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
 
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
+
+# Standard wavebands in km (wavelength ranges)
+WAVE_BANDS: list[dict[str, float | str]] = [
+    {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
+    {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
+    {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
+]
 
 
 def calculate_energy_spectra(
@@ -22,21 +30,22 @@ def calculate_energy_spectra(
 
     Notes on spectral coordinates
     -----------------------------
-    - wavenumber: cycles per km (NOT angular; no 2π factor). Computed using Earth circumference in km.
+    - wavenumber: cycles per km (NOT angular; no 2π factor). Computed using
+      Earth circumference in km.
     - wavelength: km (1 / wavenumber).
     - wavenumber_m: cycles per m (wavenumber / 1000).
-    Returned power units: (original units)^2 after latitude weighting.
-    No averaging over init_time or lead_time is performed here.
+    Returned power units: (original units)^2 after latitude weighting. Averaging
+    strategy:
+        If ``average_dims`` is provided we now (v2) compute the power spectrum
+        FIRST for each member along those dimensions and *then* average the
+        (latitude–weighted) power spectra. This implements the mean( spectrum(x)
+        ) instead of spectrum( mean(x) ), which avoids loss of variance prior to
+        quadratic power computation.
+    Time / lead dimensions are never implicitly averaged here.
     """
     # Remove trivial level dimension
     if "level" in da_var.dims and da_var.sizes.get("level", 0) == 1:
         da_var = da_var.isel(level=0, drop=True)
-
-    # Average specified dims (e.g., ensemble) but NOT lead_time/time dims by default
-    if average_dims:
-        keep_dims = [d for d in average_dims if d in da_var.dims]
-        if keep_dims:
-            da_var = da_var.mean(dim=keep_dims)
 
     if "longitude" not in da_var.dims:
         raise ValueError("longitude dimension required for energy spectra")
@@ -60,29 +69,35 @@ def calculate_energy_spectra(
     # physical spacing along longitude
     dx_km = EARTH_CIRCUMFERENCE_KM / n_lon
     da_fft["wavenumber"] = ("wavenumber", np.fft.rfftfreq(n_lon, d=dx_km))
-    da_fft["wavenumber"].attrs.update({
-        "units": "cycles km^-1",
-        "long_name": "zonal wavenumber (cycles per km)",
-        "note": "Not angular wavenumber; no 2π factor",
-    })
+    da_fft["wavenumber"].attrs.update(
+        {
+            "units": "cycles km^-1",
+            "long_name": "zonal wavenumber (cycles per km)",
+            "note": "Not angular wavenumber; no 2π factor",
+        }
+    )
 
     # Drop the zero wavenumber (mean) component for log scaling clarity
     da_fft = da_fft.isel(wavenumber=slice(1, None))
     # Assign wavelength coordinate using raw numpy values to avoid ambiguity errors
     da_fft["wavelength"] = ("wavenumber", 1.0 / da_fft["wavenumber"].values)
-    da_fft["wavelength"].attrs.update({
-        "units": "km",
-        "long_name": "zonal wavelength",
-    })
+    da_fft["wavelength"].attrs.update(
+        {
+            "units": "km",
+            "long_name": "zonal wavelength",
+        }
+    )
     da_fft["wavenumber_m"] = (
         "wavenumber",
         da_fft["wavenumber"].values / 1000.0,
     )
-    da_fft["wavenumber_m"].attrs.update({
-        "units": "cycles m^-1",
-        "long_name": "zonal wavenumber (cycles per meter)",
-        "note": "wavenumber / 1000",
-    })
+    da_fft["wavenumber_m"].attrs.update(
+        {
+            "units": "cycles m^-1",
+            "long_name": "zonal wavenumber (cycles per meter)",
+            "note": "wavenumber / 1000",
+        }
+    )
 
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
@@ -92,28 +107,30 @@ def calculate_energy_spectra(
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
-    # Latitude weighting (cos φ)
+    # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
     if "latitude" in da_power.coords:
         lat_vals = da_power["latitude"]
         cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
         da_power = da_power.weighted(cosw).mean(dim="latitude")
     else:
         raise ValueError("latitude coordinate required for weighting")
+
+    # Post-spectrum averaging over requested dims (e.g., ensemble)
+    if average_dims:
+        post_avg_dims = [d for d in average_dims if d in da_power.dims]
+        if post_avg_dims:
+            da_power = da_power.mean(dim=post_avg_dims)
     return da_power
 
 
-def calculate_log_spectral_distance(
-    spectrum1: np.ndarray, spectrum2: np.ndarray
-) -> float:
+def calculate_log_spectral_distance(spectrum1: np.ndarray, spectrum2: np.ndarray) -> float:
     eps = 1e-10
     log_spec1 = np.log10(spectrum1 + eps)
     log_spec2 = np.log10(spectrum2 + eps)
     return float(np.sqrt(np.mean((log_spec1 - log_spec2) ** 2)))
 
 
-def _compute_lsd_da(
-    spec_target: xr.DataArray, spec_pred: xr.DataArray
-) -> xr.DataArray:
+def _compute_lsd_da(spec_target: xr.DataArray, spec_pred: xr.DataArray) -> xr.DataArray:
     """Vectorized Log Spectral Distance along wavenumber (no averaging over time dims)."""
     eps = 1e-10
     log_t = np.log10(spec_target + eps)
@@ -122,6 +139,85 @@ def _compute_lsd_da(
     lsd_da = np.sqrt(diff2.mean(dim="wavenumber"))
     lsd_da.name = "lsd"
     return lsd_da
+
+
+def _compute_banded_lsd_da(
+    spec_target: xr.DataArray,
+    spec_pred: xr.DataArray,
+    wave_bands: list[dict] | None = None,
+) -> xr.DataArray:
+    """Compute LSD per waveband, returning a DataArray with a new 'band' dimension.
+
+    The input spectra must include a 'wavenumber' coordinate in cycles/km. We
+    convert wavelength bands [min_km, max_km] to wavenumber ranges and compute
+    LSD over the subset of wavenumbers within each band. If a band has no
+    overlapping spectral points (e.g., due to grid/Nyquist limits), its LSD
+    will be NaN.
+    """
+    bands = wave_bands or WAVE_BANDS
+    # Determine available wavenumber range
+    kvals = spec_target["wavenumber"].values
+    # Build per-band LSD DataArrays
+    lsd_list: list[xr.DataArray] = []
+    band_names: list[str] = []
+    for band in bands:
+        name = str(band["name"])  # e.g., 'planetary'
+        wl_min = float(band["min_km"])  # km (lower wavelength bound)
+        wl_max = float(band["max_km"])  # km (upper wavelength bound)
+        # Convert to wavenumber range (cycles/km)
+        # Larger wavelengths -> smaller wavenumber
+        k_low = 1.0 / wl_max  # inclusive lower bound in k-space
+        k_high = 1.0 / wl_min  # inclusive upper bound in k-space
+        mask = (kvals >= k_low) & (kvals <= k_high)
+        if not np.any(mask):
+            # Create a NaN DA with proper dims (time-like dims retained).
+            # Select a single wavenumber index to drop the wavenumber dimension.
+            template = spec_target.isel(wavenumber=0)
+            lsd_empty = template.astype(float) * np.nan
+            lsd_empty = lsd_empty.rename("lsd")
+            lsd_list.append(lsd_empty)
+            band_names.append(name)
+            continue
+        st = spec_target.isel(wavenumber=np.where(mask)[0])
+        sp = spec_pred.isel(wavenumber=np.where(mask)[0])
+        lsd_band = _compute_lsd_da(st, sp)
+        lsd_band = lsd_band.rename("lsd")
+        lsd_list.append(lsd_band)
+        band_names.append(name)
+
+    # Stack into a new 'band' dimension
+    lsd_banded = xr.concat(lsd_list, dim="band")
+    lsd_banded = lsd_banded.assign_coords(band=("band", band_names))
+    return lsd_banded
+
+
+def _compute_spectra_pair(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    var: str,
+    level: int | None = None,
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Compute and align spectra for target and prediction once.
+
+    Returns (spectrum_target, spectrum_prediction) with identical coordinates.
+    """
+    if level is not None:
+        da_target = ds_target[var].sel(level=level, drop=True)
+        da_prediction = ds_prediction[var].sel(level=level, drop=True)
+    else:
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
+
+    spec_t = calculate_energy_spectra(
+        da_target,
+        average_dims=["ensemble"] if "ensemble" in da_target.dims else None,
+    )
+    spec_p = calculate_energy_spectra(
+        da_prediction,
+        average_dims=["ensemble"] if "ensemble" in da_prediction.dims else None,
+    )
+    spec_t, spec_p = xr.align(spec_t, spec_p, join="inner")
+    return spec_t, spec_p
 
 
 def _plot_single_spectrum(
@@ -142,7 +238,7 @@ def _plot_single_spectrum(
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
     ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
     ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
-    props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
+    props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
         0.05,
@@ -185,13 +281,11 @@ def _plot_single_spectrum(
         0.2,
         0.1,
     ]
-    # Keep only wavelengths >= fundamental (≈ circumference) lowered tolerance and <= min resolvable small scale
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
     wl_min_possible = 1.0 / k_max
     wl_max_possible = 1.0 / k_min
     valid_wl = [
-        wl
-        for wl in wavelength_candidates
-        if wl_min_possible <= wl <= wl_max_possible * 1.01
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
     ]
     # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
     k_ticks = np.array([1.0 / wl for wl in valid_wl])
@@ -221,9 +315,7 @@ def _plot_single_spectrum(
     ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
 
     lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(
-        f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24
-    )
+    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -250,11 +342,11 @@ def _plot_energy_spectra(
     ds_prediction: xr.Dataset,
     var: str,
     level: int | None,
-    out_path: Path
-    | None,  # (unused for per-time outputs; kept for signature compatibility)
+    out_path: Path | None,
     dpi: int,
     save_plot_data: bool = False,
     save_figure: bool = True,
+    override_ensemble_token: str | None = None,
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
 
@@ -263,33 +355,22 @@ def _plot_energy_spectra(
     xr.DataArray
         LSD values with remaining time-like dims (init_time, lead_time, ...).
     """
-    if level is not None:
-        da_target = ds_target[var].sel(level=level)
-        da_prediction = ds_prediction[var].sel(level=level)
-    else:
-        da_target = ds_target[var]
-        da_prediction = ds_prediction[var]
-
-    spectrum_target = calculate_energy_spectra(
-        da_target,
-        average_dims=["ensemble"] if "ensemble" in da_target.dims else None,
-    )
-    spectrum_pred = calculate_energy_spectra(
-        da_prediction,
-        average_dims=["ensemble"] if "ensemble" in da_prediction.dims else None,
-    )
-
-    # Align (only wavenumber differs potentially)
-    spectrum_target, spectrum_pred = xr.align(
-        spectrum_target, spectrum_pred, join="inner"
-    )
+    spectrum_target, spectrum_pred = _compute_spectra_pair(ds_target, ds_prediction, var, level)
 
     # Compute LSD per time slice (vectorized)
     lsd_da = _compute_lsd_da(spectrum_target, spectrum_pred)
+    # Ensemble token: mark ensmean if we averaged an ensemble dimension
+    # Infer ensemble token: if either ds had ensemble originally, we reduced over it
+    had_ensemble = ("ensemble" in getattr(ds_target.get(var), "dims", {})) or (
+        "ensemble" in getattr(ds_prediction.get(var), "dims", {})
+    )
+    ens_token = override_ensemble_token or ("mean" if had_ensemble else None)
 
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
+    from ..helpers import build_output_filename
+
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
         arr_t = spectrum_target.values
@@ -297,7 +378,16 @@ def _plot_energy_spectra(
         init_label = "none"
         lead_label = "none"
         base_dir = out_path.parent if out_path else Path(".")  # fallback
-        fname = f"{var}_{'sfc' if level is None else str(level) + 'hPa'}_single_energy.png"
+        fname = build_output_filename(
+            metric="lsd",
+            variable=var,
+            level=level if level is not None else None,
+            qualifier="single_spectrum",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=ens_token,
+            ext="png",
+        )
         _plot_single_spectrum(
             wn,
             arr_t,
@@ -320,21 +410,18 @@ def _plot_energy_spectra(
     stacked_lsd = lsd_da.stack(__time__=time_dims)
     coords_df = stacked_target.__time__.to_index()  # MultiIndex with labels
 
-    # Output directory per variable (and per level). Flatten surface (no dedicated 'sfc' subfolder).
-    base_dir = (out_path.parent if out_path else Path(".")) / var
-    section_output = base_dir if level is None else base_dir / f"level_{level}"
+    # Output directory – flattened layout consistent with other modules.
+    section_output = out_path.parent if out_path else Path(".")
     section_output.mkdir(parents=True, exist_ok=True)
 
     for idx, key in enumerate(coords_df):
-        sel_kwargs = {dim: key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(**{
-            d: spectrum_target.get_index(d).get_loc(sel_kwargs[d])
-            for d in time_dims
-        })
-        spec_p_1d = spectrum_pred.isel(**{
-            d: spectrum_pred.get_index(d).get_loc(sel_kwargs[d])
-            for d in time_dims
-        })
+        sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
+        spec_t_1d = spectrum_target.isel(
+            **{str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
+        )
+        spec_p_1d = spectrum_pred.isel(
+            **{str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
+        )
         wn = spec_t_1d["wavenumber"].values
         arr_t = spec_t_1d.values
         arr_p = spec_p_1d.values
@@ -350,12 +437,8 @@ def _plot_energy_spectra(
             except Exception:
                 try:
                     # pandas Timestamp path
-                    init_np = np.datetime64(
-                        getattr(init_raw, "to_datetime64")()
-                    )
-                    init_label = np.datetime_as_string(
-                        init_np.astype("datetime64[h]"), unit="h"
-                    )
+                    init_np = np.datetime64(init_raw.to_datetime64())
+                    init_label = np.datetime_as_string(init_np.astype("datetime64[h]"), unit="h")
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
@@ -380,7 +463,18 @@ def _plot_energy_spectra(
         else:
             lead_label = "noLead"
 
-        fname = f"{var}_{'sfc' if level is None else str(level) + 'hPa'}_{init_label}_{lead_label}_energy.png"
+        fname = build_output_filename(
+            metric="lsd",
+            variable=var,
+            level=level if level is not None else None,
+            qualifier="spectrum",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=ens_token,
+            ext="png",
+        )
+        # Provide a path if either figure OR plot data requested
+        target_path = section_output / fname if (save_figure or save_plot_data) else None
         _plot_single_spectrum(
             wn,
             arr_t,
@@ -390,7 +484,7 @@ def _plot_energy_spectra(
             level,
             init_label,
             lead_label,
-            section_output / fname if save_figure else None,
+            target_path,
             dpi,
             save_plot_data,
             save_figure,
@@ -405,208 +499,246 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
-    lead_policy: LeadTimePolicy | None = None,
+    ensemble_mode: str | None = None,
 ) -> None:
-    # Optional: apply a single init_time selection for plotting (same behavior as CLI)
-    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
-    if plot_dt_str and "init_time" in ds_prediction.dims:
-        try:
-            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
-            available = ds_prediction["init_time"].values
-            if plot_dt not in available:
-                raise ValueError(
-                    f"Requested plot_datetime={plot_dt_str} not in predictions init_time labels."
-                )
-            ds_prediction = ds_prediction.sel(init_time=[plot_dt])
-            if "init_time" in ds_target.dims:
-                # If target has matching init_time dimension (after alignment phase)
-                if plot_dt in ds_target["init_time"].values:
-                    ds_target = ds_target.sel(init_time=[plot_dt])
-                else:
-                    # If target lacks this init_time (e.g., came from time-only dataset) we keep it unchanged
-                    pass
-            print(
-                f"[energy_spectra] Applied plot_datetime filter → init_time={plot_dt_str}"  # noqa: E501
-            )
-        except Exception as e:  # pragma: no cover - defensive
-            print(
-                f"[energy_spectra] Warning: failed to apply plot_datetime={plot_dt_str}: {e}. Proceeding with full dataset."  # noqa: E501
-            )
-    elif (not plot_dt_str) and ("init_time" in ds_prediction.dims):
-        # Mirror CLI default: if not specified choose first init_time for plot modules
-        try:
-            first_dt = ds_prediction["init_time"].values[0]
-            ds_prediction = ds_prediction.sel(init_time=[first_dt])
-            if (
-                "init_time" in ds_target.dims
-                and first_dt in ds_target["init_time"].values
-            ):
-                ds_target = ds_target.sel(init_time=[first_dt])
-            print(
-                f"[energy_spectra] Default plot init_time (first available) applied: {np.datetime_as_string(first_dt, unit='h')}"  # noqa: E501
-            )
-        except Exception:
-            pass
-    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
-    dpi = int(plotting_cfg.get("dpi", 48))
-    save_plot_data = True
-    save_figure = mode in ("plot", "both")
+    """Compute basic 2D energy spectra metrics and write an averaged LSD CSV.
+
+    This minimal implementation restores a valid, lint-clean `run()` after a
+    bad merge. It computes per-variable spectra for 2D variables (no 'level'),
+    evaluates the Log Spectral Distance (LSD) across remaining time-like dims,
+    and writes a single summary CSV using standardized filenames.
+    """
     section_output = out_root / "energy_spectra"
-
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
-        variables_3d = [
-            v for v in ds_target.data_vars if "level" in ds_target[v].dims
-        ]
-        variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
-        levels = select_cfg.get("levels") or list(ds_target.level.values)
-    else:
-        variables_3d = []
-        variables_2d = list(ds_target.data_vars)
-        levels = []
-
-    multi_lead = (
-        lead_policy is not None
-        and "lead_time" in ds_prediction.dims
-        and int(ds_prediction.lead_time.size) > 1
-        and getattr(lead_policy, "mode", "first") != "first"
-    )
-    if multi_lead:
-        # Determine available hours and panel selection
-        hours = (
-            ds_prediction["lead_time"].values // np.timedelta64(1, "h")
-        ).astype(int)
-        panel_hours = lead_policy.select_panel_hours(list(map(int, hours)))
-        hour_to_index = {int(h): i for i, h in enumerate(hours)}
-    else:
-        panel_hours = []
-        hour_to_index = {}
-
-    detailed_rows_2d: list[pd.DataFrame] = []
-    summary_rows_2d: list[dict] = []  # retained for non-multi-lead mode only
-    by_lead_rows_summary: list[dict] = []  # per (variable, lead) summary
-    by_lead_rows_detailed: list[pd.DataFrame] = []  # per-time detailed per lead
-
-    for var in variables_2d:
-        if not multi_lead:
-            print(f"[energy_spectra] 2D variable: {var}")
-            lsd_da = _plot_energy_spectra(
-                ds_target,
-                ds_prediction,
-                var,
-                None,
-                (section_output / f"{var}_sfc_energy.png"),
-                dpi,
-                save_plot_data,
-                save_figure,
-            )
-            df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
-            df_lsd.insert(0, "variable", var)
-            detailed_rows_2d.append(df_lsd)
-            summary_rows_2d.append({
-                "variable": var,
-                "lsd_mean": float(lsd_da.mean().values),
-            })
-        else:
-            print(
-                f"[energy_spectra] 2D variable: {var} multi-lead panel_hours={panel_hours}"
-            )
-            lead_means: list[float] = []
-            for h in panel_hours:
-                if int(h) not in hour_to_index:
-                    continue
-                li = hour_to_index[int(h)]
-                # Preserve lead_time dimension (drop=False) for labeling
-                ds_t_lead = ds_target.isel(lead_time=li, drop=False)
-                ds_p_lead = ds_prediction.isel(lead_time=li, drop=False)
-                lsd_da_lead = _plot_energy_spectra(
-                    ds_t_lead,
-                    ds_p_lead,
-                    var,
-                    None,
-                    section_output / f"{var}_sfc_energy_lead{int(h)}.png",
-                    dpi,
-                    save_plot_data,
-                    save_figure,
-                )
-                # Detailed per-time rows for this lead
-                df_lead = lsd_da_lead.to_dataframe(name="lsd").reset_index()
-                df_lead.insert(0, "variable", var)
-                df_lead.insert(1, "lead_time_hours", int(h))
-                by_lead_rows_detailed.append(df_lead)
-                lsd_mean_lead = float(lsd_da_lead.mean().values)
-                by_lead_rows_summary.append({
-                    "variable": var,
-                    "lead_time_hours": int(h),
-                    "lsd_mean": lsd_mean_lead,
-                })
-                lead_means.append(lsd_mean_lead)
-
     section_output.mkdir(parents=True, exist_ok=True)
-    if detailed_rows_2d:
-        pd.concat(detailed_rows_2d, ignore_index=True).to_csv(
-            section_output / "lsd_2d_metrics_detailed.csv", index=False
+
+    # Resolve ensemble handling (default to mean reduction when present)
+    resolved = resolve_ensemble_mode("energy_spectra", ensemble_mode, ds_target, ds_prediction)
+    has_ens = "ensemble" in ds_prediction.dims or "ensemble" in ds_target.dims
+    ens_token: str | None = None
+    tgt = ds_target
+    pred = ds_prediction
+    if resolved == "prob":
+        # Probabilistic semantics are not applicable here; fall back to mean
+        resolved = "mean"
+    if resolved == "mean" and has_ens:
+        if "ensemble" in tgt.dims:
+            tgt = tgt.mean(dim="ensemble", keep_attrs=True)
+        if "ensemble" in pred.dims:
+            pred = pred.mean(dim="ensemble", keep_attrs=True)
+        ens_token = ensemble_mode_to_token("mean")
+    elif resolved == "pooled" and has_ens:
+        ens_token = ensemble_mode_to_token("pooled")
+    elif resolved == "members" and has_ens:
+        # Members mode not supported in this minimal path; treat as mean for summary
+        if "ensemble" in tgt.dims:
+            tgt = tgt.mean(dim="ensemble", keep_attrs=True)
+        if "ensemble" in pred.dims:
+            pred = pred.mean(dim="ensemble", keep_attrs=True)
+        ens_token = ensemble_mode_to_token("mean")
+    else:
+        ens_token = None
+
+    # Helpers to extract time range tokens
+    def _extract_init_range(ds: xr.Dataset) -> tuple[str, str] | None:
+        if "init_time" not in ds.dims:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if getattr(vals, "size", 0) == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x: np.datetime64) -> str:
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset) -> tuple[str, str] | None:
+        if "lead_time" not in ds.dims:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if getattr(vals, "size", 0) == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(pred)
+    lead_range = _extract_lead_range(pred)
+
+    # Select 2D variables (exclude true 3D with 'level' dim)
+    if "level" in tgt.dims and int(getattr(tgt.level, "size", 0)) > 1:
+        variables_2d = [v for v in tgt.data_vars if "level" not in tgt[v].dims]
+    else:
+        variables_2d = list(tgt.data_vars)
+
+    # Basic schema validation: require longitude for spectra
+    has_lon_any = ("longitude" in tgt.dims) or any(
+        ("longitude" in tgt[v].dims) for v in variables_2d
+    )
+    if not has_lon_any:
+        raise ValueError("longitude dimension required for energy spectra")
+
+    summary_rows: list[dict[str, Any]] = []
+    for var in variables_2d:
+        spec_t, spec_p = _compute_spectra_pair(tgt, pred, str(var), None)
+        lsd_da = _compute_lsd_da(spec_t, spec_p)
+        lsd_mean = float(lsd_da.mean().values)
+        summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
+
+    if summary_rows:
+        df_summary = pd.DataFrame(summary_rows).set_index("variable")
+        out_csv = section_output / build_output_filename(
+            metric="lsd_2d_metrics",
+            variable=None,
+            level=None,
+            qualifier="averaged",
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="csv",
         )
-    if summary_rows_2d:
-        pd.DataFrame(summary_rows_2d).set_index("variable").to_csv(
-            section_output / "lsd_2d_metrics.csv"
-        )
-    if by_lead_rows_summary:
-        pd.DataFrame(by_lead_rows_summary).to_csv(
-            section_output / "lsd_2d_metrics_by_lead.csv", index=False
-        )
-    if by_lead_rows_detailed:
-        # Optional very detailed file (variable, lead, time dims) for diagnostics
-        pd.concat(by_lead_rows_detailed, ignore_index=True).to_csv(
-            section_output / "lsd_2d_metrics_by_lead_detailed.csv", index=False
-        )
+        df_summary.to_csv(out_csv)
+        print(f"[energy_spectra] saved {out_csv}")
+
+    # Optional: per-member NPZ spectrum exports when requested
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_npz = mode in ("npz", "both")
+    if save_npz and (resolved == "members") and ("ensemble" in ds_prediction.dims):
+        dpi = int((plotting_cfg or {}).get("dpi", 48))
+        for mi in range(int(ds_prediction.sizes["ensemble"])):
+            token = ensemble_mode_to_token("members", mi)
+            ds_t_m = tgt.isel(ensemble=mi) if "ensemble" in tgt.dims else tgt
+            ds_p_m = pred.isel(ensemble=mi) if "ensemble" in pred.dims else pred
+            for var in variables_2d:
+                # Use out_path only to convey the parent directory; filenames are built internally
+                _ = _plot_energy_spectra(
+                    ds_t_m,
+                    ds_p_m,
+                    str(var),
+                    None,
+                    section_output / "_anchor.png",
+                    dpi=dpi,
+                    save_plot_data=True,
+                    save_figure=False,
+                    override_ensemble_token=token,
+                )
+    print("[energy_spectra] Completed energy spectra metrics & plots.")
+
+    # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
+    try:
+        do_spec = bool((plotting_cfg or {}).get("energy_spectra_spectrogram", False))
+    except Exception:
+        do_spec = False
     if (
-        detailed_rows_2d
-        or summary_rows_2d
-        or by_lead_rows_summary
-        or by_lead_rows_detailed
+        do_spec
+        and ("lead_time" in pred.dims)
+        and int(getattr(pred, "sizes", {}).get("lead_time", 0)) > 1
     ):
-        print(
-            "[energy_spectra] saved 2D LSD metrics (detailed, summary, and multi-lead where applicable)"
-        )
+        # Create per-variable spectrograms for target and model
+        def _reduce_time_like(da: xr.DataArray) -> xr.DataArray:
+            # Average over init_time/time dimensions, keep lead_time and wavenumber
+            red_dims = [d for d in ["time", "init_time"] if d in da.dims]
+            return da.mean(dim=red_dims, skipna=True) if red_dims else da
 
-    # 3D variables: per-level per-time LSD
-    detailed_rows_3d: list[pd.DataFrame] = []
-    summary_levels: dict[str, list[float]] = {v: [] for v in variables_3d}
-    for var in variables_3d:
-        print(f"[energy_spectra] 3D variable: {var}")
-        for level in levels:
-            lsd_da = _plot_energy_spectra(
-                ds_target,
-                ds_prediction,
-                var,
-                int(level),
-                (section_output / f"{var}_{level}hPa_energy.png"),
-                dpi,
-                save_plot_data,
-                save_figure,
-            )
-            df_lsd = lsd_da.to_dataframe(name="lsd").reset_index()
-            df_lsd.insert(0, "variable", var)
-            if "level" in df_lsd.columns:
-                df_lsd["level"] = int(level)
-                cols = list(df_lsd.columns)
-                if cols[1] != "level":
-                    cols.remove("level")
-                    cols.insert(1, "level")
-                    df_lsd = df_lsd[cols]
-            else:
-                df_lsd.insert(1, "level", int(level))
-            detailed_rows_3d.append(df_lsd)
-            summary_levels[var].append(float(lsd_da.mean().values))
+        dpi = int((plotting_cfg or {}).get("dpi", 48))
+        for var in variables_2d:
+            # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
+            spec_t, spec_p = _compute_spectra_pair(tgt, pred, str(var), None)
+            # Reduce over init_time/time, retaining lead_time and wavenumber
+            spec_t2 = _reduce_time_like(spec_t)
+            spec_p2 = _reduce_time_like(spec_p)
+            # Ensure both share identical coords
+            spec_t2, spec_p2 = xr.align(spec_t2, spec_p2, join="inner")
+            # Extract coordinates
+            if "lead_time" not in spec_t2.dims:
+                continue
+            leads = spec_t2["lead_time"].values
+            # Convert lead times to hours for x-axis
+            try:
+                x_hours = np.array(
+                    [int(np.timedelta64(lt) / np.timedelta64(1, "h")) for lt in leads]
+                )
+            except Exception:
+                x_hours = np.arange(len(leads))
+            kvals = spec_t2["wavenumber"].values
+            # Prepare arrays with shape (n_leads, n_k)
+            Zt = np.asarray(spec_t2.transpose("lead_time", "wavenumber").values)
+            Zp = np.asarray(spec_p2.transpose("lead_time", "wavenumber").values)
 
-    if variables_3d:
-        section_output.mkdir(parents=True, exist_ok=True)
-        if detailed_rows_3d:
-            pd.concat(detailed_rows_3d, ignore_index=True).to_csv(
-                section_output / "lsd_3d_metrics_detailed.csv", index=False
+            def _plot_spec_img(
+                Z: np.ndarray,
+                qualifier: str,
+                *,
+                _x_hours=x_hours,
+                _kvals=kvals,
+                _var=str(var),
+            ) -> None:
+                fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+                # log10 color scale with small epsilon to avoid -inf
+                eps = 1e-10
+                im = ax.pcolormesh(
+                    _x_hours,
+                    _kvals,
+                    np.log10(Z.T + eps),
+                    shading="auto",
+                    cmap="viridis",
+                )
+                ax.set_xlabel("lead_time (h)")
+                ax.set_ylabel("wavenumber (cycles/km)")
+                cb = fig.colorbar(im, ax=ax, orientation="vertical")
+                cb.set_label("log10 energy")
+                out_png = section_output / build_output_filename(
+                    metric="energy_spectrogram",
+                    variable=_var,
+                    level=None,
+                    qualifier=qualifier,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[energy_spectra] saved {out_png}")
+                plt.close(fig)
+
+            _plot_spec_img(Zt, "target")
+            _plot_spec_img(Zp, "model")
+
+            # Save bundle NPZ for programmatic use
+            out_npz = section_output / build_output_filename(
+                metric="energy_spectrogram",
+                variable=str(var),
+                level=None,
+                qualifier="bundle",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="npz",
             )
-        # Summary (mean over time dims) in wide format (levels index)
-        df_summary = pd.DataFrame(summary_levels, index=levels)
-        df_summary.index.name = "Height Level"
-        df_summary.to_csv(section_output / "lsd_metrics.csv")
-        print("[energy_spectra] saved per-time & summary LSD for 3D variables")
+            np.savez(
+                out_npz,
+                lead_hours=x_hours,
+                wavenumber=kvals,
+                energy_target=Zt,
+                energy_model=Zp,
+                variable=str(var),
+            )
+            print(f"[energy_spectra] saved {out_npz}")

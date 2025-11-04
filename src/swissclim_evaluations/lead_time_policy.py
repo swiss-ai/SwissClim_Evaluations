@@ -7,7 +7,8 @@ and plotting.
 
 Modes
 -----
-first   : Keep only the first (t+0) lead (single-lead evaluation mode / backward compatible default).
+first   : Keep only the first (t+0) lead (single-lead evaluation mode /
+          backward compatible default).
 full    : Keep all leads (subject to optional max_hour cap).
 subset  : Keep an explicit list of hours (subset_hours).
 stride  : Keep every Nth hour (stride_hours, optionally capped by max_hour).
@@ -41,7 +42,7 @@ raises a ValueError (subset) or falls back to the first lead (stride).
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, List, Optional
+from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -60,15 +61,13 @@ class LeadTimeBin:
 @dataclass
 class LeadTimePolicy:
     mode: str = "first"  # first | full | subset | stride | bins
-    subset_hours: List[int] | None = None
-    stride_hours: Optional[int] = None
-    bins: List[LeadTimeBin] | None = None
-    max_hour: Optional[int] = (
-        None  # hard cap (inclusive) on lead hours retained
-    )
+    subset_hours: list[int] | None = None
+    stride_hours: int | None = None
+    bins: list[LeadTimeBin] | None = None
+    max_hour: int | None = None  # hard cap (inclusive) on lead hours retained
     chunk_size: int = 8
     panel_selection: str = "first"  # first | evenly_spaced | specific
-    panel_specific_hours: List[int] | None = None
+    panel_specific_hours: list[int] | None = None
     max_panels: int = 4
     store_full_fields: bool = False
 
@@ -157,9 +156,7 @@ def _lead_hours(ds: xr.Dataset) -> list[int]:
     return list(map(int, hours.tolist()))
 
 
-def apply_lead_time_selection(
-    ds: xr.Dataset, policy: LeadTimePolicy
-) -> xr.Dataset:
+def apply_lead_time_selection(ds: xr.Dataset, policy: LeadTimePolicy) -> xr.Dataset:
     if "lead_time" not in ds.dims:
         return ds
     if policy.mode == "first":
@@ -178,7 +175,7 @@ def apply_lead_time_selection(
                 ds = ds.isel(lead_time=idx)
         return ds
     if policy.mode == "subset" and policy.subset_hours:
-        targets = set(int(h) for h in policy.subset_hours)
+        targets = {int(h) for h in policy.subset_hours}
         if policy.max_hour is not None:
             targets = {h for h in targets if h <= int(policy.max_hour)}
         if not targets:
@@ -187,9 +184,7 @@ def apply_lead_time_selection(
             )
         idx = [i for i, h in enumerate(hours) if h in targets]
         if not idx:
-            raise ValueError(
-                "LeadTimePolicy subset_hours produced empty selection."
-            )
+            raise ValueError("LeadTimePolicy subset_hours produced empty selection.")
         return ds.isel(lead_time=idx)
     if policy.mode == "stride" and policy.stride_hours:
         stride = int(policy.stride_hours)
@@ -203,7 +198,8 @@ def apply_lead_time_selection(
             idx = [0]
         return ds.isel(lead_time=idx)
     if policy.mode == "bins" and policy.bins:
-        # For bins we may still apply max_hour truncation if provided, then keep all for bin aggregation
+        # For bins we may still apply max_hour truncation if provided, then keep
+        # all for bin aggregation
         if policy.max_hour is not None:
             hours = _lead_hours(ds)
             idx = [i for i, h in enumerate(hours) if h <= int(policy.max_hour)]
@@ -213,9 +209,7 @@ def apply_lead_time_selection(
     return ds
 
 
-def aggregate_bins(
-    ds: xr.Dataset, policy: LeadTimePolicy
-) -> list[tuple[str, xr.Dataset]]:
+def aggregate_bins(ds: xr.Dataset, policy: LeadTimePolicy) -> list[tuple[str, xr.Dataset]]:
     if policy.mode != "bins" or not policy.bins or "lead_time" not in ds.dims:
         return []
     hours = _lead_hours(ds)
@@ -228,8 +222,8 @@ def aggregate_bins(
         # Aggregate mean over lead_time for representation
         agg = sel.mean(dim="lead_time", keep_attrs=True)
         # Add metadata coordinate for traceability
-        agg = agg.assign_coords({
-            "lead_time_bin": ("lead_time_bin", [b.label])
-        }).expand_dims("lead_time_bin")
+        agg = agg.assign_coords({"lead_time_bin": ("lead_time_bin", [b.label])}).expand_dims(
+            "lead_time_bin"
+        )
         out.append((b.label, agg))
     return out

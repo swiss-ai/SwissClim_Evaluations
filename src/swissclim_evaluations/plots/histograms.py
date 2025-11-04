@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..lead_time_policy import LeadTimePolicy
+from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -23,17 +23,17 @@ def run(
     ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
-    lead_policy: LeadTimePolicy | None = None,
+    ensemble_mode: str | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     # Optional subsampling  to avoid loading full arrays.
-    max_samples = plotting_cfg.get("histogram_max_samples", None)
+    max_samples = plotting_cfg.get("histogram_max_samples")
     try:
         max_samples = int(max_samples) if max_samples is not None else None
-        if max_samples <= 0:
+        if max_samples is not None and max_samples <= 0:
             max_samples = None
     except Exception:
         max_samples = None
@@ -43,7 +43,7 @@ def run(
 
     # Config options for 3D handling
     process_3d = bool(plotting_cfg.get("histograms_include_3d", True))
-    max_levels = plotting_cfg.get("histograms_max_levels", None)
+    max_levels = plotting_cfg.get("histograms_max_levels")
     try:
         max_levels = int(max_levels) if max_levels is not None else None
         if max_levels is not None and max_levels <= 0:
@@ -52,143 +52,132 @@ def run(
         max_levels = None
 
     # Select only genuine 2D variables (no 'level' dimension)
-    variables_2d = [
-        v for v in ds_target.data_vars if "level" not in ds_target[v].dims
-    ]
-    variables_3d = [
-        v for v in ds_target.data_vars if "level" in ds_target[v].dims
-    ]
+    variables_2d = [v for v in ds_target.data_vars if "level" not in ds_target[v].dims]
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
         print("[histograms] No eligible variables found – skipping.")
         return
     if variables_2d:
         print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
     if process_3d and variables_3d:
-        print(
-            f"[histograms] Processing {len(variables_3d)} 3D variables (per-level)."
-        )
+        print(f"[histograms] Processing {len(variables_3d)} 3D variables (per-level).")
     lat_bins, n_bands, n_rows = _lat_bands()
+
+    # Resolve ensemble handling
+    resolved_mode = resolve_ensemble_mode("histograms", ensemble_mode, ds_target, ds_prediction)
+    has_ens = "ensemble" in ds_prediction.dims
+    if resolved_mode == "none" and has_ens:
+        raise ValueError(
+            "ensemble_mode=none requested but 'ensemble' dimension present; "
+            "choose mean|pooled|members"
+        )
+    if resolved_mode == "prob":
+        raise ValueError("ensemble_mode=prob invalid for histograms")
 
     def _plot_variable(
         da_target_var: xr.DataArray,
         da_pred_var: xr.DataArray,
         variable_name: str,
-        suffix: str,
-    ):
+        level_token: str,
+        qualifier: str,
+        ens_token: str | None,
+        lead_time_range: tuple[str, str] | None,
+    ) -> None:
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] variable: {variable_name}")
-        for lead_h in panel_hours:
-            fig, axs = plt.subplots(
-                n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi
-            )
-            lead_suffix = f"_lead{lead_h}" if lead_h is not None else ""
-            # Collect combined NPZ data across all bands
-            combined = {
-                "neg_counts": [],
-                "neg_bins": [],
-                "pos_counts": [],
-                "pos_bins": [],
-                "neg_lat_min": [],
-                "neg_lat_max": [],
-                "pos_lat_min": [],
-                "pos_lat_max": [],
-            }
 
-            # Helper functions are defined inside the loop scope so they are available each iteration
-            def _choose_edges(
-                da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000
-            ):
-                try:
-                    both = xr.concat([da1, da2], dim="_t")
-                    q = both.quantile([0.001, 0.999], skipna=True).compute()
-                    vmin = float(q.isel(quantile=0).item())
-                    vmax = float(q.isel(quantile=1).item())
-                    if (
-                        not np.isfinite(vmin)
-                        or not np.isfinite(vmax)
-                        or vmin == vmax
-                    ):
-                        vmin, vmax = -1.0, 1.0
-                except Exception:
+        fig, axs = plt.subplots(
+            n_rows,
+            2,
+            figsize=(16, 3 * n_rows),
+            dpi=dpi,
+            constrained_layout=True,
+        )
+
+        # Collect combined NPZ data across all bands
+        combined: dict[str, list[np.ndarray | tuple[np.ndarray, np.ndarray] | float]] = {
+            "neg_counts": [],
+            "neg_bins": [],
+            "pos_counts": [],
+            "pos_bins": [],
+            "neg_lat_min": [],
+            "neg_lat_max": [],
+            "pos_lat_min": [],
+            "pos_lat_max": [],
+        }
+
+        # Helper to choose common bin edges without loading full arrays
+        def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
+            try:
+                both = xr.concat([da1, da2], dim="_t")
+                q = both.quantile([0.001, 0.999], skipna=True).compute()
+                vmin = float(q.isel(quantile=0).item())
+                vmax = float(q.isel(quantile=1).item())
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
                     vmin, vmax = -1.0, 1.0
-                return np.linspace(vmin, vmax, bins + 1)
+            except Exception:
+                vmin, vmax = -1.0, 1.0
+            return np.linspace(vmin, vmax, bins + 1)
 
-            def _dask_hist(da: xr.DataArray, edges: np.ndarray):
-                data = getattr(da, "data", da)
-                darr = dsa.asarray(data)
-                darr = darr.ravel()
-                darr = darr[~dsa.isnan(darr)]
-                counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
-                return counts
+        def _dask_hist(da: xr.DataArray, edges: np.ndarray):
+            data = getattr(da, "data", da)
+            darr = dsa.asarray(data)
+            darr = darr.ravel()
+            darr = darr[~dsa.isnan(darr)]
+            counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
+            return counts
 
-            def _subsample_values(
-                da: xr.DataArray, k: int, seed: int
-            ) -> np.ndarray:
-                if k is None:
-                    arr = np.asarray(da.compute().values).ravel()
-                    return arr[np.isfinite(arr)]
-                size = int(getattr(da, "size", 0) or 0)
-                if size == 0:
-                    return np.array([], dtype=float)
-                if size <= k:
-                    arr = np.asarray(da.compute().values).ravel()
-                    return arr[np.isfinite(arr)]
-                dims = list(da.dims)
-                nd = max(1, len(dims))
-                frac = (k / float(size)) ** (1.0 / nd)
-                rng = np.random.default_rng(seed)
-                indexers: dict[str, np.ndarray] = {}
-                for d in dims:
-                    n = int(da.sizes.get(d, 1))
-                    take = max(1, int(np.ceil(frac * n)))
-                    take = min(take, n)
-                    idx = rng.choice(n, size=take, replace=False)
-                    idx.sort()
-                    indexers[d] = idx
-                sub = da.isel(**indexers)
-                arr = np.asarray(sub.compute().values).ravel()
+        # Helper subsampling function
+        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
+            if k is None:
+                arr = np.asarray(da.compute().values).ravel()
                 return arr[np.isfinite(arr)]
+            size = int(getattr(da, "size", 0) or 0)
+            if size == 0:
+                return np.array([], dtype=float)
+            if size <= k:
+                arr = np.asarray(da.compute().values).ravel()
+                return arr[np.isfinite(arr)]
+            dims = list(da.dims)
+            nd = max(1, len(dims))
+            frac = (k / float(size)) ** (1.0 / nd)
+            rng = np.random.default_rng(seed)
+            indexers: dict[str, Any] = {}
+            for d in dims:
+                n = int(da.sizes.get(str(d), 1))
+                take = max(1, int(np.ceil(frac * n)))
+                take = min(take, n)
+                idx = rng.choice(n, size=take, replace=False)
+                idx.sort()
+                indexers[str(d)] = np.asarray(idx)
+            sub = da.isel(indexers)
+            arr = np.asarray(sub.compute().values).ravel()
+            return arr[np.isfinite(arr)]
 
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
-            da_true = ds_target[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_pred = ds_prediction[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            # If subsampling is enabled, we compute edges on subsampled arrays instead of full arrays
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
+            # If subsampling enabled, compute edges on subsampled arrays
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
                 ds_sample = _subsample_values(da_true, max_samples, seed)
                 ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 1].set_title(
-                        f"Lat {lat_min}° to {lat_max}° (No data)"
-                    )
+                    axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                     continue
-                # Determine edges from combined sample quantiles
                 try:
                     both = np.concatenate([ds_sample, ml_sample])
                     qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if (
-                        not np.isfinite(qlow)
-                        or not np.isfinite(qhigh)
-                        or qlow == qhigh
-                    ):
+                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
                         qlow, qhigh = -1.0, 1.0
                 except Exception:
                     qlow, qhigh = -1.0, 1.0
                 edges = np.linspace(qlow, qhigh, 1001)
-                # Histogram on subsamples using dask.histogram for consistency
-                dsa_ds = dsa.from_array(
-                    ds_sample, chunks=ds_sample.shape[0] // 4 or 1
-                )
-                dsa_ml = dsa.from_array(
-                    ml_sample, chunks=ml_sample.shape[0] // 4 or 1
-                )
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
                 counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
                 counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
             else:
@@ -198,13 +187,9 @@ def run(
                 counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
             # Convert to density
             width = np.diff(edges)
-            bin_area = (
-                counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-            )
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
-            bin_area_ml = (
-                counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            )
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
             counts_ml = counts_ml / bin_area_ml
             axs[j, 1].bar(
                 edges[:-1],
@@ -237,215 +222,93 @@ def run(
             idx = -(j + 1)
             lat_max = lat_bins[idx - 1]
             lat_min = lat_bins[idx]
-            da_true = ds_target[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
-            da_pred = ds_prediction[variable_name].sel(
-                latitude=slice(lat_min, lat_max)
-            )
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
                 ds_sample = _subsample_values(da_true, max_samples, seed)
                 ml_sample = _subsample_values(da_pred, max_samples, seed)
                 if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 0].set_title(
-                        f"Lat {lat_min}° to {lat_max}° (No data)"
-                    )
-                    dsa_ml = dsa.from_array(
-                        ml_sample, chunks=ml_sample.shape[0] // 4 or 1
-                    )
-                    counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                    counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
-                else:
-                    edges = _choose_edges(da_true, da_pred, bins=1000)
-                    counts_ds = (
-                        _dask_hist(da_true, edges).compute().astype(float)
-                    )
-                    counts_ml = (
-                        _dask_hist(da_pred, edges).compute().astype(float)
-                    )
-                width = np.diff(edges)
-                bin_area = (
-                    counts_ds.sum() * width.mean()
-                    if counts_ds.sum() > 0
-                    else 1.0
-                )
-                counts_ds = counts_ds / bin_area
-                bin_area_ml = (
-                    counts_ml.sum() * width.mean()
-                    if counts_ml.sum() > 0
-                    else 1.0
-                )
-                counts_ml = counts_ml / bin_area_ml
-                axs[j, 1].bar(
-                    edges[:-1],
-                    counts_ds,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color="skyblue",
-                    label="Ground Truth",
-                )
-                axs[j, 1].bar(
-                    edges[:-1],
-                    counts_ml,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color="salmon",
-                    label="Model Prediction",
-                )
-                axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
-                axs[j, 1].legend(loc="upper right")
-                if save_npz:
-                    combined["neg_counts"].append((counts_ds, counts_ml))
-                    combined["neg_bins"].append(edges)
-                    combined["neg_lat_min"].append(float(lat_min))
-                    combined["neg_lat_max"].append(float(lat_max))
-
-            # Positive latitudes (left column)
-            for j in range(n_bands // 2):
-                # Positive latitude band (northern hemisphere)
-                idx = -(j + 1)
-                lat_max = lat_bins[idx - 1]
-                lat_min = lat_bins[idx]
-                da_true = ds_target[variable_name].sel(
-                    latitude=slice(lat_min, lat_max)
-                )
-                da_pred = ds_prediction[variable_name].sel(
-                    latitude=slice(lat_min, lat_max)
-                )
-                if max_samples is not None:
-                    ds_seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                    ml_seed = ds_seed + 1
-                    ds_sample = _subsample_values(da_true, max_samples, ds_seed)
-                    ml_sample = _subsample_values(da_pred, max_samples, ml_seed)
-                    if ds_sample.size == 0 or ml_sample.size == 0:
-                        axs[j, 0].set_title(
-                            f"Lat {lat_min}° to {lat_max}° (No data)"
-                        )
-                        continue
-                    try:
-                        both = np.concatenate([ds_sample, ml_sample])
-                        qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                        if (
-                            not np.isfinite(qlow)
-                            or not np.isfinite(qhigh)
-                            or qlow == qhigh
-                        ):
-                            qlow, qhigh = -1.0, 1.0
-                    except Exception:
+                    axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                    continue
+                try:
+                    both = np.concatenate([ds_sample, ml_sample])
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
                         qlow, qhigh = -1.0, 1.0
-                    edges = np.linspace(qlow, qhigh, 1001)
-                    dsa_ds = dsa.from_array(
-                        ds_sample, chunks=ds_sample.shape[0] // 4 or 1
-                    )
-                    dsa_ml = dsa.from_array(
-                        ml_sample, chunks=ml_sample.shape[0] // 4 or 1
-                    )
-                    counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                    counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
-                else:
-                    edges = _choose_edges(da_true, da_pred, bins=1000)
-                    counts_ds = (
-                        _dask_hist(da_true, edges).compute().astype(float)
-                    )
-                    counts_ml = (
-                        _dask_hist(da_pred, edges).compute().astype(float)
-                    )
-                width = np.diff(edges)
-                bin_area = (
-                    counts_ds.sum() * width.mean()
-                    if counts_ds.sum() > 0
-                    else 1.0
-                )
-                counts_ds = counts_ds / bin_area
-                bin_area_ml = (
-                    counts_ml.sum() * width.mean()
-                    if counts_ml.sum() > 0
-                    else 1.0
-                )
-                counts_ml = counts_ml / bin_area_ml
-                axs[j, 0].bar(
-                    edges[:-1],
-                    counts_ds,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color="skyblue",
-                    label="Ground Truth",
-                )
-                axs[j, 0].bar(
-                    edges[:-1],
-                    counts_ml,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color="salmon",
-                    label="Model Prediction",
-                )
-                axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
-                axs[j, 0].legend(loc="upper right")
-                if save_npz:
-                    combined["pos_counts"].append((counts_ds, counts_ml))
-                    combined["pos_bins"].append(edges)
-                    combined["pos_lat_min"].append(float(lat_min))
-                    combined["pos_lat_max"].append(float(lat_max))
-
-            units = ds_target[variable_name].attrs.get("units", "")
-            plt.suptitle(
-                f"Distribution of {variable_name} ({units}) by latitude bands{(' - lead ' + str(lead_h) + 'h') if lead_h is not None else ''}",
-                y=1.02,
+                except Exception:
+                    qlow, qhigh = -1.0, 1.0
+                edges = np.linspace(qlow, qhigh, 1001)
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+            else:
+                edges = _choose_edges(da_true, da_pred, bins=1000)
+                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+            width = np.diff(edges)
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            counts_ml = counts_ml / bin_area_ml
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ds,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color="skyblue",
+                label="Ground Truth",
             )
-            plt.tight_layout()
-
-            if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_png = (
-                    section_output
-                    / f"{variable_name}_sfc_latbands{lead_suffix}.png"
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[histograms] saved {out_png}")
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ml,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color="salmon",
+                label="Model Prediction",
+            )
+            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
+            axs[j, 0].legend(loc="upper right")
             if save_npz:
+                combined["pos_counts"].append((counts_ds, counts_ml))
+                combined["pos_bins"].append(edges)
+                combined["pos_lat_min"].append(float(lat_min))
+                combined["pos_lat_max"].append(float(lat_max))
 
         units = da_target_var.attrs.get("units", "")
         plt.suptitle(
-            f"Distribution of {variable_name}{suffix} ({units}) by latitude bands",
+            f"Distribution of {variable_name} ({units}) by latitude bands",
             y=1.02,
         )
-        plt.tight_layout()
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / f"{variable_name}{suffix}_latbands.png"
+            out_png = section_output / build_output_filename(
+                metric="hist",
+                variable=variable_name,
+                level=level_token,
+                qualifier=qualifier,
+                init_time_range=None,
+                lead_time_range=lead_time_range,
+                ensemble=ens_token,
+                ext="png",
+            )
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[histograms] saved {out_png}")
         if save_npz:
-            # Write one combined NPZ with all band histograms for this variable
-            # Convert list of tuples to stacked arrays for easier downstream use
-            def _stack_counts_bins(pairs):
-                counts = [p[0] for p in pairs]
-                bins = [p[1] for p in pairs]
-                # counts arrays have equal length (bins-1); bins arrays may have equal length
-                return np.stack(counts, axis=0), np.stack(bins, axis=0)
-
-            neg_counts, neg_bins_arr = (
-                _stack_counts_bins(combined["neg_counts"])
-                if combined["neg_counts"]
-                else (np.empty((0,)), np.empty((0,)))
-            )
-            pos_counts, pos_bins_arr = (
-                _stack_counts_bins(combined["pos_counts"])
-                if combined["pos_counts"]
-                else (np.empty((0,)), np.empty((0,)))
-            )
-
-            # The _stack_counts_bins returns stacks of objects; to keep it simple, store ragged lists via allow_pickle
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz = (
-                section_output
-                / f"{variable_name}{suffix}_latbands_combined.npz"
+            out_npz = section_output / build_output_filename(
+                metric="hist",
+                variable=variable_name,
+                level=level_token,
+                qualifier=f"{qualifier}_combined",
+                init_time_range=None,
+                lead_time_range=lead_time_range,
+                ensemble=ens_token,
+                ext="npz",
             )
             np.savez(
                 out_npz,
@@ -463,13 +326,116 @@ def run(
         plt.close(fig)
 
     # 2D variables
-    for variable_name in variables_2d:
-        _plot_variable(
-            ds_target[variable_name],
-            ds_prediction[variable_name],
-            variable_name,
-            suffix="_sfc",
+    def _iter_members():
+        if not has_ens:
+            yield None, ds_target, ds_prediction
+        else:
+            for i in range(int(ds_prediction.sizes["ensemble"])):
+                tgt_m = ds_target.isel(ensemble=i) if "ensemble" in ds_target.dims else ds_target
+                pred_m = ds_prediction.isel(ensemble=i)
+                yield i, tgt_m, pred_m
+
+    if resolved_mode == "members" and not has_ens:
+        resolved_mode = "none"  # degrade silently
+
+    if resolved_mode == "mean" and has_ens:
+        ds_prediction_mean = ds_prediction.mean(dim="ensemble")
+        ds_target_mean = (
+            ds_target.mean(dim="ensemble") if "ensemble" in ds_target.dims else ds_target
         )
+        # Determine per-lead behavior
+        per_lead = bool(plotting_cfg.get("histograms_per_lead", False)) and (
+            "lead_time" in ds_prediction_mean.dims and int(ds_prediction_mean.lead_time.size) > 1
+        )
+        lead_indices = range(int(ds_prediction_mean.lead_time.size)) if per_lead else [None]
+        for li in lead_indices:
+            lt_range = None
+            dts = ds_prediction_mean
+            dtt = ds_target_mean
+            if li is not None:
+                # Single-lead slice for outputs; encode lead_time in filename
+                dts = dts.isel(lead_time=li, drop=False)
+                dtt = dtt.isel(lead_time=li, drop=False)
+                try:
+                    lt = dts["lead_time"].values[0]
+                    hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
+                    lt_s = f"{hours:03d}h"
+                    lt_range = (lt_s, lt_s)
+                except Exception:
+                    lt_range = None
+            for variable_name in variables_2d:
+                _plot_variable(
+                    dtt[variable_name],
+                    dts[variable_name],
+                    str(variable_name),
+                    level_token="",
+                    qualifier="latbands",
+                    ens_token=ensemble_mode_to_token("mean"),
+                    lead_time_range=lt_range,
+                )
+    elif resolved_mode == "members" and has_ens:
+        for member_index, tgt_m, pred_m in _iter_members():
+            token = ensemble_mode_to_token("members", member_index)
+            per_lead = bool(plotting_cfg.get("histograms_per_lead", False)) and (
+                "lead_time" in pred_m.dims and int(pred_m.lead_time.size) > 1
+            )
+            lead_indices = range(int(pred_m.lead_time.size)) if per_lead else [None]
+            for li in lead_indices:
+                lt_range = None
+                dps = pred_m
+                dts = tgt_m
+                if li is not None:
+                    dps = dps.isel(lead_time=li, drop=False)
+                    dts = dts.isel(lead_time=li, drop=False)
+                    try:
+                        lt = dps["lead_time"].values[0]
+                        hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
+                        lt_s = f"{hours:03d}h"
+                        lt_range = (lt_s, lt_s)
+                    except Exception:
+                        lt_range = None
+                for variable_name in variables_2d:
+                    _plot_variable(
+                        dts[variable_name],
+                        dps[variable_name],
+                        str(variable_name),
+                        level_token="",
+                        qualifier="latbands",
+                        ens_token=token,
+                        lead_time_range=lt_range,
+                    )
+    else:  # pooled or none
+        token = (
+            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
+        )
+        per_lead = bool(plotting_cfg.get("histograms_per_lead", False)) and (
+            "lead_time" in ds_prediction.dims and int(ds_prediction.lead_time.size) > 1
+        )
+        lead_indices = range(int(ds_prediction.lead_time.size)) if per_lead else [None]
+        for li in lead_indices:
+            lt_range = None
+            dps = ds_prediction
+            dtt = ds_target
+            if li is not None:
+                dps = dps.isel(lead_time=li, drop=False)
+                dtt = dtt.isel(lead_time=li, drop=False)
+                try:
+                    lt = dps["lead_time"].values[0]
+                    hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
+                    lt_s = f"{hours:03d}h"
+                    lt_range = (lt_s, lt_s)
+                except Exception:
+                    lt_range = None
+            for variable_name in variables_2d:
+                _plot_variable(
+                    dtt[variable_name],
+                    dps[variable_name],
+                    str(variable_name),
+                    level_token="",
+                    qualifier="latbands",
+                    ens_token=token,
+                    lead_time_range=lt_range,
+                )
 
     # 3D variables per level
     if process_3d:
@@ -484,5 +450,48 @@ def run(
                 da_t_lvl = da_t.sel(level=lvl)
                 da_p_lvl = da_p.sel(level=lvl)
                 lvl_clean = str(lvl).replace(".", "_")
-                suffix = f"_pl{lvl_clean}"
-                _plot_variable(da_t_lvl, da_p_lvl, variable_name, suffix=suffix)
+                if resolved_mode == "mean" and has_ens:
+                    da_p_lvl_mean = da_p_lvl.mean(dim="ensemble")
+                    da_t_lvl_mean = (
+                        da_t_lvl.mean(dim="ensemble") if "ensemble" in da_t_lvl.dims else da_t_lvl
+                    )
+                    _plot_variable(
+                        da_t_lvl_mean,
+                        da_p_lvl_mean,
+                        str(variable_name),
+                        level_token=str(lvl_clean),
+                        qualifier="latbands",
+                        ens_token=ensemble_mode_to_token("mean"),
+                        lead_time_range=None,
+                    )
+                elif resolved_mode == "members" and has_ens:
+                    for member_index, tgt_m, pred_m in _iter_members():
+                        token = ensemble_mode_to_token("members", member_index)
+                        _plot_variable(
+                            (
+                                tgt_m[variable_name].sel(level=lvl)
+                                if "ensemble" in tgt_m[variable_name].dims
+                                else tgt_m.sel(level=lvl)
+                            ),
+                            pred_m[variable_name].sel(level=lvl),
+                            str(variable_name),
+                            level_token=str(lvl_clean),
+                            qualifier="latbands",
+                            ens_token=token,
+                            lead_time_range=None,
+                        )
+                else:  # pooled/none
+                    token = (
+                        ensemble_mode_to_token("pooled")
+                        if (resolved_mode == "pooled" and has_ens)
+                        else None
+                    )
+                    _plot_variable(
+                        da_t_lvl,
+                        da_p_lvl,
+                        str(variable_name),
+                        level_token=str(lvl_clean),
+                        qualifier="latbands",
+                        ens_token=token,
+                        lead_time_range=None,
+                    )

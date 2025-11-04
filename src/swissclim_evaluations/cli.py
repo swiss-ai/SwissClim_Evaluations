@@ -1,47 +1,117 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import shutil
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import xarray as xr
-import yaml
+import yaml  # type: ignore[import-untyped]
 
-from . import console as c
-from . import data as data_mod
+from . import console as c, data as data_mod
+from .helpers import (
+    format_ensemble_log,
+    resolve_ensemble_mode,
+    validate_and_normalize_ensemble_config,
+)
 from .lead_time_policy import (
     LeadTimePolicy,
     apply_lead_time_selection,
     parse_lead_time_policy,
 )
 
+# Public: expected module subdirectories produced by the evaluation pipeline
+# These names correspond to folders created under each model output directory.
+EXPECTED_SUBDIRS: set[str] = {
+    "deterministic",
+    "probabilistic",
+    "energy_spectra",
+    "ets",
+    "histograms",
+    "wd_kde",
+    "maps",
+    "vertical_profiles",
+}
+
 
 def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
-def _ensemble_handling_message(
-    ds_prediction: xr.Dataset, cfg: dict[str, Any]
-) -> str:
+def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -> str:
     sel = cfg.get("selection", {})
     modules_cfg = cfg.get("modules", {})
     probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    ensemble_member = sel.get("ensemble_member")
+    # Prefer new plural key; fall back to legacy singular.
+    if "ensemble_members" in sel:
+        ensemble_members = sel.get("ensemble_members")
+    else:
+        ensemble_members = sel.get("ensemble_member")
+        if ensemble_members is not None:
+            c.warn(
+                "Config key 'selection.ensemble_member' is deprecated; "
+                "use 'selection.ensemble_members'."
+            )
+    # Normalize ensemble_members to int | list[int] | None for apply_ensemble_policy
+    if isinstance(ensemble_members, list):
+        try:
+            ensemble_members = [int(i) for i in ensemble_members]
+        except Exception:
+            c.warn("Invalid values in ensemble_members list; ignoring selection.")
+            ensemble_members = None
+        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
+            ensemble_members = ensemble_members[0]
+    # Normalize possible list/int forms for messaging only
+    if isinstance(ensemble_members, list):
+        if len(ensemble_members) == 1:
+            ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
+        else:
+            ensemble_member_norm = [int(i) for i in ensemble_members]
+    else:
+        ensemble_member_norm = ensemble_members
 
     if "ensemble" not in ds_prediction.dims:
-        if ensemble_member is not None and not probabilistic_enabled:
-            return f"Ensemble: deterministic mode with ensemble_member={ensemble_member} → selected single member; 'ensemble' removed."
-        return "Ensemble: no 'ensemble' dimension present (either source is single-member or reduced deterministically)."
+        if ensemble_member_norm is not None and not probabilistic_enabled:
+            return (
+                "Ensemble: deterministic mode with "
+                f"ensemble_members={ensemble_member_norm} → selected single member; "
+                "'ensemble' removed."
+            )
+        return (
+            "Ensemble: no 'ensemble' dimension present (either source is single-member "
+            "or reduced deterministically)."
+        )
     # ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
     if probabilistic_enabled:
-        return f"Ensemble: probabilistic modules enabled → ensemble (size={ens_size})."
-    return f"Ensemble: deterministic mode without explicit member → expected reduction to mean, but 'ensemble' still present (size={ens_size})."
+        return (
+            "Ensemble: probabilistic mode active "
+            f"(size={ens_size}) → token=ensprob for probabilistic outputs."
+        )
+    # Deterministic paths
+    if ensemble_member_norm is None:
+        return (
+            "Ensemble: deterministic mode without explicit member → reduced to mean (ensmean)."
+            if "ensemble" not in ds_prediction.dims or ens_size == 0
+            else "Ensemble: deterministic mode without explicit member; original size="
+            f"{ens_size} (reduced internally where applicable)."
+        )
+    if isinstance(ensemble_member_norm, list):
+        return (
+            "Ensemble: deterministic mode with subset members="
+            f"{ensemble_member_norm} (size={len(ensemble_member_norm)} retained)."
+        )
+    return (
+        "Ensemble: deterministic mode with ensemble_members="
+        f"{ensemble_member_norm} → single member path."
+    )
 
 
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
@@ -54,8 +124,6 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     check_missing: bool = bool(sel.get("check_missing", False))
 
     if levels is not None and "level" in ds.dims:
-        # Only select levels that exist to avoid KeyError when upstream datasets
-        # have been pre-trimmed to a subset of pressure levels.
         try:
             available = set(ds.coords["level"].values.tolist())
         except Exception:
@@ -70,30 +138,25 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if present:
             ds = ds.sel(level=present)
         else:
-            # No overlap; keep dataset unchanged but warn to stdout for visibility.
             if requested:
                 c.warn(
                     "None of the requested pressure levels are present; "
-                    f"requested={requested}, available={sorted(available)}. Skipping level selection."
+                    f"requested={requested}, available={sorted(available)}. "
+                    "Skipping level selection."
                 )
+
     if latitudes is not None:
         ds = ds.sel(latitude=slice(*latitudes))
     if longitudes is not None:
         ds = ds.sel(longitude=slice(*longitudes))
-    # Non-contiguous explicit timestamps take precedence if provided
+
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
-            # normalize to datetime64[ns]
-            req = [
-                np.datetime64(x).astype("datetime64[ns]")
-                for x in datetimes_list
-            ]
+            req = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
         except Exception:
             req = list(datetimes_list)
         dim_name = (
-            "init_time"
-            if "init_time" in ds.dims
-            else ("time" if "time" in ds.dims else None)
+            "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
         )
         if dim_name is not None:
             try:
@@ -104,75 +167,63 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             missing = [x for x in req if x not in available]
             if missing and check_missing:
                 raise KeyError(
-                    f"Requested timestamps not found in {dim_name}: {missing[:6]}{' ...' if len(missing) > 6 else ''}"
+                    "Requested timestamps not found in "
+                    f"{dim_name}: {missing[:6]}"
+                    f"{' ...' if len(missing) > 6 else ''}"
                 )
             if missing and not check_missing and len(missing) > 0:
                 c.warn(
-                    f"Some requested timestamps are missing in {dim_name}: {len(missing)} missing; proceeding with {len(present)} present."
+                    "Some requested timestamps are missing in "
+                    f"{dim_name}: {len(missing)} missing; proceeding with "
+                    f"{len(present)} present."
                 )
             if present:
                 ds = ds.sel({dim_name: present})
-        # If neither init_time nor time exist, ignore silently
-    elif datetimes is not None:
-        # Support either a single [start,end] or a list of multiple "start:end" ranges or [[start,end], ...]
+        return ds
+
+    if datetimes is not None:
         dim_name = (
-            "init_time"
-            if "init_time" in ds.dims
-            else ("time" if "time" in ds.dims else None)
+            "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
         )
         if dim_name is None:
             return ds
 
         def _parse_ranges(values) -> list[tuple[str | None, str | None]]:
-            if not isinstance(values, (list, tuple)):
+            if not isinstance(values, (list | tuple)):
                 return []
-            # Case: exactly two entries without ':' → treat as single [start, end]
             if (
                 len(values) == 2
                 and all(isinstance(v, str) for v in values)
-                and all(":" not in v for v in values)  # plain bounds
+                and all(":" not in v for v in values)
             ):
                 return [(values[0], values[1])]
             ranges: list[tuple[str | None, str | None]] = []
             for it in values:
-                if isinstance(it, (list, tuple)) and len(it) == 2:
+                if isinstance(it, (list | tuple)) and len(it) == 2:
                     s, e = it[0], it[1]
-                    ranges.append((
-                        str(s) if s else None,
-                        str(e) if e else None,
-                    ))
+                    ranges.append((str(s) if s else None, str(e) if e else None))
                 elif isinstance(it, str) and ":" in it:
                     s, e = it.split(":", 1)
                     ranges.append((s or None, e or None))
                 elif isinstance(it, str):
-                    # A single timestamp → treat as [t, t]
                     ranges.append((it, it))
             return ranges
 
         ranges = _parse_ranges(datetimes)
         if not ranges:
-            # Fallback to original behavior if we couldn't parse anything meaningful
             if len(datetimes) >= 2:
-                ds = ds.sel(**{dim_name: slice(datetimes[0], datetimes[1])})
+                ds = ds.sel({dim_name: slice(datetimes[0], datetimes[1])})
             return ds
 
         vals = ds[dim_name].values.astype("datetime64[ns]")
         mask = np.zeros(vals.shape, dtype=bool)
         for start_s, end_s in ranges:
             try:
-                start = (
-                    np.datetime64(start_s).astype("datetime64[ns]")
-                    if start_s
-                    else vals.min()
-                )
+                start = np.datetime64(start_s).astype("datetime64[ns]") if start_s else vals.min()
             except Exception:
                 start = vals.min()
             try:
-                end = (
-                    np.datetime64(end_s).astype("datetime64[ns]")
-                    if end_s
-                    else vals.max()
-                )
+                end = np.datetime64(end_s).astype("datetime64[ns]") if end_s else vals.max()
             except Exception:
                 end = vals.max()
             mask |= (vals >= start) & (vals <= end)
@@ -184,9 +235,10 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 raise KeyError(msg)
             c.warn(msg + " Keeping dataset unchanged.")
             return ds
-        # isel by positions retains labels and avoids building a long explicit label list
         idx = np.nonzero(mask)[0]
-        ds = ds.isel(**{dim_name: idx})
+        ds = ds.isel({dim_name: idx})
+        return ds
+
     return ds
 
 
@@ -202,14 +254,13 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
         return ds
     if "lead_time" in ds.dims and ds.lead_time.size >= 2:
         step_ns = int(
-            (ds.lead_time[1] - ds.lead_time[0]).astype("timedelta64[h]")
-            / np.timedelta64(1, "h")
+            (ds.lead_time[1] - ds.lead_time[0]).astype("timedelta64[h]") / np.timedelta64(1, "h")
         )
         step_ns = max(1, step_ns)
         factor = max(1, hours // step_ns)
         return ds.isel(lead_time=slice(None, None, factor))
     if "init_time" in ds.dims and ds.init_time.size >= 2:
-        # Only stride if cadence appears uniform; otherwise, leave as-is to avoid dropping irregular labels.
+        # Only stride if cadence appears uniform; else skip to avoid dropping labels.
         try:
             vals = ds.init_time.values.astype("datetime64[h]").astype("int64")
             diffs = np.diff(vals)
@@ -223,7 +274,7 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
             return ds.isel(init_time=slice(None, None, factor))
         else:
             c.warn(
-                "Requested temporal downsampling on irregular init_time cadence → skipping stride (no-op)."
+                "Requested temporal downsampling on irregular init_time cadence → skipping stride."
             )
             return ds
     return ds
@@ -262,15 +313,10 @@ def _select_plot_datetime(
     plot_dt_str = (cfg.get("plotting", {}) or {}).get("plot_datetime")
     if not plot_dt_str:
         # Default behavior: pick the first available init_time from predictions
-        if (
-            "init_time" in ds_prediction.dims
-            and int(ds_prediction.init_time.size) > 0
-        ):
+        if "init_time" in ds_prediction.dims and int(ds_prediction.init_time.size) > 0:
             plot_dt = ds_prediction["init_time"].values[0]
             ds_target_plot = (
-                ds_target.sel(init_time=[plot_dt])
-                if "init_time" in ds_target.dims
-                else ds_target
+                ds_target.sel(init_time=[plot_dt]) if "init_time" in ds_target.dims else ds_target
             )
             ds_prediction_plot = ds_prediction.sel(init_time=[plot_dt])
             return ds_target_plot, ds_prediction_plot
@@ -289,22 +335,19 @@ def _select_plot_datetime(
             )
 
     if "init_time" not in ds_prediction.dims:
-        raise ValueError(
-            "plot_datetime requires datasets with 'init_time' dimension."
-        )
+        raise ValueError("plot_datetime requires datasets with 'init_time' dimension.")
 
     # Ensure exact label present in predictions (targets are aligned to ML labels)
     available = ds_prediction["init_time"].values
     if plot_dt not in available:
         raise ValueError(
             "Requested plot_datetime not found in predictions init_time. "
-            f"Requested={plot_dt_str}. Available examples: {available[:8]} (total {available.size})."
+            f"Requested={plot_dt_str}. Available examples: {available[:8]} "
+            f"(total {available.size})."
         )
 
     ds_target_plot = (
-        ds_target.sel(init_time=[plot_dt])
-        if "init_time" in ds_target.dims
-        else ds_target
+        ds_target.sel(init_time=[plot_dt]) if "init_time" in ds_target.dims else ds_target
     )
     ds_prediction_plot = ds_prediction.sel(init_time=[plot_dt])
     return ds_target_plot, ds_prediction_plot
@@ -334,7 +377,8 @@ def _select_plot_ensemble(
     idx = [int(m) for m in members]
     if any((m < 0 or m >= ens_size) for m in idx):
         raise ValueError(
-            f"plot_ensemble_members indices out of range. Requested={idx}, available range=0..{ens_size - 1}."
+            "plot_ensemble_members indices out of range. Requested="
+            f"{idx}, available range=0..{ens_size - 1}."
         )
     ds_prediction = ds_prediction.isel(ensemble=idx)
     if "ensemble" in ds_prediction_std.dims:
@@ -360,12 +404,30 @@ def prepare_datasets(
     variables_2d = sel.get("variables_2d")
     variables_3d = sel.get("variables_3d")
     hours = sel.get("temporal_resolution_hours")
-    ensemble_member = sel.get("ensemble_member")
+    # Handle ensemble selection (new plural key) with backward compatibility for legacy singular
+    if "ensemble_members" in sel:
+        ensemble_members = sel.get("ensemble_members")
+    else:
+        ensemble_members = sel.get("ensemble_member")
+        if ensemble_members is not None:
+            c.warn(
+                "Config key 'selection.ensemble_member' is deprecated; "
+                "use 'selection.ensemble_members'."
+            )
+    # Normalize to int | list[int] | None
+    if isinstance(ensemble_members, list):
+        try:
+            ensemble_members = [int(i) for i in ensemble_members]
+        except Exception:
+            c.warn("Invalid values in ensemble_members list; ignoring selection.")
+            ensemble_members = None
+        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
+            ensemble_members = ensemble_members[0]
 
     # Open datasets from paths with optional variable selection
     var_list = None
     if variables_2d or variables_3d:
-        var_list = list((variables_2d or [])) + list((variables_3d or []))
+        var_list = list(variables_2d or []) + list(variables_3d or [])
     ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
     ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
 
@@ -399,19 +461,20 @@ def prepare_datasets(
     probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
-        ensemble_member=ensemble_member,
+        ensemble_members=ensemble_members,
         probabilistic_enabled=probabilistic_enabled,
     )
     ds_target = data_mod.apply_ensemble_policy(
         ds_target,
-        ensemble_member=None,
+        ensemble_members=None,
         probabilistic_enabled=probabilistic_enabled,
     )
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
 
-    # Apply lead time selection (subset/stride) after temporal resolution so stride logic doesn't fight it
+    # Apply lead time selection (subset/stride) after temporal resolution so
+    # stride logic doesn't fight it
     if preserve_all:
         ds_target = apply_lead_time_selection(ds_target, lead_policy)
         ds_prediction = apply_lead_time_selection(ds_prediction, lead_policy)
@@ -427,11 +490,13 @@ def prepare_datasets(
     if "init_time" in ds_prediction.dims:
         # Ensure predictions have lead_time
         if "lead_time" not in ds_prediction.dims:
-            ds_prediction = ds_prediction.expand_dims({
-                "lead_time": np.array(
-                    [np.timedelta64(0, "h")], dtype="timedelta64[h]"
-                ).astype("timedelta64[ns]")
-            })
+            ds_prediction = ds_prediction.expand_dims(
+                {
+                    "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
+                        "timedelta64[ns]"
+                    )
+                }
+            )
 
         # Build stacked predictions with valid_time
         ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
@@ -444,37 +509,30 @@ def prepare_datasets(
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
             if "lead_time" not in ds_target.dims:
-                ds_target = ds_target.expand_dims({
-                    "lead_time": np.array(
-                        [np.timedelta64(0, "h")], dtype="timedelta64[h]"
-                    ).astype("timedelta64[ns]")
-                })
+                ds_target = ds_target.expand_dims(
+                    {
+                        "lead_time": np.array(
+                            [np.timedelta64(0, "h")], dtype="timedelta64[h]"
+                        ).astype("timedelta64[ns]")
+                    }
+                )
             nwp_init = ds_target["init_time"].astype("datetime64[ns]")
             nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
-            nwp_valid_1d = (nwp_init + nwp_lead).stack(
-                pair=("init_time", "lead_time")
-            )
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
-                valid_time=nwp_valid_1d
-            )
+            nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
         elif "time" in ds_target.dims:
             # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
             tvals = ds_target["time"].values.astype("datetime64[ns]")
             # Build a pair index aligned to each time with synthetic init_time=time and lead_time=0
-            ds_tgt_stacked = ds_target.expand_dims({
-                "lead_time": [np.timedelta64(0, "ns")]
-            })
+            ds_tgt_stacked = ds_target.expand_dims({"lead_time": [np.timedelta64(0, "ns")]})
             ds_tgt_stacked = ds_tgt_stacked.rename({"time": "init_time"})
-            ds_tgt_stacked = ds_tgt_stacked.stack(
-                pair=("init_time", "lead_time")
-            )
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
-                valid_time=("pair", tvals)
-            )
+            ds_tgt_stacked = ds_tgt_stacked.stack(pair=("init_time", "lead_time"))
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=("pair", tvals))
         else:
             raise ValueError(
-                "Targets must have either ('init_time','lead_time') or 'time' dimension for alignment."
+                "Targets must have either ('init_time','lead_time') or 'time' "
+                "dimension for alignment."
             )
 
         # Intersect valid_time and align order to predictions
@@ -484,7 +542,8 @@ def prepare_datasets(
         )
         if common_valid.size == 0:
             raise ValueError(
-                "No overlapping valid times between ground_truth (time/init+lead) and predictions (init+lead) after selection."
+                "No overlapping valid times between ground_truth (time/init+lead) and "
+                "predictions (init+lead) after selection."
             )
         ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
         nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
@@ -499,38 +558,30 @@ def prepare_datasets(
             index_map.setdefault(vt, i)
         try:
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
-        except KeyError:
+        except KeyError as err:
             raise ValueError(
                 "Internal alignment error: ML valid_time not found in targets after intersection."
-            )
+            ) from err
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
         # Replace pair labels on targets to match predictions exactly for clean unstack
-        to_drop = [
-            n
-            for n in ("pair", "init_time", "lead_time")
-            if n in ds_tgt_stacked.coords
-        ]
+        to_drop = [n for n in ("pair", "init_time", "lead_time") if n in ds_tgt_stacked.coords]
         if to_drop:
             ds_tgt_stacked = ds_tgt_stacked.drop_vars(to_drop)
-        ds_tgt_stacked = ds_tgt_stacked.assign_coords(
-            pair=ds_pred_stacked["pair"]
-        )  # type: ignore[index]
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(
+                pair=ds_pred_stacked["pair"]
+            )  # pairs aligned
 
         # Unstack back to (init_time, lead_time)
         ds_prediction = ds_pred_stacked.unstack("pair")
         ds_target = ds_tgt_stacked.unstack("pair")
 
     # Enforce repository-wide chunking policy to ensure predictable performance
-    ds_target = data_mod.enforce_chunking(
-        ds_target, dataset_name="ground_truth"
-    )
+    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="ground_truth")
     ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="ml")
 
     # Optional: strict check for missing values in inputs
     try:
-        check_missing_flag = bool(
-            cfg.get("selection", {}).get("check_missing", False)
-        )
+        check_missing_flag = bool(cfg.get("selection", {}).get("check_missing", False))
     except Exception:
         check_missing_flag = False
     if check_missing_flag:
@@ -546,10 +597,10 @@ def prepare_datasets(
                 try:
                     nan_sum = da.isnull().sum()
                     # nan_sum is a 0-D DataArray (possibly dask-backed) → compute
-                    count = int(nan_sum.compute())  # type: ignore[arg-type]
+                    count = int(nan_sum.compute())
                     if count > 0:
-                        missing_counts[var] = count
-                        totals[var] = int(da.size)
+                        missing_counts[str(var)] = count
+                        totals[str(var)] = int(da.size)
                 except Exception:
                     # Fallback: attempt an 'any' check
                     try:
@@ -557,22 +608,17 @@ def prepare_datasets(
                     except Exception:
                         has_nan = False
                     if has_nan:
-                        missing_counts[var] = -1  # unknown exact count
-                        totals[var] = int(getattr(da, "size", 0) or 0)
+                        missing_counts[str(var)] = -1  # unknown exact count
+                        totals[str(var)] = int(getattr(da, "size", 0) or 0)
             if missing_counts:
                 lines = []
                 for v, cnt in missing_counts.items():
                     tot = totals.get(v, 0)
                     if cnt >= 0 and tot > 0:
-                        lines.append(f"  - {v}: {cnt}/{tot} missing values")
+                        lines.append(f"  - {str(v)}: {cnt}/{tot} missing values")
                     else:
-                        lines.append(
-                            f"  - {v}: missing values present (count unavailable)"
-                        )
-                problems.append(
-                    f"{name} dataset contains missing data:\n"
-                    + "\n".join(lines)
-                )
+                        lines.append(f"  - {str(v)}: missing values present (count unavailable)")
+                problems.append(f"{name} dataset contains missing data:\n" + "\n".join(lines))
         # Always print the result to the terminal; do not abort here
         if problems:
             c.panel(
@@ -586,9 +632,7 @@ def prepare_datasets(
                 "Missing-value check (enabled): no NaNs detected in ground_truth or predictions."
             )
 
-    ds_target_std, ds_prediction_std = _standardize_pair(
-        ds_target, ds_prediction
-    )
+    ds_target_std, ds_prediction_std = _standardize_pair(ds_target, ds_prediction)
     return ds_target, ds_prediction, ds_target_std, ds_prediction_std
 
 
@@ -598,33 +642,98 @@ def _ensure_output(path: str | os.PathLike[str]) -> Path:
     return p
 
 
+def _maybe_copy_config_to_output(cfg: dict[str, Any], out_root: Path) -> None:
+    """If the CLI provided a config file path, copy it into the output folder.
+
+    - Uses the original basename (e.g., config.yaml) to aid reproducibility.
+    - Overwrites any existing file with the same name to reflect the last run.
+    - Silently skips if the path is missing or invalid.
+    """
+    try:
+        src_path = cfg.get("_config_path")
+        if not src_path:
+            return
+        src = Path(str(src_path))
+        if not src.exists() or not src.is_file():
+            return
+        dst = out_root / src.name
+        try:
+            # Avoid SameFileError if output_root is same folder as config
+            if dst.resolve() == src.resolve():
+                return
+        except Exception:
+            # If resolve fails (e.g., permissions), proceed with copy best-effort
+            pass
+        shutil.copy2(src, dst)
+    except Exception:
+        # Best-effort only; do not fail the run because of a copy issue
+        pass
+
+
 def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
     t0 = time.time()
     module_timings: list[tuple[str, float]] = []
-    # Prepare datasets (this call parses and attaches __lead_time_policy onto cfg)
-    ds_target, ds_prediction, ds_target_std, ds_prediction_std = (
-        prepare_datasets(cfg)
-    )
-    # Retrieve the parsed lead time policy AFTER preparation (was previously fetched too early → always None)
+    # Track per-module outcomes: name, status(success|failed|skipped), seconds, optional error
+    module_results: list[dict[str, Any]] = []
+    # Prepare datasets (this also parses and attaches __lead_time_policy onto cfg)
+    ds_target, ds_prediction, ds_target_std, ds_prediction_std = prepare_datasets(cfg)
+    # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
 
     # Derive per-plot datasets if a specific plot datetime is requested
-    ds_target_plot, ds_prediction_plot = _select_plot_datetime(
-        ds_target, ds_prediction, cfg
-    )
+    ds_target_plot, ds_prediction_plot = _select_plot_datetime(ds_target, ds_prediction, cfg)
     # For maps only: optionally subset ensemble members and/or a single datetime
     # Other modules use full datasets (no plot-time/ensemble filtering)
-    ds_prediction_plot, _ = _select_plot_ensemble(
-        ds_prediction_plot, ds_prediction_std, cfg
-    )
+    ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
-    out_root = _ensure_output(
-        cfg.get("paths", {}).get("output_root", "output/verification_esfm")
-    )
+    out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+    # Persist the exact configuration used for this run into the output directory
+    _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()
+    # Validate / normalize ensemble block early to surface typos (e.g. 'member').
+    # Support ensemble block under either top-level or selection (example_config uses selection).
+    raw_ensemble_top = cfg.get("ensemble", {}) or {}
+    raw_ensemble_sel = (cfg.get("selection", {}) or {}).get("ensemble", {}) or {}
+    if raw_ensemble_top and raw_ensemble_sel:
+        # Merge giving precedence to top-level definitions.
+        merged = {**raw_ensemble_sel, **raw_ensemble_top}
+        c.warn(
+            "Both top-level 'ensemble' and 'selection.ensemble' blocks present; "
+            "top-level keys take precedence where duplicated."
+        )
+        raw_ensemble_cfg = merged
+    elif raw_ensemble_top:
+        raw_ensemble_cfg = raw_ensemble_top
+    else:
+        raw_ensemble_cfg = raw_ensemble_sel
+    has_ens = "ensemble" in ds_prediction.dims
+    ensemble_cfg, ens_warnings = validate_and_normalize_ensemble_config(raw_ensemble_cfg, has_ens)
+    # Defer printing of warnings until after dataset summary so all ensemble info appears together.
+    fallback_notes = [w for w in ens_warnings if w.startswith("[ensemble-fallback]")]
+    other_notes = [w for w in ens_warnings if w not in fallback_notes]
+    # Compute resolved modes (post-normalization) using resolver for transparency.
+    module_names = [
+        "maps",
+        "histograms",
+        "wd_kde",
+        "energy_spectra",
+        "vertical_profiles",
+        "deterministic",
+        "ets",
+        "probabilistic",
+    ]
+    resolved_modes: dict[str, str] = {}
+    for _m in module_names:
+        req = ensemble_cfg.get(_m)
+        try:
+            resolved_modes[_m] = resolve_ensemble_mode(_m, req, ds_target, ds_prediction)
+        except Exception:
+            # Fallback; shouldn't happen
+            resolved_modes[_m] = req or "none"
+    # We'll show resolved modes later with fallbacks & summary
 
     # Basic overview
     all_vars = list(ds_target.data_vars)
@@ -636,7 +745,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
         vars_3d = []
         vars_2d = all_vars
     c.panel(
-        f"Output: [bold]{out_root}[/]\nMode: [bold]{mode}[/]\nVariables → 2D: [bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]",
+        (
+            f"Output: [bold]{out_root}[/]"
+            f"\nMode: [bold]{mode}[/]"
+            f"\nVariables → 2D: [bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]"
+        ),
         title="Run Overview",
         style="cyan",
     )
@@ -645,34 +758,48 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.section("Model dataset (prepared)")
     # printing the Dataset object provides a concise summary (dims/coords/vars)
     try:
-        from .console import USE_RICH  # type: ignore
-        from .console import console as _rc  # type: ignore
+        from .console import (
+            USE_RICH,
+            console as _rc,
+        )
 
         if USE_RICH:
-            from rich.pretty import Pretty  # type: ignore
+            from rich.pretty import Pretty
 
             _rc.print(Pretty(ds_prediction))
         else:
             print(ds_prediction)
     except Exception:
         print(ds_prediction)
-    # Ensemble handling summary
-    ens_msg = _ensemble_handling_message(ds_prediction, cfg)
-    level = "ok" if "probabilistic modules enabled" in ens_msg else "info"
-    c.ensemble_panel(ens_msg, level=level)
+    # Consolidated ensemble information (fallbacks + resolved modes + high-level message)
+    try:
+        ens_msg = _ensemble_handling_message(ds_prediction, cfg)
+        blocks: list[str] = []
+        if fallback_notes:
+            blocks.append("Fallbacks:\n" + "\n".join(fallback_notes))
+        if other_notes:
+            blocks.append("Notes:\n" + "\n".join(other_notes))
+        blocks.append(
+            "Resolved Modes:\n" + "\n".join(f"{m}: {resolved_modes[m]}" for m in module_names)
+        )
+        blocks.append("Summary:\n" + ens_msg)
+        c.panel(
+            "\n\n".join(blocks),
+            title="Ensemble Configuration",
+            style="blue",
+        )
+    except Exception:
+        pass
 
     # Lead time policy summary (multi-lead visibility)
     if lead_policy is not None:
         try:
-            from .lead_time_policy import LeadTimePolicy  # type: ignore
+            from .lead_time_policy import LeadTimePolicy
 
             if isinstance(lead_policy, LeadTimePolicy):  # runtime guard
                 hours = []
                 if "lead_time" in ds_prediction.dims:
-                    hrs = (
-                        ds_prediction["lead_time"].values
-                        // np.timedelta64(1, "h")
-                    ).astype(int)
+                    hrs = (ds_prediction["lead_time"].values // np.timedelta64(1, "h")).astype(int)
                     hours = hrs.tolist()
                 mode = lead_policy.mode
                 details: list[str] = [f"mode={mode}"]
@@ -687,11 +814,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 panel_text = (
                     "Lead time policy → "
                     + ", ".join(details)
-                    + (
-                        f"\nAvailable lead hours after selection: {hours}"
-                        if hours
-                        else ""
-                    )
+                    + (f"\nAvailable lead hours after selection: {hours}" if hours else "")
                 )
                 c.panel(panel_text, title="Lead Time Policy", style="magenta")
         except Exception:
@@ -701,64 +824,136 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("maps"):
         from .plots import maps as maps_mod
 
-        c.module_status(
-            "maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}"
-        )
+        c.module_status("maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_full = int(ds_prediction.sizes.get("ensemble"))
+            ens_full = int(ds_prediction.sizes.get("ensemble", 0))
             ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
-            if ens_plot < ens_full:
-                c.info(
-                    f"Ensemble present (selected size={ens_plot} of total {ens_full}) → generating maps for selected members."
-                )
-            else:
-                c.info(
-                    f"Ensemble present (size={ens_full}) → generating maps for all members."
-                )
+            use_mode = resolved_modes.get("maps", "members")
+            msg = format_ensemble_log(
+                "maps",
+                use_mode,
+                ens_full,
+                None if ens_plot == ens_full else f"selected {ens_plot} of {ens_full}",
+            )
+            c.info(msg)
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        maps_mod.run(ds_target_plot, ds_prediction_plot, out_root, plotting)
-        module_timings.append(("maps", time.time() - _t))
+        try:
+            maps_mod.run(
+                ds_target_plot,
+                ds_prediction_plot,
+                out_root,
+                plotting,
+                ensemble_mode=ensemble_cfg.get("maps"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("maps", dt))
+            module_results.append(
+                {
+                    "name": "maps",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover - robustness
+            dt = time.time() - _t
+            c.error(f"maps failed: {ex}")
+            module_results.append(
+                {
+                    "name": "maps",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
 
         c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
-                f"Ensemble present (size={ens_size}) → module displays deterministic reduction."
+                format_ensemble_log(
+                    "histograms", resolved_modes.get("histograms", "pooled"), ens_size
+                )
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        hist_mod.run(ds_target, ds_prediction, out_root, plotting)
-        module_timings.append(("histograms", time.time() - _t))
+        try:
+            hist_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                ensemble_mode=ensemble_cfg.get("histograms"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("histograms", dt))
+            module_results.append(
+                {
+                    "name": "histograms",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"histograms failed: {ex}")
+            module_results.append(
+                {
+                    "name": "histograms",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
 
-        c.module_status(
-            "wd_kde", "run", f"vars_2d={len(vars_2d)} (standardized)"
-        )
+        c.module_status("wd_kde", "run", f"vars_2d={len(vars_2d)} (standardized)")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
-            c.info(
-                f"Ensemble present (size={ens_size}) → module uses reduced standardized mean."
-            )
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(format_ensemble_log("wd_kde", resolved_modes.get("wd_kde", "pooled"), ens_size))
         else:
             c.info("No ensemble dimension → deterministic standardized inputs.")
         _t = time.time()
-        wd_mod.run(
-            ds_target,
-            ds_prediction,
-            ds_target_std,
-            ds_prediction_std,
-            out_root,
-            plotting,
-        )
-        module_timings.append(("wd_kde", time.time() - _t))
+        try:
+            wd_mod.run(
+                ds_target,
+                ds_prediction,
+                ds_target_std,
+                ds_prediction_std,
+                out_root,
+                plotting,
+                ensemble_mode=ensemble_cfg.get("wd_kde"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("wd_kde", dt))
+            module_results.append(
+                {
+                    "name": "wd_kde",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"wd_kde failed: {ex}")
+            module_results.append(
+                {
+                    "name": "wd_kde",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
@@ -769,43 +964,90 @@ def run_selected(cfg: dict[str, Any]) -> None:
             f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}",
         )
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
-                f"Ensemble present (size={ens_size}) → spectra computed for reduced mean field."
+                format_ensemble_log(
+                    "energy_spectra", resolved_modes.get("energy_spectra", "mean"), ens_size
+                )
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        es_mod.run(
-            ds_target,
-            ds_prediction,
-            out_root,
-            plotting,
-            cfg.get("selection", {}),
-            lead_policy=lead_policy,
-        )
-        module_timings.append(("energy_spectra", time.time() - _t))
+        try:
+            es_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                cfg.get("selection", {}),
+                ensemble_mode=ensemble_cfg.get("energy_spectra"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("energy_spectra", dt))
+            module_results.append(
+                {
+                    "name": "energy_spectra",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"energy_spectra failed: {ex}")
+            module_results.append(
+                {
+                    "name": "energy_spectra",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
 
         c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
             c.info(
-                f"Ensemble present (size={ens_size}) → profiles shown for deterministic reduction only."
+                format_ensemble_log(
+                    "vertical_profiles", resolved_modes.get("vertical_profiles", "mean"), ens_size
+                )
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        vp_mod.run(
-            ds_target,
-            ds_prediction,
-            out_root,
-            plotting,
-            cfg.get("selection", {}),
-        )
-        module_timings.append(("vertical_profiles", time.time() - _t))
+        try:
+            vp_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                plotting,
+                cfg.get("selection", {}),
+                ensemble_mode=ensemble_cfg.get("vertical_profiles"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("vertical_profiles", dt))
+            module_results.append(
+                {
+                    "name": "vertical_profiles",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"vertical_profiles failed: {ex}")
+            module_results.append(
+                {
+                    "name": "vertical_profiles",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -813,45 +1055,91 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("deterministic", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
+            ens_size_det: int = int(ds_prediction.sizes.get("ensemble", 0))
+            use_mode = resolved_modes.get("deterministic", "mean")
             c.info(
-                f"Ensemble present (size={ens_size}) → metrics computed on deterministic reduction."
+                format_ensemble_log(
+                    "deterministic",
+                    use_mode,
+                    ens_size_det,
+                )
             )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        det_mod.run(
-            ds_target,
-            ds_prediction,
-            ds_target_std,
-            ds_prediction_std,
-            out_root,
-            plotting,
-            cfg.get("metrics", {}),
-            lead_policy=lead_policy,
-        )
-        module_timings.append(("deterministic", time.time() - _t))
+        try:
+            det_mod.run(
+                ds_target,
+                ds_prediction,
+                ds_target_std,
+                ds_prediction_std,
+                out_root,
+                plotting,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("deterministic"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("deterministic", dt))
+            module_results.append(
+                {
+                    "name": "deterministic",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"deterministic failed: {ex}")
+            module_results.append(
+                {
+                    "name": "deterministic",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
 
         c.module_status("ets", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
-            c.info(
-                f"Ensemble present (size={ens_size}) → ETS computed on deterministic reduction."
-            )
+            ens_size_ets = int(ds_prediction.sizes.get("ensemble", 0))
+            use_mode = resolved_modes.get("ets", "mean")
+            c.info(format_ensemble_log("ets", use_mode, ens_size_ets))
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
-        ets_mod.run(
-            ds_target,
-            ds_prediction,
-            out_root,
-            cfg.get("metrics", {}),
-            lead_policy=lead_policy,
-        )
-        module_timings.append(("ets", time.time() - _t))
+        try:
+            ets_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("ets"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("ets", dt))
+            module_results.append(
+                {
+                    "name": "ets",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"ets failed: {ex}")
+            module_results.append(
+                {
+                    "name": "ets",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
@@ -867,48 +1155,173 @@ def run_selected(cfg: dict[str, Any]) -> None:
             "CRPS/PIT (xarray) + WBX SSR/CRPS",
         )
         if "ensemble" in ds_prediction.dims:
-            ens_size = ds_prediction.sizes.get("ensemble")
-            c.success(
-                f"Ensemble present (size={ens_size}) → running both xarray and WBX probabilistic metrics."
-            )
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            if ens_size < 2:
+                c.warn(
+                    "Ensemble size="
+                    f"{ens_size} <2 → skipping probabilistic metrics (CRPS/PIT + WBX require >=2)."
+                )
+                # Register skipped modules
+                for suffix in ("xarray", "plots", "wbx"):
+                    module_results.append(
+                        {
+                            "name": f"probabilistic:{suffix}",
+                            "status": "skipped",
+                            "seconds": 0.0,
+                            "error": "ensemble size <2",
+                        }
+                    )
+                # Continue to completion without executing probabilistic submodules
+                pass
+            else:
+                c.success(format_ensemble_log("probabilistic", "prob", ens_size))
+                # Xarray-based CRPS/PIT + plots
+                _t = time.time()
+                try:
+                    run_probabilistic(
+                        ds_target,
+                        ds_prediction,
+                        out_root,
+                        plotting,
+                        cfg,
+                        ensemble_mode=ensemble_cfg.get("probabilistic"),
+                    )
+                    dt = time.time() - _t
+                    module_timings.append(("probabilistic:xarray", dt))
+                    module_results.append(
+                        {
+                            "name": "probabilistic:xarray",
+                            "status": "success",
+                            "seconds": dt,
+                            "error": None,
+                        }
+                    )
+                except Exception as ex:  # pragma: no cover
+                    dt = time.time() - _t
+                    c.error(f"probabilistic:xarray failed: {ex}")
+                    module_results.append(
+                        {
+                            "name": "probabilistic:xarray",
+                            "status": "failed",
+                            "seconds": dt,
+                            "error": str(ex),
+                        }
+                    )
+                _t = time.time()
+                try:
+                    plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+                    dt = time.time() - _t
+                    module_timings.append(("probabilistic:plots", dt))
+                    module_results.append(
+                        {
+                            "name": "probabilistic:plots",
+                            "status": "success",
+                            "seconds": dt,
+                            "error": None,
+                        }
+                    )
+                except Exception as ex:  # pragma: no cover
+                    dt = time.time() - _t
+                    c.error(f"probabilistic:plots failed: {ex}")
+                    module_results.append(
+                        {
+                            "name": "probabilistic:plots",
+                            "status": "failed",
+                            "seconds": dt,
+                            "error": str(ex),
+                        }
+                    )
+                _t = time.time()
+                try:
+                    run_probabilistic_wbx(ds_target, ds_prediction, out_root, plotting, cfg)
+                    dt = time.time() - _t
+                    module_timings.append(("probabilistic:wbx", dt))
+                    module_results.append(
+                        {
+                            "name": "probabilistic:wbx",
+                            "status": "success",
+                            "seconds": dt,
+                            "error": None,
+                        }
+                    )
+                except Exception as ex:  # pragma: no cover
+                    dt = time.time() - _t
+                    c.error(f"probabilistic:wbx failed: {ex}")
+                    module_results.append(
+                        {
+                            "name": "probabilistic:wbx",
+                            "status": "failed",
+                            "seconds": dt,
+                            "error": str(ex),
+                        }
+                    )
         else:
-            c.warn(
-                "No ensemble dimension → skipping probabilistic metrics (requires 'ensemble')."
-            )
-        if "ensemble" in ds_prediction.dims:
-            # Xarray-based CRPS/PIT + plots
-            _t = time.time()
-            run_probabilistic(
-                ds_target,
-                ds_prediction,
-                out_root,
-                plotting,
-                cfg,
-                lead_policy=lead_policy,
-            )
-            module_timings.append(("probabilistic:xarray", time.time() - _t))
-            _t = time.time()
-            plot_probabilistic(
-                ds_target,
-                ds_prediction,
-                out_root,
-                plotting,
-            )
-            module_timings.append(("probabilistic:plots", time.time() - _t))
-            # WeatherBenchX-based summaries and aggregates
-            _t = time.time()
-            run_probabilistic_wbx(
-                ds_target, ds_prediction, out_root, plotting, cfg
-            )
-            module_timings.append(("probabilistic:wbx", time.time() - _t))
-
-    # Final completion message + timings summary
+            c.warn("No ensemble dimension → skipping probabilistic metrics (requires 'ensemble').")
+    # Final completion message + timings summary + module results summary (pass/fail)
     elapsed = time.time() - t0
     try:
-        from .console import timings_summary as _timings
+        if "module_results" in locals() and module_results:
+            # Build a text table (avoid adding dependency). Use rich if available.
+            from .console import (
+                USE_RICH,
+                console as _rc,
+            )
 
-        if module_timings:
-            _timings(module_timings, elapsed)
+            successes = sum(1 for r in module_results if r["status"] == "success")
+            failures = [r for r in module_results if r["status"] == "failed"]
+            skipped = [r for r in module_results if r["status"] == "skipped"]
+            if USE_RICH:
+                try:  # pragma: no cover
+                    from rich import box
+                    from rich.table import Table
+
+                    tbl = Table(title="Module Results", box=box.SIMPLE_HEAVY)
+                    tbl.add_column("Module", style="bold")
+                    tbl.add_column("Status")
+                    tbl.add_column("Time (s)", justify="right")
+                    tbl.add_column("Error")
+                    for r in module_results:
+                        status = r["status"]
+                        style = {
+                            "success": "green",
+                            "failed": "red",
+                            "skipped": "yellow",
+                        }.get(status, "white")
+                        err = r.get("error") or ""
+                        if len(err) > 80:
+                            err = err[:77] + "..."
+                        tbl.add_row(
+                            r["name"],
+                            f"[{style}]{status}[/]",
+                            f"{r['seconds']:.2f}",
+                            err,
+                        )
+                    _rc.print(tbl)
+                except Exception:
+                    print("Module Results:")
+                    for r in module_results:
+                        print(
+                            f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                            + (f" error={r['error']}" if r["error"] else "")
+                        )
+            else:
+                print("Module Results:")
+                for r in module_results:
+                    print(
+                        f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
+                        + (f" error={r['error']}" if r["error"] else "")
+                    )
+            if failures:
+                from . import console as c2
+
+                c2.warn(
+                    f"{len(failures)} module(s) failed: {', '.join(r['name'] for r in failures)}"
+                )
+            else:
+                from . import console as c2
+
+                c2.success(f"All {successes} module(s) succeeded.")
+
     except Exception:
         pass
     # Always print a plain-text completion line so logs are readable without Rich
@@ -922,7 +1335,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         if USE_RICH:
             c.panel(
-                f"Completed in [bold]{elapsed:,.1f}[/] seconds\nOutputs written to: [bold]{out_root}[/]",
+                (
+                    f"Completed in [bold]{elapsed:,.1f}[/] seconds"
+                    f"\nOutputs written to: [bold]{out_root}[/]"
+                ),
                 title="✅ Finished",
                 style="green",
             )
@@ -932,9 +1348,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SwissClim Evaluations runner")
-    p.add_argument(
-        "--config", type=str, required=True, help="Path to YAML config"
-    )
+    p.add_argument("--config", type=str, required=True, help="Path to YAML config")
     return p
 
 
@@ -949,7 +1363,7 @@ def main(argv: list[str] | None = None) -> None:
         pass
     # In non-interactive (no TTY) environments like Slurm, force plain output
     try:
-        from .console import set_color_mode  # type: ignore
+        from .console import set_color_mode
 
         is_tty = False
         try:
@@ -962,6 +1376,9 @@ def main(argv: list[str] | None = None) -> None:
         pass
     args = build_parser().parse_args(argv)
     cfg = _load_yaml(args.config)
+    # Record the original config path for reproducibility actions (not part of user schema)
+    with contextlib.suppress(Exception):
+        cfg["_config_path"] = args.config
     run_selected(cfg)
 
 

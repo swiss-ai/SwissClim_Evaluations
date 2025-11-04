@@ -24,9 +24,7 @@ def _build_continuous_target():
     )
     lat = np.linspace(46.0, 46.5, 2)
     lon = np.linspace(7.0, 7.5, 2)
-    data = np.arange(time.size * lat.size * lon.size).reshape(
-        time.size, lat.size, lon.size
-    )
+    data = np.arange(time.size * lat.size * lon.size).reshape(time.size, lat.size, lon.size)
     ds = xr.Dataset(
         {
             "2m_temperature": (
@@ -87,15 +85,13 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
     from swissclim_evaluations import data as data_mod
 
     monkeypatch.setattr(data_mod, "era5", lambda path, variables=None: ds_tgt)
-    monkeypatch.setattr(
-        data_mod, "open_ml", lambda path, variables=None: ds_pred
-    )
+    monkeypatch.setattr(data_mod, "open_ml", lambda path, variables=None: ds_pred)
 
     cfg = {
         "paths": {
             "nwp": "unused",
             "ml": "unused",
-            "output_root": str(tmp_path / "out"),
+            "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},
         "selection": {
@@ -111,10 +107,7 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
     assert int(ds_prediction.init_time.size) == 3
     assert np.all(ds_prediction.init_time.values == ds_target.init_time.values)
     # lead_time should exist and be zero
-    assert (
-        "lead_time" in ds_prediction.dims
-        and int(ds_prediction.lead_time.size) == 1
-    )
+    assert "lead_time" in ds_prediction.dims and int(ds_prediction.lead_time.size) == 1
     assert np.all(
         ds_prediction.lead_time.values
         == np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
@@ -122,7 +115,8 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
 
 
 def test_multiple_datetime_ranges_selection(tmp_path: Path, monkeypatch):
-    # Target continuous, predictions hourly; select two disjoint ranges over init_time and verify alignment
+    # Target continuous, predictions hourly; select two disjoint ranges over
+    # init_time and verify alignment
     ds_tgt = _build_continuous_target()
     # Predictions with hourly inits 0..6
     init = np.array(
@@ -168,16 +162,14 @@ def test_multiple_datetime_ranges_selection(tmp_path: Path, monkeypatch):
     from swissclim_evaluations import data as data_mod
 
     monkeypatch.setattr(data_mod, "era5", lambda path, variables=None: ds_tgt)
-    monkeypatch.setattr(
-        data_mod, "open_ml", lambda path, variables=None: ds_pred
-    )
+    monkeypatch.setattr(data_mod, "open_ml", lambda path, variables=None: ds_pred)
 
     # Select two disjoint ranges: 00..02 and 05..06
     cfg = {
         "paths": {
             "nwp": "unused",
             "ml": "unused",
-            "output_root": str(tmp_path / "out"),
+            "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},
         "selection": {

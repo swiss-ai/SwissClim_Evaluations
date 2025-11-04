@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, Protocol
 
 try:
     from rich import box
@@ -29,9 +29,14 @@ class _PlainConsole:
         print(*objects, flush=True)
 
 
+class _SupportsPrint(Protocol):
+    def print(self, *objects: Any, **kwargs: Any) -> None: ...
+
+
 _COLOR_PREF = os.environ.get("SWISSCLIM_COLOR", "always").lower()
 # always|auto|never
-USE_RICH = bool(_HAS_RICH and _COLOR_PREF != "never")
+USE_RICH: bool = bool(_HAS_RICH and _COLOR_PREF != "never")
+console: _SupportsPrint
 if USE_RICH:
     force = _COLOR_PREF == "always"
     console = Console(
@@ -122,9 +127,7 @@ def panel(content: str, title: str | None = None, style: str = "") -> None:
 def dims_table(ds) -> None:
     """Render a tiny table of dataset dimensions and sizes."""
     if not USE_RICH:
-        console.print(
-            "dims: " + ", ".join(f"{k}={v}" for k, v in ds.dims.items())
-        )
+        console.print("dims: " + ", ".join(f"{k}={v}" for k, v in ds.dims.items()))
         return
     tbl = Table(box=box.SIMPLE_HEAVY)
     tbl.add_column("Dim", style="bold")
@@ -195,3 +198,24 @@ def timings_summary(entries: list[tuple[str, float]], total: float) -> None:
             pct = (secs / total * 100.0) if total > 0 else 0.0
             console.print(f"  - {str(name).ljust(name_w)}  {secs:7.2f}s  ({pct:5.1f}%)")
         console.print(f"Total: {total:,.2f}s")
+
+
+def set_color_mode(mode: str) -> None:
+    """Set console color mode and reinitialize the console accordingly.
+
+    mode: 'always' | 'auto' | 'never'
+    """
+    global USE_RICH, console
+    mode = str(mode).lower()
+    os.environ["SWISSCLIM_COLOR"] = mode
+    USE_RICH = bool(_HAS_RICH and mode != "never")
+    if USE_RICH:
+        force = mode == "always"
+        console = Console(
+            highlight=False,
+            force_terminal=True if force else None,
+            color_system="truecolor",
+            soft_wrap=True,
+        )
+    else:
+        console = _PlainConsole()

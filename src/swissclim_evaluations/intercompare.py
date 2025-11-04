@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Tuple
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -11,6 +12,66 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
+import yaml  # type: ignore[import-untyped]
+
+# Rich-style console utilities for consistent terminal output
+try:  # pragma: no cover (console printing)
+    from . import console as c
+except Exception:  # pragma: no cover
+
+    class _DummyConsole:
+        def __getattr__(self, _name):
+            def _noop(*args, **kwargs):
+                # Fallback to basic print when console is not available
+                if args:
+                    print(*args)
+
+            return _noop
+
+    c = _DummyConsole()  # type: ignore
+
+
+def _scan_model_sets(
+    models: list[Path], rel_glob: str
+) -> tuple[list[set[str]], set[str], set[str]]:
+    """Return per-model sets, intersection and union for a relative glob pattern.
+
+    rel_glob: e.g. "energy_spectra/*_spectrum*.npz", "maps/map_*.npz".
+    """
+    dir_part = rel_glob.split("/")[0]
+    pat_part = "/".join(rel_glob.split("/")[1:]) if "/" in rel_glob else rel_glob
+    per_model: list[set[str]] = []
+    for m in models:
+        base = (m / dir_part) if dir_part and dir_part != rel_glob else m
+        files = list(base.glob(pat_part))
+        per_model.append({f.name for f in files if f.is_file()})
+    inter = set.intersection(*per_model) if per_model else set()
+    uni = set().union(*per_model) if per_model else set()
+    return per_model, inter, uni
+
+
+def _report_missing(
+    module: str,
+    models: list[Path],
+    labels: list[str],
+    per_model: list[set[str]],
+    union: set[str],
+) -> None:
+    """Pretty-print which basenames were missing per model for a module scan."""
+    rows: list[str] = []
+    for lab, files in zip(labels, per_model, strict=False):
+        missing = sorted(union - files)
+        rows.append(f"• {lab}: present={len(files)} missing={len(missing)}")
+        if missing:
+            preview = ", ".join(missing[:8])
+            if len(missing) > 8:
+                preview += ", …"
+            rows.append(f"  ↳ missing examples: {preview}")
+    c.panel(
+        "\n".join(rows) if rows else "No files discovered for this module.",
+        title=f"Intercompare — {module}: availability by model",
+        style="yellow",
+    )
 
 
 def _as_paths(items: Iterable[str]) -> list[Path]:
@@ -34,11 +95,7 @@ def _common_files(models: list[Path], rel_glob: str) -> list[str]:
     sets: list[set[str]] = []
     for m in models:
         files = (
-            list(
-                (m / rel_glob.split("/")[0]).glob(
-                    "/".join(rel_glob.split("/")[1:])
-                )
-            )
+            list((m / rel_glob.split("/")[0]).glob("/".join(rel_glob.split("/")[1:])))
             if "/" in rel_glob
             else list(m.glob(rel_glob))
         )
@@ -54,266 +111,318 @@ def _load_npz(path: Path) -> dict:
         return {k: d[k] for k in d.files}
 
 
-def _find_vertical_profile_files(models: list[Path]) -> tuple[list[str], str]:
-    """Return common vertical profile NPZ basenames and a mode label.
+def _find_vertical_profile_files(models: list[Path]) -> list[str]:
+    """Return common vertical profile NPZ basenames (current schema).
 
-    Supports new pattern (*_pl_nmae_combined.npz) and legacy (*_pl_rel_error_combined.npz).
-    Preference: use new pattern if any found; otherwise try legacy. Only returns files that
-    exist in ALL model folders.
+    New naming uses the standardized builder:
+      vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz
+    We locate files by the stable prefix and the "_combined" qualifier.
+    Returns sorted list of basenames existing across all model folders.
     """
     vp_dir = Path("vertical_profiles")
-    # New pattern first
-    new_pattern = "*_pl_nmae_combined.npz"
-    legacy_pattern = "*_pl_rel_error_combined.npz"
-    new_sets: list[set[str]] = []
+    patterns = [
+        "vprof_nmae_*_combined*.npz",  # current
+        "*_pl_nmae_combined*.npz",  # legacy fallback
+    ]
+    # Build intersection over models; if multiple patterns match, union per model first
+    sets: list[set[str]] = []
     for m in models:
-        files = list((m / vp_dir).glob(new_pattern))
-        new_sets.append({f.name for f in files if f.is_file()})
-    if new_sets and all(len(s) > 0 for s in new_sets):
-        common_new = (
-            set.intersection(*new_sets) if len(new_sets) > 1 else new_sets[0]
-        )
-        if common_new:
-            return sorted(common_new), "nmae"
-    # Legacy fallback
-    legacy_sets: list[set[str]] = []
-    for m in models:
-        files = list((m / vp_dir).glob(legacy_pattern))
-        legacy_sets.append({f.name for f in files if f.is_file()})
-    if legacy_sets and all(len(s) > 0 for s in legacy_sets):
-        common_legacy = (
-            set.intersection(*legacy_sets)
-            if len(legacy_sets) > 1
-            else legacy_sets[0]
-        )
-        if common_legacy:
-            return sorted(common_legacy), "legacy"
-    return [], "none"
+        model_files: set[str] = set()
+        for pat in patterns:
+            model_files.update({f.name for f in (m / vp_dir).glob(pat) if f.is_file()})
+        sets.append(model_files)
+    if not sets:
+        return []
+    common = set.intersection(*sets) if len(sets) > 1 else sets[0]
+    return sorted(common)
 
 
 def intercompare_vertical_profiles(
-    models: list[Path], labels: list[str], out_root: Path
+    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
 ) -> None:
-    """Overlay vertical profile NMAE (or legacy relative error) curves across models.
+    """Overlay vertical profile NMAE (or legacy relative error) curves.
 
     For each variable present in all model folders we create per-lat-band figure
-    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS (ground truth) not expressly stored.
-    The NPZ files only contain metric curves already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
+    (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS
+    (ground truth) not expressly stored. The NPZ files only contain metric curves
+    already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
 
-    We therefore only plot model curves. If legacy rel_error files are used, label plots accordingly.
+    We therefore only plot model curves. If legacy rel_error files are used we
+    label plots accordingly.
     """
-    basenames, mode = _find_vertical_profile_files(models)
-    if not basenames:
-        return
-    dst = _ensure_dir(out_root / "vertical_profiles")
-    color_palette = sns.color_palette("tab10", n_colors=len(models))
-    for base in basenames:
-        payloads = []
-        for m in models:
-            try:
-                payloads.append(_load_npz(m / "vertical_profiles" / base))
-            except Exception:
-                payloads.append({})
-        if not payloads or any(len(p) == 0 for p in payloads):
-            continue
-        key_neg = (
-            "nmae_neg"
-            if mode == "nmae"
-            else (
-                "rel_error_neg"
-                if "rel_error_neg" in payloads[0]
-                else "nmae_neg"
-            )
-        )
-        key_pos = (
-            "nmae_pos"
-            if mode == "nmae"
-            else (
-                "rel_error_pos"
-                if "rel_error_pos" in payloads[0]
-                else "nmae_pos"
-            )
-        )
-        if key_neg not in payloads[0] or key_pos not in payloads[0]:
-            continue
-        neg_arr0 = np.asarray(payloads[0][key_neg])
-        bands = neg_arr0.shape[0]
-        neg_lat_min = payloads[0].get("neg_lat_min")
-        neg_lat_max = payloads[0].get("neg_lat_max")
-        pos_lat_min = payloads[0].get("pos_lat_min")
-        pos_lat_max = payloads[0].get("pos_lat_max")
-        level_values = payloads[0].get("level")
-        if level_values is None:
-            continue
-        fig, axs = plt.subplots(
-            bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True
-        )
-        for j in range(bands):
-            axn = axs[j, 0]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
-                arr = np.asarray(pay.get(key_pos))
-                if arr is None or arr.shape[0] <= j:
-                    continue
-                axn.plot(
-                    arr[j], level_values, label=lab, color=color_palette[c]
-                )
-            if pos_lat_min is not None and pos_lat_max is not None:
-                axn.set_title(
-                    f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
-                )
-            axn.invert_yaxis()
-            axn.set_xlabel("NMAE (%)" if mode == "nmae" else "Rel Error")
-            axsou = axs[j, 1]
-            for c, (lab, pay) in enumerate(zip(labels, payloads)):
-                arr = np.asarray(pay.get(key_neg))
-                if arr is None or arr.shape[0] <= j:
-                    continue
-                axsou.plot(
-                    arr[j], level_values, label=lab, color=color_palette[c]
-                )
-            if neg_lat_min is not None and neg_lat_max is not None:
-                axsou.set_title(
-                    f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
-                )
-            axsou.invert_yaxis()
-            axsou.set_xlabel("NMAE (%)" if mode == "nmae" else "Rel Error")
-        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles,
-                labels_leg,
-                loc="lower center",
-                ncol=min(6, len(models)),
-            )
-        var = base.replace("_pl_nmae_combined.npz", "").replace(
-            "_pl_rel_error_combined.npz", ""
-        )
-        fig.suptitle(
-            f"Vertical Profiles — {var} ({'NMAE %' if mode == 'nmae' else 'Relative Error'})",
-            y=1.02,
-        )
-        plt.tight_layout(rect=(0, 0.04, 1, 1))
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
-        rows = []
-        for lab, pay in zip(labels, payloads):
-            neg_arr = np.asarray(pay.get(key_neg))
-            pos_arr = np.asarray(pay.get(key_pos))
-            if neg_arr is None or pos_arr is None:
+    # Availability across models for both new and legacy patterns
+    per_model_vp: list[set[str]] = []
+    for m in models:
+        s: set[str] = set()
+        for pat in ("vprof_nmae_*_combined*.npz", "*_pl_nmae_combined*.npz"):
+            s.update({f.name for f in (m / "vertical_profiles").glob(pat) if f.is_file()})
+        per_model_vp.append(s)
+    union_vp = set().union(*per_model_vp) if per_model_vp else set()
+    if union_vp:
+        if not quiet:
+            _report_missing("vertical_profiles", models, labels, per_model_vp, union_vp)
+
+        basenames = _find_vertical_profile_files(models)
+        if not basenames:
+            return
+        dst = _ensure_dir(out_root / "vertical_profiles")
+        color_palette = sns.color_palette("tab10", n_colors=len(models))
+        for base in basenames:
+            payloads = []
+            for m in models:
+                try:
+                    payloads.append(_load_npz(m / "vertical_profiles" / base))
+                except Exception:
+                    payloads.append({})
+            # Require at least two models with payload
+            valid_models = [
+                p
+                for p in payloads
+                if p.get("nmae_pos") is not None and p.get("nmae_neg") is not None
+            ]
+            if len(valid_models) < 2:
                 continue
+            key_neg = "nmae_neg"
+            key_pos = "nmae_pos"
+            if key_neg not in payloads[0] or key_pos not in payloads[0]:
+                continue
+            neg_arr0 = np.asarray(payloads[0][key_neg])
+            bands = neg_arr0.shape[0]
+            neg_lat_min = payloads[0].get("neg_lat_min")
+            neg_lat_max = payloads[0].get("neg_lat_max")
+            pos_lat_min = payloads[0].get("pos_lat_min")
+            pos_lat_max = payloads[0].get("pos_lat_max")
+            level_values = payloads[0].get("level")
+            if level_values is None:
+                continue
+            fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
             for j in range(bands):
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(np.nanmean(pos_arr[j])),
-                    "metric": "NMAE" if mode == "nmae" else "RelError",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])),
-                    "metric": "NMAE" if mode == "nmae" else "RelError",
-                })
-        if rows:
-            df = pd.DataFrame(rows)
-            out_csv = dst / base.replace(".npz", "_summary.csv")
-            df.to_csv(out_csv, index=False)
-            print(f"[intercompare] saved {out_csv}")
+                axn = axs[j, 0]
+                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    arr = np.asarray(pay.get(key_pos))
+                    if arr is None or arr.shape[0] <= j:
+                        continue
+                    axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
+                if pos_lat_min is not None and pos_lat_max is not None:
+                    axn.set_title(
+                        f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
+                    )
+                axn.invert_yaxis()
+                axn.set_xlabel("NMAE (%)")
+                axsou = axs[j, 1]
+                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    arr = np.asarray(pay.get(key_neg))
+                    if arr is None or arr.shape[0] <= j:
+                        continue
+                    axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
+                if neg_lat_min is not None and neg_lat_max is not None:
+                    axsou.set_title(
+                        f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
+                    )
+                axsou.invert_yaxis()
+                axsou.set_xlabel("NMAE (%)")
+            handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+            if handles:
+                fig.legend(
+                    handles,
+                    labels_leg,
+                    loc="lower center",
+                    ncol=min(6, len(models)),
+                )
+            # Derive variable name from filename robustly
+            var = base[:-4] if base.endswith(".npz") else base
+            if var.startswith("vprof_nmae_"):
+                # vprof_nmae_<variable>_multi_combined[...]
+                tail = var[len("vprof_nmae_") :]
+                if "_multi_combined" in tail:
+                    var = tail.split("_multi_combined", 1)[0]
+                else:  # fallback: strip from first _combined
+                    var = tail.split("_combined", 1)[0]
+            else:
+                # legacy: <variable>_pl_nmae_combined[...]
+                var = var.replace("_pl_nmae_combined", "").replace("_pl_rel_error_combined", "")
+            fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
+            plt.tight_layout(rect=(0, 0.04, 1, 1))
+            out_png = dst / base.replace(".npz", "_compare.png")
+            # Save only if at least two models contributed lines
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
+            rows = []
+            for lab, pay in zip(labels, payloads, strict=False):
+                neg_arr = np.asarray(pay.get(key_neg))
+                pos_arr = np.asarray(pay.get(key_pos))
+                if neg_arr is None or pos_arr is None:
+                    continue
+                for j in range(bands):
+                    with np.errstate(all="ignore"):
+                        val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
+                    rows.append(
+                        {
+                            "variable": var,
+                            "band_index": j,
+                            "hemisphere": "north",
+                            "model": lab,
+                            "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                            "metric": "NMAE",
+                        }
+                    )
+                    rows.append(
+                        {
+                            "variable": var,
+                            "band_index": j,
+                            "hemisphere": "south",
+                            "model": lab,
+                            "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                            "metric": "NMAE",
+                        }
+                    )
+            # Save summary only if we have at least two distinct models with values
+            if rows:
+                df = pd.DataFrame(rows)
+                if df["model"].nunique() >= 2:
+                    out_csv = dst / base.replace(".npz", "_summary.csv")
+                    df.to_csv(out_csv, index=False)
+                    if not quiet:
+                        c.success(f"Saved {out_csv}")
 
 
 def intercompare_energy_spectra(
-    models: list[Path], labels: list[str], out_root: Path
+    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
 ) -> None:
     src_rel = Path("energy_spectra")
     dst = _ensure_dir(out_root / "energy_spectra")
 
-    # 2D variables pattern: {var}_sfc_energy.npz
-    common_2d = _common_files(models, str(src_rel / "*_sfc_energy.npz"))
-    for base in common_2d:
-        datas: list[dict] = []
-        for m in models:
-            datas.append(_load_npz(m / src_rel / base))
-        # Use DS from first model as baseline (identical across models by construction)
-        wn = datas[0].get("wavenumber_ds")
-        spec_ds = datas[0].get("spectrum_ds")
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-        if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-            ax.loglog(
-                wn[2:-2], spec_ds[2:-2], color="k", lw=2.0, label="Ground Truth"
-            )
-        colors = sns.color_palette("tab10", n_colors=len(models))
-        for i, (lab, dat) in enumerate(zip(labels, datas)):
-            wnm = dat.get("wavenumber_ml")
-            specm = dat.get("spectrum_ml")
-            if wnm is None or specm is None or len(specm) == 0:
+    # Availability report
+    per_model, inter, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
+    if not quiet:
+        _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
+
+    # Helper to plot a group of NPZ with baseline
+    def _plot_group(basenames: list[str], surface: bool) -> None:
+        for base in basenames:
+            datas = [_load_npz(m / src_rel / base) for m in models]
+            # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
+            wn = datas[0].get("wavenumber")
+            if wn is None:
+                wn = datas[0].get("wavenumber_ds")
+            spec_ds = datas[0].get("spectrum_target")
+            if spec_ds is None:
+                spec_ds = datas[0].get("spectrum_ds")
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+            if wn is not None and spec_ds is not None and len(spec_ds) > 0:
+                try:  # noqa: SIM105 (allow explicit clarity)
+                    ax.loglog(
+                        wn[2:-2],
+                        np.asarray(spec_ds)[2:-2],
+                        color="k",
+                        lw=2.0,
+                        label="Ground Truth",
+                    )
+                except Exception:  # pragma: no cover
+                    pass
+            colors = sns.color_palette("tab10", n_colors=len(models))
+            for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
+                specm = dat.get("spectrum_prediction")
+                if specm is None:
+                    specm = dat.get("spectrum_ml")
+                wnm = dat.get("wavenumber")
+                if wnm is None:
+                    wnm = dat.get("wavenumber_ml")
+                if wnm is None or specm is None or len(np.asarray(specm)) == 0:
+                    continue
+                try:
+                    ax.loglog(
+                        wnm[2:-2],
+                        np.asarray(specm)[2:-2],  # ensure numpy array slicing
+                        label=lab,
+                        color=colors[i],
+                    )
+                except Exception:
+                    continue
+            ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+            ax.set_ylabel("Energy Density (weighted)")
+            var = datas[0].get("variable") or "var"
+            level = datas[0].get("level") if not surface else None
+            level_val: int | None = None
+            try:
+                level_val = int(level) if level is not None else None
+            except Exception:
+                level_val = None
+            if surface:
+                title = f"Energy Spectra — {var} (sfc)"
+            else:
+                title = (
+                    f"Energy Spectra — {var} {level_val} hPa"
+                    if level_val is not None
+                    else f"Energy Spectra — {var}"
+                )
+            ax.set_title(title)
+            ax.grid(True, which="both", ls="--", alpha=0.4)
+            ax.legend(frameon=False)
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
+
+    # Collect NPZ patterns (new first, fallback to legacy)
+    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
+    # build_output_filename outputs
+    # Fallback to legacy glob if any remain
+    # New simplified assumption: spectra NPZ basenames already uniform.
+    # Retain backward compatibility not required; only support existing saved spectrum npz.
+    # Spectrum files in current schema include an ensemble token after '_spectrum',
+    # e.g. '..._spectrum_ensnone.npz'.
+    surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
+    if surf:
+        # Decide surface vs pressure level by presence of _<digits>hPa_
+        surface_files = [b for b in surf if "hPa" not in b]
+        pl_files = [b for b in surf if "hPa" in b]
+        if surface_files:
+            _plot_group(surface_files, surface=True)
+        if pl_files:
+            _plot_group(pl_files, surface=False)
+
+    # Combine LSD summary across models (2D averaged only current naming)
+    lsd_rows: list[pd.DataFrame] = []
+    lsd_banded_rows: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        for f in (m / src_rel).glob("lsd_2d_metrics_*averaged*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
                 continue
-            ax.loglog(wnm[2:-2], specm[2:-2], label=lab, color=colors[i])
-        ax.set_xlabel("Longitudinal Wavenumber (cycles/Earth)")
-        ax.set_ylabel("Energy Density")
-        var = datas[0].get("variable")
-        title = f"Energy Spectra — {str(var)} (sfc)"
-        ax.set_title(title)
-        ax.grid(True, which="both", ls="--", alpha=0.4)
-        ax.legend(frameon=False)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
-
-    # 3D variables pattern: {var}_{level}hPa_energy.npz
-    common_3d = _common_files(models, str(src_rel / "*_*hPa_energy.npz"))
-    for base in common_3d:
-        datas = [_load_npz(m / src_rel / base) for m in models]
-        wn = datas[0].get("wavenumber_ds")
-        spec_ds = datas[0].get("spectrum_ds")
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-        if wn is not None and spec_ds is not None and len(spec_ds) > 0:
-            ax.loglog(
-                wn[2:-2], spec_ds[2:-2], color="k", lw=2.0, label="Ground Truth"
-            )
-        colors = sns.color_palette("tab10", n_colors=len(models))
-        for i, (lab, dat) in enumerate(zip(labels, datas)):
-            wnm = dat.get("wavenumber_ml")
-            specm = dat.get("spectrum_ml")
-            if wnm is None or specm is None or len(specm) == 0:
+            if "variable" not in df.columns and "Unnamed: 0" in df.columns:
+                df = df.rename(columns={"Unnamed: 0": "variable"})
+            df.insert(0, "model", lab)
+            df["source_file"] = f.name
+            lsd_rows.append(df)
+        # Also include banded LSD summaries if present
+        for f in (m / src_rel).glob("lsd_bands_2d_metrics_*averaged*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
                 continue
-            ax.loglog(wnm[2:-2], specm[2:-2], label=lab, color=colors[i])
-        var = datas[0].get("variable")
-        level = datas[0].get("level")
-        ax.set_xlabel("Longitudinal Wavenumber (cycles/Earth)")
-        ax.set_ylabel("Energy Density")
-        ax.set_title(f"Energy Spectra — {str(var)} {int(level)} hPa")
-        ax.grid(True, which="both", ls="--", alpha=0.4)
-        ax.legend(frameon=False)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
-
-    # Combine LSD CSVs if present
-    lsd_2d_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / src_rel / "lsd_2d_metrics.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
-            if "variable" in df.columns:
-                df = df.set_index("variable")
-            df = df.rename(columns={"lsd": "LSD"})
-            df["model"] = lab
-            lsd_2d_rows.append(df.reset_index())
-    if lsd_2d_rows:
-        out_csv = dst / "lsd_2d_metrics_combined.csv"
-        pd.concat(lsd_2d_rows, ignore_index=True).to_csv(out_csv, index=False)
+            # expected columns: variable, band, lsd_mean
+            df.insert(0, "model", lab)
+            df["source_file"] = f.name
+            lsd_banded_rows.append(df)
+    if lsd_rows:
+        dfc = pd.concat(lsd_rows, ignore_index=True)
+        if dfc["model"].nunique() >= 2:
+            out_csv = dst / "lsd_2d_metrics_averaged_combined.csv"
+            dfc.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
+    if lsd_banded_rows:
+        dfcb = pd.concat(lsd_banded_rows, ignore_index=True)
+        if dfcb["model"].nunique() >= 2:
+            out_csv = dst / "lsd_bands_2d_metrics_averaged_combined.csv"
+            dfcb.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
 
 
-def _plot_hist_counts(
-    ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str
-):
+def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
     # Draw as stairs to avoid bar clutter across models and ensure proper alignment
     counts = np.asarray(counts, dtype=float)
     edges = np.asarray(edges, dtype=float)
@@ -325,10 +434,18 @@ def intercompare_histograms(
     labels: list[str],
     out_root: Path,
     max_models_in_legend: int = 12,
+    *,
+    quiet: bool = False,
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-    common = _common_files(models, str(src_rel / "*_sfc_latbands_combined.npz"))
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
+    if not quiet:
+        _report_missing("histograms", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "hist_*latbands_combined*.npz"))
+    if not common:
+        return
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -337,7 +454,7 @@ def intercompare_histograms(
         lat_neg_max = payloads[0].get("neg_lat_max")
         lat_pos_min = payloads[0].get("pos_lat_min")
         lat_pos_max = payloads[0].get("pos_lat_max")
-        n_rows = len(lat_neg_min)
+        n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
 
         # Right column: southern hemisphere bands
@@ -348,18 +465,22 @@ def intercompare_histograms(
             # Each element is (counts_ds, counts_ml)
             counts_ds = ds_ml_pairs[0]
             bins_ds = payloads[0]["neg_bins"][j]
-            _plot_hist_counts(
-                ax, bins_ds, counts_ds, label="Ground Truth", color="k"
-            )
+            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
             # Plot each model ML
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["neg_counts"][j][1]
                 bins_ml = pay["neg_bins"][j]
-                _plot_hist_counts(
-                    ax, bins_ml, counts_ml, label=lab, color=colors[i]
-                )
-            lat_min = float(lat_neg_min[j])
-            lat_max = float(lat_neg_max[j])
+                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+            lat_min = (
+                float(lat_neg_min[j])
+                if isinstance(lat_neg_min, (list | np.ndarray))
+                else float("nan")
+            )
+            lat_max = (
+                float(lat_neg_max[j])
+                if isinstance(lat_neg_max, (list | np.ndarray))
+                else float("nan")
+            )
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
 
         # Left column: northern hemisphere bands
@@ -368,17 +489,21 @@ def intercompare_histograms(
             ds_ml_pairs = payloads[0]["pos_counts"][j]
             counts_ds = ds_ml_pairs[0]
             bins_ds = payloads[0]["pos_bins"][j]
-            _plot_hist_counts(
-                ax, bins_ds, counts_ds, label="Ground Truth", color="k"
-            )
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts_ml = pay["pos_counts"][j][1]
                 bins_ml = pay["pos_bins"][j]
-                _plot_hist_counts(
-                    ax, bins_ml, counts_ml, label=lab, color=colors[i]
-                )
-            lat_min = float(lat_pos_min[j])
-            lat_max = float(lat_pos_max[j])
+                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+            lat_min = (
+                float(lat_pos_min[j])
+                if isinstance(lat_pos_min, (list | np.ndarray))
+                else float("nan")
+            )
+            lat_max = (
+                float(lat_pos_max[j])
+                if isinstance(lat_pos_max, (list | np.ndarray))
+                else float("nan")
+            )
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
 
         # Legends: add a single shared legend
@@ -391,21 +516,39 @@ def intercompare_histograms(
                 ncol=min(6, 1 + len(models)),
             )
         plt.tight_layout(rect=(0, 0.05, 1, 1))
-        var = base.replace("_sfc_latbands_combined.npz", "")
+        # Derive a variable/level label for the figure title.
+        # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
+        # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
+        stem = base[:-4] if base.endswith(".npz") else base
+        var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
+        # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
+        var_part_no_ens = (
+            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+        )  # SIM108
+        # Remove suffix beginning with '_latbands_combined'
+        if "_latbands_combined" in var_part_no_ens:
+            var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
+        var = var_part_no_ens
         fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        if not quiet:
+            c.success(f"Saved {out_png}")
         plt.close(fig)
 
 
 def intercompare_wd_kde(
-    models: list[Path], labels: list[str], out_root: Path
+    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
 ) -> None:
     src_rel = Path("wd_kde")
     dst = _ensure_dir(out_root / "wd_kde")
-    common = _common_files(
-        models, str(src_rel / "*_sfc_latbands_kde_combined.npz")
-    )
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*combined*.npz")
+    if not quiet:
+        _report_missing("wd_kde", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "wd_kde_*combined*.npz"))
+    if not common:
+        return
     colors = sns.color_palette("tab10", n_colors=len(models))
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -419,7 +562,7 @@ def intercompare_wd_kde(
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
                     pay["neg_kde_ml"][j],
@@ -436,7 +579,7 @@ def intercompare_wd_kde(
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
             ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
-            for i, (lab, pay) in enumerate(zip(labels, payloads)):
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],
                     pay["pos_kde_ml"][j],
@@ -456,36 +599,74 @@ def intercompare_wd_kde(
                 ncol=min(6, 1 + len(models)),
             )
         plt.tight_layout(rect=(0, 0.05, 1, 1))
-        var = base.replace("_sfc_latbands_kde_combined.npz", "")
+        # Extract variable/level part.
+        stem = base[:-4] if base.endswith(".npz") else base
+        var_part = stem[len("wd_kde_") :] if stem.startswith("wd_kde_") else stem  # SIM108
+        # Remove trailing ensemble token if present
+        var_part_no_ens = (
+            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+        )  # SIM108
+        # Remove '_combined' suffix (may appear with preceding level token)
+        if var_part_no_ens.endswith("_combined"):
+            var_part_no_ens = var_part_no_ens[: -len("_combined")]
+        var = var_part_no_ens
         fig.suptitle(f"Normalized KDE by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
 
+    # Combine averaged Wasserstein summary across models if present
+    frames_w: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        for f in (m / src_rel).glob("wd_kde_wasserstein_averaged_*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
+            if df.empty or "wasserstein_mean" not in df.columns:
+                continue
+            df.insert(0, "model", lab)
+            df["source_file"] = f.name
+            frames_w.append(df)
+    if frames_w:
+        combined = pd.concat(frames_w, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "wd_kde_wasserstein_averaged_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            if not quiet:
+                print(f"[intercompare] saved {out_csv}")
 
-def _parse_map_filename(name: str) -> Tuple[str, str]:
-    """Return (kind, key) where kind in {"sfc","pl"} and key without extension for grouping.
 
-    Examples:
-      202301021200_10m_u_component_of_wind_sfc_ens0.npz -> ("sfc", same name)
-      202301021200_temperature_pl_ens0.npz -> ("pl", same name)
+def _parse_map_filename(name: str) -> str:
+    """Return base key without extension.
+
+    New schema already omits placeholder tokens; we simply strip extension.
     """
-    base = name.replace(".npz", "")
-    if "_pl" in base:
-        return "pl", base
-    return "sfc", base
+    return name[:-4] if name.endswith(".npz") else name
 
 
 def intercompare_maps(
-    models: list[Path], labels: list[str], out_root: Path, max_panels: int = 4
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    max_panels: int = 4,
+    *,
+    quiet: bool = False,
 ) -> None:
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
-    common = _common_files(models, str(src_rel / "*.npz"))
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "maps/map_*.npz")
+    if not quiet:
+        _report_missing("maps", models, labels, per_model, uni)
+    # New schema: map_<var>[ _<level>][ _init...][ _lead...]_ens*.npz
+    common = _common_files(models, str(src_rel / "map_*.npz"))
+    if not common:
+        return
     # Limit to first N common map artifacts to avoid huge outputs
     for base in common[:max_panels]:
-        kind, key = _parse_map_filename(base)
-        payloads = [_load_npz(m / src_rel / (key + ".npz")) for m in models]
+        key = _parse_map_filename(base)
+        payloads = [_load_npz(m / src_rel / f"{key}.npz") for m in models]
         # Extract DS from first payload
         nwp = payloads[0].get("nwp")
         mls = [p.get("ml") for p in payloads]
@@ -496,45 +677,25 @@ def intercompare_maps(
         if lats is None or lons is None:
             continue
 
-        # Determine if data are (lat, lon) or (level, lat, lon)
         def _is_3d(arr: np.ndarray) -> bool:
             return isinstance(arr, np.ndarray) and arr.ndim == 3
 
         n_levels = nwp.shape[0] if _is_3d(nwp) else 1
-        # Sanity: all ML arrays must match dimensionality
         if any(
             (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
-            or (
-                (not _is_3d(nwp))
-                and (not isinstance(m, np.ndarray) or m.ndim != 2)
-            )
+            or ((not _is_3d(nwp)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
             for m in mls
         ):
-            print(f"[intercompare][maps] shape mismatch for {key}; skipping")
+            c.warn(f"maps: shape mismatch for {key}; skipping")
             continue
-        # Loop levels (single iteration for 2D)
         for lvl in range(n_levels):
             nwp_slice = nwp[lvl] if n_levels > 1 else nwp
-            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls]
-            # Compute vmin/vmax per level for balanced contrast across models
+            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls if isinstance(m, np.ndarray)]
             try:
-                vmin = float(
-                    np.nanmin(
-                        [np.nanmin(nwp_slice)]
-                        + [np.nanmin(x) for x in ml_slices]
-                    )
-                )
-                vmax = float(
-                    np.nanmax(
-                        [np.nanmax(nwp_slice)]
-                        + [np.nanmax(x) for x in ml_slices]
-                    )
-                )
+                vmin = float(np.nanmin([np.nanmin(nwp_slice)] + [np.nanmin(x) for x in ml_slices]))
+                vmax = float(np.nanmax([np.nanmax(nwp_slice)] + [np.nanmax(x) for x in ml_slices]))
             except ValueError:
-                # In case all NaNs
-                print(
-                    f"[intercompare][maps] all-NaN data for {key} level {lvl}; skipping"
-                )
+                c.warn(f"maps: all-NaN data for {key} level {lvl}; skipping")
                 continue
             ncols = 1 + len(models)
             fig, axes = plt.subplots(
@@ -543,6 +704,7 @@ def intercompare_maps(
                 figsize=(6 * ncols, 4),
                 dpi=160,
                 subplot_kw={"projection": ccrs.PlateCarree()},
+                constrained_layout=True,
             )
             if ncols == 1:
                 axes = [axes]
@@ -559,17 +721,13 @@ def intercompare_maps(
             axes[0].coastlines(linewidth=0.5)
             title_base = "Ground Truth"
             if n_levels > 1:
-                # Attempt to fetch level coordinate if present
                 level_vals = payloads[0].get("level")
-                if (
-                    isinstance(level_vals, np.ndarray)
-                    and len(level_vals) == n_levels
-                ):
+                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
                     title_base += f" (level {int(level_vals[lvl])})"
                 else:
                     title_base += f" (level {lvl})"
             axes[0].set_title(title_base)
-            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices):
+            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
                 ax.pcolormesh(
                     lons,
                     lats,
@@ -582,12 +740,17 @@ def intercompare_maps(
                 ax.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax.coastlines(linewidth=0.5)
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
-            cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
-            cbar_label = "Value"
-            plt.colorbar(
-                im0, cax=cbar_ax, orientation="horizontal", label=cbar_label
+            # Use a constrained-layout-friendly colorbar spanning all axes
+            cbar = fig.colorbar(
+                im0,
+                ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                orientation="horizontal",
+                fraction=0.05,
+                pad=0.08,
             )
-            plt.tight_layout(rect=(0, 0.1, 1, 1))
+            with contextlib.suppress(Exception):
+                cbar.set_label("Value")
+            # No tight_layout here; constrained_layout handles spacing
             suffix = f"_level{lvl}" if n_levels > 1 else ""
             out_png = dst / (key + suffix + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -595,15 +758,35 @@ def intercompare_maps(
 
 
 def intercompare_metrics_csv(
-    models: list[Path], labels: list[str], out_root: Path
+    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
 ) -> None:
     # Deterministic metrics
     dst_det = _ensure_dir(out_root / "deterministic")
     frames: list[pd.DataFrame] = []
     frames_std: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / "deterministic" / "metrics.csv"
-        if f.is_file():
+    for lab, m in zip(labels, models, strict=False):
+        # New schema: deterministic_metrics*.csv (may have qualifiers/time tokens)
+        candidates = sorted((m / "deterministic").glob("deterministic_metrics*.csv"))
+        # Prefer exact base (no averaged/time tokens) for primary combined table
+        f = next(
+            (
+                c
+                for c in candidates
+                if (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if f is not None and f.is_file():
             df = pd.read_csv(f)
             # Normalize variable column
             if "variable" not in df.columns:
@@ -615,8 +798,25 @@ def intercompare_metrics_csv(
                     df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
             frames.append(df)
-        fstd = m / "deterministic" / "metrics_standardized.csv"
-        if fstd.is_file():
+        fstd = next(
+            (
+                c
+                for c in (m / "deterministic").glob("deterministic_metrics_standardized*.csv")
+                if (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if fstd is not None and fstd.is_file():
             df = pd.read_csv(fstd)
             if "variable" not in df.columns:
                 if "Unnamed: 0" in df.columns:
@@ -628,21 +828,18 @@ def intercompare_metrics_csv(
             frames_std.append(df)
     if frames:
         comb = pd.concat(frames, ignore_index=True)
-        comb.to_csv(dst_det / "metrics_combined.csv", index=False)
+        if comb["model"].nunique() >= 2:
+            comb.to_csv(dst_det / "metrics_combined.csv", index=False)
         # Optional: simple bar plots; coerce to numeric and handle all-NaN gracefully
         for metric in ("RMSE", "MAE", "FSS"):
             if metric in comb.columns:
                 tmp = comb.copy()
                 tmp[metric] = pd.to_numeric(tmp[metric], errors="coerce")
-                pivot = tmp.pivot(
-                    index="variable", columns="model", values=metric
-                )
+                pivot = tmp.pivot(index="variable", columns="model", values=metric)
                 # Drop rows/columns that are entirely NaN
-                pivot = pivot.dropna(axis=0, how="all").dropna(
-                    axis=1, how="all"
-                )
+                pivot = pivot.dropna(axis=0, how="all").dropna(axis=1, how="all")
                 out_png = dst_det / f"{metric}_compare.png"
-                if pivot.empty or pivot.notna().sum().sum() == 0:
+                if pivot.empty or pivot.notna().sum().sum() == 0 or pivot.shape[1] < 2:
                     # Save a one-panel message so users see why it's empty
                     fig, ax = plt.subplots(figsize=(8, 3))
                     ax.axis("off")
@@ -657,7 +854,8 @@ def intercompare_metrics_csv(
                     plt.tight_layout()
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     plt.close(fig)
-                    print(f"[intercompare] saved placeholder {out_png}")
+                    if not quiet:
+                        print(f"[intercompare] saved placeholder {out_png}")
                     continue
                 ax = pivot.plot(kind="bar", figsize=(12, 6))
                 ax.set_title(f"{metric} by variable and model")
@@ -667,25 +865,28 @@ def intercompare_metrics_csv(
                 plt.close()
     if frames_std:
         combs = pd.concat(frames_std, ignore_index=True)
-        combs.to_csv(dst_det / "metrics_standardized_combined.csv", index=False)
+        if combs["model"].nunique() >= 2:
+            combs.to_csv(dst_det / "metrics_standardized_combined.csv", index=False)
 
     # ETS
     dst_ets = _ensure_dir(out_root / "ets")
     frames_ets: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / "ets" / "ets_metrics.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
+    for lab, m in zip(labels, models, strict=False):
+        # ets_metrics*.csv new naming
+        for f in (m / "ets").glob("ets_metrics*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
             df.insert(0, "model", lab)
             frames_ets.append(df)
     if frames_ets:
         comb = pd.concat(frames_ets, ignore_index=True)
-        comb.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
+        if comb["model"].nunique() >= 2:
+            comb.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
 
 
-def _plot_step_from_hist(
-    ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str
-):
+def _plot_step_from_hist(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
     counts = np.asarray(counts, dtype=float)
     edges = np.asarray(edges, dtype=float)
     ax.stairs(counts, edges, label=label, color=color)
@@ -696,21 +897,42 @@ def intercompare_probabilistic(
     labels: list[str],
     out_root: Path,
     max_crps_map_panels: int = 4,
+    *,
+    quiet: bool = False,
 ) -> None:
     src_rel = Path("probabilistic")
     dst = _ensure_dir(out_root / "probabilistic")
 
+    # Availability report (single panel across all probabilistic artifacts)
+    per_model_accum: list[set[str]] = [set() for _ in models]
+    union_total: set[str] = set()
+    for pattern in (
+        "probabilistic/pit_hist_*.npz",
+        "probabilistic/crps_map_*.npz",
+        "probabilistic/prob_metrics_spatial*.nc",
+        "probabilistic/prob_metrics_temporal*.nc",
+    ):
+        per_model, inter, uni = _scan_model_sets(models, pattern)
+        union_total |= uni
+        for i, s in enumerate(per_model):
+            per_model_accum[i] |= s
+    if not quiet:
+        _report_missing("probabilistic", models, labels, per_model_accum, union_total)
+
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / src_rel / "crps_summary.csv"
-        if f.is_file():
-            df = pd.read_csv(f)
+    for lab, m in zip(labels, models, strict=False):
+        for f in (m / src_rel).glob("crps_summary*.csv"):
+            try:
+                df = pd.read_csv(f)
+            except Exception:
+                continue
             df.insert(0, "model", lab)
             frames_crps.append(df)
     if frames_crps:
         comb = pd.concat(frames_crps, ignore_index=True)
-        comb.to_csv(dst / "crps_summary_combined.csv", index=False)
+        if comb["model"].nunique() >= 2:
+            comb.to_csv(dst / "crps_summary_combined.csv", index=False)
 
     # 2) Combine WBX CSV summaries if present
     for basename, outname in (
@@ -718,34 +940,49 @@ def intercompare_probabilistic(
         ("crps_ensemble.csv", "crps_ensemble_combined.csv"),
     ):
         frames: list[pd.DataFrame] = []
-        for lab, m in zip(labels, models):
+        for lab, m in zip(labels, models, strict=False):
             f = m / src_rel / basename
             if f.is_file():
                 df = pd.read_csv(f)
                 df.insert(0, "model", lab)
                 frames.append(df)
         if frames:
-            pd.concat(frames, ignore_index=True).to_csv(
-                dst / outname, index=False
-            )
+            dfc = pd.concat(frames, ignore_index=True)
+            if dfc["model"].nunique() >= 2:
+                dfc.to_csv(dst / outname, index=False)
 
     # 3) Overlay PIT histograms by variable
-    common_pit = _common_files(models, str(src_rel / "*_pit_hist.npz"))
+    common_pit = _common_files(models, str(src_rel / "pit_hist_*.npz"))
     colors = sns.color_palette("tab10", n_colors=len(models))
     for base in common_pit:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
         # Uniform reference line at y=1
-        ax.axhline(
-            1.0, color="brown", linestyle="--", linewidth=1, label="Uniform"
-        )
-        for i, (lab, pay) in enumerate(zip(labels, payloads)):
+        ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
+        contributed = 0
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
             counts = pay.get("counts")
             edges = pay.get("edges")
             if counts is None or edges is None:
                 continue
+            contributed += 1
             _plot_step_from_hist(ax, edges, counts, label=lab, color=colors[i])
-        var = base.replace("_pit_hist.npz", "")
+        if contributed < 2:
+            plt.close(fig)
+            continue
+        # Extract variable token from standardized filename: pit_hist_<var>_..._ens*.npz
+        stem = base[:-4] if base.endswith(".npz") else base
+        var = stem
+        if stem.startswith("pit_hist_"):
+            rest = stem[len("pit_hist_") :]
+            # trim ensemble token and optional time tokens
+            if "_ens" in rest:
+                rest = rest.split("_ens", 1)[0]
+            # remove optional _init... and _lead... segments if present
+            for tok in ("_init", "_lead"):
+                if tok in rest:
+                    rest = rest.split(tok, 1)[0]
+            var = rest
         ax.set_title(f"PIT histogram — {var}")
         ax.set_xlabel("PIT value")
         ax.set_ylabel("Density")
@@ -761,10 +998,11 @@ def intercompare_probabilistic(
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Compute global vmin/vmax across models for consistent color scale
         arrays = [p.get("crps") for p in payloads]
-        if any(a is None for a in arrays):
+        # Require at least two models with arrays
+        if sum(1 for a in arrays if a is not None) < 2:
             continue
-        vmin = float(np.nanmin([np.nanmin(a) for a in arrays]))
-        vmax = float(np.nanmax([np.nanmax(a) for a in arrays]))
+        vmin = float(np.nanmin([np.nanmin(a) for a in arrays if a is not None]))
+        vmax = float(np.nanmax([np.nanmax(a) for a in arrays if a is not None]))
         lats = payloads[0].get("latitude")
         lons = payloads[0].get("longitude")
         ncols = len(models)
@@ -774,10 +1012,11 @@ def intercompare_probabilistic(
             figsize=(6 * ncols, 4),
             dpi=160,
             subplot_kw={"projection": ccrs.PlateCarree()},
+            constrained_layout=True,
         )
         if ncols == 1:
             axes = [axes]
-        for ax, lab, arr in zip(axes, labels, arrays):
+        for ax, lab, arr in zip(axes, labels, arrays, strict=False):
             mesh = ax.pcolormesh(
                 lons,
                 lats,
@@ -790,9 +1029,17 @@ def intercompare_probabilistic(
             ax.coastlines(linewidth=0.5)
             ax.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax.set_title(lab)
-        cbar_ax = plt.gcf().add_axes([0.15, 0.08, 0.7, 0.03])
-        plt.colorbar(mesh, cax=cbar_ax, orientation="horizontal", label="CRPS")
-        plt.tight_layout(rect=(0, 0.1, 1, 1))
+        # Use a constrained-layout-friendly colorbar spanning all axes
+        cbar = fig.colorbar(
+            mesh,
+            ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+            orientation="horizontal",
+            fraction=0.05,
+            pad=0.08,
+        )
+        with contextlib.suppress(Exception):
+            cbar.set_label("CRPS")
+        # No tight_layout here; constrained_layout handles spacing
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
@@ -800,9 +1047,13 @@ def intercompare_probabilistic(
     # 5) Combine spatial/temporal WBX NetCDF aggregates into tidy CSVs and simple plots
     # Spatial aggregates
     spatial_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / src_rel / "probabilistic_metrics_spatial.nc"
-        if f.is_file():
+    for lab, m in zip(labels, models, strict=False):
+        # New naming: prob_metrics_spatial*.nc (fallback to legacy probabilistic_metrics_spatial.nc)
+        nc_candidates = list((m / src_rel).glob("prob_metrics_spatial*.nc"))
+        if not nc_candidates:
+            legacy = m / src_rel / "probabilistic_metrics_spatial.nc"
+            nc_candidates = [legacy] if legacy.is_file() else []
+        for f in nc_candidates:
             try:
                 ds = xr.open_dataset(f)
                 df = ds.to_dataframe().reset_index()
@@ -810,8 +1061,7 @@ def intercompare_probabilistic(
                 value_cols = [
                     c
                     for c in df.columns
-                    if isinstance(c, str)
-                    and (c.startswith("CRPS.") or c.startswith("SSR."))
+                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
                 ]
                 if not value_cols:
                     continue
@@ -834,55 +1084,59 @@ def intercompare_probabilistic(
                 pass
     if spatial_rows:
         spatial_df = pd.concat(spatial_rows, ignore_index=True)
-        out_csv = dst / "spatial_metrics_combined.csv"
-        spatial_df.to_csv(out_csv, index=False)
-        print(f"[intercompare] saved {out_csv}")
-        # Simple plot: if a region-like column exists, average across variables and plot by region
-        region_col = None
-        # Prefer canonical 'region' column; else pick the first object-type column among dims
-        cand_cols = [c for c in spatial_df.columns if c.lower() == "region"]
-        if cand_cols:
-            region_col = cand_cols[0]
-        else:
-            obj_cols = [
-                c
-                for c in spatial_df.columns
-                if spatial_df[c].dtype == object
-                and c not in ("metric", "variable", "model")
-            ]
-            region_col = obj_cols[0] if obj_cols else None
-        if region_col:
-            for metric in sorted(spatial_df["metric"].unique()):
-                tmp = spatial_df[spatial_df["metric"] == metric].copy()
-                tmp = tmp.groupby([region_col, "model"], as_index=False)[
-                    "value"
-                ].mean()
-                pivot = tmp.pivot(
-                    index=region_col, columns="model", values="value"
-                ).sort_index()
-                if not pivot.empty and pivot.notna().sum().sum() > 0:
-                    ax = pivot.plot(kind="bar", figsize=(12, 6))
-                    ax.set_title(f"{metric} (spatial aggregates)")
-                    ax.set_ylabel(metric)
-                    plt.tight_layout()
-                    out_png = dst / f"spatial_{metric}_compare.png"
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                    print(f"[intercompare] saved {out_png}")
-                    plt.close()
+        # Only save/output if at least two models contributed
+        if spatial_df["model"].nunique() >= 2:
+            out_csv = dst / "spatial_metrics_combined.csv"
+            spatial_df.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
+            # Simple plot: if a region-like column exists, average across
+            # variables and plot by region
+            region_col = None
+            # Prefer canonical 'region' column; else pick the first object-type column among dims
+            cand_cols = [c for c in spatial_df.columns if c.lower() == "region"]
+            if cand_cols:
+                region_col = cand_cols[0]
+            else:
+                obj_cols = [
+                    c
+                    for c in spatial_df.columns
+                    if spatial_df[c].dtype == object and c not in ("metric", "variable", "model")
+                ]
+                region_col = obj_cols[0] if obj_cols else None
+            if region_col:
+                for metric in sorted(spatial_df["metric"].unique()):
+                    tmp = spatial_df[spatial_df["metric"] == metric].copy()
+                    tmp = tmp.groupby([region_col, "model"], as_index=False)["value"].mean()
+                    pivot = tmp.pivot(
+                        index=region_col, columns="model", values="value"
+                    ).sort_index()
+                    if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                        ax = pivot.plot(kind="bar", figsize=(12, 6))
+                        ax.set_title(f"{metric} (spatial aggregates)")
+                        ax.set_ylabel(metric)
+                        plt.tight_layout()
+                        out_png = dst / f"spatial_{metric}_compare.png"
+                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                        if not quiet:
+                            c.success(f"Saved {out_png}")
+                        plt.close()
 
     # Temporal aggregates
     temporal_rows: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models):
-        f = m / src_rel / "probabilistic_metrics_temporal.nc"
-        if f.is_file():
+    for lab, m in zip(labels, models, strict=False):
+        nc_candidates = list((m / src_rel).glob("prob_metrics_temporal*.nc"))
+        if not nc_candidates:
+            legacy = m / src_rel / "probabilistic_metrics_temporal.nc"
+            nc_candidates = [legacy] if legacy.is_file() else []
+        for f in nc_candidates:
             try:
                 ds = xr.open_dataset(f)
                 df = ds.to_dataframe().reset_index()
                 value_cols = [
                     c
                     for c in df.columns
-                    if isinstance(c, str)
-                    and (c.startswith("CRPS.") or c.startswith("SSR."))
+                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
                 ]
                 if not value_cols:
                     continue
@@ -903,119 +1157,117 @@ def intercompare_probabilistic(
                 pass
     if temporal_rows:
         temporal_df = pd.concat(temporal_rows, ignore_index=True)
-        out_csv = dst / "temporal_metrics_combined.csv"
-        temporal_df.to_csv(out_csv, index=False)
-        print(f"[intercompare] saved {out_csv}")
-        # Pick a time-bin column to plot if present (e.g., 'season'); else skip plotting
-        timebin_col = None
-        pref_cols = ["season", "month", "time_bin"]
-        for c in pref_cols:
-            if c in temporal_df.columns:
-                timebin_col = c
-                break
-        if timebin_col is None:
-            # Try any object-like dim besides variable/metric/model
-            obj_cols = [
-                c
-                for c in temporal_df.columns
-                if temporal_df[c].dtype == object
-                and c not in ("metric", "variable", "model")
-            ]
-            timebin_col = obj_cols[0] if obj_cols else None
-        if timebin_col:
-            for metric in sorted(temporal_df["metric"].unique()):
-                tmp = temporal_df[temporal_df["metric"] == metric].copy()
-                tmp = tmp.groupby([timebin_col, "model"], as_index=False)[
-                    "value"
-                ].mean()
-                # Ensure categorical ordering if seasons
-                if timebin_col == "season":
-                    order = ["DJF", "MAM", "JJA", "SON"]
-                    tmp[timebin_col] = pd.Categorical(
-                        tmp[timebin_col], categories=order, ordered=True
-                    )
-                piv = tmp.pivot(
-                    index=timebin_col, columns="model", values="value"
-                ).sort_index()
-                if not piv.empty and piv.notna().sum().sum() > 0:
-                    ax = piv.plot(kind="line", marker="o", figsize=(10, 4))
-                    ax.set_title(f"{metric} (temporal aggregates)")
-                    ax.set_ylabel(metric)
-                    ax.set_xlabel(timebin_col.capitalize())
-                    plt.tight_layout()
-                    out_png = dst / f"temporal_{metric}_compare.png"
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                    print(f"[intercompare] saved {out_png}")
-                    plt.close()
+        # Only save/output if at least two models contributed
+        if temporal_df["model"].nunique() >= 2:
+            out_csv = dst / "temporal_metrics_combined.csv"
+            temporal_df.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
+            # Pick a time-bin column to plot if present (e.g., 'season'); else skip plotting
+            timebin_col = None
+            pref_cols = ["season", "month", "time_bin"]
+            for col in pref_cols:
+                if col in temporal_df.columns:
+                    timebin_col = col
+                    break
+            if timebin_col is None:
+                # Try any object-like dim besides variable/metric/model
+                obj_cols = [
+                    c
+                    for c in temporal_df.columns
+                    if temporal_df[c].dtype == object and c not in ("metric", "variable", "model")
+                ]
+                timebin_col = obj_cols[0] if obj_cols else None
+            if timebin_col:
+                for metric in sorted(temporal_df["metric"].unique()):
+                    tmp = temporal_df[temporal_df["metric"] == metric].copy()
+                    tmp = tmp.groupby([timebin_col, "model"], as_index=False)["value"].mean()
+                    # Ensure categorical ordering if seasons
+                    if timebin_col == "season":
+                        order = ["DJF", "MAM", "JJA", "SON"]
+                        tmp[timebin_col] = pd.Categorical(
+                            tmp[timebin_col], categories=order, ordered=True
+                        )
+                    piv = tmp.pivot(index=timebin_col, columns="model", values="value").sort_index()
+                    if not piv.empty and piv.notna().sum().sum() > 0 and piv.shape[1] >= 2:
+                        ax = piv.plot(kind="line", marker="o", figsize=(10, 4))
+                        ax.set_title(f"{metric} (temporal aggregates)")
+                        ax.set_ylabel(metric)
+                        ax.set_xlabel(timebin_col.capitalize())
+                        plt.tight_layout()
+                        out_png = dst / f"temporal_{metric}_compare.png"
+                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                        if not quiet:
+                            c.success(f"Saved {out_png}")
+                        plt.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="SwissClim Evaluations — Intercomparison of saved artifacts"
+        description="SwissClim Evaluations — Intercomparison runner (YAML-configured)"
     )
     p.add_argument(
-        "models",
-        nargs="+",
-        help="Paths to per-model output folders (e.g., output/modelA output/modelB)",
-    )
-    p.add_argument(
-        "--labels",
-        nargs="*",
-        help="Optional labels for models (same order as models)",
-    )
-    p.add_argument(
-        "--out",
+        "--config",
         type=str,
-        default="output/intercomparison",
-        help="Output directory for combined plots/CSVs",
-    )
-    p.add_argument(
-        "--modules",
-        nargs="*",
-        default=["spectra", "hist", "kde", "maps", "metrics", "prob", "vprof"],
-        help="Subset of modules to run: spectra, hist, kde, maps, metrics, prob, vprof",
-    )
-    p.add_argument(
-        "--max-map-panels",
-        type=int,
-        default=4,
-        help="Max number of map panels to generate (to limit output size)",
+        required=True,
+        help="Path to intercomparison YAML config (models, labels, output_root, modules, quiet)",
     )
     return p
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
-    models = _as_paths(args.models)
-    labels = (
-        args.labels
-        if args.labels and len(args.labels) == len(models)
-        else [_model_label(p) for p in models]
-    )
-    out_root = _ensure_dir(Path(args.out))
+def _load_yaml(path: str) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
-    # Validate expected sub-structure lightly
+
+def run_from_config(cfg: dict) -> None:
+    # Resolve models
+    model_strs = cfg.get("models") or []
+    if not isinstance(model_strs, list) or len(model_strs) < 2:
+        raise ValueError("config.models must be a list with at least two model directories")
+    models = _as_paths(model_strs)
+    # Labels
+    labels = cfg.get("labels") or []
+    if not labels or len(labels) != len(models):
+        labels = [_model_label(p) for p in models]
+    # Output root
+    out_root = _ensure_dir(Path(cfg.get("output_root", "output/intercomparison")).resolve())
+    # Modules
+    modules = cfg.get("modules") or ["spectra", "hist", "kde", "maps", "metrics", "prob", "vprof"]
+    modules = [str(m).lower() for m in modules]
+    # Other options
+    max_map_panels = int(cfg.get("max_map_panels", 4))
+    max_crps_map_panels = int(cfg.get("max_crps_map_panels", 4))
+    quiet = bool(cfg.get("quiet", False))
+
+    # Light validation: warn on missing model dirs
     for m in models:
         if not m.exists():
             print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
-    mods = set(args.modules)
+    mods = set(modules)
     if "spectra" in mods:
-        intercompare_energy_spectra(models, labels, out_root)
+        intercompare_energy_spectra(models, labels, out_root, quiet=quiet)
     if "hist" in mods:
-        intercompare_histograms(models, labels, out_root)
+        intercompare_histograms(models, labels, out_root, quiet=quiet)
     if "kde" in mods:
-        intercompare_wd_kde(models, labels, out_root)
+        intercompare_wd_kde(models, labels, out_root, quiet=quiet)
     if "maps" in mods:
-        intercompare_maps(
-            models, labels, out_root, max_panels=int(args.max_map_panels)
-        )
+        intercompare_maps(models, labels, out_root, max_panels=max_map_panels, quiet=quiet)
     if "metrics" in mods:
-        intercompare_metrics_csv(models, labels, out_root)
+        intercompare_metrics_csv(models, labels, out_root, quiet=quiet)
     if "prob" in mods:
-        intercompare_probabilistic(models, labels, out_root)
+        intercompare_probabilistic(
+            models, labels, out_root, max_crps_map_panels=max_crps_map_panels, quiet=quiet
+        )
     if "vprof" in mods:
-        intercompare_vertical_profiles(models, labels, out_root)
+        intercompare_vertical_profiles(models, labels, out_root, quiet=quiet)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    cfg = _load_yaml(args.config)
+    run_from_config(cfg)
 
 
 if __name__ == "__main__":

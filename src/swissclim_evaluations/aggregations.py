@@ -1,10 +1,15 @@
 import dask.array as da
 import numpy as np
-from pandas.core.indexes.interval import Interval 
 import xarray as xr
+from pandas.core.indexes.interval import Interval
 
 
-def histogram(ds: xr.Dataset, bins: int | np.ndarray, dims: list[str] | None=None, bindim: str | None = None) -> xr.Dataset:
+def histogram(
+    ds: xr.Dataset,
+    bins: int | np.ndarray,
+    dims: list[str] | None = None,
+    bindim: str | None = None,
+) -> xr.Dataset:
     """
     Compute the histogram of the data along the given dimension.
 
@@ -12,16 +17,19 @@ def histogram(ds: xr.Dataset, bins: int | np.ndarray, dims: list[str] | None=Non
     -----
     `da.histogram` must be used instead of `np.histogram` to support chunked arrays.
     """
-    bins = bins if isinstance(bins, (list, np.ndarray)) else np.linspace(0, 1, bins + 1)
-    other_dims = list(set(ds.dims) - set(dims))
-    other_dims = [dim for dim in ds.dims if dim in other_dims]
-    stackdims = {"core_dims": dims, "other_dims": other_dims}
-    bincoord = np.array([Interval(bins[i], bins[i+1]) for i in range(len(bins)-1)])
+    bins = bins if isinstance(bins, (list | np.ndarray)) else np.linspace(0, 1, int(bins) + 1)
+    core_dims: list[str] = list(dims or [])
+    other_dims_set = set(ds.dims) - set(core_dims)
+    # Ensure string dimension names for typing (xarray dims are strings in our pipeline)
+    other_dims: list[str] = [str(dim) for dim in ds.dims if dim in other_dims_set]
+    # Pass as a single mapping argument to satisfy typing of Dataset.stack
+    stackdims: dict[str, list[str]] = {"core_dims": core_dims, "other_dims": other_dims}
+    bincoord = np.array([Interval(bins[i], bins[i + 1]) for i in range(len(bins) - 1)])
     bindim = bindim or "bin"
 
     binidx = xr.apply_ufunc(
         da.digitize,
-        ds.stack(**stackdims).chunk({"other_dims": "auto"}),
+        ds.stack(stackdims).chunk({"other_dims": "auto"}),
         kwargs={"bins": bins[1:], "right": True},
         input_core_dims=[["core_dims"]],
         output_core_dims=[["core_dims"]],
@@ -29,7 +37,7 @@ def histogram(ds: xr.Dataset, bins: int | np.ndarray, dims: list[str] | None=Non
     )
 
     bincount: xr.Dataset = xr.apply_ufunc(
-        lambda x: da.apply_along_axis(da.bincount, 1, x, minlength=len(bins)-1),
+        lambda x: da.apply_along_axis(da.bincount, 1, x, minlength=len(bins) - 1),
         binidx,
         input_core_dims=[["other_dims", "core_dims"]],
         output_core_dims=[["other_dims", bindim]],
@@ -59,7 +67,7 @@ def latitude_weights(latitudes: xr.DataArray, normalize: bool = True) -> xr.Data
 
     delta = np.diff(lat_rad)
     delta = np.concatenate(([delta[0]], delta))
-    bounds = np.concatenate(([lat_rad[0] - delta[0]/2], lat_rad + delta/2))
+    bounds = np.concatenate(([lat_rad[0] - delta[0] / 2], lat_rad + delta / 2))
 
     bounds[0] = max(bounds[0], -np.pi / 2)
     bounds[-1] = min(bounds[-1], np.pi / 2)

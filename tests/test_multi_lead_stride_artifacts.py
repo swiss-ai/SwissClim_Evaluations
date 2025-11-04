@@ -8,10 +8,11 @@ from swissclim_evaluations.metrics import deterministic as det
 
 
 def build_stride_pair(total_hours=36, stride=12):
-    """Create a dataset with lead_time every 6h, then emulate stride selection by picking every stride/6 step."""
-    times = np.array(["2023-01-01T00"], dtype="datetime64[h]").astype(
-        "datetime64[ns]"
-    )
+    """Create a dataset with lead_time every 6h.
+
+    Emulate stride selection by picking every stride/6 step.
+    """
+    times = np.array(["2023-01-01T00"], dtype="datetime64[h]").astype("datetime64[ns]")
     # create 6h spaced leads: 0,6,12,... up to total_hours
     raw_leads = np.arange(0, total_hours + 6, 6)
     leads = raw_leads.astype("timedelta64[h]").astype("timedelta64[ns]")
@@ -36,7 +37,8 @@ def build_stride_pair(total_hours=36, stride=12):
 
 def test_stride_policy_produces_per_lead_files(tmp_path: Path):
     ds_t, ds_p, kept = build_stride_pair()
-    # Policy would have mode=stride but at metrics layer we just need that lead_time size>1 and policy.mode != 'first'
+    # Policy would have mode=stride but at metrics layer we just need that
+    # lead_time size>1 and policy.mode != 'first'
     policy = LeadTimePolicy(mode="stride", stride_hours=12)
     det.run(
         ds_t,
@@ -49,6 +51,4 @@ def test_stride_policy_produces_per_lead_files(tmp_path: Path):
         lead_policy=policy,
     )
     wide = tmp_path / "deterministic" / "metrics_by_lead_wide.csv"
-    assert wide.exists(), (
-        "Expected per-lead wide metrics file missing for stride policy"
-    )
+    assert wide.exists(), "Expected per-lead wide metrics file missing for stride policy"

@@ -13,9 +13,9 @@ def _make_ds(hours):
         np.zeros((1, len(leads))),
         dims=("init_time", "lead_time"),
         coords={
-            "init_time": np.array(
-                ["2023-01-01T00"], dtype="datetime64[h]"
-            ).astype("datetime64[ns]"),
+            "init_time": np.array(["2023-01-01T00"], dtype="datetime64[h]").astype(
+                "datetime64[ns]"
+            ),
             "lead_time": leads,
         },
     )
@@ -32,9 +32,7 @@ def test_max_hour_stride():
 
 def test_max_hour_subset():
     ds = _make_ds([0, 6, 12, 18, 24, 30])
-    policy = LeadTimePolicy(
-        mode="subset", subset_hours=[0, 6, 12, 36], max_hour=18
-    )
+    policy = LeadTimePolicy(mode="subset", subset_hours=[0, 6, 12, 36], max_hour=18)
     out = apply_lead_time_selection(ds, policy)
     kept = (out.lead_time.values // np.timedelta64(1, "h")).astype(int).tolist()
     # 18 is not in subset_hours; 36 filtered out by max_hour → expect only 0,6,12

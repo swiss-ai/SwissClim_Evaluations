@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Hashable, Mapping
 from pathlib import Path
-from typing import Any, Hashable, Mapping
+from typing import Any
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -12,28 +13,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble as WBXCRPSEnsemble,
-)
 
 # Use official WeatherBenchX metrics instead of local copies
 from weatherbenchX.metrics.probabilistic import (
+    CRPSEnsemble as WBXCRPSEnsemble,
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
-from ..helpers import time_chunks
-from ..lead_time_policy import LeadTimePolicy
+from ..helpers import build_output_filename, time_chunks
 
 
-def _crps_e1(da_target, da_prediction):
+def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
     e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
     return e_1
 
 
-def crps_e1(
-    da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"
-):
+def crps_e1(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     """Compute the CRPS (e1 component) for ensemble predictions vs targets."""
     return xr.apply_ufunc(
         _crps_e1,
@@ -45,8 +41,11 @@ def crps_e1(
     )
 
 
-def _crps_e2(da_prediction):
+def _crps_e2(da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
+    # Require at least 2 members; upstream runner enforces this. Keep explicit check for clarity.
+    if M < 2:
+        raise ValueError("CRPS e2 component requires ensemble size >=2")
     e_2 = np.sum(
         np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
@@ -65,9 +64,11 @@ def crps_e2(da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     )
 
 
-def _crps_ensemble_fair(da_target, da_prediction):
+def _crps_ensemble_fair(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
-    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
+    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / max(M, 1)
+    if M < 2:
+        raise ValueError("Fair CRPS requires ensemble size >=2 (got 1)")
     e_2 = np.sum(
         np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
         axis=(-1, -2),
@@ -75,10 +76,28 @@ def _crps_ensemble_fair(da_target, da_prediction):
     return e_1 - 0.5 * e_2
 
 
-def crps_ensemble(
-    da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"
-):
+def crps_ensemble(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
     """Compute the fair CRPS for ensemble predictions vs targets."""
+    # Ensure ensemble dimension lives in a single chunk to avoid Dask providing
+    # singleton blocks to gufunc core (which can trigger M=1 checks inside the
+    # function even when global size >1).
+    try:
+        if hasattr(da_prediction.data, "chunks"):
+            # Rechunk only along ensemble dim; keep others unchanged.
+            current = da_prediction.data.chunks
+            if ensemble_dim in da_prediction.dims:
+                axis = da_prediction.dims.index(ensemble_dim)
+                if len(current[axis]) > 1:  # multiple chunks along ensemble dim
+                    da_prediction = da_prediction.chunk({ensemble_dim: -1})
+            # Mirror target chunking for broadcasting safety
+            if (
+                hasattr(da_target.data, "chunks")
+                and ensemble_dim in da_target.dims
+                and len(da_target.data.chunks[da_target.dims.index(ensemble_dim)]) > 1
+            ):
+                da_target = da_target.chunk({ensemble_dim: -1})
+    except Exception:
+        pass  # Best effort; fall back silently
     res = xr.apply_ufunc(
         _crps_ensemble_fair,
         da_target,
@@ -86,6 +105,7 @@ def crps_ensemble(
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix)
 
@@ -105,6 +125,7 @@ def probability_integral_transform(
         input_core_dims=[[], [ensemble_dim]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 
@@ -113,9 +134,7 @@ def _ens_mean_se(da_target, da_prediction):
     return (da_prediction.mean(axis=-1) - da_target) ** 2
 
 
-def ensemble_mean_se(
-    da_target, da_prediction, name_prefix: str = "EnsembleMeanSquaredError"
-):
+def ensemble_mean_se(da_target, da_prediction, name_prefix: str = "EnsembleMeanSquaredError"):
     """Compute the ensemble mean squared error of predictions vs targets."""
     res = xr.apply_ufunc(
         _ens_mean_se,
@@ -124,6 +143,7 @@ def ensemble_mean_se(
         input_core_dims=[[], ["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix)
 
@@ -140,6 +160,7 @@ def ensemble_std(da_prediction, name_prefix: str = "EnsembleSTD"):
         input_core_dims=[["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
+        output_dtypes=[float],
     )
     return _add_metric_prefix(res, name_prefix) if name_prefix else res
 
@@ -150,9 +171,7 @@ def _add_metric_prefix(da_or_ds: xr.Dataset | xr.DataArray, prefix: str):
         name = da_or_ds.name or "value"
         return da_or_ds.rename(f"{prefix}.{name}")
     else:
-        return da_or_ds.rename({
-            var: f"{prefix}.{var}" for var in da_or_ds.data_vars
-        })
+        return da_or_ds.rename({var: f"{prefix}.{var}" for var in da_or_ds.data_vars})
 
 
 # --- Runner helpers and orchestrators (combined) ---
@@ -190,11 +209,7 @@ def _pit_histogram_dask(
     darr = dsa.asarray(data)
     darr = darr.ravel()
     darr = darr[~dsa.isnan(darr)]
-    counts = (
-        dsa.histogram(darr, bins=np.asarray(edges))[0]
-        .compute()
-        .astype(np.float64)
-    )
+    counts = dsa.histogram(darr, bins=np.asarray(edges))[0].compute().astype(np.float64)
     if density:
         total = counts.sum()
         if total > 0:
@@ -217,7 +232,7 @@ def _iter_time_chunks(
             lead_chunk,
         ):
             idx = {"init_time": init_chunk_vals, "lead_time": lead_chunk_vals}
-            # Assumes CLI aligned targets and predictions by init_time/lead_time intersection already.
+            # Assumes upstream CLI aligned datasets by init_time/lead_time intersection.
             yield (ds_target.sel(**idx).load(), ds_prediction.sel(**idx).load())
     elif "time" in ds_prediction.dims:
         yield ds_target, ds_prediction
@@ -231,7 +246,7 @@ def run_probabilistic(
     out_root: Path,
     cfg_plot: dict[str, Any],
     cfg_all: dict[str, Any],
-    lead_policy: LeadTimePolicy | None = None,
+    ensemble_mode: str | None = None,
 ) -> None:
     """Compute CRPS and PIT, save summaries and optional fields.
 
@@ -245,117 +260,149 @@ def run_probabilistic(
     # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
 
     if "ensemble" not in ds_prediction.dims:
-        print(
-            "[probabilistic] Skipping: model dataset has no 'ensemble' dimension."
-        )
+        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
         return
 
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; "
+            "nothing to do."
         )
         return
 
     crps_rows: list[dict[str, Any]] = []
 
-    per_lead = (
-        lead_policy is not None
-        and "lead_time" in ds_prediction.dims
-        and int(ds_prediction.lead_time.size) > 1
-        and lead_policy.mode != "first"
-    )
+    # Extract time ranges for naming
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
 
-    if not per_lead:
-        for var in variables:
-            da_target = ds_target[var]
-            da_prediction = ds_prediction[var]
-            try:
-                da_target, da_prediction = xr.align(
-                    da_target, da_prediction, join="exact"
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
                 )
-            except Exception:
-                if da_target.shape == da_prediction.shape:
-                    da_target = da_target.copy()
-                    da_prediction = da_prediction.copy()
-                else:
-                    raise
-            crps_da = crps_ensemble(
-                da_target, da_prediction, ensemble_dim="ensemble"
-            )
-            crps_mean = float(_reduce_mean_all(crps_da).compute().item())
-            crps_rows.append({"variable": var, "CRPS": crps_mean})
 
-            pit_da = probability_integral_transform(
-                da_target,
-                da_prediction,
-                ensemble_dim="ensemble",
-                name_prefix=None,
-            )
-            counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
-            pit_npz = section_output / f"{var}_pit_hist.npz"
-            np.savez(
-                pit_npz,
-                counts=counts,
-                edges=edges,
-            )
-            print(f"[probabilistic] saved {pit_npz}")
-            pit_nc = section_output / f"{var}_pit.nc"
-            crps_nc = section_output / f"{var}_crps.nc"
-            pit_da.to_netcdf(pit_nc)
-            crps_da.to_netcdf(crps_nc)
-            print(f"[probabilistic] saved {pit_nc}")
-            print(f"[probabilistic] saved {crps_nc}")
-    else:
-        lead_hours = (
-            ds_prediction["lead_time"].values // np.timedelta64(1, "h")
-        ).astype(int)
-        crps_lead_rows: list[dict[str, Any]] = []
-        for li, h in enumerate(lead_hours):
-            for var in variables:
-                da_target = ds_target[var].isel(lead_time=li)
-                da_prediction = ds_prediction[var].isel(lead_time=li)
-                try:
-                    da_target, da_prediction = xr.align(
-                        da_target, da_prediction, join="exact"
-                    )
-                except Exception:
-                    if da_target.shape == da_prediction.shape:
-                        da_target = da_target.copy()
-                        da_prediction = da_prediction.copy()
-                    else:
-                        raise
-                crps_da = crps_ensemble(
-                    da_target, da_prediction, ensemble_dim="ensemble"
-                )
-                crps_mean = float(_reduce_mean_all(crps_da).compute().item())
-                crps_lead_rows.append({
-                    "variable": var,
-                    "lead_time_hours": int(h),
-                    "CRPS": crps_mean,
-                })
-                if lead_policy.store_full_fields:
-                    crps_nc = section_output / f"{var}_crps_lead{int(h)}.nc"
-                    crps_da.to_netcdf(crps_nc)
-                # Only compute PIT histogram for panel-selected leads to limit cost
-                # Select panel hours once
-        if crps_lead_rows:
-            crps_df = pd.DataFrame(crps_lead_rows)
-            crps_df.to_csv(section_output / "crps_by_lead.csv", index=False)
-            # Aggregate mean across leads for single-lead summary (backward compatibility)
-            summary = crps_df.groupby("variable").mean(numeric_only=True)[
-                "CRPS"
-            ]
-            for var, val in summary.items():
-                crps_rows.append({"variable": var, "CRPS": float(val)})
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
 
-    if crps_rows:
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
+    from ..helpers import ensemble_mode_to_token
+
+    ens_token = ensemble_mode_to_token("prob")
+
+    for var in variables:
+        # Extract and align targets and predictions along shared coordinates
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
+        try:
+            da_target, da_prediction = xr.align(da_target, da_prediction, join="exact")
+        except Exception:
+            # Fallback to by-position if shapes match exactly
+            if da_target.shape == da_prediction.shape:
+                da_target = da_target.copy()
+                da_prediction = da_prediction.copy()
+            else:
+                raise
+        crps_da = crps_ensemble(da_target, da_prediction, ensemble_dim="ensemble")
+        crps_mean = float(_reduce_mean_all(crps_da).compute().item())
+        crps_rows.append({"variable": var, "CRPS": crps_mean})
+
+        pit_da = probability_integral_transform(
+            da_target,
+            da_prediction,
+            ensemble_dim="ensemble",
+            name_prefix="PIT",
+        )
+        counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
+        pit_npz = section_output / build_output_filename(
+            metric="pit_hist",
+            variable=str(var),
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="npz",
+        )
+        np.savez(
+            pit_npz,
+            counts=counts,
+            edges=edges,
+        )
+        print(f"[probabilistic] saved {pit_npz}")
+        # Always save PIT and CRPS fields for reproducibility
+        pit_nc = section_output / build_output_filename(
+            metric="pit_field",
+            variable=str(var),
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="nc",
+        )
+        crps_nc = section_output / build_output_filename(
+            metric="crps_field",
+            variable=str(var),
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="nc",
+        )
+        pit_da.to_netcdf(pit_nc)
+        crps_da.to_netcdf(crps_nc)
+        print(f"[probabilistic] saved {pit_nc}")
+        print(f"[probabilistic] saved {crps_nc}")
+
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
-        out_csv = section_output / "crps_summary.csv"
+        out_csv = section_output / build_output_filename(
+            metric="crps_summary",
+            variable=None,
+            level=None,
+            qualifier="averaged" if (init_range or lead_range) else None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="csv",
+        )
         df.to_csv(out_csv)
         print("CRPS summary (per variable):")
         print(df.head())
         print(f"[probabilistic] saved {out_csv}")
+        # Backward-compatible copy for tests expecting ensnone naming
 
 
 def _select_base_variable_for_plot(
@@ -363,11 +410,7 @@ def _select_base_variable_for_plot(
     ds_prediction: xr.Dataset,
     plotting_cfg: dict[str, Any],
 ) -> str:
-    cfg_var = (
-        (plotting_cfg or {}).get("map_variable")
-        if isinstance(plotting_cfg, dict)
-        else None
-    )
+    cfg_var = (plotting_cfg or {}).get("map_variable") if isinstance(plotting_cfg, dict) else None
     if cfg_var and isinstance(cfg_var, str):
         if cfg_var.startswith("CRPS."):
             return cfg_var.split(".", 1)[1]
@@ -377,15 +420,11 @@ def _select_base_variable_for_plot(
         raise ValueError(
             "No common variables between targets and predictions for probabilistic plots."
         )
-    return common[0]
+    return str(common[0])
 
 
 def _time_reduce_dims_for_plot(da: xr.DataArray) -> list[str]:
-    return [
-        d
-        for d in ["time", "init_time", "lead_time", "ensemble"]
-        if d in da.dims
-    ]
+    return [d for d in ["time", "init_time", "lead_time", "ensemble"] if d in da.dims]
 
 
 def plot_probabilistic(
@@ -394,9 +433,10 @@ def plot_probabilistic(
     out_root: Path,
     plotting_cfg: dict[str, Any],
 ) -> None:
-    """Generate probabilistic plots (CRPS map and PIT histogram) and save to disk.
+    """Generate probabilistic plots (CRPS map + PIT histogram).
 
-    Saves under out_root/probabilistic as PNGs and optionally NPZ with data if output_mode is 'npz' or 'both'.
+    Saves under out_root/probabilistic. If output_mode in {'npz','both'} also
+    writes NPZ data artifacts.
     """
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -405,28 +445,18 @@ def plot_probabilistic(
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
 
-    base_var = _select_base_variable_for_plot(
-        ds_target, ds_prediction, plotting_cfg
-    )
+    base_var = _select_base_variable_for_plot(ds_target, ds_prediction, plotting_cfg)
 
     # CRPS map (reduce over time-like dims, keep lat/lon)
-    crps = crps_ensemble(
-        ds_target[base_var], ds_prediction[base_var], ensemble_dim="ensemble"
-    )
+    crps = crps_ensemble(ds_target[base_var], ds_prediction[base_var], ensemble_dim="ensemble")
     reduce_dims = _time_reduce_dims_for_plot(crps)
     crps_map = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
 
     # Detect lat/lon and sort latitude ascending for pcolormesh compatibility
-    lat_name = next(
-        (n for n in crps_map.dims if n in ("latitude", "lat", "y")), None
-    )
-    lon_name = next(
-        (n for n in crps_map.dims if n in ("longitude", "lon", "x")), None
-    )
+    lat_name = next((n for n in crps_map.dims if n in ("latitude", "lat", "y")), None)
+    lon_name = next((n for n in crps_map.dims if n in ("longitude", "lon", "x")), None)
     if lat_name is None or lon_name is None:
-        raise ValueError(
-            f"Cannot find lat/lon dims in CRPS map dims: {crps_map.dims}"
-        )
+        raise ValueError(f"Cannot find lat/lon dims in CRPS map dims: {crps_map.dims}")
     lat_vals = crps_map[lat_name].values
     if lat_vals[0] > lat_vals[-1]:
         crps_map = crps_map.sortby(lat_name)
@@ -443,18 +473,83 @@ def plot_probabilistic(
         shading="auto",
         transform=ccrs.PlateCarree(),
     )
-    cbar = plt.colorbar(
-        mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8
-    )
+    cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
     cbar.set_label(f"CRPS — {base_var}")
     ax.set_title(f"CRPS map (mean over time): {base_var}")
 
+    # Attempt time range extraction for plots
+    def _extract_init_range_plot(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range_plot(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range_plot = _extract_init_range_plot(ds_prediction)
+    lead_range_plot = _extract_lead_range_plot(ds_prediction)
     if save_fig:
-        out_png = section / f"crps_map_{base_var}.png"
+        from ..helpers import build_output_filename, ensemble_mode_to_token
+
+        ens_token_plot = ensemble_mode_to_token("prob")
+        out_png = section / build_output_filename(
+            metric="crps_map",
+            variable=base_var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range_plot,
+            lead_time_range=lead_range_plot,
+            ensemble=ens_token_plot,
+            ext="png",
+        )
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         print(f"[probabilistic-plots] saved {out_png}")
     if save_npz:
-        out_npz = section / f"crps_map_{base_var}.npz"
+        from ..helpers import build_output_filename, ensemble_mode_to_token
+
+        ens_token_plot = ensemble_mode_to_token("prob")
+        out_npz = section / build_output_filename(
+            metric="crps_map",
+            variable=base_var,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range_plot,
+            lead_time_range=lead_range_plot,
+            ensemble=ens_token_plot,
+            ext="npz",
+        )
         np.savez(
             out_npz,
             crps=crps_map.values,
@@ -471,12 +566,11 @@ def plot_probabilistic(
         ds_target[base_var],
         ds_prediction[base_var],
         ensemble_dim="ensemble",
-        name_prefix=None,
+        name_prefix="PIT",
     )
     counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
 
     fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
-    # Draw histogram from counts/edges to avoid materializing all values
     widths = np.diff(edges)
     ax.bar(
         edges[:-1],
@@ -493,14 +587,79 @@ def plot_probabilistic(
     ax.legend()
 
     if save_fig:
-        out_png = section / f"pit_hist_{base_var}.png"
+        out_png = (
+            section / f"pit_hist_{base_var}.png"
+        )  # legacy non-tokenized image filename retained
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         print(f"[probabilistic-plots] saved {out_png}")
     if save_npz:
-        out_npz = section / f"pit_hist_{base_var}.npz"
+        # Use standardized filename builder for NPZ (with ensprob token)
+        from ..helpers import build_output_filename, ensemble_mode_to_token
+
+        ens_token_plot = ensemble_mode_to_token("prob")
+        out_npz = section / build_output_filename(
+            metric="pit_hist",
+            variable=base_var,
+            level=None,
+            qualifier=None,
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=ens_token_plot,
+            ext="npz",
+        )
         np.savez(out_npz, counts=counts, edges=edges, variable=base_var)
         print(f"[probabilistic-plots] saved {out_npz}")
     plt.close(fig)
+
+    # Optional: CRPS line plots over lead_time per variable
+    try:
+        do_lines = bool((plotting_cfg or {}).get("probabilistic_line_plots", False))
+    except Exception:
+        do_lines = False
+    if (
+        do_lines
+        and ("lead_time" in ds_prediction.dims)
+        and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+    ):
+        variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
+        hours_vals = None
+        try:
+            lt = ds_prediction["lead_time"].values
+            hours_vals = [int(np.timedelta64(x) / np.timedelta64(1, "h")) for x in lt]
+        except Exception:
+            hours_vals = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+        for var in variables:
+            crps = crps_ensemble(ds_target[var], ds_prediction[var], ensemble_dim="ensemble")
+            # mean over all dims except lead_time
+            reduce_dims = [
+                d
+                for d in ["time", "init_time", "latitude", "longitude", "level", "ensemble"]
+                if d in crps.dims
+            ]
+            crps_lt = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
+            try:
+                vals = np.asarray(crps_lt.values).ravel()
+            except Exception:
+                continue
+            fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
+            ax.plot(hours_vals, vals, marker="o")
+            ax.set_xlabel("lead_time (h)")
+            ax.set_ylabel("CRPS")
+            ax.set_title(f"CRPS vs lead_time — {var}")
+            out_png = section / build_output_filename(
+                metric="crps_line",
+                variable=str(var),
+                level=None,
+                qualifier=None,
+                init_time_range=init_range_plot,
+                lead_time_range=lead_range_plot,
+                ensemble=ensemble_mode_to_token("prob"),
+                ext="png",
+            )
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[probabilistic-plots] saved {out_png}")
+            plt.close(fig)
 
 
 """
@@ -528,26 +687,19 @@ def _wbx_metric_to_df(
     """
     # Build var->DataArray mappings using only common variables
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
-    pred_map: Mapping[Hashable, xr.DataArray] = {
-        v: ds_prediction[v] for v in variables
-    }
-    targ_map: Mapping[Hashable, xr.DataArray] = {
-        v: ds_target[v] for v in variables
-    }
+    pred_map: Mapping[Hashable, xr.DataArray] = {v: ds_prediction[v] for v in variables}
+    targ_map: Mapping[Hashable, xr.DataArray] = {v: ds_target[v] for v in variables}
 
     # Compute and average statistics per variable
     mean_stats: dict[str, dict[Hashable, xr.DataArray]] = {}
     dims_all = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "level",
-            "ensemble",
-        ]
+        "time",
+        "init_time",
+        "lead_time",
+        "latitude",
+        "longitude",
+        "level",
+        "ensemble",
     ]
     for stat_name, stat in metric.statistics.items():
         stat_vals = stat.compute(predictions=pred_map, targets=targ_map)
@@ -590,42 +742,126 @@ def run_probabilistic_wbx(
     from weatherbenchX import aggregation, binning, weighting
 
     if "ensemble" not in ds_prediction.dims:
-        print(
-            "[probabilistic] Skipping: model dataset has no 'ensemble' dimension."
-        )
+        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
         return
 
-    common_vars = [
-        v for v in ds_prediction.data_vars if v in ds_target.data_vars
-    ]
+    common_vars = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not common_vars:
         print(
-            "[probabilistic] No overlapping variables between targets and predictions; nothing to do."
+            "[probabilistic] No overlapping variables between targets and predictions; "
+            "nothing to do."
         )
         return
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
     # CSV summaries using WBX metrics (SpreadSkillRatio, CRPSEnsemble)
+    # Use .sizes (preferred) instead of .dims.get for forward compatibility
+    m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
+    if m_ens < 2:
+        raise RuntimeError(
+            "WBX probabilistic metrics require ensemble size >=2 (SpreadSkillRatio/CRPS ensemble). "
+            f"Found ensemble size {m_ens}."
+        )
     ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
-    ssr_df = _wbx_metric_to_df(
-        ssr_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="SSR"
+    try:
+        ssr_df = _wbx_metric_to_df(
+            ssr_metric,
+            ds_prediction=ds_pred,
+            ds_target=ds_targ,
+            value_col="SSR",
+        )
+    except Exception as e:  # pragma: no cover - defensive clarity wrapper
+        raise RuntimeError(
+            "Failed computing SpreadSkillRatio via WeatherBenchX. "
+            "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
+        ) from e
+
+    # Extract time ranges for naming
+    def _extract_init_range(ds: xr.Dataset):
+        if "init_time" not in ds:
+            return None
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
+        except Exception:
+            return None
+
+    def _extract_lead_range(ds: xr.Dataset):
+        if "lead_time" not in ds:
+            return None
+        try:
+            vals = ds["lead_time"].values
+            if vals.size == 0:
+                return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
+        except Exception:
+            return None
+
+    init_range = _extract_init_range(ds_prediction)
+    lead_range = _extract_lead_range(ds_prediction)
+
+    from ..helpers import ensemble_mode_to_token
+
+    ens_token_prob = ensemble_mode_to_token("prob")
+
+    ssr_csv = section / build_output_filename(
+        metric="spread_skill_ratio",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token_prob,
+        ext="csv",
     )
-    ssr_csv = section / "spread_skill_ratio.csv"
     ssr_df.to_csv(ssr_csv)
     print(f"[probabilistic] saved {ssr_csv}")
 
     crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
-    crps_df = _wbx_metric_to_df(
-        crps_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="CRPS"
+    try:
+        crps_df = _wbx_metric_to_df(
+            crps_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="CRPS"
+        )
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "Failed computing CRPSEnsemble via WeatherBenchX. "
+            "Check ensemble size (>=2) and data alignment. Original error: " + str(e)
+        ) from e
+    crps_csv = section / build_output_filename(
+        metric="crps_ensemble",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token_prob,
+        ext="csv",
     )
-    crps_csv = section / "crps_ensemble.csv"
     crps_df.to_csv(crps_csv)
     print(f"[probabilistic] saved {crps_csv}")
 
-    def _default_regions() -> dict[
-        str, tuple[tuple[float, float], tuple[float, float]]
-    ]:
+    def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
         return {
             "global": ((-90, 90), (0, 360)),
             "tropics": ((-20, 20), (0, 360)),
@@ -641,11 +877,7 @@ def run_probabilistic_wbx(
             "antarctic": ((-90, -60), (0, 360)),
         }
 
-    regions_cfg = (
-        (plotting_cfg or {}).get("regions")
-        if isinstance(plotting_cfg, dict)
-        else None
-    )
+    regions_cfg = (plotting_cfg or {}).get("regions") if isinstance(plotting_cfg, dict) else None
     regions = regions_cfg or _default_regions()
 
     spatial_aggregator = aggregation.Aggregator(
@@ -659,20 +891,17 @@ def run_probabilistic_wbx(
         if isinstance(plotting_cfg, dict)
         else False
     )
-    temporal_bin_by = (
-        [binning.ByTimeUnit("season", "init_time")] if seasonal else None
-    )
+    temporal_bin_by = [binning.ByTimeUnit("season", "init_time")] if seasonal else None
     temporal_aggregator = aggregation.Aggregator(
         reduce_dims=["init_time"],
         bin_by=temporal_bin_by,
     )
 
-    metrics = {
-        "CRPS": CRPSEnsemble(ensemble_dim="ensemble"),
-        "SSR": SpreadSkillRatio(ensemble_dim="ensemble"),
-    }
+    metrics = {}
+    metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
+    metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
 
-    variables = [v for v in ds_pred.data_vars]
+    variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
     targ_map = {v: ds_targ[v] for v in variables}
     # Temporal results: reduce spatial dims, keep time dims
@@ -705,8 +934,26 @@ def run_probabilistic_wbx(
 
     enc_t = _build_time_encoding(temporal_results)
     enc_s = _build_time_encoding(spatial_results)
-    temporal_fn = section / "probabilistic_metrics_temporal.nc"
-    spatial_fn = section / "probabilistic_metrics_spatial.nc"
+    temporal_fn = section / build_output_filename(
+        metric="prob_metrics_temporal",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token_prob,
+        ext="nc",
+    )
+    spatial_fn = section / build_output_filename(
+        metric="prob_metrics_spatial",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token_prob,
+        ext="nc",
+    )
     temporal_results.to_netcdf(temporal_fn, engine="scipy", encoding=enc_t)
     spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
     print("Wrote:", temporal_fn)
@@ -717,16 +964,10 @@ def run_probabilistic_wbx(
     if mode in ("plot", "both"):
         # Choose base variable
         cfg_var = (
-            (plotting_cfg or {}).get("map_variable")
-            if isinstance(plotting_cfg, dict)
-            else None
+            (plotting_cfg or {}).get("map_variable") if isinstance(plotting_cfg, dict) else None
         )
         base_var = cfg_var or variables[0]
-        reduce_dims = [
-            d
-            for d in ["init_time", "lead_time", "time"]
-            if d in ds_pred[base_var].dims
-        ]
+        reduce_dims = [d for d in ["init_time", "lead_time", "time"] if d in ds_pred[base_var].dims]
         # Compute CRPS map using a single-chunk aggregator for simplicity
         pred_map = {base_var: ds_pred[base_var]}
         targ_map = {base_var: ds_targ[base_var]}
@@ -764,22 +1005,26 @@ def run_probabilistic_wbx(
                     cmap="viridis",
                     shading="auto",
                 )
-                plt.colorbar(
-                    mesh, ax=ax, orientation="vertical", label=crps_name
-                )
+                plt.colorbar(mesh, ax=ax, orientation="vertical", label=crps_name)
                 ax.set_title(f"CRPS map: {base_var}")
                 # Avoid clashing with non-WBX CRPS map by using a distinct filename
-                out_png = section / f"crps_map_wbx_{base_var}.png"
+                out_png = section / build_output_filename(
+                    metric="crps_map_wbx",
+                    variable=base_var,
+                    level=None,
+                    qualifier=None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token_prob,
+                    ext="png",
+                )
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
                 print(f"[probabilistic] saved {out_png}")
                 plt.close(fig)
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:
-    if isinstance(da_or_ds, xr.DataArray):
-        ds = da_or_ds.to_dataset(name="value")
-    else:
-        ds = da_or_ds
+    ds = da_or_ds.to_dataset(name="value") if isinstance(da_or_ds, xr.DataArray) else da_or_ds
     dims = [
         d
         for d in [
