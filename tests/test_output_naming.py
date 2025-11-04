@@ -58,14 +58,14 @@ def test_probabilistic_first_lead_integration(tmp_path: Path):
         lead_time_range=lead_range,
         ensemble=None,
     )
-    assert fn == "crps_summary_init2025010100-2025010206_lead000h-000h_ensnone.csv"
+    assert fn == "crps_summary_init2025010100-2025010206_lead000h-000h_ensmean.csv"
     assert trimmed.lead_time.size == 1
 
 
 def test_build_output_filename_matrix():
     # Parametric quick sweep over combinations
     cases = [
-        {"metric": "metrics", "ensemble": None, "exp": "metrics_ensnone.csv"},
+        {"metric": "metrics", "ensemble": None, "exp": "metrics_ensmean.csv"},
         {
             "metric": "map",
             "variable": "temperature",
@@ -94,13 +94,13 @@ def test_build_output_filename_matrix():
             "metric": "ets_metrics",
             "lead_time_range": ("000h", "048h"),
             "ensemble": None,
-            "exp": "ets_metrics_lead000h-048h_ensnone.csv",
+            "exp": "ets_metrics_lead000h-048h_ensmean.csv",
         },
         {
             "metric": "wd_kde_wasserstein",
             "init_time_range": ("2023010100", "2023010300"),
             "ensemble": None,
-            "exp": "wd_kde_wasserstein_init2023010100-2023010300_ensnone.csv",
+            "exp": "wd_kde_wasserstein_init2023010100-2023010300_ensmean.csv",
         },
     ]
     for c in cases:

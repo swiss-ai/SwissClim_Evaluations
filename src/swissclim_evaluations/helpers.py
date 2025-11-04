@@ -102,7 +102,7 @@ def build_output_filename(
 ) -> str:
     """Build standardized output filename.
 
-    Always includes ensemble token (ensnone if not present).
+    Always includes ensemble token (ensmean by default).
     Args:
         metric: Short identifier.
         variable: Variable name; list/None omitted.
@@ -131,7 +131,8 @@ def build_output_filename(
         parts.append(f"lead{lead_time_range[0]}-{lead_time_range[1]}")
     # Ensemble token always last before extension
     if ensemble is None:
-        parts.append("ensnone")
+        # Default: treat deterministic/no-explicit-ensemble as mean for naming consistency
+        parts.append("ensmean")
     else:
         ens_lower = str(ensemble).lower()
         # Accept already fully-qualified tokens from resolver
@@ -222,7 +223,7 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     For members mode we expect caller to invoke once per member with member_index.
     """
     if mode == "none":
-        return None  # builder will inject ensnone
+        return None  # builder will inject default 'ensmean'
     if mode == "mean":
         return "mean"  # builder normalises to ensmean
     if mode == "pooled":

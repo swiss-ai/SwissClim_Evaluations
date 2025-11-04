@@ -348,6 +348,21 @@ Attributes:
 
 The evaluation generates organized results for each enabled module:
 
+## Ensemble handling: modes and filename tokens
+
+- Dataset may or may not have an `ensemble` dimension. You can optionally preselect members via `selection.ensemble_members` and override per‑module behaviour under `ensemble`.
+- Resolved modes per module and their output filename tokens:
+  - mean: reduce ensemble to its arithmetic mean → suffix `_ensmean`
+  - pooled: treat all members' samples jointly (histograms/KDE) → `_enspooled`
+  - members: export one artifact per member → `_ens0`, `_ens1`, ...
+  - prob: probabilistic semantics (CRPS/PIT/SSR keep ensemble inside metrics) → `_ensprob`
+  - none: only valid when the dataset truly has no `ensemble` dim; filenames still use `_ensmean` for consistency.
+
+Notes
+
+- Deterministic and ETS modules default to `mean` when an ensemble dimension is present; otherwise they behave deterministically on the single field. In both cases, filenames now use `_ensmean` (we no longer emit `_ensnone`).
+- Existing intercomparison tools still recognize legacy files ending with `_ensnone` for backward compatibility.
+
 ### Deterministic Metrics
 
 Filenames encode only information that is actually present:
