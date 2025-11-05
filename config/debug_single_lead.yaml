@@ -1,0 +1,79 @@
+# Debug config: single-lead, reduced dataset, all modules enabled
+# Goal: quick end-to-end run to validate behavior vs main branch.
+
+paths:
+  # Keep existing small Aurora/ESFM rollout (has 3D vars)
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
+  # Use WeatherBench2 ERA5 shards (combined lazily)
+  nwp: [
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
+  ]
+  # Isolated output folder for this debug run
+  output_root: "output/debug_single_lead"
+
+selection:
+  # Keep one 2D and one 3D variable so all modules have inputs
+  variables_2d: ["10m_u_component_of_wind"]
+  variables_3d: ["u_component_of_wind"]
+  # Reduce spatial domain (latitude band only) to speed up; keep full 0..360 longitudes
+  latitudes: [60.0, 30.0]      # narrow band to reduce workload (ERA5 lat is descending)
+  longitudes: [0.0, 359.75]    # keep full zonal span (required for spectra)
+  levels: [1000]               # single pressure level for the 3D var
+  # Tiny time window around the rollout date
+  datetimes: ["2023-01-02T00:2023-01-03T00"]
+  # No coarse temporal stride; lead_time policy controls selection
+  temporal_resolution_hours: null
+  # Do not pre-filter ensemble; let per-module modes handle it
+  ensemble_members: null
+  # Per-module ensemble handling (defaults retained; leave here for clarity)
+  ensemble:
+    maps: members
+    histograms: pooled
+    wd_kde: pooled
+    energy_spectra: mean
+    vertical_profiles: mean
+    deterministic: mean
+    ets: mean
+    probabilistic: prob
+  # Be lenient about missing levels/timestamps in this debug run
+  check_missing: false
+
+plotting:
+  random_seed: 42
+  plot_datetime: null
+  plot_ensemble_members: null
+  dpi: 48
+  # Reduce subsampling budgets to speed up
+  kde_max_samples: 50000
+  histogram_max_samples: 50000
+  output_mode: both            # save both PNGs and NPZs where applicable
+  # Multi-lead plot toggles (mostly ignored in single-lead mode)
+  histograms_per_lead: true
+  maps_per_lead_grid: true
+  lead_panel_hours: [0]
+  wd_kde_global_evolution: false
+  energy_spectra_spectrogram: false
+  probabilistic_line_plots: true
+  ets_line_plot: true
+  vertical_profiles_evolve_lead: false
+
+# Single-lead evaluation
+lead_time:
+  mode: first                  # take only first lead_time (single-lead)
+  stride_hours: 12             # ignored for mode=first
+  max_hour: 120                # ignored for mode=first
+  panel:
+    strategy: first
+    count: 1
+
+metrics:
+  deterministic:
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
+    fss:
+      quantile: 0.90
+      window_size: 9
+  ets:
+    thresholds: [50, 70, 90]
+    line_plot: true

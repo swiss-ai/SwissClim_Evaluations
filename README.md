@@ -96,6 +96,27 @@ srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
+## Quick debug: single-lead run
+
+Use the provided debug config to run a very small, single-lead evaluation end-to-end. This keeps all modules enabled while trimming data volume to finish fast.
+
+- Config: `config/debug_single_lead.yaml`
+- Output folder: `output/debug_single_lead/`
+
+Run inside the container (recommended):
+
+```bash
+srun --container-writable --environment=/users/$USER/.edf/swissclim-eval.toml \
+  -A a122 -t 00:15:00 -p debug --pty \
+  python -u -m swissclim_evaluations.cli --config config/debug_single_lead.yaml
+```
+
+Or submit as a batch job by temporarily setting `CONFIG_PATH_IN_REPO="config/debug_single_lead.yaml"` in `launchscript.sh` and then:
+
+```bash
+sbatch launchscript.sh
+```
+
 <details>
 <summary>Install with uenv + uv</summary>
 
