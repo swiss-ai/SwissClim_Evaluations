@@ -19,7 +19,7 @@ selection:
   # Reduce spatial domain (latitude band only) to speed up; keep full 0..360 longitudes
   latitudes: [60.0, 30.0]      # narrow band to reduce workload (ERA5 lat is descending)
   longitudes: [0.0, 359.75]    # keep full zonal span (required for spectra)
-  levels: [1000]               # single pressure level for the 3D var
+  levels: [500, 1000]          # keep two levels so vertical_profiles can run
   # Tiny time window around the rollout date
   datetimes: ["2023-01-02T00:2023-01-03T00"]
   # No coarse temporal stride; lead_time policy controls selection
@@ -77,3 +77,13 @@ metrics:
   ets:
     thresholds: [50, 70, 90]
     line_plot: true
+
+modules:
+  maps: true
+  histograms: true
+  wd_kde: true
+  energy_spectra: true
+  vertical_profiles: true
+  deterministic: true
+  ets: true
+  probabilistic: true
