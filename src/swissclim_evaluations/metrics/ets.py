@@ -183,9 +183,10 @@ def run(
                     print(f"[ets] saved {out_wide}")
                     # Optional: line plot of thresholds vs lead_time per variable
                     try:
-                        do_plot = bool(ets_cfg.get("line_plot", False))
+                        # Default to True so ETS thresholds per lead are visualized
+                        do_plot = bool(ets_cfg.get("line_plot", True))
                     except Exception:
-                        do_plot = False
+                        do_plot = True
                     if do_plot:
                         import matplotlib.pyplot as _plt
 

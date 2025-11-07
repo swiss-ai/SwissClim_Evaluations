@@ -1,0 +1,100 @@
+# Debug config: multi-lead evaluation with minimal data volume
+# Goal: exercise all multi-lead plotting/features quickly on the debug queue.
+
+paths:
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
+    # "/capstor/store/cscs/swissai/a122/baselines/AIFS-v1-1/rollout_pred_aifs-single-1.1_2023-01-02T00x224_40steps.zarr"
+
+
+  nwp: [
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
+  ]
+  output_root: "output/debug_multi_lead"
+
+selection:
+  # Latitude selection behavior (not cyclic):
+  # - Provide as [min_lat, max_lat]. If given in descending order, it will be
+  #   normalized to ascending and treated as a single contiguous band (no polar union).
+  latitudes: [34.0, 72.0]
+  # Longitude selection behavior:
+  # - If first < second → standard band [first, second]
+  # - If first > second → wrap-around union [first..max_lon] ∪ [min_lon..second]
+  longitudes: [335.0, 45.0]
+
+  # Use 10m wind (u-component) for debug; disable 3D vars for this run
+  variables_2d: ["10m_u_component_of_wind"]
+  variables_3d: []
+  levels: []
+
+  # Two-day window to retain multiple valid lead_time offsets after alignment
+  datetimes: ["2023-01-02T00:2023-01-04T00"]
+
+  temporal_resolution_hours: null
+  ensemble_members: null # use all ensemble members
+
+  # Per-module ensemble preferences (kept for clarity; ignored if no ensemble)
+  ensemble:
+    maps: members
+    histograms: pooled
+    wd_kde: pooled
+    energy_spectra: mean
+    vertical_profiles: mean
+    deterministic: mean
+    ets: mean
+    probabilistic: prob
+
+  check_missing: false
+
+plotting:
+  random_seed: 42
+  plot_datetime: null
+  plot_ensemble_members: null
+  dpi: 48
+  kde_max_samples: 60000
+  histogram_max_samples: 60000
+  output_mode: both
+
+  # Multi-lead plotting features requested
+  histograms_per_lead: true
+  maps_per_lead_grid: true
+  wd_kde_global_evolution: true
+  energy_spectra_spectrogram: true
+  probabilistic_line_plots: true
+  ets_line_plot: true
+  vertical_profiles_evolve_lead: true
+
+# Multi-lead selection policy
+
+lead_time:
+  # Keep all → full | sample every N hours → stride | explicit subset → subset
+  mode: subset
+  # Hard cap (applies to all modes except 'first')
+  max_hour: 240
+  # Stride options (only when mode: stride)
+  stride:
+    hours: 48   # keep every N hours
+  # Subset options (only when mode: subset)
+  subset:
+    hours: [6, 48, 96, 144, 192, 240]  # explicit list of lead hours to keep
+
+modules:
+  maps: true
+  histograms: true
+  wd_kde: true
+  energy_spectra: true
+  vertical_profiles: true
+  deterministic: true
+  ets: true
+  probabilistic: true
+
+metrics:
+  deterministic:
+    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
+    standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
+    fss:
+      quantile: 0.95
+      window_size: 9
+  ets:
+    thresholds: [50, 70, 90]
+    line_plot: true

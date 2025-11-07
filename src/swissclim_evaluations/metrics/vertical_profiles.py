@@ -405,8 +405,7 @@ def run(
             and ("lead_time" in ds_prediction.dims)
             and int(ds_prediction.sizes.get("lead_time", 0)) > 1
         ):
-            # Determine lead hours to show
-            panel_hours = (plotting_cfg or {}).get("lead_panel_hours")
+            # Use all retained lead_time hours (panel concept removed)
             try:
                 all_hours = [
                     int(np.timedelta64(x) / np.timedelta64(1, "h"))
@@ -414,9 +413,7 @@ def run(
                 ]
             except Exception:
                 all_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
-            if not panel_hours:
-                max_panels = int((plotting_cfg or {}).get("vprof_max_panels", 5))
-                panel_hours = all_hours[:max_panels]
+            panel_hours = all_hours
             # Compute global (all-latitudes) profiles per selected lead
             fig, ax = plt.subplots(figsize=(7, 6), dpi=dpi * 2)
             colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(panel_hours)))
@@ -453,3 +450,63 @@ def run(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[vertical_profiles] saved {out_png}")
             plt.close(fig)
+
+            # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
+            try:
+                all_hours = [
+                    int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                    for x in ds_prediction["lead_time"].values
+                ]
+            except Exception:
+                all_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+            hour_index_pairs = []
+            for h in panel_hours:
+                try:
+                    hour_index_pairs.append((int(h), all_hours.index(int(h))))
+                except Exception:
+                    hour_index_pairs.append((int(h), panel_hours.index(h)))
+            if hour_index_pairs:
+                n_levels = len(level_values)
+                n_leads = len(hour_index_pairs)
+                grid = np.full((n_levels, n_leads), np.nan, dtype=float)
+                for j, (h, li) in enumerate(hour_index_pairs):
+                    da_t = ds_target[var]
+                    da_p = ds_prediction[var]
+                    if "lead_time" in da_t.dims:
+                        da_t = da_t.isel(lead_time=li)
+                    if "lead_time" in da_p.dims:
+                        da_p = da_p.isel(lead_time=li)
+                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                    try:
+                        grid[:, j] = np.asarray(prof.values).ravel()
+                    except Exception:
+                        pass
+                lead_hours_plot = [h for h, _ in hour_index_pairs]
+                fig2, ax2 = plt.subplots(figsize=(9, 6), dpi=dpi * 2)
+                im = ax2.pcolormesh(
+                    lead_hours_plot,
+                    level_values,
+                    grid,
+                    shading="nearest",
+                    cmap="viridis",
+                )
+                ax2.invert_yaxis()
+                ax2.set_xlabel("lead_time (h)")
+                ax2.set_ylabel("Level")
+                ax2.set_title(f"Vertical Profiles NMAE — lead-time evolution (heatmap) — {var}")
+                cbar = plt.colorbar(im, ax=ax2, orientation="vertical")
+                cbar.set_label("NMAE (%)")
+                out_png2 = section_output / build_output_filename(
+                    metric="vprof_nmae",
+                    variable=var,
+                    level="multi",
+                    qualifier="evolve_heatmap",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token if resolved_mode != "members" else None,
+                    ext="png",
+                )
+                plt.tight_layout()
+                plt.savefig(out_png2, bbox_inches="tight", dpi=200)
+                print(f"[vertical_profiles] saved {out_png2}")
+                plt.close(fig2)

@@ -325,8 +325,12 @@ def run_probabilistic(
         # Extract and align targets and predictions along shared coordinates
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
+        # Align coordinates so both arrays share the same indexing. Use an
+        # outer join so we preserve all prediction lead_time offsets even when
+        # targets are missing some valid_time points. Missing entries become
+        # NaN and are handled by downstream skipna averaging.
         try:
-            da_target, da_prediction = xr.align(da_target, da_prediction, join="exact")
+            da_target, da_prediction = xr.align(da_target, da_prediction, join="outer")
         except Exception:
             # Fallback to by-position if shapes match exactly
             if da_target.shape == da_prediction.shape:
@@ -447,8 +451,21 @@ def plot_probabilistic(
 
     base_var = _select_base_variable_for_plot(ds_target, ds_prediction, plotting_cfg)
 
-    # CRPS map (reduce over time-like dims, keep lat/lon)
-    crps = crps_ensemble(ds_target[base_var], ds_prediction[base_var], ensemble_dim="ensemble")
+    # Align target/prediction on common coordinates with an OUTER join to preserve all
+    # prediction lead_time offsets (especially when targets are sparser). This mirrors
+    # the alignment used in run_probabilistic and prevents accidental intersection that
+    # could drop requested panel hours.
+    try:
+        da_t = ds_target[base_var]
+        da_p = ds_prediction[base_var]
+        da_t, da_p = xr.align(da_t, da_p, join="outer")
+    except Exception:
+        # Fallback to by-position if shapes match exactly
+        da_t = ds_target[base_var]
+        da_p = ds_prediction[base_var]
+    # CRPS values (keep lead_time for per-lead panels)
+    crps = crps_ensemble(da_t, da_p, ensemble_dim="ensemble")
+    # For the single-map preview, we reduce all time-like dims including lead_time
     reduce_dims = _time_reduce_dims_for_plot(crps)
     crps_map = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
 
@@ -460,22 +477,55 @@ def plot_probabilistic(
     lat_vals = crps_map[lat_name].values
     if lat_vals[0] > lat_vals[-1]:
         crps_map = crps_map.sortby(lat_name)
+    # Unwrap longitudes for wrapped selections (e.g., 335..360 U 0..45 -> -25..45)
+    try:
+        lon_vals = np.asarray(crps_map[lon_name].values)
+        if lon_vals.size:
+            lmin, lmax = float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals))
+            if (lmax - lmin) > 180 and np.any(lon_vals < 90) and np.any(lon_vals > 270):
+                new = lon_vals.copy()
+                new[new > 180] -= 360
+                order = np.argsort(new)
+                crps_map = crps_map.isel({lon_name: order}).assign_coords(
+                    {lon_name: (lon_name, new[order])}
+                )
+    except Exception:
+        pass
 
-    # Plot CRPS map
-    fig = plt.figure(figsize=(10, 6), dpi=dpi * 2)
+    # Plot CRPS map (simple original style, no percentile scaling / fallback)
+    fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
     ax = plt.axes(projection=ccrs.PlateCarree())
     ax.add_feature(cfeature.COASTLINE, lw=0.5)
+    ax.add_feature(cfeature.BORDERS, lw=0.3)
+    Z = crps_map.values
+    # Debug info for empty map diagnosis
+    finite_count = int(np.isfinite(Z).sum())
+    print(f"[probabilistic-plots] CRPS finite values: {finite_count} / {Z.size}")
+    if finite_count == 0:
+        print("[probabilistic-plots] WARNING: CRPS map has no finite values (all NaN or inf).")
+    # Basic color limits
+    vmin = 0.0
+    vmax = float(np.nanmax(Z)) if np.isfinite(Z).any() else 1.0
+    if not np.isfinite(vmax) or vmax <= vmin:
+        vmax = 1.0
     mesh = ax.pcolormesh(
         crps_map[lon_name],
         crps_map[lat_name],
-        crps_map.values,
+        Z,
         cmap="viridis",
         shading="auto",
         transform=ccrs.PlateCarree(),
+        vmin=vmin,
+        vmax=vmax,
     )
     cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    cbar.set_label(f"CRPS — {base_var}")
-    ax.set_title(f"CRPS map (mean over time): {base_var}")
+    try:
+        units = ds_target[base_var].attrs.get("units", "")
+        label = f"CRPS ({units})" if units else "CRPS"
+        cbar.set_label(label)
+    except Exception:
+        cbar.set_label("CRPS")
+    ax.set_title(f"CRPS map (mean over time): {base_var}", fontsize=12)
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -524,6 +574,7 @@ def plot_probabilistic(
         from ..helpers import build_output_filename, ensemble_mode_to_token
 
         ens_token_plot = ensemble_mode_to_token("prob")
+        ax.set_title(f"CRPS map (mean over time): {base_var}", fontsize=11)
         out_png = section / build_output_filename(
             metric="crps_map",
             variable=base_var,
@@ -561,10 +612,158 @@ def plot_probabilistic(
         print(f"[probabilistic-plots] saved {out_npz}")
     plt.close(fig)
 
-    # PIT histogram (global)
+    # Panel: CRPS maps by lead_time across all retained hours (panel concept removed)
+    if "lead_time" in crps.dims and int(crps.sizes.get("lead_time", 0)) >= 1 and save_fig:
+        try:
+            full_hours = [
+                int(np.timedelta64(x) / np.timedelta64(1, "h")) for x in crps["lead_time"].values
+            ]
+        except Exception:
+            full_hours = list(range(int(crps.sizes.get("lead_time", 0))))
+        if full_hours:
+            # Reduce all dims except latitude/longitude and lead_time
+            dims_to_reduce = [d for d in ["time", "init_time", "ensemble"] if d in crps.dims]
+            crps_by_lead = crps.mean(dim=dims_to_reduce, skipna=True) if dims_to_reduce else crps
+            lat_name = next((n for n in crps_by_lead.dims if n in ("latitude", "lat", "y")), None)
+            lon_name = next((n for n in crps_by_lead.dims if n in ("longitude", "lon", "x")), None)
+            if lat_name is None or lon_name is None:
+                raise ValueError(f"Cannot find lat/lon dims in CRPS dims: {crps_by_lead.dims}")
+            lat_vals = crps_by_lead[lat_name].values
+            if lat_vals[0] > lat_vals[-1]:
+                crps_by_lead = crps_by_lead.sortby(lat_name)
+            # Unwrap longitudes for wrapped domains
+            try:
+                lon_vals = np.asarray(crps_by_lead[lon_name].values)
+                if lon_vals.size:
+                    lmin, lmax = float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals))
+                    if (lmax - lmin) > 180 and np.any(lon_vals < 90) and np.any(lon_vals > 270):
+                        new = lon_vals.copy()
+                        new[new > 180] -= 360
+                        order = np.argsort(new)
+                        crps_by_lead = crps_by_lead.isel({lon_name: order}).assign_coords(
+                            {lon_name: (lon_name, new[order])}
+                        )
+            except Exception:
+                pass
+            # Build mapping from all available lead hours -> index
+            raw_leads = crps_by_lead["lead_time"].values
+            all_hours: list[int] = []
+            for x in raw_leads:
+                try:
+                    # Timedelta-like
+                    h = int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                except Exception:
+                    try:
+                        h = int(x)
+                    except Exception:
+                        h = len(all_hours)
+                all_hours.append(h)
+            # Debug visibility
+            try:
+                print(f"[probabilistic-plots] CRPS grid using lead_hours={all_hours}")
+            except Exception:
+                pass
+            hour_index_pairs = []
+            for h in full_hours:
+                try:
+                    idx = all_hours.index(int(h))
+                    hour_index_pairs.append((int(h), idx))
+                except Exception:
+                    continue
+            if hour_index_pairs:
+                # 2-column CRPS-only layout: fixed at 2 columns (configuration removed per user request).
+                ncols = 2
+                n = len(hour_index_pairs)
+                nrows = (n + ncols - 1) // ncols
+                # Width mirrors maps grid proportionally: 7.0 per column (maps uses ~7 per column).
+                fig, axes = plt.subplots(
+                    nrows,
+                    ncols,
+                    figsize=(7.0 * ncols, 4.0 * nrows),
+                    dpi=dpi * 2,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    squeeze=False,
+                    constrained_layout=True,
+                )
+                # Flatten axes for indexing; hide unused later.
+                axes_flat = [axes[r][c] for r in range(nrows) for c in range(ncols)]
+                # Global color scale
+                Z_stack = []
+                for _, li in hour_index_pairs:
+                    Z_stack.append(np.asarray(crps_by_lead.isel(lead_time=li).values))
+                Z_stack = np.asarray(Z_stack)
+                vmin, vmax = 0.0, float(np.nanmax(Z_stack)) if np.isfinite(Z_stack).any() else 1.0
+                first_im = None
+                for i, (h, li) in enumerate(hour_index_pairs):
+                    ax = axes_flat[i]
+                    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+                    ax.coastlines(linewidth=0.5)
+                    Z = np.asarray(crps_by_lead.isel(lead_time=li).values)
+                    im = ax.pcolormesh(
+                        crps_by_lead[lon_name],
+                        crps_by_lead[lat_name],
+                        Z,
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                        shading="auto",
+                    )
+                    if first_im is None:
+                        first_im = im
+                    try:
+                        _lon = crps_by_lead[lon_name].values
+                        _lat = crps_by_lead[lat_name].values
+                        ax.set_extent(
+                            [
+                                float(np.min(_lon)),
+                                float(np.max(_lon)),
+                                float(np.min(_lat)),
+                                float(np.max(_lat)),
+                            ],
+                            crs=ccrs.PlateCarree(),
+                        )
+                    except Exception:
+                        pass
+                    ax.set_title(f"CRPS — lead {int(h)}h", fontsize=11)
+                # Hide unused axes if n not multiple of ncols
+                for j in range(n, nrows * ncols):
+                    axes_flat[j].axis("off")
+                if first_im is not None:
+                    # Single vertical colorbar akin to maps grid
+                    cb = fig.colorbar(
+                        first_im,
+                        ax=[ax for ax in axes_flat[:n] if ax.axes.get_visible()],
+                        orientation="vertical",
+                        fraction=0.025,
+                        pad=0.02,
+                    )
+                    cb.set_label("CRPS")
+                from ..helpers import ensemble_mode_to_token
+
+                ens_token_grid = ensemble_mode_to_token("prob")
+                plt.suptitle(
+                    f"CRPS grid — {base_var} | ensemble={ens_token_grid}",
+                    fontsize=14,
+                )
+                out_png = section / build_output_filename(
+                    metric="crps_map",
+                    variable=base_var,
+                    level=None,
+                    qualifier="grid",
+                    init_time_range=init_range_plot,
+                    lead_time_range=lead_range_plot,
+                    ensemble=ens_token_grid,
+                    ext="png",
+                )
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[probabilistic-plots] saved {out_png}")
+                plt.close(fig)
+
+    # PIT histogram (global and by-lead panels)
     pit = probability_integral_transform(
-        ds_target[base_var],
-        ds_prediction[base_var],
+        da_t,
+        da_p,
         ensemble_dim="ensemble",
         name_prefix="PIT",
     )
@@ -585,13 +784,6 @@ def plot_probabilistic(
     ax.set_ylabel("Density")
     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
     ax.legend()
-
-    if save_fig:
-        out_png = (
-            section / f"pit_hist_{base_var}.png"
-        )  # legacy non-tokenized image filename retained
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        print(f"[probabilistic-plots] saved {out_png}")
     if save_npz:
         # Use standardized filename builder for NPZ (with ensprob token)
         from ..helpers import build_output_filename, ensemble_mode_to_token
@@ -611,55 +803,155 @@ def plot_probabilistic(
         print(f"[probabilistic-plots] saved {out_npz}")
     plt.close(fig)
 
-    # Optional: CRPS line plots over lead_time per variable
-    try:
-        do_lines = bool((plotting_cfg or {}).get("probabilistic_line_plots", False))
-    except Exception:
-        do_lines = False
-    if (
-        do_lines
-        and ("lead_time" in ds_prediction.dims)
-        and int(ds_prediction.sizes.get("lead_time", 0)) > 1
-    ):
-        variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
-        hours_vals = None
+    # PIT per-lead panel plot (multi-row grid) over all retained hours
+    if "lead_time" in pit.dims and int(pit.sizes.get("lead_time", 0)) >= 1 and save_fig:
         try:
-            lt = ds_prediction["lead_time"].values
-            hours_vals = [int(np.timedelta64(x) / np.timedelta64(1, "h")) for x in lt]
-        except Exception:
-            hours_vals = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
-        for var in variables:
-            crps = crps_ensemble(ds_target[var], ds_prediction[var], ensemble_dim="ensemble")
-            # mean over all dims except lead_time
-            reduce_dims = [
-                d
-                for d in ["time", "init_time", "latitude", "longitude", "level", "ensemble"]
-                if d in crps.dims
+            full_hours = [
+                int(np.timedelta64(x) / np.timedelta64(1, "h")) for x in pit["lead_time"].values
             ]
-            crps_lt = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
+        except Exception:
+            full_hours = list(range(int(pit.sizes.get("lead_time", 0))))
+        if full_hours:
+            raw_leads = pit["lead_time"].values
+            all_hours: list[int] = []
+            for x in raw_leads:
+                try:
+                    h = int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                except Exception:
+                    try:
+                        h = int(x)
+                    except Exception:
+                        h = len(all_hours)
+                all_hours.append(h)
+            # Debug visibility
+            hour_index_pairs = []
+            for h in full_hours:
+                try:
+                    idx = all_hours.index(int(h))
+                    hour_index_pairs.append((int(h), idx))
+                except Exception:
+                    continue
+            if hour_index_pairs:
+                n = len(hour_index_pairs)
+                ncols = int((plotting_cfg or {}).get("panel_cols", 2))
+                nrows = (n + ncols - 1) // ncols
+                fig, axes = plt.subplots(
+                    nrows,
+                    ncols,
+                    figsize=(5.4 * ncols, 3.0 * nrows),
+                    dpi=dpi * 2,
+                    squeeze=False,
+                )
+                for i, (h, li) in enumerate(hour_index_pairs):
+                    r, c = divmod(i, ncols)
+                    sub = pit.isel(lead_time=li)
+                    data = np.asarray(sub.values).ravel()
+                    data = data[np.isfinite(data)]
+                    counts_local, _ = np.histogram(data, bins=edges)
+                    width = np.diff(edges)
+                    total = counts_local.sum()
+                    dens = counts_local / (total * width.mean()) if total > 0 else counts_local
+                    ax = axes[r][c]
+                    ax.bar(
+                        edges[:-1],
+                        dens,
+                        width=width,
+                        align="edge",
+                        color="#4C78A8",
+                        edgecolor="white",
+                    )
+                    ax.axhline(1.0, color="brown", linestyle="--", linewidth=1)
+                    ax.set_title(f"Lead {int(h)}h", fontsize=11)
+                    if r == nrows - 1:
+                        ax.set_xlabel("PIT value")
+                    if c == 0:
+                        ax.set_ylabel("Density")
+                plt.suptitle(f"PIT histograms per lead — {base_var}", fontsize=16)
+                from ..helpers import ensemble_mode_to_token
+
+                out_png = section / build_output_filename(
+                    metric="pit_hist",
+                    variable=base_var,
+                    level=None,
+                    qualifier="grid",
+                    init_time_range=init_range_plot,
+                    lead_time_range=lead_range_plot,
+                    ensemble=ensemble_mode_to_token("prob"),
+                    ext="png",
+                )
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[probabilistic-plots] saved {out_png}")
+                plt.close(fig)
+
+    # CRPS line plots across all retained lead_time hours
+    if ("lead_time" in ds_prediction.dims) and int(ds_prediction.sizes.get("lead_time", 0)) > 1:
+        try:
+            panel_hours = [
+                int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                for x in ds_prediction["lead_time"].values
+            ]
+        except Exception:
+            panel_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+        if panel_hours:
+            variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
             try:
-                vals = np.asarray(crps_lt.values).ravel()
+                all_hours = [
+                    int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                    for x in ds_prediction["lead_time"].values
+                ]
             except Exception:
-                continue
-            fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
-            ax.plot(hours_vals, vals, marker="o")
-            ax.set_xlabel("lead_time (h)")
-            ax.set_ylabel("CRPS")
-            ax.set_title(f"CRPS vs lead_time — {var}")
-            out_png = section / build_output_filename(
-                metric="crps_line",
-                variable=str(var),
-                level=None,
-                qualifier=None,
-                init_time_range=init_range_plot,
-                lead_time_range=lead_range_plot,
-                ensemble=ensemble_mode_to_token("prob"),
-                ext="png",
-            )
-            plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[probabilistic-plots] saved {out_png}")
-            plt.close(fig)
+                all_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+            hour_index_pairs = []
+            for h in panel_hours:
+                try:
+                    hour_index_pairs.append((int(h), all_hours.index(int(h))))
+                except Exception:
+                    continue
+            if hour_index_pairs:
+                for var in variables:
+                    crps = crps_ensemble(
+                        ds_target[var], ds_prediction[var], ensemble_dim="ensemble"
+                    )
+                    reduce_dims = [
+                        d
+                        for d in [
+                            "time",
+                            "init_time",
+                            "latitude",
+                            "longitude",
+                            "level",
+                            "ensemble",
+                        ]
+                        if d in crps.dims
+                    ]
+                    crps_lt = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
+                    # Subset to selected lead indices
+                    sel_indices = [li for _, li in hour_index_pairs]
+                    try:
+                        crps_sel = crps_lt.isel(lead_time=sel_indices)
+                        vals = np.asarray(crps_sel.values).ravel()
+                    except Exception:
+                        continue
+                    hours_plot = [h for h, _ in hour_index_pairs]
+                    fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
+                    ax.plot(hours_plot, vals, marker="o")
+                    ax.set_xlabel("lead_time (h)")
+                    ax.set_ylabel("CRPS")
+                    ax.set_title(f"CRPS vs lead_time — {var}")
+                    out_png = section / build_output_filename(
+                        metric="crps_line",
+                        variable=str(var),
+                        level=None,
+                        qualifier=None,
+                        init_time_range=init_range_plot,
+                        lead_time_range=lead_range_plot,
+                        ensemble=ensemble_mode_to_token("prob"),
+                        ext="png",
+                    )
+                    plt.tight_layout()
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    print(f"[probabilistic-plots] saved {out_png}")
+                    plt.close(fig)
 
 
 """

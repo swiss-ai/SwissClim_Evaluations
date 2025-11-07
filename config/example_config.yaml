@@ -172,31 +172,25 @@ modules:
 
 # Multi-lead evaluation policy
 # modes:
-#   first  - only first lead time (single-lead evaluation default if omitted)
+#   first  - only first lead time (use to force single-lead evaluation)
 #   full   - use all available lead hours
 #   subset - explicit list of lead hours to keep (provide subset_hours)
 #   stride - keep every Nth hour (provide stride_hours)
-#   bins   - retain all, later aggregate into user-defined bins (bins list)
 # panel.* controls which lead hours are used for multi-panel plots (maps, histograms, spectra, etc.)
 lead_time:
-  mode: stride            # first | full | subset | stride | bins
-  stride_hours: 12
+  mode: stride            # first | full | subset | stride
+  # Prefer nested style for stride/subset; flat keys still supported for backward compatibility
+  stride:
+    hours: 12
   max_hour: 120
-  # subset_hours: [0, 6, 12, 24]   # only if mode=subset
+  # Subset example (only if mode=subset)
+  # subset:
+  #   hours: [0, 6, 12, 24]
+  # Legacy (still supported): subset_hours: [0, 6, 12, 24]
   panel:
     strategy: evenly_spaced  # first | evenly_spaced | specific
     count: 5                 # number of panel lead hours to show
     # panel_specific_hours: [0, 24, 72]  # only if strategy=specific
-  # bins:
-  #   - start: 0   # inclusive (hours)
-  #     end: 24    # exclusive
-  #     label: day1
-  #   - start: 24
-  #     end: 48
-  #     label: day2
-  #   - start: 48
-  #     end: 120
-  #     label: day3_plus
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.

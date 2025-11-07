@@ -147,6 +147,9 @@ def standardize_dims(
     - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
     - Accept schemas with or without optional 'level' / 'ensemble' dims.
     """
+
+    # (debug logging removed)
+
     # Normalize alias dimension/coordinate names first
     dim_aliases = {
         "initial_time": "init_time",
@@ -234,6 +237,7 @@ def standardize_dims(
         raise ValueError(
             f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. Allowed: {ALLOWED_DIMS}."
         )
+    # (debug logging removed)
     return ds
 
 
@@ -417,5 +421,5 @@ def apply_ensemble_policy(
         # subset but keep ensemble dimension
         return ds.isel(ensemble=indices_list)
 
-    # No explicit selection: preserve legacy behaviour -> reduce to mean
-    return ds.mean(dim="ensemble", keep_attrs=True)
+    # No explicit selection: do NOT pre-reduce. Keep ensemble for modules to decide.
+    return ds

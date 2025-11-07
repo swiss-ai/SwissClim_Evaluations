@@ -31,6 +31,14 @@ def test_policy_subset():
     assert hours == [0, 12]
 
 
+def test_policy_subset_nested():
+    p = parse_lead_time_policy({"mode": "subset", "subset": {"hours": [0, 12]}})
+    ds = _dummy_ds(5)  # 0,6,12,18,24
+    sel = apply_lead_time_selection(ds, p)
+    hours = (sel.lead_time.values // np.timedelta64(1, "h")).astype(int).tolist()
+    assert hours == [0, 12]
+
+
 def test_policy_stride():
     p = parse_lead_time_policy({"mode": "stride", "stride_hours": 12})
     ds = _dummy_ds(6)  # 0..30 step6

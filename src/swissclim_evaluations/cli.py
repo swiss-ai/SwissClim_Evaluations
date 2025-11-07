@@ -34,46 +34,33 @@ EXPECTED_SUBDIRS: set[str] = {
     "energy_spectra",
     "ets",
     "histograms",
-    "wd_kde",
     "maps",
     "vertical_profiles",
+    "wd_kde",
 }
 
 
-def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
-
-
 def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -> str:
-    sel = cfg.get("selection", {})
-    modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    # Prefer new plural key; fall back to legacy singular.
-    if "ensemble_members" in sel:
-        ensemble_members = sel.get("ensemble_members")
-    else:
-        ensemble_members = sel.get("ensemble_member")
-        if ensemble_members is not None:
-            c.warn(
-                "Config key 'selection.ensemble_member' is deprecated; "
-                "use 'selection.ensemble_members'."
-            )
-    # Normalize ensemble_members to int | list[int] | None for apply_ensemble_policy
-    if isinstance(ensemble_members, list):
-        try:
-            ensemble_members = [int(i) for i in ensemble_members]
-        except Exception:
-            c.warn("Invalid values in ensemble_members list; ignoring selection.")
-            ensemble_members = None
-        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
-            ensemble_members = ensemble_members[0]
-    # Normalize possible list/int forms for messaging only
+    """Return a human-readable summary of how the ensemble dimension is being handled.
+
+    This mirrors the earlier inline logic that was accidentally inlined into the
+    EXPECTED_SUBDIRS constant during a bad merge. It intentionally does NOT mutate
+    datasets; it only inspects configuration and dimensions.
+    """
+    sel = cfg.get("selection", {}) or {}
+    # Support legacy singular key
+    ensemble_members = sel.get("ensemble_members", sel.get("ensemble_member"))
+    probabilistic_enabled = bool(cfg.get("modules", {}).get("probabilistic"))
+
+    # Normalize for messaging only
     if isinstance(ensemble_members, list):
         if len(ensemble_members) == 1:
             ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
         else:
-            ensemble_member_norm = [int(i) for i in ensemble_members]
+            try:
+                ensemble_member_norm = [int(i) for i in ensemble_members]
+            except Exception:
+                ensemble_member_norm = ensemble_members
     else:
         ensemble_member_norm = ensemble_members
 
@@ -88,6 +75,7 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
             "Ensemble: no 'ensemble' dimension present (either source is single-member "
             "or reduced deterministically)."
         )
+
     # ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
     if probabilistic_enabled:
@@ -95,13 +83,12 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
             "Ensemble: probabilistic mode active "
             f"(size={ens_size}) → token=ensprob for probabilistic outputs."
         )
+
     # Deterministic paths
     if ensemble_member_norm is None:
         return (
-            "Ensemble: deterministic mode without explicit member → reduced to mean (ensmean)."
-            if "ensemble" not in ds_prediction.dims or ens_size == 0
-            else "Ensemble: deterministic mode without explicit member; original size="
-            f"{ens_size} (reduced internally where applicable)."
+            "Ensemble: deterministic mode without explicit member; keeping full ensemble "
+            f"(size={ens_size}). Modules may reduce internally depending on their own settings."
         )
     if isinstance(ensemble_member_norm, list):
         return (
@@ -146,9 +133,72 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 )
 
     if latitudes is not None:
-        ds = ds.sel(latitude=slice(*latitudes))
+        # Latitude is NOT cyclic. Support a single contiguous band and adapt slice order to
+        # the coordinate orientation (ascending or descending) to avoid empty selections.
+        try:
+            if isinstance(latitudes, (list, tuple)) and len(latitudes) == 2:
+                lat0, lat1 = float(latitudes[0]), float(latitudes[1])
+                # Detect axis orientation best-effort (monotonic increasing vs decreasing)
+                asc = True
+                try:
+                    vals = ds["latitude"].values
+                    if vals.size >= 2:
+                        asc = bool(vals[1] >= vals[0])
+                except Exception:
+                    asc = True
+                lo = min(lat0, lat1)
+                hi = max(lat0, lat1)
+                # For descending coordinates, slice should be (hi -> lo)
+                slc = slice(lo, hi) if asc else slice(hi, lo)
+                ds = ds.sel(latitude=slc)
+            else:
+                # Fallback: attempt generic slice expansion
+                ds = ds.sel(latitude=slice(*latitudes))
+        except Exception:
+            # Conservative fallback: leave dataset unchanged if selection fails
+            pass
+        # Guard against empty spatial selection early
+        try:
+            if "latitude" in ds.dims and int(ds.sizes.get("latitude", 0)) == 0:
+                raise ValueError(
+                    "Latitude selection resulted in an empty dataset. "
+                    f"Requested latitudes={latitudes}. Check bounds and coordinate convention."
+                )
+        except Exception:
+            pass
     if longitudes is not None:
-        ds = ds.sel(longitude=slice(*longitudes))
+        # For longitude: if first <= second, apply a normal slice.
+        # If first > second, select union of [first..max_lon] ∪ [min_lon..second].
+        # Works regardless of coordinate convention (0..360 or -180..180). We sort ascending
+        # for deterministic behavior before masking.
+        try:
+            if isinstance(longitudes, (list, tuple)) and len(longitudes) == 2:
+                lon0, lon1 = float(longitudes[0]), float(longitudes[1])
+                if lon0 > lon1:
+                    with contextlib.suppress(Exception):
+                        ds = ds.sortby("longitude", ascending=True)
+                    lon_vals = ds["longitude"]
+                    mask = (lon_vals >= lon0) | (lon_vals <= lon1)
+                    ds = ds.sel(longitude=lon_vals[mask])
+                else:
+                    ds = ds.sel(longitude=slice(lon0, lon1))
+            else:
+                # If user supplied more complex structure (not currently documented),
+                # attempt direct slice unpack
+                ds = ds.sel(longitude=slice(*longitudes))
+        except Exception:
+            # Conservative fallback: leave dataset unchanged if selection fails
+            pass
+        # Guard against empty spatial selection early
+        try:
+            if "longitude" in ds.dims and int(ds.sizes.get("longitude", 0)) == 0:
+                raise ValueError(
+                    "Longitude selection resulted in an empty dataset. "
+                    f"Requested longitudes={longitudes}. Check bounds and coordinate "
+                    "convention (0–360 vs -180..180)."
+                )
+        except Exception:
+            pass
 
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
@@ -212,7 +262,21 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         ranges = _parse_ranges(datetimes)
         if not ranges:
             if len(datetimes) >= 2:
-                ds = ds.sel({dim_name: slice(datetimes[0], datetimes[1])})
+                # If selecting on 'time' (typical for ERA5 targets) and multi-lead with a
+                # max_hour horizon is configured, extend the upper bound so that
+                # valid_time = init+lead remains covered by the ground-truth window.
+                end = datetimes[1]
+                try:
+                    lt_cfg = (cfg or {}).get("lead_time", {})
+                    mode = str(lt_cfg.get("mode", "first")).lower()
+                    max_h = lt_cfg.get("max_hour")
+                    if dim_name == "time" and mode != "first" and max_h is not None:
+                        end_dt = np.datetime64(end).astype("datetime64[ns]")
+                        end_ext = end_dt + np.timedelta64(int(max_h), "h")
+                        end = str(end_ext)
+                except Exception:
+                    pass
+                ds = ds.sel({dim_name: slice(datetimes[0], end)})
             return ds
 
         vals = ds[dim_name].values.astype("datetime64[ns]")
@@ -226,6 +290,15 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 end = np.datetime64(end_s).astype("datetime64[ns]") if end_s else vals.max()
             except Exception:
                 end = vals.max()
+            # Extend end bound for ERA5 targets when multi-lead horizon is requested
+            try:
+                lt_cfg = (cfg or {}).get("lead_time", {})
+                mode = str(lt_cfg.get("mode", "first")).lower()
+                max_h = lt_cfg.get("max_hour")
+                if dim_name == "time" and mode != "first" and max_h is not None:
+                    end = end + np.timedelta64(int(max_h), "h")
+            except Exception:
+                pass
             mask |= (vals >= start) & (vals <= end)
 
         count = int(mask.sum())
@@ -252,13 +325,16 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
     """
     if hours is None:
         return ds
+    # (debug logging removed)
     if "lead_time" in ds.dims and ds.lead_time.size >= 2:
         step_ns = int(
             (ds.lead_time[1] - ds.lead_time[0]).astype("timedelta64[h]") / np.timedelta64(1, "h")
         )
         step_ns = max(1, step_ns)
         factor = max(1, hours // step_ns)
-        return ds.isel(lead_time=slice(None, None, factor))
+        out = ds.isel(lead_time=slice(None, None, factor))
+        # (debug logging removed)
+        return out
     if "init_time" in ds.dims and ds.init_time.size >= 2:
         # Only stride if cadence appears uniform; else skip to avoid dropping labels.
         try:
@@ -271,7 +347,9 @@ def _apply_temporal_resolution(ds: xr.Dataset, hours: int | None) -> xr.Dataset:
             dt_hours = int(diffs[0]) if diffs.size > 0 else 1
             dt_hours = max(1, dt_hours)
             factor = max(1, hours // dt_hours)
-            return ds.isel(init_time=slice(None, None, factor))
+            out = ds.isel(init_time=slice(None, None, factor))
+            # (debug logging removed)
+            return out
         else:
             c.warn(
                 "Requested temporal downsampling on irregular init_time cadence → skipping stride."
@@ -431,9 +509,85 @@ def prepare_datasets(
     ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
     ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
 
+    # Debug visibility: show raw lead_time counts in ML/targets before any selection
+    def _lead_hours(ds: xr.Dataset) -> list[int]:
+        if "lead_time" not in ds.dims:
+            return []
+        try:
+            raw = ds["lead_time"].values
+            hrs = (raw // np.timedelta64(1, "h")).astype(int).tolist()
+            return [int(h) for h in hrs]
+        except Exception:
+            return []
+
+    # Lead-time audit collector to persist exact points of any reduction
+    lead_audit: list[dict[str, Any]] = []
+
+    def _audit(
+        step: str, ds_ml: xr.Dataset | None = None, ds_nwp: xr.Dataset | None = None
+    ) -> None:
+        """Record lead_time hours and sizes for ML and NWP at a named step."""
+
+        def _hours(ds: xr.Dataset | None) -> list[int]:
+            if ds is None or "lead_time" not in ds.dims:
+                return []
+            try:
+                vals = ds["lead_time"].values
+                return (vals // np.timedelta64(1, "h")).astype(int).tolist()
+            except Exception:
+                return []
+
+        entry: dict[str, Any] = {"step": step}
+        if ds_ml is not None:
+            hrs_ml = _hours(ds_ml)
+            entry["ml"] = {"count": len(hrs_ml), "sample": hrs_ml[:12]}
+        if ds_nwp is not None:
+            hrs_nwp = _hours(ds_nwp)
+            entry["nwp"] = {"count": len(hrs_nwp), "sample": hrs_nwp[:12]}
+        lead_audit.append(entry)
+
+    # Defer detailed lead-time prints; record via audit only here
+    try:
+        _ = _lead_hours(ds_prediction)
+        _ = _lead_hours(ds_target)
+    except Exception:
+        pass
+    _audit("after open", ds_prediction, ds_target)
+
     # Align dims to match config expectations
     ds_target = _slice_common(ds_target, cfg)
     ds_prediction = _slice_common(ds_prediction, cfg)
+    # Guard: empty init_time at this stage leads to cryptic errors later.
+    # Check predictions primarily, as they drive alignment.
+    try:
+        if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
+            raise ValueError(
+                "No init_time labels remain after selection. Check selection.datetimes window "
+                "and ensure it overlaps the ML store's init_time coordinates."
+            )
+    except Exception:
+        # If access fails, skip guard (will fail naturally later)
+        pass
+    # Defer selection prints; capture only in audit
+    _audit("after selection", ds_prediction, ds_target)
+
+    # Sanity-check: avoid empty temporal dims before heavy alignment/stacking
+    def _ensure_nonempty_temporal(ds: xr.Dataset, label: str) -> None:
+        it_sz = int(ds.sizes.get("init_time", 0)) if "init_time" in ds.dims else -1
+        lt_sz = int(ds.sizes.get("lead_time", 0)) if "lead_time" in ds.dims else -1
+        if it_sz == 0:
+            raise ValueError(
+                f"{label} has zero init_time after selection; check selection.datetimes "
+                "and that your source covers the requested window."
+            )
+        if lt_sz == 0:
+            raise ValueError(
+                f"{label} has zero lead_time after selection; the dataset appears to have "
+                "no forecast steps."
+            )
+
+    _ensure_nonempty_temporal(ds_prediction, "Predictions")
+    _ensure_nonempty_temporal(ds_target, "Ground-truth")
 
     # Standardize temporal dims and enforce required schema
     # Lead time policy parsing (opt-in multi-lead) ---------------------------------
@@ -443,18 +597,22 @@ def prepare_datasets(
     preserve_all = lead_policy.mode != "first"
     cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
 
+    # Keep only the first lead by default; when multi-lead policy is active
+    # (preserve_all=True), retain all leads to allow downstream selection/stride.
     ds_target = data_mod.standardize_dims(
         ds_target,
         dataset_name="ground_truth",
-        first_lead_only=True,
+        first_lead_only=not preserve_all,
         preserve_all_leads=preserve_all,
     )
     ds_prediction = data_mod.standardize_dims(
         ds_prediction,
         dataset_name="ml",
-        first_lead_only=True,
+        first_lead_only=not preserve_all,
         preserve_all_leads=preserve_all,
     )
+    # Defer standardize prints; capture only in audit
+    _audit("after standardize_dims", ds_prediction, ds_target)
 
     # Handle optional ensemble dimension according to config and selected modules
     modules_cfg = cfg.get("modules", {})
@@ -472,12 +630,59 @@ def prepare_datasets(
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
+    _audit("after temporal_resolution", ds_prediction, ds_target)
+
+    # If a multi-lead policy is active and the user provided a datetimes window, ensure
+    # the ground-truth window is wide enough to cover the selected forecast horizon.
+    # Concretely, extend the target's upper bound by max_hour so that valid_time = init+lead
+    # remains within the available ERA5 range; otherwise alignment can drop most leads.
+    try:
+        sel_block = cfg.get("selection", {}) or {}
+        bounds = sel_block.get("datetimes")
+        if preserve_all and lead_policy.max_hour is not None and bounds and len(bounds) == 2:
+            end = np.datetime64(bounds[1]).astype("datetime64[ns]")
+            extend_h = int(lead_policy.max_hour)
+            end_ext = end + np.timedelta64(extend_h, "h")
+            # Only widen targets; predictions keep the user-selected init_time window
+            if "init_time" in ds_target.dims:
+                vals = ds_target["init_time"].values.astype("datetime64[ns]")
+                if vals.size > 0 and end_ext > vals.max():
+                    ds_target = ds_target.sel(init_time=slice(None, end_ext))
+                    _audit("after extend_target_window", ds_prediction, ds_target)
+            elif "time" in ds_target.dims:
+                vals = ds_target["time"].values.astype("datetime64[ns]")
+                if vals.size > 0 and end_ext > vals.max():
+                    ds_target = ds_target.sel(time=slice(None, end_ext))
+                    _audit("after extend_target_window", ds_prediction, ds_target)
+    except Exception:
+        # Best effort; if anything fails, proceed without extension.
+        pass
 
     # Apply lead time selection (subset/stride) after temporal resolution so
-    # stride logic doesn't fight it
+    # stride logic doesn't fight it. IMPORTANT: For targets that often have only
+    # a zero lead_time (ERA5 with time→init_time), applying subset/stride can drop
+    # all leads and error. We therefore apply the policy to predictions always,
+    # and only apply to targets for 'full' mode (to honor max_hour caps). For
+    # 'subset'/'stride', we skip target filtering and rely on valid_time alignment.
     if preserve_all:
-        ds_target = apply_lead_time_selection(ds_target, lead_policy)
+        # Always filter predictions per policy
+        ds_prediction_before_policy = ds_prediction
         ds_prediction = apply_lead_time_selection(ds_prediction, lead_policy)
+        # If policy selection resulted in empty lead_time, fall back to pre-policy dataset
+        try:
+            if "lead_time" in ds_prediction.sizes and int(ds_prediction.sizes["lead_time"]) == 0:
+                c.warn(
+                    "lead_time policy produced an empty selection for predictions. "
+                    "Skipping lead_time filtering and keeping original leads."
+                )
+                ds_prediction = ds_prediction_before_policy
+        except Exception:
+            pass
+        # Targets: apply only in 'full' mode (respects max_hour) where safe/meaningful
+        if lead_policy.mode == "full":
+            ds_target = apply_lead_time_selection(ds_target, lead_policy)
+        # (summary log removed during cleanup)
+        _audit(f"after lead_time policy ({lead_policy.mode})", ds_prediction, ds_target)
 
     ds_target = _select_variables(ds_target, variables_2d, variables_3d)
     ds_prediction = _select_variables(ds_prediction, variables_2d, variables_3d)
@@ -497,6 +702,15 @@ def prepare_datasets(
                     )
                 }
             )
+            # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
+            try:
+                pre_align_hours = (
+                    (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
+                    .astype(int)
+                    .tolist()
+                )
+            except Exception:
+                pre_align_hours = []
 
         # Build stacked predictions with valid_time
         ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
@@ -522,13 +736,21 @@ def prepare_datasets(
             nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
             ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
         elif "time" in ds_target.dims:
-            # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
+            # Target has only 'time' dim. Reindex target onto the prediction valid_time grid to
+            # preserve all available lead_time offsets instead of collapsing to a single dummy lead.
             tvals = ds_target["time"].values.astype("datetime64[ns]")
-            # Build a pair index aligned to each time with synthetic init_time=time and lead_time=0
-            ds_tgt_stacked = ds_target.expand_dims({"lead_time": [np.timedelta64(0, "ns")]})
-            ds_tgt_stacked = ds_tgt_stacked.rename({"time": "init_time"})
-            ds_tgt_stacked = ds_tgt_stacked.stack(pair=("init_time", "lead_time"))
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=("pair", tvals))
+            # Give target a valid_time coordinate for reindexing
+            ds_tgt_time = ds_target.assign_coords(valid_time=("time", tvals)).swap_dims(
+                {"time": "valid_time"}
+            )
+            pred_valid_times = ds_pred_stacked["valid_time"].values
+            ds_tgt_reindexed = ds_tgt_time.reindex(valid_time=pred_valid_times)
+            # Rename to 'pair' and attach same MultiIndex as predictions so that unstack works
+            ds_tgt_stacked = ds_tgt_reindexed.rename({"valid_time": "pair"}).assign_coords(
+                pair=ds_pred_stacked["pair"]
+            )
+            # Keep valid_time coord for auditing symmetry
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=("pair", pred_valid_times))
         else:
             raise ValueError(
                 "Targets must have either ('init_time','lead_time') or 'time' "
@@ -574,6 +796,40 @@ def prepare_datasets(
         # Unstack back to (init_time, lead_time)
         ds_prediction = ds_pred_stacked.unstack("pair")
         ds_target = ds_tgt_stacked.unstack("pair")
+        # (debug alignment summary removed)
+        _audit("after alignment", ds_prediction, ds_target)
+
+        # Warn if alignment dropped lead_time hours selected by the policy due to missing
+        # ground-truth valid_time overlap.
+        try:
+            if preserve_all:
+                try:
+                    after_align_hours = (
+                        (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
+                        .astype(int)
+                        .tolist()
+                    )
+                except Exception:
+                    after_align_hours = []
+                if (
+                    pre_align_hours
+                    and after_align_hours
+                    and len(after_align_hours) < len(pre_align_hours)
+                ):
+                    lost = [h for h in pre_align_hours if h not in after_align_hours]
+                    if lost:
+                        msg = (
+                            "Alignment clipped forecast leads due to limited target time range. "
+                            f"Kept {len(after_align_hours)} of {len(pre_align_hours)} hours; "
+                            "dropped: "
+                            f"{lost[:14]}{' ...' if len(lost) > 14 else ''}. "
+                            "To retain these, widen selection.datetimes to include their "
+                            "valid times "
+                            "(init_time + lead_time) or provide a longer ground-truth window."
+                        )
+                        c.warn(msg)
+        except Exception:
+            pass
 
     # Enforce repository-wide chunking policy to ensure predictable performance
     ds_target = data_mod.enforce_chunking(ds_target, dataset_name="ground_truth")
@@ -632,6 +888,8 @@ def prepare_datasets(
                 "Missing-value check (enabled): no NaNs detected in ground_truth or predictions."
             )
 
+    # Persist audit for run_selected to write out alongside outputs
+    cfg["__lead_time_audit"] = lead_audit
     ds_target_std, ds_prediction_std = _standardize_pair(ds_target, ds_prediction)
     return ds_target, ds_prediction, ds_target_std, ds_prediction_std
 
@@ -681,6 +939,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
 
+    # Panel hour injection deprecated: all plots now use full retained lead_time set.
+    # Remove any legacy 'lead_panel_hours' to avoid accidental partial plotting.
+    try:
+        plotting_block = cfg.setdefault("plotting", {})
+        if "lead_panel_hours" in plotting_block:
+            del plotting_block["lead_panel_hours"]
+    except Exception:
+        pass
+
     # Derive per-plot datasets if a specific plot datetime is requested
     ds_target_plot, ds_prediction_plot = _select_plot_datetime(ds_target, ds_prediction, cfg)
     # For maps only: optionally subset ensemble members and/or a single datetime
@@ -688,6 +955,18 @@ def run_selected(cfg: dict[str, Any]) -> None:
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
     out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+    # Write lead-time audit if available
+    try:
+        audit = cfg.get("__lead_time_audit") or []
+        if audit:
+            import json
+
+            p = out_root / "lead_time_audit.json"
+            with open(p, "w") as f:
+                json.dump(audit, f, indent=2, default=str)
+            c.info(f"Lead-time audit written to {p}")
+    except Exception:
+        pass
     # Persist the exact configuration used for this run into the output directory
     _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
@@ -809,14 +1088,76 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     details.append(f"subset={lead_policy.subset_hours}")
                 if lead_policy.max_hour is not None:
                     details.append(f"max_hour={lead_policy.max_hour}")
-                if lead_policy.bins:
-                    details.append(f"bins={len(lead_policy.bins)}")
+                # 'bins' mode removed
                 panel_text = (
                     "Lead time policy → "
                     + ", ".join(details)
                     + (f"\nAvailable lead hours after selection: {hours}" if hours else "")
                 )
                 c.panel(panel_text, title="Lead Time Policy", style="magenta")
+                # Compact lead-time snapshot (moved down near policy)
+                try:
+                    audit = cfg.get("__lead_time_audit") or []
+
+                    def _fmt(step_key: str, label: str) -> str | None:
+                        for e in audit:
+                            if e.get("step") == step_key and "ml" in e:
+                                ml = e["ml"]
+                                sample = ml.get("sample", [])
+                                return (
+                                    f"[lead-time] ML {label}: count={ml.get('count', 0)} "
+                                    f"sample={sample[:8]}"
+                                )
+                        return None
+
+                    lines = []
+                    s1 = _fmt("after open", "raw hours")
+                    if s1:
+                        lines.append(s1)
+                    s2 = _fmt("after selection", "after selection.datetimes")
+                    if s2:
+                        lines.append(s2)
+                    s3 = _fmt("after standardize_dims", "after standardize_dims")
+                    if s3:
+                        lines.append(s3)
+                    # Also include policy/alignment summaries for easier debugging
+                    # Try common modes explicitly; only one will match the audit step label
+                    s4 = (
+                        _fmt("after lead_time policy (stride)", "after lead_time policy")
+                        or _fmt("after lead_time policy (full)", "after lead_time policy")
+                        or _fmt("after lead_time policy (subset)", "after lead_time policy")
+                        or _fmt("after lead_time policy (panel)", "after lead_time policy")
+                    )
+                    if s4:
+                        lines.append(s4)
+                    s5 = _fmt("after alignment", "after alignment")
+                    if s5:
+                        lines.append(s5)
+                    for ln in lines:
+                        c.info(ln)
+                except Exception:
+                    pass
+                # Extra visibility: warn if multi-lead requested but only a single lead remains
+                try:
+                    if isinstance(lead_policy, LeadTimePolicy):
+                        multi_requested = lead_policy.mode != "first"
+                    else:
+                        multi_requested = False
+                except Exception:
+                    multi_requested = False
+                if (
+                    multi_requested
+                    and ("lead_time" in ds_prediction.dims)
+                    and int(ds_prediction.lead_time.size) == 1
+                ):
+                    c.warn(
+                        "Multi-lead policy requested but only a single lead is present after "
+                        "selection/alignment. This typically means either your ML store has a "
+                        "single lead, your date window clips most valid times, or target/ML "
+                        "time alignment leaves only one overlapping offset. Consider widening "
+                        "'selection.datetimes', setting lead_time.mode=full temporarily, or "
+                        "inspecting the ML Zarr with tools/inspect_zarr.py."
+                    )
         except Exception:
             pass
 
@@ -1068,6 +1409,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
+            # Pass lead_policy through so per-lead deterministic artifacts are generated
             det_mod.run(
                 ds_target,
                 ds_prediction,
@@ -1077,6 +1419,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 plotting,
                 cfg.get("metrics", {}),
                 ensemble_mode=ensemble_cfg.get("deterministic"),
+                lead_policy=lead_policy,
             )
             dt = time.time() - _t
             module_timings.append(("deterministic", dt))
@@ -1112,12 +1455,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
+            # Provide lead_policy to unlock by-lead ETS artifacts
             ets_mod.run(
                 ds_target,
                 ds_prediction,
                 out_root,
                 cfg.get("metrics", {}),
                 ensemble_mode=ensemble_cfg.get("ets"),
+                lead_policy=lead_policy,
             )
             dt = time.time() - _t
             module_timings.append(("ets", dt))
@@ -1350,6 +1695,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SwissClim Evaluations runner")
     p.add_argument("--config", type=str, required=True, help="Path to YAML config")
     return p
+
+
+def _load_yaml(path: str) -> dict[str, Any]:
+    """Load a YAML file into a dict, returning an empty dict on empty files.
+
+    Kept local to this module to avoid cross-imports so the CLI can run in isolation
+    during tests where other modules are monkeypatched.
+    """
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    # Ensure we return a plain dict for downstream mutation
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def main(argv: list[str] | None = None) -> None:

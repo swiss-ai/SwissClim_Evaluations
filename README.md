@@ -317,27 +317,20 @@ modules:
 #   full   - use all available lead hours
 #   subset - explicit list of lead hours to keep (provide subset_hours)
 #   stride - keep every Nth hour (provide stride_hours)
-#   bins   - retain all, later aggregate into user-defined bins (bins list)
 # panel.* controls which lead hours are used for multi-panel plots (maps, histograms, spectra, etc.)
 lead_time:
-  mode: stride            # first | full | subset | stride | bins
-  stride_hours: 12
+  mode: stride            # first | full | subset | stride
+  # Prefer nested style for stride/subset; flat keys remain supported
+  stride:
+    hours: 12
   max_hour: 120
-  # subset_hours: [0, 6, 12, 24]   # only if mode=subset
-  panel:
-    strategy: evenly_spaced  # first | evenly_spaced | specific
-    count: 5                 # number of panel lead hours to show
-    # panel_specific_hours: [0, 24, 72]  # only if strategy=specific
-  # bins:
-  #   - start: 0   # inclusive (hours)
-  #     end: 24    # exclusive
-  #     label: day1
-  #   - start: 24
-  #     end: 48
-  #     label: day2
-  #   - start: 48
-  #     end: 120
-  #     label: day3_plus
+  # Subset example (only if mode=subset)
+  # subset:
+  #   hours: [0, 6, 12, 24]
+  # Legacy: subset_hours: [0, 6, 12, 24]
+  # Panel (multi-figure subset) configuration has been removed; all modules now
+  # use the same retained set of lead_time hours after applying this policy.
+
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
@@ -605,9 +598,10 @@ Add a `lead_time` block to the YAML (see embedded example config). Supported mod
 | full   | Keep all leads (optionally capped by `max_hour`). |
 | subset | Keep only hours listed in `subset_hours`. |
 | stride | Keep every Nth hour defined by `stride_hours`. |
-| bins   | Keep all leads; downstream modules may aggregate by defined bins. |
 
-Additional fields: `max_hour` (inclusive cap), `panel.strategy` (`first`, `evenly_spaced`, `specific`), `panel.count`, and optional `panel_specific_hours`.
+Additional field: `max_hour` (inclusive cap). The previous `panel.*` keys and
+`plotting.lead_panel_hours` have been deprecated; every module now visualizes
+the complete retained lead_time set.
 
 At runtime the CLI prints a “Lead Time Policy” panel summarizing the resolved mode, stride/subset, and the final list of lead hours after selection.
 
@@ -618,8 +612,8 @@ At runtime the CLI prints a “Lead Time Policy” panel summarizing the resolve
 | deterministic | metrics_by_lead_long.csv, metrics_by_lead_wide.csv, metrics_standardized_by_lead_* | metrics.csv / metrics_standardized.csv |
 | ets | ets_metrics_by_lead_wide.csv | ets_metrics.csv |
 | probabilistic | (planned) crps_by_lead.csv | crps_summary.csv |
-| energy_spectra | lsd_2d_metrics_by_lead.csv (panel-selected leads) | lsd_2d_metrics.csv |
-| plots (maps, histograms, wd_kde) | Panels restricted to selected lead hours | — |
+| energy_spectra | lsd_2d_metrics_by_lead.csv | lsd_2d_metrics.csv |
+| plots (maps, histograms, wd_kde) | Per-lead grids/overlays covering all retained hours | — |
 
 If no `lead_time` section is provided behavior falls back to `first` (single lead) for backward compatibility.
 
@@ -634,13 +628,25 @@ If no `lead_time` section is provided behavior falls back to `first` (single lea
 Enable these in the `plotting:` block to visualize evolution across lead_time:
 
 - `histograms_per_lead`: one histogram page per selected lead_time (2D vars)
-- `maps_per_lead_grid`: grid panels for chosen hours (`lead_panel_hours`)
+- `maps_per_lead_grid`: grid panels for all retained lead_time hours
 - `wd_kde_global_evolution`: 3D perspective of global standardized KDE evolving along lead_time
 - `energy_spectra_spectrogram`: 2D image with x=lead_time, y=wavenumber, color=log10(energy)
 - `probabilistic_line_plots`: CRPS vs lead_time line per variable (requires ensemble size >=2)
-- `vertical_profiles_evolve_lead`: overlay vertical NMAE profiles for multiple lead times (3D vars)
+- `vertical_profiles_evolve_lead`: overlay vertical NMAE profiles for all retained lead times (3D vars)
 
 ETS line plot (thresholds vs lead_time) can be enabled via `metrics.ets.line_plot: true`.
+
+### Migration Notes (Panel Removal)
+
+Prior versions supported a separate "panel" subset (`panel.strategy`, `panel.count`,
+`plotting.lead_panel_hours`) to reduce the number of lead times shown in multi-panel
+figures. This complexity was removed:
+
+- All modules (maps, histograms, wd_kde, energy_spectra spectrograms, vertical profiles, probabilistic CRPS/PIT) now plot the full retained lead_time set after applying the selection policy.
+- Any existing `panel:` block or `plotting.lead_panel_hours` key in configs is ignored safely.
+- To limit the number of leads in both metrics and plots, adjust the main policy using `mode: stride`, `stride.hours`, or provide a concise `subset.hours` list, optionally with `max_hour`.
+
+Configs referencing deprecated keys do not need immediate cleanup; they simply no longer affect output. Remove them gradually to avoid confusion.
 
 ## Intercomparison of Saved Artifacts
 

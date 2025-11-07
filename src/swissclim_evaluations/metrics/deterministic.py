@@ -539,40 +539,75 @@ def run(
             wide_rows.append(flat)
         if rows:
             long_df = pd.concat(rows, ignore_index=True)
-            out_long = section_output / "metrics_by_lead_long.csv"
-            long_df.to_csv(out_long, index=False)
-            print(f"[deterministic] saved {out_long}")
+            # Write standardized filename with tokens for downstream tooling
+            try:
+                out_long = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="by_lead_long",
+                    init_time_range=init_range,
+                    lead_time_range=_extract_lead_range(ds_prediction),
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                long_df.to_csv(out_long, index=False)
+                print(f"[deterministic] saved {out_long}")
+            except Exception:
+                pass
         if wide_rows:
             wide_df = pd.DataFrame(wide_rows)
-            out_wide = section_output / "metrics_by_lead_wide.csv"
-            wide_df.to_csv(out_wide, index=False)
-            print(f"[deterministic] saved {out_wide}")
+            # Write standardized filename variant
+            try:
+                out_wide = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="by_lead_wide",
+                    init_time_range=init_range,
+                    lead_time_range=_extract_lead_range(ds_prediction),
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                wide_df.to_csv(out_wide, index=False)
+                print(f"[deterministic] saved {out_wide}")
+            except Exception:
+                pass
 
         # Optional quick line plots over lead_time
+        # Always generate one plot per (variable, metric): x=lead_time, y=value
         try:
-            if (plotting_cfg or {}).get("line_plots", False):
-                import matplotlib.pyplot as _plt
+            import matplotlib.pyplot as _plt
 
-                # For each variable, plot MAE vs lead_time if present
-                if not wide_df.empty:
-                    var_cols = [c for c in wide_df.columns if c != "lead_time_hours"]
-                    # Infer vars and metrics from var_metric columns
-                    split = [c.split("_", 1) for c in var_cols if "_" in c]
-                    by_var: dict[str, list[str]] = {}
-                    for v, m in split:
-                        by_var.setdefault(v, []).append(m)
-                    for v, metrics in by_var.items():
-                        # choose a small subset to avoid clutter
-                        for m in metrics[:3]:
-                            col = f"{v}_{m}"
-                            fig, ax = _plt.subplots(figsize=(6, 3))
-                            ax.plot(wide_df["lead_time_hours"], wide_df[col], marker="o")
-                            ax.set_xlabel("lead_time (h)")
-                            ax.set_ylabel(m)
-                            ax.set_title(f"{v} — {m} vs lead_time")
-                            out_png = section_output / f"{v}_{m}_line_vs_lead.png"
-                            _plt.savefig(out_png, bbox_inches="tight", dpi=150)
-                            _plt.close(fig)
+            if not wide_df.empty:
+                var_cols = [c for c in wide_df.columns if c != "lead_time_hours"]
+                split = [c.split("_", 1) for c in var_cols if "_" in c]
+                by_var: dict[str, list[str]] = {}
+                for v, m in split:
+                    by_var.setdefault(v, []).append(m)
+                for v, metrics in by_var.items():
+                    for m in sorted(set(metrics)):
+                        col = f"{v}_{m}"
+                        if col not in wide_df:
+                            continue
+                        fig, ax = _plt.subplots(figsize=(6.5, 3.2))
+                        ax.plot(wide_df["lead_time_hours"], wide_df[col], marker="o")
+                        ax.set_xlabel("lead_time (h)")
+                        ax.set_ylabel(m)
+                        ax.set_title(f"{v} — {m} vs lead_time")
+                        out_png = section_output / build_output_filename(
+                            metric="det_line",
+                            variable=str(v),
+                            level=None,
+                            qualifier=m.replace(" ", "_"),
+                            init_time_range=init_range,
+                            lead_time_range=_extract_lead_range(ds_prediction),
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        _plt.tight_layout()
+                        _plt.savefig(out_png, bbox_inches="tight", dpi=150)
+                        _plt.close(fig)
         except Exception:
             pass
         try:

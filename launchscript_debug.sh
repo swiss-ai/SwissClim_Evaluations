@@ -26,6 +26,7 @@ fi
 
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 srun \
   --container-writable \
