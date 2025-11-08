@@ -471,7 +471,10 @@ def plot_probabilistic(
     da_t = ds_target[base_var]
     da_p = ds_prediction[base_var]
     _aligned = False
-    if all(dim in da_t.dims for dim in da_p.dims):
+    # For probabilistic plots, target is deterministic (no ensemble) while prediction
+    # has ensemble dimension. Check alignment only on non-ensemble dimensions.
+    non_ens_dims_p = [d for d in da_p.dims if d != "ensemble"]
+    if all(dim in da_t.dims for dim in non_ens_dims_p):
         da_t, da_p = xr.align(da_t, da_p, join="outer")
         _aligned = True
     if not _aligned and da_t.shape != da_p.shape:
