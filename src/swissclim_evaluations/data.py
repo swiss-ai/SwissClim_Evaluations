@@ -1,4 +1,3 @@
-import contextlib
 import logging
 import warnings
 from collections.abc import Sequence
@@ -179,9 +178,14 @@ def standardize_dims(
         if "time" in ds.coords:
             # Rename both the dimension and its coordinate in one go
             ds = ds.rename({"time": "init_time"})
-            # On newer xarray, rename drops the xindex; restore it if possible
-            with contextlib.suppress(Exception):  # xarray>=2024.10
-                ds = ds.set_xindex("init_time")
+            # On newer xarray, rename may drop the xindex; restore it only if not already indexed.
+            try:
+                existing_indexes = getattr(ds, "xindexes", {}) or getattr(ds, "_indexes", {})
+                if "init_time" not in existing_indexes:
+                    ds = ds.set_xindex("init_time")
+            except Exception:
+                # Deterministic fallback: if re-indexing fails we proceed without raising here.
+                pass
         else:
             # Fallback: only dimension exists (no coord var)
             ds = ds.rename_dims({"time": "init_time"})
@@ -207,10 +211,7 @@ def standardize_dims(
             ds.lead_time.size
         ) > 1:  # SIM102
             lead0 = ds["lead_time"].values[0]
-            with contextlib.suppress(Exception):
-                ds = ds.sel(lead_time=[lead0])
-            if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
-                ds = ds.isel(lead_time=0, drop=False)
+            ds = ds.sel(lead_time=[lead0])
 
     # If the dataset already has 'level' keep it; absence means purely 2D vars.
 
@@ -267,8 +268,7 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         }
         for dim, asc in sort_prefs.items():
             if dim in ds.dims:
-                with contextlib.suppress(Exception):
-                    ds = ds.sortby(dim, ascending=asc)
+                ds = ds.sortby(dim, ascending=asc)
         return ds
 
     for p in paths:
@@ -283,21 +283,17 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
     # non-monotonic global indexes during combine_by_coords.
-    try:
-        levels_list = [
-            ds.coords["level"].values
-            for ds in dsets
-            if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
-        ]
-        if levels_list:
-            import numpy as _np
+    levels_list = [
+        ds.coords["level"].values
+        for ds in dsets
+        if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
+    ]
+    if levels_list:
+        import numpy as _np
 
-            canon_level = _np.unique(_np.concatenate(levels_list))
-            canon_level.sort()
-            dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
-    except Exception:
-        # Best-effort; if harmonization fails, proceed and let combine raise a clearer error
-        pass
+        canon_level = _np.unique(_np.concatenate(levels_list))
+        canon_level.sort()
+        dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
     if not dsets:
         raise ValueError("No Zarr paths provided.")
     if len(dsets) == 1:

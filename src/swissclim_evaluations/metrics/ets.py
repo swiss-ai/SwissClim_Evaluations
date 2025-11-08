@@ -44,12 +44,9 @@ def run(
     ets_cfg = (metrics_cfg or {}).get("ets", {})
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
     reduce_ens_mean = True
-    try:
-        rem = ets_cfg.get("reduce_ensemble_mean")
-        if rem is not None:
-            reduce_ens_mean = bool(rem)
-    except Exception:
-        reduce_ens_mean = True
+    rem = ets_cfg.get("reduce_ensemble_mean")
+    if rem is not None:
+        reduce_ens_mean = bool(rem)
     aggregate_members_mean = bool(ets_cfg.get("aggregate_members_mean", True))
 
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
@@ -72,11 +69,8 @@ def run(
 
     df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
 
-    try:
-        print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
-        print(df.head())
-    except Exception:
-        pass
+    print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
+    print(df.head())
 
     if out_root is not None:
         from ..helpers import build_output_filename
@@ -84,42 +78,36 @@ def run(
         def _extract_init_range(ds: xr.Dataset):
             if "init_time" not in ds:
                 return None
-            try:
-                vals = ds["init_time"].values
-                if vals.size == 0:
-                    return None
-                start = np.datetime64(vals.min()).astype("datetime64[h]")
-                end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-                def _fmt(x):
-                    return (
-                        np.datetime_as_string(x, unit="h")
-                        .replace("-", "")
-                        .replace(":", "")
-                        .replace("T", "")
-                    )
-
-                return (_fmt(start), _fmt(end))
-            except Exception:
+            vals = ds["init_time"].values
+            if getattr(vals, "size", 0) == 0:
                 return None
+            start = np.datetime64(vals.min()).astype("datetime64[h]")
+            end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+            def _fmt(x):
+                return (
+                    np.datetime_as_string(x, unit="h")
+                    .replace("-", "")
+                    .replace(":", "")
+                    .replace("T", "")
+                )
+
+            return (_fmt(start), _fmt(end))
 
         def _extract_lead_range(ds: xr.Dataset):
             if "lead_time" not in ds:
                 return None
-            try:
-                vals = ds["lead_time"].values
-                if vals.size == 0:
-                    return None
-                hours = (vals / np.timedelta64(1, "h")).astype(int)
-                sh = int(hours.min())
-                eh = int(hours.max())
-
-                def _fmt(h: int) -> str:
-                    return f"{h:03d}h"
-
-                return (_fmt(sh), _fmt(eh))
-            except Exception:
+            vals = ds["lead_time"].values
+            if getattr(vals, "size", 0) == 0:
                 return None
+            hours = (vals / np.timedelta64(1, "h")).astype(int)
+            sh = int(hours.min())
+            eh = int(hours.max())
+
+            def _fmt(h: int) -> str:
+                return f"{h:03d}h"
+
+            return (_fmt(sh), _fmt(eh))
 
         init_range = _extract_init_range(ds_prediction)
         lead_range = _extract_lead_range(ds_prediction)
@@ -146,23 +134,19 @@ def run(
             df.to_csv(out_csv)
             print(f"[ets] saved {out_csv}")
             # Optional per-lead wide CSV when multi-lead policy provided
-            try:
-                multi_lead = (
-                    (lead_policy is not None)
-                    and ("lead_time" in ds_prediction.dims)
-                    and int(ds_prediction.sizes.get("lead_time", 0)) > 1
-                    and getattr(lead_policy, "mode", "first") != "first"
-                )
-            except Exception:
-                multi_lead = False
+            multi_lead = (
+                (lead_policy is not None)
+                and ("lead_time" in ds_prediction.dims)
+                and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+                and getattr(lead_policy, "mode", "first") != "first"
+            )
             if multi_lead:
                 rows = []
                 leads = list(ds_prediction["lead_time"].values)
+                # Determine hours deterministically based on dtype of leads
+                is_td = np.issubdtype(np.asarray(leads).dtype, np.timedelta64)
                 for i, lt in enumerate(leads):
-                    try:
-                        hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
-                    except Exception:
-                        hours = int(i)
+                    hours = int(lt / np.timedelta64(1, "h")) if is_td else int(i)
                     ds_t_i = (
                         ds_target.isel(lead_time=i, drop=False)
                         if "lead_time" in ds_target.dims
@@ -182,13 +166,12 @@ def run(
                     wide_df.to_csv(out_wide, index=False)
                     print(f"[ets] saved {out_wide}")
                     # Optional: line plot of thresholds vs lead_time per variable
-                    try:
-                        # Default to True so ETS thresholds per lead are visualized
-                        do_plot = bool(ets_cfg.get("line_plot", True))
-                    except Exception:
-                        do_plot = True
+                    # Default to True so ETS thresholds per lead are visualized
+                    do_plot = bool(ets_cfg.get("line_plot", True))
                     if do_plot:
                         import matplotlib.pyplot as _plt
+
+                        from ..helpers import build_output_filename
 
                         hours = wide_df["lead_time_hours"].values
                         # For each variable present in columns, collect threshold series
@@ -210,10 +193,69 @@ def run(
                             ax.set_ylabel("ETS")
                             ax.set_title(f"ETS thresholds vs lead_time — {v}")
                             ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=8)
-                            out_png = section_output / f"ets_line_{v}.png"
+                            out_png = section_output / build_output_filename(
+                                metric="ets_line",
+                                variable=str(v),
+                                level=None,
+                                qualifier=None,
+                                init_time_range=init_range,
+                                lead_time_range=lead_range,
+                                ensemble=ens_token,
+                                ext="png",
+                            )
                             _plt.tight_layout()
                             _plt.savefig(out_png, bbox_inches="tight", dpi=150)
                             _plt.close(fig)
+                            # Save NPZ and CSV for line plot values
+                            from numpy import savez as _savez
+
+                            hours_arr = np.asarray(hours, dtype=float)
+                            data = {"lead_hours": hours_arr}
+                            for col, tlabel in pairs_sorted:
+                                key = f"ETS_{tlabel.rstrip('%')}"
+                                data[key] = wide_df[col].values.astype(float)
+                            out_npz = section_output / build_output_filename(
+                                metric="ets_line",
+                                variable=str(v),
+                                level=None,
+                                qualifier="data",
+                                init_time_range=init_range,
+                                lead_time_range=lead_range,
+                                ensemble=ens_token,
+                                ext="npz",
+                            )
+                            _savez(out_npz, **data)
+                            out_csv = section_output / build_output_filename(
+                                metric="ets_line",
+                                variable=str(v),
+                                level=None,
+                                qualifier="by_lead",
+                                init_time_range=init_range,
+                                lead_time_range=lead_range,
+                                ensemble=ens_token,
+                                ext="csv",
+                            )
+                            # Build a tidy CSV: lead_hours, threshold_label, value
+                            rows_csv = []
+                            for col, tlabel in pairs_sorted:
+                                hours_list = list(np.asarray(hours_arr, dtype=float))
+                                for h, val in zip(
+                                    hours_list,
+                                    wide_df[col].values.tolist(),
+                                    strict=False,
+                                ):
+                                    rows_csv.append(
+                                        {
+                                            "variable": v,
+                                            "lead_time_hours": float(h),
+                                            "threshold": tlabel,
+                                            "ETS": float(val),
+                                        }
+                                    )
+                            pd.DataFrame(rows_csv).to_csv(out_csv, index=False)
+                            print(f"[ets] saved {out_png}")
+                            print(f"[ets] saved {out_npz}")
+                            print(f"[ets] saved {out_csv}")
         else:
             per_member_dfs = []
             for mi in members_indices:

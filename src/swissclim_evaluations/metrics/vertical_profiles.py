@@ -93,42 +93,36 @@ def run(
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        try:
-            vals = ds["init_time"].values
-            if vals.size == 0:
-                return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
-        except Exception:
+        vals = ds["init_time"].values
+        if getattr(vals, "size", 0) == 0:
             return None
+        start = np.datetime64(vals.min()).astype("datetime64[h]")
+        end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+        def _fmt(x):
+            return (
+                np.datetime_as_string(x, unit="h")
+                .replace("-", "")
+                .replace(":", "")
+                .replace("T", "")
+            )
+
+        return (_fmt(start), _fmt(end))
 
     def _extract_lead_range(ds: xr.Dataset):
         if "lead_time" not in ds:
             return None
-        try:
-            vals = ds["lead_time"].values
-            if vals.size == 0:
-                return None
-            hours = (vals / np.timedelta64(1, "h")).astype(int)
-            sh = int(hours.min())
-            eh = int(hours.max())
-
-            def _fmt(h: int) -> str:
-                return f"{h:03d}h"
-
-            return (_fmt(sh), _fmt(eh))
-        except Exception:
+        vals = ds["lead_time"].values
+        if getattr(vals, "size", 0) == 0:
             return None
+        hours = (vals / np.timedelta64(1, "h")).astype(int)
+        sh = int(hours.min())
+        eh = int(hours.max())
+
+        def _fmt(h: int) -> str:
+            return f"{h:03d}h"
+
+        return (_fmt(sh), _fmt(eh))
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
@@ -194,11 +188,10 @@ def run(
         # Detect latitude ordering once (ERA5 often descending 90 -> -90). We
         # adapt slice direction instead of sorting (cheaper and preserves
         # original layout / lazy dask graph).
-        try:
+        lat_desc = False
+        if "latitude" in ds_target[var].coords:
             lat_vals = ds_target[var].latitude
             lat_desc = bool(lat_vals[0] > lat_vals[-1])
-        except Exception:
-            lat_desc = False
 
         def _lat_slice(lo: float, hi: float, *, _lat_desc: bool = lat_desc) -> slice:  # bind order
             """Return a slice selecting [lo, hi] irrespective of coordinate order.
@@ -396,32 +389,26 @@ def run(
         fig_count += 1
 
         # Optional: overlay vertical profiles for selected lead_time values (evolution)
-        try:
-            evolve = bool((plotting_cfg or {}).get("vertical_profiles_evolve_lead", False))
-        except Exception:
-            evolve = False
+        evolve = bool((plotting_cfg or {}).get("vertical_profiles_evolve_lead", False))
         if (
             evolve
             and ("lead_time" in ds_prediction.dims)
             and int(ds_prediction.sizes.get("lead_time", 0)) > 1
         ):
             # Use all retained lead_time hours (panel concept removed)
-            try:
+            if np.issubdtype(np.asarray(ds_prediction["lead_time"].values).dtype, np.timedelta64):
                 all_hours = [
                     int(np.timedelta64(x) / np.timedelta64(1, "h"))
                     for x in ds_prediction["lead_time"].values
                 ]
-            except Exception:
-                all_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+            else:
+                all_hours = [int(x) for x in range(int(ds_prediction.sizes.get("lead_time", 0)))]
             panel_hours = all_hours
             # Compute global (all-latitudes) profiles per selected lead
             fig, ax = plt.subplots(figsize=(7, 6), dpi=dpi * 2)
             colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(panel_hours)))
             for idx, h in enumerate(panel_hours):
-                try:
-                    li = all_hours.index(int(h))
-                except Exception:
-                    li = idx
+                li = all_hours.index(int(h)) if int(h) in all_hours else idx
                 # Slice datasets at this lead
                 da_t = ds_target[var]
                 da_p = ds_prediction[var]
@@ -450,15 +437,48 @@ def run(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             print(f"[vertical_profiles] saved {out_png}")
             plt.close(fig)
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="vprof_nmae",
+                    variable=var,
+                    level="multi",
+                    qualifier="evolve_data",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token if resolved_mode != "members" else None,
+                    ext="npz",
+                )
+                profiles = []
+                for idx, h in enumerate(panel_hours):
+                    try:
+                        li = all_hours.index(int(h))
+                    except Exception:
+                        li = idx
+                    da_t = ds_target[var]
+                    da_p = ds_prediction[var]
+                    if "lead_time" in da_t.dims:
+                        da_t = da_t.isel(lead_time=li)
+                    if "lead_time" in da_p.dims:
+                        da_p = da_p.isel(lead_time=li)
+                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                    profiles.append(np.asarray(prof.values))
+                np.savez(
+                    out_npz,
+                    lead_hours=np.array(panel_hours, dtype=float),
+                    level=np.asarray(level_values),
+                    nmae_profiles=np.array(profiles, dtype=object),
+                    allow_pickle=True,
+                )
+                print(f"[vertical_profiles] saved {out_npz}")
 
             # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
-            try:
+            if np.issubdtype(np.asarray(ds_prediction["lead_time"].values).dtype, np.timedelta64):
                 all_hours = [
                     int(np.timedelta64(x) / np.timedelta64(1, "h"))
                     for x in ds_prediction["lead_time"].values
                 ]
-            except Exception:
-                all_hours = list(range(int(ds_prediction.sizes.get("lead_time", 0))))
+            else:
+                all_hours = [int(x) for x in range(int(ds_prediction.sizes.get("lead_time", 0)))]
             hour_index_pairs = []
             for h in panel_hours:
                 try:
@@ -469,7 +489,7 @@ def run(
                 n_levels = len(level_values)
                 n_leads = len(hour_index_pairs)
                 grid = np.full((n_levels, n_leads), np.nan, dtype=float)
-                for j, (h, li) in enumerate(hour_index_pairs):
+                for j, (_h, li) in enumerate(hour_index_pairs):  # rename unused h -> _h (ruff B007)
                     da_t = ds_target[var]
                     da_p = ds_prediction[var]
                     if "lead_time" in da_t.dims:
@@ -477,10 +497,7 @@ def run(
                     if "lead_time" in da_p.dims:
                         da_p = da_p.isel(lead_time=li)
                     prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
-                    try:
-                        grid[:, j] = np.asarray(prof.values).ravel()
-                    except Exception:
-                        pass
+                    grid[:, j] = np.asarray(prof.values).ravel()
                 lead_hours_plot = [h for h, _ in hour_index_pairs]
                 fig2, ax2 = plt.subplots(figsize=(9, 6), dpi=dpi * 2)
                 im = ax2.pcolormesh(
@@ -510,3 +527,21 @@ def run(
                 plt.savefig(out_png2, bbox_inches="tight", dpi=200)
                 print(f"[vertical_profiles] saved {out_png2}")
                 plt.close(fig2)
+                if save_npz:
+                    out_npz2 = section_output / build_output_filename(
+                        metric="vprof_nmae",
+                        variable=var,
+                        level="multi",
+                        qualifier="evolve_heatmap_data",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token if resolved_mode != "members" else None,
+                        ext="npz",
+                    )
+                    np.savez(
+                        out_npz2,
+                        lead_hours=np.array(lead_hours_plot, dtype=float),
+                        level=np.asarray(level_values),
+                        nmae_grid=grid,
+                    )
+                    print(f"[vertical_profiles] saved {out_npz2}")

@@ -1,12 +1,11 @@
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 import xarray as xr
 
 from swissclim_evaluations.lead_time_policy import LeadTimePolicy
-from swissclim_evaluations.metrics import deterministic as det, ets as ets_mod
+from swissclim_evaluations.metrics import ets as ets_mod
 
 
 def _build_pair(n_leads=3):
@@ -29,11 +28,9 @@ def _build_pair(n_leads=3):
 
 @pytest.mark.skip(
     reason="legacy simple per-lead filenames removed; standardized tokenized filenames only"
-import pytest
-pytestmark = pytest.mark.skip(reason="Removed as not required after output cleanup; metrics validated via standardized filenames and other tests")
 )
 def test_deterministic_per_lead(tmp_path: Path):
-    pass  # Test skipped at module level
+    pass  # Explicitly skipped; deterministic per-lead filenames standardized elsewhere
 
 
 def test_ets_per_lead(tmp_path: Path):

@@ -59,9 +59,11 @@ def run(
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     # Limit number of samples drawn from each band to avoid loading all data into memory
-    max_samples = int(plotting_cfg.get("kde_max_samples", 200_000))
+    _max_samples = int(
+        plotting_cfg.get("kde_max_samples", 200_000)
+    )  # unused; underscore to appease linter
     # Global random seed from config for reproducible subsampling
-    base_seed = int(plotting_cfg.get("random_seed", 42))
+    _base_seed = int(plotting_cfg.get("random_seed", 42))  # unused; underscore to appease linter
     # Target/prediction always use identical subsamples so that if underlying
     # arrays are equal the KDEs match exactly (paired subsampling is enforced).
     section_output = out_root / "wd_kde"
@@ -148,10 +150,7 @@ def run(
     # Removed Wasserstein CSV generation entirely.
 
     # Optional: Global KDE evolution over lead_time (3D perspective)
-    try:
-        evolve_flag = bool((plotting_cfg or {}).get("wd_kde_global_evolution", False))
-    except Exception:
-        evolve_flag = False
+    evolve_flag = bool((plotting_cfg or {}).get("wd_kde_global_evolution", False))
     if evolve_flag and ("lead_time" in ds_prediction_std_eff.dims):
         # Choose a representative 2D standardized variable (no level dim)
         cand_vars = [
@@ -162,18 +161,15 @@ def run(
         if cand_vars:
             base_var = str(cand_vars[0])
             # Common evaluation axis from combined sample across all leads (paired with targets)
-            try:
-                # Draw a coarse subsample to set robust evaluation range
-                da_t_all = ds_target_std_eff[base_var]
-                da_p_all = ds_prediction_std_eff[base_var]
-                # Collapse spatial + time to estimate global min/max quickly
-                q_t = da_t_all.quantile([0.001, 0.999], skipna=True).compute().values
-                q_p = da_p_all.quantile([0.001, 0.999], skipna=True).compute().values
-                vmin = float(min(q_t[0], q_p[0]))
-                vmax = float(max(q_t[1], q_p[1]))
-                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-                    vmin, vmax = -3.0, 3.0
-            except Exception:
+            # Draw a coarse subsample to set robust evaluation range
+            da_t_all = ds_target_std_eff[base_var]
+            da_p_all = ds_prediction_std_eff[base_var]
+            # Collapse spatial + time to estimate global min/max quickly
+            q_t = da_t_all.quantile([0.001, 0.999], skipna=True).compute().values
+            q_p = da_p_all.quantile([0.001, 0.999], skipna=True).compute().values
+            vmin = float(min(q_t[0], q_p[0]))
+            vmax = float(max(q_t[1], q_p[1]))
+            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
                 vmin, vmax = -3.0, 3.0
             y_eval = np.linspace(vmin, vmax, 200)
 
@@ -188,16 +184,15 @@ def run(
                 arr = arr[np.isfinite(arr)]
                 if arr.size < 10:
                     return np.zeros_like(y_eval)
-                try:
-                    kde = gaussian_kde(arr)
-                    return kde(y_eval)
-                except Exception:
-                    return np.zeros_like(y_eval)
+                kde = gaussian_kde(arr)
+                return kde(y_eval)
 
             for i, lt in enumerate(leads):
-                try:
-                    hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
-                except Exception:
+                # Convert timedelta leads to hours; fall back to index
+                lt_arr = np.asarray(lt)
+                if np.issubdtype(lt_arr.dtype, np.timedelta64):
+                    hours = int(lt_arr / np.timedelta64(1, "h"))
+                else:
                     hours = int(i)
                 lead_hours.append(hours)
                 da_t = ds_target_std_eff[base_var]
@@ -236,27 +231,17 @@ def run(
                 y_model = i * offset + Z_p_arr[i]
                 # Filled model ridge (fallback to line if fill_between not available in test stubs)
                 if hasattr(ax_r, "fill_between"):
-                    try:
-                        ax_r.fill_between(
-                            Y, i * offset, y_model, color=color, alpha=0.55, linewidth=0.0
-                        )
-                    except Exception:
-                        ax_r.plot(Y, y_model, color=color, lw=1.0)
+                    ax_r.fill_between(
+                        Y, i * offset, y_model, color=color, alpha=0.55, linewidth=0.0
+                    )
                 else:
                     ax_r.plot(Y, y_model, color=color, lw=1.0)
                 # Target outline as thin black line for contrast
                 ax_r.plot(Y, y_target, color="black", lw=0.7)
                 # Lead hour label
-                try:
-                    ax_r.text(
-                        Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8
-                    )
-                except Exception:
-                    pass
-            try:
-                ax_r.set_yticks([])
-            except Exception:
-                pass
+                ax_r.text(Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8)
+                if hasattr(ax_r, "set_yticks"):
+                    ax_r.set_yticks([])
             ax_r.set_xlabel(f"{base_var} (standardized)")
             ax_r.set_title("Global KDE evolution — ridgeline (filled=model, line=target)")
             out_png_r = section_output / build_output_filename(
@@ -269,8 +254,29 @@ def run(
                 ensemble=ens_token_base,
                 ext="png",
             )
-            fig_r.savefig(out_png_r, bbox_inches="tight", dpi=200)
-            print(f"[wd_kde] saved {out_png_r}")
+            if save_fig:
+                fig_r.savefig(out_png_r, bbox_inches="tight", dpi=200)
+                print(f"[wd_kde] saved {out_png_r}")
             plt.close(fig_r)
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="wd_kde_evolve",
+                    variable=base_var,
+                    level=None,
+                    qualifier="ridgeline_data",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token_base,
+                    ext="npz",
+                )
+                np.savez(
+                    out_npz,
+                    lead_hours=X,
+                    y_eval=Y,
+                    density_target=Z_t_arr,
+                    density_model=Z_p_arr,
+                    variable=base_var,
+                )
+                print(f"[wd_kde] saved {out_npz}")
 
             # Removed: heatmaps, 3D curves, and NPZ bundle.

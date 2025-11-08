@@ -57,10 +57,7 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
         if len(ensemble_members) == 1:
             ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
         else:
-            try:
-                ensemble_member_norm = [int(i) for i in ensemble_members]
-            except Exception:
-                ensemble_member_norm = ensemble_members
+            ensemble_member_norm = [int(i) for i in ensemble_members]
     else:
         ensemble_member_norm = ensemble_members
 
@@ -135,70 +132,47 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     if latitudes is not None:
         # Latitude is NOT cyclic. Support a single contiguous band and adapt slice order to
         # the coordinate orientation (ascending or descending) to avoid empty selections.
-        try:
-            if isinstance(latitudes, (list, tuple)) and len(latitudes) == 2:
-                lat0, lat1 = float(latitudes[0]), float(latitudes[1])
-                # Detect axis orientation best-effort (monotonic increasing vs decreasing)
-                asc = True
-                try:
-                    vals = ds["latitude"].values
-                    if vals.size >= 2:
-                        asc = bool(vals[1] >= vals[0])
-                except Exception:
-                    asc = True
-                lo = min(lat0, lat1)
-                hi = max(lat0, lat1)
-                # For descending coordinates, slice should be (hi -> lo)
-                slc = slice(lo, hi) if asc else slice(hi, lo)
-                ds = ds.sel(latitude=slc)
-            else:
-                # Fallback: attempt generic slice expansion
-                ds = ds.sel(latitude=slice(*latitudes))
-        except Exception:
-            # Conservative fallback: leave dataset unchanged if selection fails
-            pass
+        if isinstance(latitudes, (list | tuple)) and len(latitudes) == 2:  # ruff UP038
+            lat0, lat1 = float(latitudes[0]), float(latitudes[1])
+            # Detect axis orientation (monotonic increasing vs decreasing)
+            vals = ds["latitude"].values
+            asc = bool(vals[1] >= vals[0]) if vals.size >= 2 else True
+            lo = min(lat0, lat1)
+            hi = max(lat0, lat1)
+            # For descending coordinates, slice should be (hi -> lo)
+            slc = slice(lo, hi) if asc else slice(hi, lo)
+            ds = ds.sel(latitude=slc)
+        else:
+            ds = ds.sel(latitude=slice(*latitudes))
         # Guard against empty spatial selection early
-        try:
-            if "latitude" in ds.dims and int(ds.sizes.get("latitude", 0)) == 0:
-                raise ValueError(
-                    "Latitude selection resulted in an empty dataset. "
-                    f"Requested latitudes={latitudes}. Check bounds and coordinate convention."
-                )
-        except Exception:
-            pass
+        if "latitude" in ds.dims and int(ds.sizes.get("latitude", 0)) == 0:
+            raise ValueError(
+                "Latitude selection resulted in an empty dataset. "
+                f"Requested latitudes={latitudes}. Check bounds and coordinate convention."
+            )
     if longitudes is not None:
         # For longitude: if first <= second, apply a normal slice.
         # If first > second, select union of [first..max_lon] ∪ [min_lon..second].
         # Works regardless of coordinate convention (0..360 or -180..180). We sort ascending
         # for deterministic behavior before masking.
-        try:
-            if isinstance(longitudes, (list, tuple)) and len(longitudes) == 2:
-                lon0, lon1 = float(longitudes[0]), float(longitudes[1])
-                if lon0 > lon1:
-                    with contextlib.suppress(Exception):
-                        ds = ds.sortby("longitude", ascending=True)
-                    lon_vals = ds["longitude"]
-                    mask = (lon_vals >= lon0) | (lon_vals <= lon1)
-                    ds = ds.sel(longitude=lon_vals[mask])
-                else:
-                    ds = ds.sel(longitude=slice(lon0, lon1))
+        if isinstance(longitudes, (list | tuple)) and len(longitudes) == 2:  # ruff UP038
+            lon0, lon1 = float(longitudes[0]), float(longitudes[1])
+            if lon0 > lon1:
+                ds = ds.sortby("longitude", ascending=True)
+                lon_vals = ds["longitude"]
+                mask = (lon_vals >= lon0) | (lon_vals <= lon1)
+                ds = ds.sel(longitude=lon_vals[mask])
             else:
-                # If user supplied more complex structure (not currently documented),
-                # attempt direct slice unpack
-                ds = ds.sel(longitude=slice(*longitudes))
-        except Exception:
-            # Conservative fallback: leave dataset unchanged if selection fails
-            pass
+                ds = ds.sel(longitude=slice(lon0, lon1))
+        else:
+            ds = ds.sel(longitude=slice(*longitudes))
         # Guard against empty spatial selection early
-        try:
-            if "longitude" in ds.dims and int(ds.sizes.get("longitude", 0)) == 0:
-                raise ValueError(
-                    "Longitude selection resulted in an empty dataset. "
-                    f"Requested longitudes={longitudes}. Check bounds and coordinate "
-                    "convention (0–360 vs -180..180)."
-                )
-        except Exception:
-            pass
+        if "longitude" in ds.dims and int(ds.sizes.get("longitude", 0)) == 0:
+            raise ValueError(
+                "Longitude selection resulted in an empty dataset. "
+                f"Requested longitudes={longitudes}. Check bounds and coordinate "
+                "convention (0–360 vs -180..180)."
+            )
 
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
@@ -547,11 +521,8 @@ def prepare_datasets(
         lead_audit.append(entry)
 
     # Defer detailed lead-time prints; record via audit only here
-    try:
-        _ = _lead_hours(ds_prediction)
-        _ = _lead_hours(ds_target)
-    except Exception:
-        pass
+    _ = _lead_hours(ds_prediction)
+    _ = _lead_hours(ds_target)
     _audit("after open", ds_prediction, ds_target)
 
     # Align dims to match config expectations
@@ -559,15 +530,11 @@ def prepare_datasets(
     ds_prediction = _slice_common(ds_prediction, cfg)
     # Guard: empty init_time at this stage leads to cryptic errors later.
     # Check predictions primarily, as they drive alignment.
-    try:
-        if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
-            raise ValueError(
-                "No init_time labels remain after selection. Check selection.datetimes window "
-                "and ensure it overlaps the ML store's init_time coordinates."
-            )
-    except Exception:
-        # If access fails, skip guard (will fail naturally later)
-        pass
+    if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
+        raise ValueError(
+            "No init_time labels remain after selection. Check selection.datetimes window "
+            "and ensure it overlaps the ML store's init_time coordinates."
+        )
     # Defer selection prints; capture only in audit
     _audit("after selection", ds_prediction, ds_target)
 
@@ -636,27 +603,23 @@ def prepare_datasets(
     # the ground-truth window is wide enough to cover the selected forecast horizon.
     # Concretely, extend the target's upper bound by max_hour so that valid_time = init+lead
     # remains within the available ERA5 range; otherwise alignment can drop most leads.
-    try:
-        sel_block = cfg.get("selection", {}) or {}
-        bounds = sel_block.get("datetimes")
-        if preserve_all and lead_policy.max_hour is not None and bounds and len(bounds) == 2:
-            end = np.datetime64(bounds[1]).astype("datetime64[ns]")
-            extend_h = int(lead_policy.max_hour)
-            end_ext = end + np.timedelta64(extend_h, "h")
-            # Only widen targets; predictions keep the user-selected init_time window
-            if "init_time" in ds_target.dims:
-                vals = ds_target["init_time"].values.astype("datetime64[ns]")
-                if vals.size > 0 and end_ext > vals.max():
-                    ds_target = ds_target.sel(init_time=slice(None, end_ext))
-                    _audit("after extend_target_window", ds_prediction, ds_target)
-            elif "time" in ds_target.dims:
-                vals = ds_target["time"].values.astype("datetime64[ns]")
-                if vals.size > 0 and end_ext > vals.max():
-                    ds_target = ds_target.sel(time=slice(None, end_ext))
-                    _audit("after extend_target_window", ds_prediction, ds_target)
-    except Exception:
-        # Best effort; if anything fails, proceed without extension.
-        pass
+    sel_block = cfg.get("selection", {}) or {}
+    bounds = sel_block.get("datetimes")
+    if preserve_all and lead_policy.max_hour is not None and bounds and len(bounds) == 2:
+        end = np.datetime64(bounds[1]).astype("datetime64[ns]")
+        extend_h = int(lead_policy.max_hour)
+        end_ext = end + np.timedelta64(extend_h, "h")
+        # Only widen targets; predictions keep the user-selected init_time window
+        if "init_time" in ds_target.dims:
+            vals = ds_target["init_time"].values.astype("datetime64[ns]")
+            if vals.size > 0 and end_ext > vals.max():
+                ds_target = ds_target.sel(init_time=slice(None, end_ext))
+                _audit("after extend_target_window", ds_prediction, ds_target)
+        elif "time" in ds_target.dims:
+            vals = ds_target["time"].values.astype("datetime64[ns]")
+            if vals.size > 0 and end_ext > vals.max():
+                ds_target = ds_target.sel(time=slice(None, end_ext))
+                _audit("after extend_target_window", ds_prediction, ds_target)
 
     # Apply lead time selection (subset/stride) after temporal resolution so
     # stride logic doesn't fight it. IMPORTANT: For targets that often have only

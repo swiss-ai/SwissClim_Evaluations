@@ -5,7 +5,10 @@ import pytest
 import xarray as xr
 
 pytestmark = pytest.mark.skip(
-    reason="Removed as not required after output cleanup; stride artifacts validated via standardized outputs"
+    reason=(
+        "Removed as not required after output cleanup; stride artifacts validated via "
+        "standardized outputs"
+    )
 )
 
 

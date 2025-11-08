@@ -152,8 +152,10 @@ def apply_lead_time_selection(ds: xr.Dataset, policy: LeadTimePolicy) -> xr.Data
             idx = [i for i in idx if hours[i] <= int(policy.max_hour)]
         # STRICT: Do not silently fall back; if nothing matches, fail early.
         if not idx:
-            raise ValueError(
-                f"LeadTimePolicy stride={stride} produced empty selection for hours {hours} (after max_hour filter)."
+            msg = (
+                "LeadTimePolicy stride="
+                f"{stride} produced empty selection for hours {hours} (after max_hour filter)."
             )
+            raise ValueError(msg)
         return ds.isel(lead_time=idx)
     return ds

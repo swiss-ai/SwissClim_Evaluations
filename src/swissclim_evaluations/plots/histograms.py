@@ -135,15 +135,16 @@ def run(
 
         # Helper to choose common bin edges without loading full arrays
         def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
-            try:
+            # Fast guard: empty selections → default symmetric range
+            if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
+                vmin, vmax = -1.0, 1.0
+            else:
                 both = xr.concat([da1, da2], dim="_t")
                 q = both.quantile([0.001, 0.999], skipna=True).compute()
                 vmin = float(q.isel(quantile=0).item())
                 vmax = float(q.isel(quantile=1).item())
-                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
                     vmin, vmax = -1.0, 1.0
-            except Exception:
-                vmin, vmax = -1.0, 1.0
             return np.linspace(vmin, vmax, bins + 1)
 
         def _dask_hist(da: xr.DataArray, edges: np.ndarray):
@@ -200,13 +201,13 @@ def run(
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                     continue
-                try:
-                    both = np.concatenate([ds_sample, ml_sample])
-                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                        qlow, qhigh = -1.0, 1.0
-                except Exception:
+                both = np.concatenate([ds_sample, ml_sample])
+                if both.size <= 1:
                     qlow, qhigh = -1.0, 1.0
+                else:
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if (not np.isfinite(qlow)) or (not np.isfinite(qhigh)) or (qlow == qhigh):
+                        qlow, qhigh = -1.0, 1.0
                 edges = np.linspace(qlow, qhigh, 1001)
                 dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
                 dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
@@ -243,20 +244,17 @@ def run(
             )
             axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
             # Update global limits
-            try:
-                if global_x_min is None or float(edges[0]) < global_x_min:
-                    global_x_min = float(edges[0])
-                if global_x_max is None or float(edges[-1]) > global_x_max:
-                    global_x_max = float(edges[-1])
-                local_y_max = float(
-                    max(
-                        np.nanmax(counts_ds) if counts_ds.size else 0.0,
-                        np.nanmax(counts_ml) if counts_ml.size else 0.0,
-                    )
+            if global_x_min is None or float(edges[0]) < global_x_min:
+                global_x_min = float(edges[0])
+            if global_x_max is None or float(edges[-1]) > global_x_max:
+                global_x_max = float(edges[-1])
+            local_y_max = float(
+                max(
+                    np.nanmax(counts_ds) if counts_ds.size else 0.0,
+                    np.nanmax(counts_ml) if counts_ml.size else 0.0,
                 )
-                global_y_max = max(global_y_max, local_y_max)
-            except Exception:
-                pass
+            )
+            global_y_max = max(global_y_max, local_y_max)
             axs[j, 1].legend(loc="upper right")
             if save_npz:
                 combined["neg_counts"].append((counts_ds, counts_ml))
@@ -278,13 +276,13 @@ def run(
                 if ds_sample.size == 0 or ml_sample.size == 0:
                     axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                     continue
-                try:
-                    both = np.concatenate([ds_sample, ml_sample])
-                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                        qlow, qhigh = -1.0, 1.0
-                except Exception:
+                both = np.concatenate([ds_sample, ml_sample])
+                if both.size <= 1:
                     qlow, qhigh = -1.0, 1.0
+                else:
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if (not np.isfinite(qlow)) or (not np.isfinite(qhigh)) or (qlow == qhigh):
+                        qlow, qhigh = -1.0, 1.0
                 edges = np.linspace(qlow, qhigh, 1001)
                 dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
                 dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
@@ -319,20 +317,17 @@ def run(
             )
             axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
             # Update global limits
-            try:
-                if global_x_min is None or float(edges[0]) < global_x_min:
-                    global_x_min = float(edges[0])
-                if global_x_max is None or float(edges[-1]) > global_x_max:
-                    global_x_max = float(edges[-1])
-                local_y_max = float(
-                    max(
-                        np.nanmax(counts_ds) if counts_ds.size else 0.0,
-                        np.nanmax(counts_ml) if counts_ml.size else 0.0,
-                    )
+            if global_x_min is None or float(edges[0]) < global_x_min:
+                global_x_min = float(edges[0])
+            if global_x_max is None or float(edges[-1]) > global_x_max:
+                global_x_max = float(edges[-1])
+            local_y_max = float(
+                max(
+                    np.nanmax(counts_ds) if counts_ds.size else 0.0,
+                    np.nanmax(counts_ml) if counts_ml.size else 0.0,
                 )
-                global_y_max = max(global_y_max, local_y_max)
-            except Exception:
-                pass
+            )
+            global_y_max = max(global_y_max, local_y_max)
             axs[j, 0].legend(loc="upper right")
             if save_npz:
                 combined["pos_counts"].append((counts_ds, counts_ml))
@@ -341,15 +336,12 @@ def run(
                 combined["pos_lat_max"].append(float(lat_max))
 
         # Apply unified axes after plotting (post-update of global limits)
-        try:
-            if global_x_min is not None and global_x_max is not None:
-                for j in range(n_bands // 2):
-                    axs[j, 1].set_xlim(global_x_min, global_x_max)
-                    axs[j, 0].set_xlim(global_x_min, global_x_max)
-                    axs[j, 1].set_ylim(0.0, global_y_max * 1.05 if global_y_max > 0 else 1.0)
-                    axs[j, 0].set_ylim(0.0, global_y_max * 1.05 if global_y_max > 0 else 1.0)
-        except Exception:
-            pass
+        if global_x_min is not None and global_x_max is not None:
+            for j in range(n_bands // 2):
+                axs[j, 1].set_xlim(global_x_min, global_x_max)
+                axs[j, 0].set_xlim(global_x_min, global_x_max)
+                axs[j, 1].set_ylim(0.0, global_y_max * 1.05 if global_y_max > 0 else 1.0)
+                axs[j, 0].set_ylim(0.0, global_y_max * 1.05 if global_y_max > 0 else 1.0)
 
         units = da_target_var.attrs.get("units", "")
         plt.suptitle(
@@ -549,7 +541,7 @@ def run(
         per_lead = bool(plotting_cfg.get("histograms_per_lead", True)) and (
             "lead_time" in ds_prediction_mean.dims and int(ds_prediction_mean.lead_time.size) > 1
         )
-        lead_indices = range(int(ds_prediction_mean.lead_time.size)) if per_lead else [None]
+        # removed unused lead_indices (ruff F841)
         # Suppress individual per-lead global PNGs: only produce grid later
         # (retain potential single-lead case by emitting one global if only one lead)
         if not per_lead:
@@ -700,6 +692,32 @@ def run(
                     )
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     print(f"[histograms] saved {out_png}")
+                if save_npz:
+                    # Persist panel data (edges, densities) for table recreation
+                    # Store variable length object arrays for flexibility
+                    out_npz = section_output / build_output_filename(
+                        metric="hist_global",
+                        variable=str(variable_name),
+                        level="",
+                        qualifier="grid_data",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ensemble_mode_to_token("mean"),
+                        ext="npz",
+                    )
+                    lead_hours = np.array(panel_hours, dtype=float)
+                    dens_true_list = [pr[1] for pr in panel_results]  # dt
+                    dens_pred_list = [pr[2] for pr in panel_results]  # dp
+                    edges_list = [pr[0] for pr in panel_results]
+                    np.savez(
+                        out_npz,
+                        lead_hours=lead_hours,
+                        densities_true=np.array(dens_true_list, dtype=object),
+                        densities_pred=np.array(dens_pred_list, dtype=object),
+                        edges=np.array(edges_list, dtype=object),
+                        allow_pickle=True,
+                    )
+                    print(f"[histograms] saved {out_npz}")
                 plt.close(fig)
     elif resolved_mode == "members" and has_ens:
         for member_index, tgt_m, pred_m in _iter_members():
@@ -707,7 +725,7 @@ def run(
             per_lead = bool(plotting_cfg.get("histograms_per_lead", True)) and (
                 "lead_time" in pred_m.dims and int(pred_m.lead_time.size) > 1
             )
-            lead_indices = range(int(pred_m.lead_time.size)) if per_lead else [None]
+            # removed unused lead_indices (ruff F841)
             # Suppress member per-lead globals; only grid
             if not per_lead:
                 for variable_name in variables_2d:
@@ -848,6 +866,30 @@ def run(
                         )
                         plt.savefig(out_png, bbox_inches="tight", dpi=200)
                         print(f"[histograms] saved {out_png}")
+                    if save_npz:
+                        out_npz = section_output / build_output_filename(
+                            metric="hist_global",
+                            variable=str(variable_name),
+                            level="",
+                            qualifier="grid_data",
+                            init_time_range=None,
+                            lead_time_range=None,
+                            ensemble=token,
+                            ext="npz",
+                        )
+                        lead_hours = np.array(panel_hours, dtype=float)
+                        dens_true_list = [pr[1] for pr in panel_results]
+                        dens_pred_list = [pr[2] for pr in panel_results]
+                        edges_list = [pr[0] for pr in panel_results]
+                        np.savez(
+                            out_npz,
+                            lead_hours=lead_hours,
+                            densities_true=np.array(dens_true_list, dtype=object),
+                            densities_pred=np.array(dens_pred_list, dtype=object),
+                            edges=np.array(edges_list, dtype=object),
+                            allow_pickle=True,
+                        )
+                        print(f"[histograms] saved {out_npz}")
                     plt.close(fig)
     else:  # pooled or none
         token = (
@@ -856,7 +898,7 @@ def run(
         per_lead = bool(plotting_cfg.get("histograms_per_lead", True)) and (
             "lead_time" in ds_prediction.dims and int(ds_prediction.lead_time.size) > 1
         )
-        lead_indices = range(int(ds_prediction.lead_time.size)) if per_lead else [None]
+        # removed unused variable lead_indices (ruff F841)
         if not per_lead:
             for variable_name in variables_2d:
                 _plot_global_hist(
@@ -994,6 +1036,30 @@ def run(
                     )
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     print(f"[histograms] saved {out_png}")
+                if save_npz:
+                    out_npz = section_output / build_output_filename(
+                        metric="hist_global",
+                        variable=str(variable_name),
+                        level="",
+                        qualifier="grid_data",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=token,
+                        ext="npz",
+                    )
+                    lead_hours = np.array(panel_hours, dtype=float)
+                    dens_true_list = [pr[1] for pr in panel_results]
+                    dens_pred_list = [pr[2] for pr in panel_results]
+                    edges_list = [pr[0] for pr in panel_results]
+                    np.savez(
+                        out_npz,
+                        lead_hours=lead_hours,
+                        densities_true=np.array(dens_true_list, dtype=object),
+                        densities_pred=np.array(dens_pred_list, dtype=object),
+                        edges=np.array(edges_list, dtype=object),
+                        allow_pickle=True,
+                    )
+                    print(f"[histograms] saved {out_npz}")
                 plt.close(fig)
 
     # 3D variables per level

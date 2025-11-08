@@ -202,9 +202,9 @@ def run(
             axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[0].coastlines(linewidth=0.5)
             # Zoom to data extent to avoid extreme aspect distortion when lat range is narrow
-            try:
-                _lon = lon.values if lon is not None else ds_var.longitude.values
-                _lat = lat.values if lat is not None else ds_var.latitude.values
+            _lon = lon.values if lon is not None else ds_var.longitude.values
+            _lat = lat.values if lat is not None else ds_var.latitude.values
+            if hasattr(axes[0], "set_extent"):
                 axes[0].set_extent(
                     [
                         float(np.min(_lon)),
@@ -214,8 +214,6 @@ def run(
                     ],
                     crs=ccrs.PlateCarree(),
                 )
-            except Exception:
-                pass
             axes[0].set_title("Ground Truth")
 
             lon_ml = ds_ml_var.coords.get("longitude", None)
@@ -232,9 +230,9 @@ def run(
             )
             axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[1].coastlines(linewidth=0.5)
-            try:
-                _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
-                _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
+            _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
+            _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
+            if hasattr(axes[1], "set_extent"):
                 axes[1].set_extent(
                     [
                         float(np.min(_lon)),
@@ -244,8 +242,6 @@ def run(
                     ],
                     crs=ccrs.PlateCarree(),
                 )
-            except Exception:
-                pass
             axes[1].set_title("Model Prediction")
 
             # Colorbar spanning both axes — vertical to save vertical space
@@ -256,22 +252,22 @@ def run(
                 fraction=0.025,
                 pad=0.02,
             )
-            try:
-                if cb is not None:
-                    cb.set_label(ds_target[var].attrs.get("units", ""))
-            except Exception:
-                pass
+            if cb is not None:
+                cb.set_label(ds_target[var].attrs.get("units", ""))
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
-                try:
-                    init_label = str(time_selected.dt.strftime("%Y-%m-%d %H:%MZ").values)
-                except Exception:
-                    init_label = str(time_selected.values)
-                plt.suptitle(
-                    f"Maps — {var}{title_extra} | ensemble={ens_token_global or ('member ' + str(ens) if ens is not None else 'none')} | init_time={init_label} | lead_range={lead_range}",
-                    fontsize=14,
+                # Robust formatting without relying on .dt accessor
+                ts_val = np.asarray(time_selected.values, dtype="datetime64[h]")
+                init_label = np.datetime_as_string(ts_val).replace("T", " ") + "Z"
+                ensemble_label = ens_token_global or (
+                    "member " + str(ens) if ens is not None else "none"
                 )
+                title_text = (
+                    f"Maps — {var}{title_extra} | ensemble={ensemble_label} | "
+                    f"init_time={init_label} | lead_range={lead_range}"
+                )
+                plt.suptitle(title_text, fontsize=14)
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)
@@ -325,11 +321,8 @@ def run(
             )
             if per_lead_grid:
                 # Use all retained lead_time hours from the dataset (panel concept removed)
-                try:
-                    vals = ds_prediction["lead_time"].values
-                    all_hours = [int(v / np.timedelta64(1, "h")) for v in vals]
-                except Exception:
-                    all_hours = list(range(int(ds_prediction.lead_time.size)))
+                vals = ds_prediction["lead_time"].values
+                all_hours = [int(v / np.timedelta64(1, "h")) for v in vals]
                 panel_hours = all_hours
                 if panel_hours:
                     rows = len(panel_hours)
@@ -347,10 +340,7 @@ def run(
                     vmax_global = None
                     slices: list[tuple[int, xr.DataArray, xr.DataArray]] = []
                     for r, h in enumerate(panel_hours):
-                        try:
-                            idx = all_hours.index(int(h))
-                        except Exception:
-                            idx = r
+                        idx = r  # panel_hours preserves order from all_hours
                         ds_var = ds_target[var]
                         ds_ml_var = ds_prediction[var]
                         if ens is not None:
@@ -374,12 +364,11 @@ def run(
                         slices.append((int(h), ds_var, ds_ml_var))
                         vmin_local = min(float(ds_var.min()), float(ds_ml_var.min()))
                         vmax_local = max(float(ds_var.max()), float(ds_ml_var.max()))
-                        vmin_global = (
-                            vmin_local if vmin_global is None else min(vmin_global, vmin_local)
-                        )
-                        vmax_global = (
-                            vmax_local if vmax_global is None else max(vmax_global, vmax_local)
-                        )
+                        # Maintain running global min/max without calling min(None, x)
+                        if (vmin_global is None) or (vmin_local < vmin_global):
+                            vmin_global = vmin_local
+                        if (vmax_global is None) or (vmax_local > vmax_global):
+                            vmax_global = vmax_local
 
                     # Now plot with consistent vmin/vmax and a single colorbar
                     first_im = None
@@ -401,9 +390,9 @@ def run(
                             first_im = im
                         axes[r, 0].add_feature(cfeature.BORDERS, linewidth=0.5)
                         axes[r, 0].coastlines(linewidth=0.5)
-                        try:
-                            _lon = lon.values if lon is not None else ds_var.longitude.values
-                            _lat = lat.values if lat is not None else ds_var.latitude.values
+                        _lon = lon.values if lon is not None else ds_var.longitude.values
+                        _lat = lat.values if lat is not None else ds_var.latitude.values
+                        if hasattr(axes[r, 0], "set_extent"):
                             axes[r, 0].set_extent(
                                 [
                                     float(np.min(_lon)),
@@ -413,8 +402,6 @@ def run(
                                 ],
                                 crs=ccrs.PlateCarree(),
                             )
-                        except Exception:
-                            pass
                         axes[r, 0].set_title(f"Ground Truth — lead {int(h)}h")
 
                         lon_ml = ds_ml_var.coords.get("longitude", None)
@@ -431,13 +418,9 @@ def run(
                         )
                         axes[r, 1].add_feature(cfeature.BORDERS, linewidth=0.5)
                         axes[r, 1].coastlines(linewidth=0.5)
-                        try:
-                            _lon = (
-                                lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
-                            )
-                            _lat = (
-                                lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
-                            )
+                        _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
+                        _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
+                        if hasattr(axes[r, 1], "set_extent"):
                             axes[r, 1].set_extent(
                                 [
                                     float(np.min(_lon)),
@@ -447,8 +430,6 @@ def run(
                                 ],
                                 crs=ccrs.PlateCarree(),
                             )
-                        except Exception:
-                            pass
                         axes[r, 1].set_title(f"Model Prediction — lead {int(h)}h")
 
                     # Single shared colorbar
@@ -456,25 +437,28 @@ def run(
                         cb = fig.colorbar(
                             first_im, ax=axes, orientation="vertical", fraction=0.025, pad=0.02
                         )
-                        try:
+                        from contextlib import suppress
+
+                        with suppress(Exception):
                             cb.set_label(units_label)
-                        except Exception:
-                            pass
 
                     # save combined grid with descriptive header
                     # For grid, show first init_time only (time_selected) without range semantics
-                    try:
-                        init_label = (
-                            str(ds_prediction["init_time"].values[0]).replace("T", " ")
-                            if "init_time" in ds_prediction.dims
-                            else "n/a"
-                        )
-                    except Exception:
-                        init_label = "n/a"
-                    plt.suptitle(
-                        f"Maps grid — {var}{title_extra} | ensemble={ens_token_global or ('member ' + str(ens) if ens is not None else 'none')} | init_time={init_label}",
-                        fontsize=14,
+                    init_label = (
+                        np.datetime_as_string(
+                            np.asarray(ds_prediction["init_time"].values[0], dtype="datetime64[h]")
+                        ).replace("T", " ")
+                        if "init_time" in ds_prediction.dims
+                        else "n/a"
                     )
+                    ensemble_label = ens_token_global or (
+                        "member " + str(ens) if ens is not None else "none"
+                    )
+                    grid_title = (
+                        f"Maps grid — {var}{title_extra} | ensemble={ensemble_label} | "
+                        f"init_time={init_label}"
+                    )
+                    plt.suptitle(grid_title, fontsize=14)
                     ens_token = (
                         ensemble_mode_to_token("members", ens)
                         if (resolved_mode == "members" and ens is not None)
@@ -492,11 +476,45 @@ def run(
                     )
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     print(f"[maps] saved {out_png}")
+                    if save_npz:
+                        # Persist per-lead arrays for programmatic inspection
+                        out_npz = section_output / build_output_filename(
+                            metric="map",
+                            variable=str(var),
+                            level=None,
+                            qualifier="grid_data",
+                            init_time_range=init_range,
+                            lead_time_range=None,
+                            ensemble=ens_token,
+                            ext="npz",
+                        )
+                        lead_hours = np.array([h for h, _, _ in slices], dtype=float)
+                        nwp_stack = np.array([dv.values for _, dv, _ in slices], dtype=object)
+                        ml_stack = np.array([dm.values for _, _, dm in slices], dtype=object)
+                        # latitude/longitude consistent across slices
+                        lat_arr = (
+                            slices[0][1].latitude.values
+                            if "latitude" in slices[0][1].coords
+                            else np.array([])
+                        )
+                        lon_arr = (
+                            slices[0][1].longitude.values
+                            if "longitude" in slices[0][1].coords
+                            else np.array([])
+                        )
+                        np.savez(
+                            out_npz,
+                            lead_hours=lead_hours,
+                            nwp=nwp_stack,
+                            ml=ml_stack,
+                            latitude=lat_arr,
+                            longitude=lon_arr,
+                            allow_pickle=True,
+                        )
+                        print(f"[maps] saved {out_npz}")
                     plt.close(fig)
                 else:
-                    print(
-                        "[maps] per-lead grid requested but no lead_panel_hours provided; skipping grid."
-                    )
+                    print("[maps] per-lead grid requested but no lead times found; skipping grid.")
 
     # 3D maps per level (one figure with rows per level)
     for _i, var in enumerate(variables_3d):
@@ -562,9 +580,9 @@ def run(
                 )
                 axes[r, 0].add_feature(cfeature.BORDERS, linewidth=0.5)
                 axes[r, 0].coastlines(linewidth=0.5)
-                try:
-                    _lon = lon.values if lon is not None else ds_var.longitude.values
-                    _lat = lat.values if lat is not None else ds_var.latitude.values
+                _lon = lon.values if lon is not None else ds_var.longitude.values
+                _lat = lat.values if lat is not None else ds_var.latitude.values
+                if hasattr(axes[r, 0], "set_extent"):
                     axes[r, 0].set_extent(
                         [
                             float(np.min(_lon)),
@@ -574,8 +592,6 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                except Exception:
-                    pass
                 axes[r, 0].set_title(f"Ground Truth — level {lvl}")
 
                 lon_ml = ds_ml_var.coords.get("longitude", None)
@@ -592,9 +608,9 @@ def run(
                 )
                 axes[r, 1].add_feature(cfeature.BORDERS, linewidth=0.5)
                 axes[r, 1].coastlines(linewidth=0.5)
-                try:
-                    _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
-                    _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
+                _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
+                _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
+                if hasattr(axes[r, 1], "set_extent"):
                     axes[r, 1].set_extent(
                         [
                             float(np.min(_lon)),
@@ -604,8 +620,6 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                except Exception:
-                    pass
                 axes[r, 1].set_title(f"Model Prediction — level {lvl}")
 
             ens_token = (

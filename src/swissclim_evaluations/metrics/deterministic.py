@@ -482,14 +482,6 @@ def run(
         except Exception:
             pass
 
-    # Console summary for aggregate mode
-    if members_indices is None:
-        try:
-            print("Deterministic metrics (targets vs predictions) — first 5 rows:", flush=True)
-            print(regular_metrics.head(), flush=True)
-        except Exception:
-            pass
-
     # Optional per-lead artifacts when a multi-lead policy is provided
     try:
         multi_lead = (
@@ -591,7 +583,9 @@ def run(
                         if col not in wide_df:
                             continue
                         fig, ax = _plt.subplots(figsize=(6.5, 3.2))
-                        ax.plot(wide_df["lead_time_hours"], wide_df[col], marker="o")
+                        x = wide_df["lead_time_hours"].values
+                        y = wide_df[col].values
+                        ax.plot(x, y, marker="o")
                         ax.set_xlabel("lead_time (h)")
                         ax.set_ylabel(m)
                         ax.set_title(f"{v} — {m} vs lead_time")
@@ -608,13 +602,35 @@ def run(
                         _plt.tight_layout()
                         _plt.savefig(out_png, bbox_inches="tight", dpi=150)
                         _plt.close(fig)
+                        # Save NPZ and CSV for the line plot
+                        out_npz = section_output / build_output_filename(
+                            metric="det_line",
+                            variable=str(v),
+                            level=None,
+                            qualifier=m.replace(" ", "_") + "_data",
+                            init_time_range=init_range,
+                            lead_time_range=_extract_lead_range(ds_prediction),
+                            ensemble=ens_token,
+                            ext="npz",
+                        )
+                        np.savez(
+                            out_npz,
+                            lead_hours=x.astype(float),
+                            values=y.astype(float),
+                            metric=m,
+                            variable=str(v),
+                        )  # line wrapped to satisfy E501
+                        out_csv = section_output / build_output_filename(
+                            metric="det_line",
+                            variable=str(v),
+                            level=None,
+                            qualifier=m.replace(" ", "_") + "_by_lead",
+                            init_time_range=init_range,
+                            lead_time_range=_extract_lead_range(ds_prediction),
+                            ensemble=ens_token,
+                            ext="csv",
+                        )
+                        pd.DataFrame({"lead_time_hours": x, m: y}).to_csv(out_csv, index=False)
         except Exception:
             pass
-        try:
-            print(
-                "Deterministic standardized metrics (targets vs predictions) — first 5 rows:",
-                flush=True,
-            )
-            print(standardized_metrics.head(), flush=True)
-        except Exception:
-            pass
+        # (Removed duplicate standardized metrics console summary to reduce noise)

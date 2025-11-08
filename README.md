@@ -117,8 +117,7 @@ Or submit as a batch job by temporarily setting `CONFIG_PATH_IN_REPO="config/deb
 sbatch launchscript.sh
 ```
 
-<details>
-<summary>Install with uenv + uv</summary>
+## Install with uenv + uv
 
 ```bash
 bash tools/setup_env_uenv.sh # activates uenv and exits
@@ -127,18 +126,13 @@ bash tools/setup_env_uenv.sh # installs deps with uv
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-</details>
-
-<details>
-<summary>Install with conda + uv</summary>
+## Install with conda + uv
 
 ```bash
 bash tools/setup_env_conda.sh
 conda activate swissclim-eval
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
-
-</details>
 
 ## Configure
 
@@ -427,13 +421,26 @@ deterministic_metrics_ens0.csv            # members mode example (member 0)
 
 ### Extreme Threshold Statistics (ETS)
 
-ETS filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+Outputs include single-file summaries and multi-lead artifacts with standardized filenames built by the shared helper (time-range and ensemble tokens appended when present):
 
-```text
-ets_metrics_ensmean.csv
-ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
-ets_metrics_init_time_ens0.csv   # members mode per-member file
-```
+- Summary CSVs
+  - `ets/ets_metrics_ens*.csv`
+  - `ets/ets_metrics_averaged_[initYYYYMMDDHH-YYYYMMDDHH]_[leadXXXh-YYYh]_ens*.csv`
+  - In members mode, one file per member (e.g., `ens0`, `ens1`, …).
+
+- Multi-lead wide table (when lead_time policy keeps >1 hour)
+  - `ets/ets_metrics_by_lead_wide.csv`
+  - Columns: `lead_time_hours` + one column per (variable × threshold), e.g., `var_ETS 50%`.
+
+- Line artifacts by variable (thresholds vs lead_time)
+  - PNG: `ets/ets_line_<variable>_[init...]_[lead...]_ens*.png`
+  - NPZ: `ets/ets_line_<variable>_data_[init...]_[lead...]_ens*.npz`
+  - CSV (tidy): `ets/ets_line_<variable>_by_lead_[init...]_[lead...]_ens*.csv`
+
+Notes
+
+- Thresholds are computed as percentiles of the observed distribution per variable.
+- Ensemble handling follows `ensemble.ets` in the YAML (mean | members). The filename token will be `ensmean`, `ens<i>`, `enspooled` if applicable, or omitted when no ensemble dim exists (defaults to `ensnone`).
 
 ### Energy Spectra Analysis
 
@@ -471,12 +478,26 @@ wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mod
 
 Time ranges (if present) appear just before the ensemble token: `..._init2023010200-2023010412_lead000h-036h_enspooled.npz`.
 
+Multi-lead figure artifacts (PNG + NPZ):
+
+- Global histograms grid by lead_time
+  - PNG: `hist_global_<variable>_grid_*.png`
+  - NPZ bundle: `hist_global_<variable>_grid_data_*.npz` containing per-panel edges and densities for ground truth and model, plus lead_hours.
+- WD-KDE ridgeline (global standardized KDE evolving along lead_time)
+  - PNG: `wd_kde_evolve_ridgeline_*.png`
+  - NPZ bundle: `wd_kde_evolve_ridgeline_data_*.npz` with `lead_hours`, `y_eval`, `density_target`, `density_model`.
+
 ### Vertical Structure (3D variables only)
 
 Outputs (standardized naming):
 
 - Plot: `vertical_profiles/vprof_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
 - Combined band data (NPZ): `vertical_profiles/vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Lead-time evolution overlays:
+  - PNG: `vertical_profiles/vprof_nmae_<variable>_multi_evolve*.png`
+  - NPZ: `vertical_profiles/vprof_nmae_<variable>_multi_evolve_data*.npz` (profiles per lead)
+  - Heatmap PNG: `vertical_profiles/vprof_nmae_<variable>_multi_evolve_heatmap*.png`
+  - Heatmap NPZ: `vertical_profiles/vprof_nmae_<variable>_multi_evolve_heatmap_data*.npz`
 - Summaries (CSV) may be produced by intercomparison rather than the module itself.
 
 ### Spatial Maps
@@ -519,6 +540,16 @@ pit_field_2m_temperature_ensprob.nc
 crps_field_2m_temperature_ensprob.nc
 crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
 crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map
+
+Additional multi-lead lines and tables:
+
+- CRPS line vs lead_time per variable
+  - PNG: `probabilistic/crps_line_<variable>*.png`
+  - CSV: `probabilistic/crps_line_<variable>_by_lead*.csv`
+  - NPZ: `probabilistic/crps_line_<variable>_by_lead_data*.npz`
+- PIT histogram uniform deviation summary vs lead_time
+  - CSV: `probabilistic/pit_hist_<variable>_uniform_diff_by_lead*.csv`
+  - NPZ: `probabilistic/pit_hist_<variable>_uniform_diff_by_lead_data*.npz`
 ```
 
 WBX summary tables / fields:
@@ -546,6 +577,8 @@ crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
   make maps.
 - PIT histograms are stored as NPZ (counts, edges) for reproducibility;
   corresponding PIT fields are also written to NetCDF.
+- When multiple lead_time hours are present, CRPS grid maps are produced across all hours; for tabular review, we also export a `crps_line` CSV per variable listing the mean CRPS by lead_time (and a matching NPZ).
+- Likewise, we export a compact PIT uniform-deviation CSV (difference from a uniform histogram) by lead_time for quick diagnostics (and a matching NPZ).
 
 All modules print concise progress like:
 
@@ -609,11 +642,11 @@ At runtime the CLI prints a “Lead Time Policy” panel summarizing the resolve
 
 | Module | Additional Files (multi-lead) | Single-lead Summary File (averaged across leads or first lead) |
 |--------|-------------------------------|---------------------------------------------------------------|
-| deterministic | metrics_by_lead_long.csv, metrics_by_lead_wide.csv, metrics_standardized_by_lead_* | metrics.csv / metrics_standardized.csv |
-| ets | ets_metrics_by_lead_wide.csv | ets_metrics.csv |
-| probabilistic | (planned) crps_by_lead.csv | crps_summary.csv |
-| energy_spectra | lsd_2d_metrics_by_lead.csv | lsd_2d_metrics.csv |
-| plots (maps, histograms, wd_kde) | Per-lead grids/overlays covering all retained hours | — |
+| deterministic | metrics_by_lead_long.csv, metrics_by_lead_wide.csv, per-variable det_line PNG + NPZ + CSV | metrics.csv / metrics_standardized.csv |
+| ets | ets_metrics_by_lead_wide.csv, per-variable ets_line PNG + NPZ + CSV | ets_metrics.csv |
+| probabilistic | crps_map grid PNGs; crps_line per-variable PNG + NPZ + CSV; PIT grid PNGs; PIT uniform_diff_by_lead CSV + NPZ | crps_summary.csv |
+| energy_spectra | spectrogram target/model/diff PNGs + NPZ bundle; lsd_2d_by_lead CSV (long+wide) | lsd_2d_metrics.csv |
+| plots (maps, histograms, wd_kde) | Maps grid PNG (+ NPZ grid_data); hist_global grid PNG (+ NPZ grid_data); KDE ridgeline PNG (+ NPZ) | — |
 
 If no `lead_time` section is provided behavior falls back to `first` (single lead) for backward compatibility.
 
