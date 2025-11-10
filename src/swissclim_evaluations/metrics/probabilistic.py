@@ -20,7 +20,10 @@ from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
-from ..helpers import build_output_filename, time_chunks
+from ..helpers import (
+    build_output_filename,
+    time_chunks,
+)
 
 
 def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
@@ -253,7 +256,10 @@ def run_probabilistic(
     Outputs:
     - crps_summary.csv (mean across common dims)
     - {var}_pit_hist.npz (counts, edges)
-    - Optional: {var}_pit.nc and {var}_crps.nc when plotting.output_mode is 'npz' or 'both'
+    - {var}_pit_field.npz (full PIT field with coordinates)
+    - {var}_crps_field.npz (full CRPS field with coordinates)
+
+    Note: All field outputs use NPZ format for memory efficiency (avoids OOM).
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
@@ -362,7 +368,8 @@ def run_probabilistic(
         )
         print(f"[probabilistic] saved {pit_npz}")
         # Always save PIT and CRPS fields for reproducibility
-        pit_nc = section_output / build_output_filename(
+        # Save PIT and CRPS fields as NPZ (memory-efficient, no OOM issues)
+        pit_npz_field = section_output / build_output_filename(
             metric="pit_field",
             variable=str(var),
             level=None,
@@ -370,9 +377,9 @@ def run_probabilistic(
             init_time_range=init_range,
             lead_time_range=lead_range,
             ensemble=ens_token,
-            ext="nc",
+            ext="npz",
         )
-        crps_nc = section_output / build_output_filename(
+        crps_npz_field = section_output / build_output_filename(
             metric="crps_field",
             variable=str(var),
             level=None,
@@ -380,12 +387,30 @@ def run_probabilistic(
             init_time_range=init_range,
             lead_time_range=lead_range,
             ensemble=ens_token,
-            ext="nc",
+            ext="npz",
         )
-        pit_da.to_netcdf(pit_nc)
-        crps_da.to_netcdf(crps_nc)
-        print(f"[probabilistic] saved {pit_nc}")
-        print(f"[probabilistic] saved {crps_nc}")
+        # Use NPZ format (same lightweight approach as maps.py)
+        # Saves essential arrays without full xarray overhead - memory efficient
+        np.savez(
+            pit_npz_field,
+            data=pit_da.values,
+            latitude=pit_da.latitude.values if "latitude" in pit_da.coords else np.array([]),
+            longitude=pit_da.longitude.values if "longitude" in pit_da.coords else np.array([]),
+            init_time=pit_da.init_time.values if "init_time" in pit_da.coords else np.array([]),
+            lead_time=pit_da.lead_time.values if "lead_time" in pit_da.coords else np.array([]),
+            level=pit_da.level.values if "level" in pit_da.coords else np.array([]),
+        )
+        np.savez(
+            crps_npz_field,
+            data=crps_da.values,
+            latitude=crps_da.latitude.values if "latitude" in crps_da.coords else np.array([]),
+            longitude=crps_da.longitude.values if "longitude" in crps_da.coords else np.array([]),
+            init_time=crps_da.init_time.values if "init_time" in crps_da.coords else np.array([]),
+            lead_time=crps_da.lead_time.values if "lead_time" in crps_da.coords else np.array([]),
+            level=crps_da.level.values if "level" in crps_da.coords else np.array([]),
+        )
+        print(f"[probabilistic] saved {pit_npz_field}")
+        print(f"[probabilistic] saved {crps_npz_field}")
 
     if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
@@ -681,9 +706,11 @@ def run_probabilistic_wbx(
     Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
     - crps_ensemble.csv
-    - probabilistic_metrics_temporal.nc
-    - probabilistic_metrics_spatial.nc
-    - Optional: crps_map_<var>.png if output_mode enables plotting
+    - prob_metrics_temporal.npz
+    - prob_metrics_spatial.npz
+    - Optional: crps_map_wbx_<var>.png if output_mode enables plotting
+
+    Note: All aggregated results use NPZ format for memory efficiency (avoids OOM).
     """
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
@@ -864,51 +891,73 @@ def run_probabilistic_wbx(
         metrics, temporal_aggregator, pred_map, targ_map
     )
 
-    def _build_time_encoding(ds: xr.Dataset) -> dict:
-        enc: dict = {}
-        names = list(ds.data_vars) + list(ds.coords)
-        for name in names:
-            try:
-                da = ds[name]
-            except Exception:
-                continue
-            if hasattr(da, "dtype"):
-                kind = getattr(da.dtype, "kind", "")
-                if kind == "M":  # datetime64
-                    enc[name] = {
-                        "units": "seconds since 1970-01-01",
-                        "dtype": "i4",
-                    }
-                elif kind == "m":  # timedelta64
-                    enc[name] = {"units": "seconds", "dtype": "i4"}
-        return enc
+    # Save individual metric/variable combinations (like other modules)
+    # temporal_results has vars like "CRPS.2m_temperature", "SSR.2m_temperature", etc.
+    for var_name, _da in temporal_results.data_vars.items():
+        metric_name, variable = var_name.split(".", 1)
+        npz_path = section / build_output_filename(
+            metric=f"{metric_name.lower()}_temporal_wbx",
+            variable=variable,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="npz",
+        )
+        np.savez(
+            npz_path,
+            data=temporal_results[var_name].values,
+            latitude=temporal_results[var_name].latitude.values
+            if "latitude" in temporal_results[var_name].coords
+            else np.array([]),
+            longitude=temporal_results[var_name].longitude.values
+            if "longitude" in temporal_results[var_name].coords
+            else np.array([]),
+            init_time=temporal_results[var_name].init_time.values
+            if "init_time" in temporal_results[var_name].coords
+            else np.array([]),
+            lead_time=temporal_results[var_name].lead_time.values
+            if "lead_time" in temporal_results[var_name].coords
+            else np.array([]),
+            level=temporal_results[var_name].level.values
+            if "level" in temporal_results[var_name].coords
+            else np.array([]),
+        )
+        print("Wrote:", npz_path)
 
-    enc_t = _build_time_encoding(temporal_results)
-    enc_s = _build_time_encoding(spatial_results)
-    temporal_fn = section / build_output_filename(
-        metric="prob_metrics_temporal",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="nc",
-    )
-    spatial_fn = section / build_output_filename(
-        metric="prob_metrics_spatial",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="nc",
-    )
-    temporal_results.to_netcdf(temporal_fn, engine="scipy", encoding=enc_t)
-    spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
-    print("Wrote:", temporal_fn)
-    print("Wrote:", spatial_fn)
+    for var_name, _da in spatial_results.data_vars.items():
+        metric_name, variable = var_name.split(".", 1)
+        npz_path = section / build_output_filename(
+            metric=f"{metric_name.lower()}_spatial_wbx",
+            variable=variable,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="npz",
+        )
+        np.savez(
+            npz_path,
+            data=spatial_results[var_name].values,
+            latitude=spatial_results[var_name].latitude.values
+            if "latitude" in spatial_results[var_name].coords
+            else np.array([]),
+            longitude=spatial_results[var_name].longitude.values
+            if "longitude" in spatial_results[var_name].coords
+            else np.array([]),
+            init_time=spatial_results[var_name].init_time.values
+            if "init_time" in spatial_results[var_name].coords
+            else np.array([]),
+            lead_time=spatial_results[var_name].lead_time.values
+            if "lead_time" in spatial_results[var_name].coords
+            else np.array([]),
+            level=spatial_results[var_name].level.values
+            if "level" in spatial_results[var_name].coords
+            else np.array([]),
+        )
+        print("Wrote:", npz_path)
 
     # Optional CRPS map similar to notebook for a selected variable
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()

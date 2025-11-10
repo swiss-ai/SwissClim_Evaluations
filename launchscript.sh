@@ -12,7 +12,7 @@
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # 2) Config path relative to this repo OR an absolute path
 #    Examples: "config/my_run.yaml"  OR  "/abs/path/to/config.yaml"
-CONFIG_PATH_IN_REPO="config/my_run.yaml"
+CONFIG_PATH_IN_REPO="config/my_run_ifs.yaml"
 # -------------------------------------------------------------
 
 # Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)

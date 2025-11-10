@@ -434,28 +434,30 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (o
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
 
-Per-variable artifacts:
+Per-variable artifacts (xarray-based):
 
 ```text
 pit_hist_2m_temperature_ensprob.npz
-pit_field_2m_temperature_ensprob.nc
-crps_field_2m_temperature_ensprob.nc
+pit_field_2m_temperature_ensprob.npz
+crps_field_2m_temperature_ensprob.npz
 crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
-crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map
 ```
 
-WBX summary tables / fields:
+WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
+
+```text
+crps_temporal_wbx_2m_temperature_ensprob.npz
+crps_spatial_wbx_2m_temperature_ensprob.npz
+ssr_temporal_wbx_2m_temperature_ensprob.npz
+ssr_spatial_wbx_2m_temperature_ensprob.npz
+crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map (optional)
+```
+
+Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
 crps_ensemble_ensprob.csv
-prob_metrics_temporal_ensprob.nc
-prob_metrics_spatial_ensprob.nc
-```
-
-Aggregated CRPS summaries (xarray based):
-
-```text
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 ```
@@ -464,7 +466,9 @@ crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
-- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NetCDF.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NPZ.
+- All probabilistic outputs use NPZ format for memory efficiency (avoids OOM issues with large dask arrays).
+- WeatherBenchX temporal/spatial aggregations are saved per metric and variable (e.g., `crps_temporal_wbx_<variable>_ensprob.npz`) for consistency with other modules.
 
 All modules print concise progress like:
 
@@ -514,7 +518,7 @@ What gets combined:
 - deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
 - ets: merged CSV (`ets_metrics_combined.csv`).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
-  - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+  - Additionally merges WBX spatial and temporal aggregates from `*_temporal_wbx_*_ensprob.npz` and `*_spatial_wbx_*_ensprob.npz` files into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
   - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
 - vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/vprof_nmae_<variable>_multi_combined_compare.png` — plus per-variable summary tables (`vprof_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model. Legacy `*_pl_nmae_combined*` files are still supported as input.
 
