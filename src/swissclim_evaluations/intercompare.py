@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import xarray as xr
 import yaml  # type: ignore[import-untyped]
 
 # Rich-style console utilities for consistent terminal output
@@ -909,8 +908,8 @@ def intercompare_probabilistic(
     for pattern in (
         "probabilistic/pit_hist_*.npz",
         "probabilistic/crps_map_*.npz",
-        "probabilistic/prob_metrics_spatial*.nc",
-        "probabilistic/prob_metrics_temporal*.nc",
+        "probabilistic/*_spatial_wbx_*.npz",
+        "probabilistic/*_temporal_wbx_*.npz",
     ):
         per_model, inter, uni = _scan_model_sets(models, pattern)
         union_total |= uni
@@ -1044,48 +1043,82 @@ def intercompare_probabilistic(
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
 
-    # 5) Combine spatial/temporal WBX NetCDF aggregates into tidy CSVs and simple plots
+    # 5) Combine spatial/temporal WBX NPZ aggregates into tidy CSVs and simple plots
     # Spatial aggregates
     spatial_rows: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        # New naming: prob_metrics_spatial*.nc (fallback to legacy probabilistic_metrics_spatial.nc)
-        nc_candidates = list((m / src_rel).glob("prob_metrics_spatial*.nc"))
-        if not nc_candidates:
-            legacy = m / src_rel / "probabilistic_metrics_spatial.nc"
-            nc_candidates = [legacy] if legacy.is_file() else []
-        for f in nc_candidates:
+        # New naming: {crps,ssr}_spatial_wbx_<variable>_*.npz
+        npz_files = list((m / src_rel).glob("*_spatial_wbx_*.npz"))
+        for f in npz_files:
             try:
-                ds = xr.open_dataset(f)
-                df = ds.to_dataframe().reset_index()
-                # Keep only metric variables we know (columns like 'CRPS.<var>' or 'SSR.<var>')
-                value_cols = [
-                    c
-                    for c in df.columns
-                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
-                ]
-                if not value_cols:
+                # Extract metric and variable from filename
+                # Pattern: {metric}_spatial_wbx_{variable}_{time_tokens}_ensprob.npz
+                stem = f.stem  # removes .npz
+                # Find metric (crps or ssr)
+                if stem.startswith("crps_spatial_wbx_"):
+                    metric = "CRPS"
+                    rest = stem[len("crps_spatial_wbx_") :]
+                elif stem.startswith("ssr_spatial_wbx_"):
+                    metric = "SSR"
+                    rest = stem[len("ssr_spatial_wbx_") :]
+                else:
                     continue
-                dims_cols = [c for c in df.columns if c not in value_cols]
-                # Melt into tidy form
-                long = df.melt(
-                    id_vars=dims_cols,
-                    value_vars=value_cols,
-                    var_name="metric_var",
-                    value_name="value",
-                )
-                # Split metric and variable
-                parts = long["metric_var"].str.split(".", n=1, expand=True)
-                long["metric"] = parts[0]
-                long["variable"] = parts[1]
-                long = long.drop(columns=["metric_var"])  # cleanup
-                long["model"] = lab
-                spatial_rows.append(long)
+                # Extract variable (everything before time tokens or ensemble token)
+                # Remove ensemble token first
+                if "_ens" in rest:
+                    rest = rest.rsplit("_ens", 1)[0]
+                # Remove time tokens
+                for tok in ("_init", "_lead"):
+                    if tok in rest:
+                        rest = rest.split(tok, 1)[0]
+                variable = rest
+
+                # Load NPZ and reconstruct data
+                npz_data = _load_npz(f)
+                data_arr = npz_data.get("data")
+                if data_arr is None:
+                    continue
+
+                # Build coordinate arrays
+                coords = {}
+                for coord_name in ("latitude", "longitude", "init_time", "lead_time", "level"):
+                    coord_data = npz_data.get(coord_name)
+                    if coord_data is not None and len(coord_data) > 0:
+                        coords[coord_name] = coord_data
+
+                # Create dataframe rows
+                # For spatial aggregates, we typically have dimensions like region/season
+                # Flatten the data array and create rows
+                if data_arr.ndim == 0:
+                    # Scalar value
+                    spatial_rows.append(
+                        {
+                            "model": lab,
+                            "metric": metric,
+                            "variable": variable,
+                            "value": float(data_arr),
+                        }
+                    )
+                else:
+                    # Multi-dimensional - need to iterate
+                    # This is a simplified approach; adjust based on actual structure
+                    flat_data = data_arr.flatten()
+                    for val in flat_data:
+                        if np.isfinite(val):
+                            spatial_rows.append(
+                                {
+                                    "model": lab,
+                                    "metric": metric,
+                                    "variable": variable,
+                                    "value": float(val),
+                                }
+                            )
             except Exception:
                 pass
     if spatial_rows:
-        spatial_df = pd.concat(spatial_rows, ignore_index=True)
+        spatial_df = pd.DataFrame(spatial_rows)
         # Only save/output if at least two models contributed
-        if spatial_df["model"].nunique() >= 2:
+        if len(spatial_df) > 0 and spatial_df["model"].nunique() >= 2:
             out_csv = dst / "spatial_metrics_combined.csv"
             spatial_df.to_csv(out_csv, index=False)
             if not quiet:
@@ -1125,40 +1158,71 @@ def intercompare_probabilistic(
     # Temporal aggregates
     temporal_rows: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        nc_candidates = list((m / src_rel).glob("prob_metrics_temporal*.nc"))
-        if not nc_candidates:
-            legacy = m / src_rel / "probabilistic_metrics_temporal.nc"
-            nc_candidates = [legacy] if legacy.is_file() else []
-        for f in nc_candidates:
+        # New naming: {crps,ssr}_temporal_wbx_<variable>_*.npz
+        npz_files = list((m / src_rel).glob("*_temporal_wbx_*.npz"))
+        for f in npz_files:
             try:
-                ds = xr.open_dataset(f)
-                df = ds.to_dataframe().reset_index()
-                value_cols = [
-                    c
-                    for c in df.columns
-                    if isinstance(c, str) and (c.startswith("CRPS.") or c.startswith("SSR."))
-                ]
-                if not value_cols:
+                # Extract metric and variable from filename
+                stem = f.stem
+                if stem.startswith("crps_temporal_wbx_"):
+                    metric = "CRPS"
+                    rest = stem[len("crps_temporal_wbx_") :]
+                elif stem.startswith("ssr_temporal_wbx_"):
+                    metric = "SSR"
+                    rest = stem[len("ssr_temporal_wbx_") :]
+                else:
                     continue
-                dims_cols = [c for c in df.columns if c not in value_cols]
-                long = df.melt(
-                    id_vars=dims_cols,
-                    value_vars=value_cols,
-                    var_name="metric_var",
-                    value_name="value",
-                )
-                parts = long["metric_var"].str.split(".", n=1, expand=True)
-                long["metric"] = parts[0]
-                long["variable"] = parts[1]
-                long = long.drop(columns=["metric_var"])  # cleanup
-                long["model"] = lab
-                temporal_rows.append(long)
+                # Extract variable
+                if "_ens" in rest:
+                    rest = rest.rsplit("_ens", 1)[0]
+                for tok in ("_init", "_lead"):
+                    if tok in rest:
+                        rest = rest.split(tok, 1)[0]
+                variable = rest
+
+                # Load NPZ and reconstruct data
+                npz_data = _load_npz(f)
+                data_arr = npz_data.get("data")
+                if data_arr is None:
+                    continue
+
+                # Build coordinate arrays
+                coords = {}
+                for coord_name in ("latitude", "longitude", "init_time", "lead_time", "level"):
+                    coord_data = npz_data.get(coord_name)
+                    if coord_data is not None and len(coord_data) > 0:
+                        coords[coord_name] = coord_data
+
+                # Create dataframe rows
+                if data_arr.ndim == 0:
+                    # Scalar value
+                    temporal_rows.append(
+                        {
+                            "model": lab,
+                            "metric": metric,
+                            "variable": variable,
+                            "value": float(data_arr),
+                        }
+                    )
+                else:
+                    # Multi-dimensional - flatten and create rows
+                    flat_data = data_arr.flatten()
+                    for val in flat_data:
+                        if np.isfinite(val):
+                            temporal_rows.append(
+                                {
+                                    "model": lab,
+                                    "metric": metric,
+                                    "variable": variable,
+                                    "value": float(val),
+                                }
+                            )
             except Exception:
                 pass
     if temporal_rows:
-        temporal_df = pd.concat(temporal_rows, ignore_index=True)
+        temporal_df = pd.DataFrame(temporal_rows)
         # Only save/output if at least two models contributed
-        if temporal_df["model"].nunique() >= 2:
+        if len(temporal_df) > 0 and temporal_df["model"].nunique() >= 2:
             out_csv = dst / "temporal_metrics_combined.csv"
             temporal_df.to_csv(out_csv, index=False)
             if not quiet:
