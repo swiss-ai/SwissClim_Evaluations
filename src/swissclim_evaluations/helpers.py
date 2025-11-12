@@ -187,6 +187,18 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
 
 _VALID_MODES = {"none", "mean", "pooled", "prob", "members"}
 
+# Explicit per-module allowed modes (logical + implemented semantics).
+_ALLOWED_PER_MODULE: dict[str, set[str]] = {
+    "maps": {"none", "mean", "members"},
+    "vertical_profiles": {"none", "mean", "pooled", "members"},
+    "probabilistic": {"prob"},
+    "histograms": {"none", "mean", "pooled", "members"},
+    "wd_kde": {"none", "mean", "pooled", "members"},
+    "energy_spectra": {"none", "mean", "pooled", "members"},
+    "deterministic": {"none", "mean", "pooled", "members"},
+    "ets": {"none", "mean", "pooled", "members"},
+}
+
 
 def resolve_ensemble_mode(
     module: str,
@@ -296,6 +308,14 @@ def validate_and_normalize_ensemble_config(
                 f"ensemble.{module}='{val_raw}' is invalid; falling back to default '{default}'."
             )
             val = default
+        # Enforce per-module allowed set (before handling 'none' degradations).
+        allowed = _ALLOWED_PER_MODULE.get(module)
+        if allowed is not None and val not in allowed:
+            # If user provided 'pooled' for maps or vertical_profiles, provide actionable message.
+            raise ValueError(
+                "Unsupported ensemble mode for module: "
+                f"ensemble.{module}='{val_raw}' not in allowed set {sorted(allowed)}."
+            )
         if has_ensemble:
             if val == "none" and module != "probabilistic":
                 default = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")

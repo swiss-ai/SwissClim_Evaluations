@@ -44,24 +44,25 @@ def _compute_nmae(
             name="nmae",
         )
 
-    reduce_dims = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "ensemble",
-        ]
-        if d in sub_true.dims
+    # Reduce over all non-level dims present in either target or prediction,
+    # including 'ensemble' when computing pooled semantics.
+    candidate_dims = [
+        "time",
+        "init_time",
+        "lead_time",
+        "latitude",
+        "longitude",
+        "ensemble",
     ]
+    reduce_dims = [d for d in candidate_dims if (d in sub_true.dims) or (d in sub_pred.dims)]
+    reduce_dims_true = [d for d in candidate_dims if d in sub_true.dims]
     diff = (sub_pred - sub_true).astype("float32")
     abs_err = xr.ufuncs.abs(diff)
 
     mae = abs_err.mean(dim=reduce_dims, skipna=True)
-    t_max = sub_true.max(dim=reduce_dims, skipna=True)
-    t_min = sub_true.min(dim=reduce_dims, skipna=True)
+    # Range is computed from the truth across its own dims only
+    t_max = sub_true.max(dim=reduce_dims_true, skipna=True)
+    t_min = sub_true.min(dim=reduce_dims_true, skipna=True)
     delta = (t_max - t_min).astype("float32")
     nmae = (mae / delta.where(delta != 0)).where(delta != 0)
     nmae = (nmae * 100.0).fillna(0.0).astype("float32")
