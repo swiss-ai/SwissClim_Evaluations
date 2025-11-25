@@ -7,6 +7,8 @@ from typing import cast
 import numpy as np
 import xarray as xr
 
+from . import customizations as custom
+
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
 # be injected artificially. Earlier versions added a singleton level which led
@@ -134,6 +136,8 @@ def standardize_dims(
         "lead": "lead_time",
         "number": "ensemble",
         "member": "ensemble",
+        "lat": "latitude",
+        "lon": "longitude"
     }
     rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
     if rename_dims_map:
@@ -253,6 +257,8 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
             if keep:
                 ds_i = ds_i[keep]
         ds_i = _ensure_monotonic(ds_i)
+        # Custom interaction based on the zarr file
+        ds_i = custom.modify_ds(ds_i, p)
         dsets.append(ds_i)
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
@@ -302,6 +308,8 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, path)
     return ds
 
 
@@ -316,6 +324,8 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, path)
     return ds
 
 
