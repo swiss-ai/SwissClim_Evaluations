@@ -8,7 +8,8 @@ paths:
   # archives are combined lazily by coordinates (no data is materialized; Dask
   # graphs remain intact). All stores must follow the same variable/dimension schema.
   # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
-  ml: "/capstor/store/cscs/swissai/a122/IFS/esfm/ifs_ens_combined.zarr"
+  # ml: "/capstor/store/cscs/swissai/a122/IFS/esfm/ifs_ens_combined.zarr"
+  ml: "/capstor/store/cscs/swissai/a122/IFS/esfm/ifs_control_combined.zarr"
 
   # Path(s) to the reference dataset (ERA5 in WeatherBench2 layout).
   # Accepts a single string or a list of strings. When multiple stores are provided,
@@ -19,7 +20,7 @@ paths:
   ]
 
   # Where outputs are written; a subfolder per module will be created here.
-  output_root: "output/verification_ifs_ens"
+  output_root: "output/verification_ifs_control"
 
 selection:
   # Pressure levels (hPa) for 3D variables. Only levels present in the data are kept.
