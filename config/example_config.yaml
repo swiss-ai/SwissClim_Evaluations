@@ -100,12 +100,13 @@ selection:
     maps: members            # members | mean | none*
     histograms: pooled       # pooled | members | mean | none*
     wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    deterministic: mean      # mean | members | none*
-    ets: mean                # mean | members | none*
-    probabilistic: prob      # prob (only valid choice; module forces prob)
+    energy_spectra: mean     # mean | pooled | members | none*
+    vertical_profiles: mean  # mean | pooled | members | none*
+    deterministic: mean      # mean | pooled | members | none*
+    ets: mean                # mean | pooled | members | none*
+    probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
+    # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
   # If true, raise an error when requested pressure levels are missing from the data.
   check_missing: false

@@ -85,8 +85,7 @@ srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
-<details>
-<summary>Install with uenv + uv</summary>
+### Install with uenv + uv
 
 ```bash
 bash tools/setup_env_uenv.sh # activates uenv and exits
@@ -95,10 +94,7 @@ bash tools/setup_env_uenv.sh # installs deps with uv
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-</details>
-
-<details>
-<summary>Install with conda + uv</summary>
+### Install with conda + uv
 
 ```bash
 bash tools/setup_env_conda.sh
@@ -106,15 +102,11 @@ conda activate swissclim-eval
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-</details>
-
 ## Configure
 
 The YAML is the single source of truth. Use the commented example directly:
 
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary><strong>Example config (click to expand)</strong></summary>
+### Example config
 
 ```yaml
 # Global configuration for SwissClim Evaluations
@@ -219,12 +211,13 @@ selection:
     maps: members            # members | mean | none*
     histograms: pooled       # pooled | members | mean | none*
     wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    deterministic: mean      # mean | members | none*
-    ets: mean                # mean | members | none*
-    probabilistic: prob      # prob (only valid choice; module forces prob)
+    energy_spectra: mean     # mean | pooled | members | none*
+    vertical_profiles: mean  # mean | pooled | members | none*
+    deterministic: mean      # mean | pooled | members | none*
+    ets: mean                # mean | pooled | members | none*
+    probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
+    # Validation raises an error if an unsupported mode is configured (e.g. maps: pooled).
 
   # If true, raise an error when requested pressure levels are missing from the data.
   check_missing: false
@@ -309,9 +302,6 @@ metrics:
     thresholds: [50, 70, 90]
 ```
 
-</details>
-<!-- markdownlint-enable MD033 -->
-
 ## Dataset Requirements
 
 This verification is based on xarray Datasets with the following structure.
@@ -347,6 +337,20 @@ Attributes:
 ## Output Overview
 
 The evaluation generates organized results for each enabled module:
+
+## Ensemble handling: modes and filename tokens
+
+Datasets may include an `ensemble` dimension. You can pre‑select members (`selection.ensemble_members`) and set per‑module modes under `ensemble`. Invalid combinations are rejected early.
+
+Modes → tokens:
+
+- mean → `_ensmean`; pooled → `_enspooled`; members → `_ens<i>`; prob → `_ensprob`; none → only when no ensemble dim (still names `_ensmean`).
+
+Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets mean|pooled|members; probabilistic prob only.
+
+If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
+
+Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
 
 ### Deterministic Metrics
 

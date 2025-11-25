@@ -329,6 +329,7 @@ def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
     probabilistic_enabled: bool = False,
+    preserve_full_when_unselected: bool = False,
     **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
@@ -395,5 +396,8 @@ def apply_ensemble_policy(
         # subset but keep ensemble dimension
         return ds.isel(ensemble=indices_list)
 
-    # No explicit selection: preserve legacy behaviour -> reduce to mean
+    # No explicit selection: optionally preserve full ensemble for downstream pooled/members
+    # handling, otherwise keep legacy collapse to mean.
+    if preserve_full_when_unselected:
+        return ds
     return ds.mean(dim="ensemble", keep_attrs=True)
