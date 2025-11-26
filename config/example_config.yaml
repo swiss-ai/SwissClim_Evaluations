@@ -165,6 +165,9 @@ metrics:
   #   "FSS", "Relative L1", "Relative L2"
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
+    # If true, compute and report metrics per pressure level (for 3D variables).
+    report_per_level: true
+
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
@@ -188,4 +191,16 @@ metrics:
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
+    # If true, compute and report ETS per pressure level (for 3D variables).
+    report_per_level: true
+
     thresholds: [50, 70, 90]
+
+  # Energy Spectra configuration.
+  energy_spectra:
+    # If true, compute and report LSD metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+probabilistic:
+  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+  report_per_level: true

@@ -320,6 +320,9 @@ def run_probabilistic(
     from ..helpers import ensemble_mode_to_token
 
     ens_token = ensemble_mode_to_token("prob")
+    prob_cfg = (cfg_all or {}).get("probabilistic", {})
+    report_per_level = bool(prob_cfg.get("report_per_level", True))
+    crps_rows_per_level: list[dict[str, Any]] = []
 
     for var in variables:
         # Extract and align targets and predictions along shared coordinates
@@ -337,6 +340,19 @@ def run_probabilistic(
         crps_da = crps_ensemble(da_target, da_prediction, ensemble_dim="ensemble")
         crps_mean = float(_reduce_mean_all(crps_da).compute().item())
         crps_rows.append({"variable": var, "CRPS": crps_mean})
+
+        if report_per_level and "level" in crps_da.dims:
+            dims_to_reduce = [d for d in crps_da.dims if d != "level"]
+            crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
+
+            for lvl in crps_per_level.level.values:
+                crps_rows_per_level.append(
+                    {
+                        "variable": var,
+                        "level": int(lvl),
+                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
+                    }
+                )
 
         pit_da = probability_integral_transform(
             da_target,
@@ -404,6 +420,21 @@ def run_probabilistic(
         print(df.head())
         print(f"[probabilistic] saved {out_csv}")
         # Backward-compatible copy for tests expecting ensnone naming
+
+    if crps_rows_per_level:
+        df_lvl = pd.DataFrame(crps_rows_per_level)
+        out_csv_lvl = section_output / build_output_filename(
+            metric="crps_summary",
+            variable=None,
+            level=None,
+            qualifier="per_level",
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="csv",
+        )
+        df_lvl.to_csv(out_csv_lvl, index=False)
+        print(f"[probabilistic] saved {out_csv_lvl}")
 
 
 def _select_base_variable_for_plot(

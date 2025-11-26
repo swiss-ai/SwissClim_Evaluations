@@ -1073,6 +1073,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 plotting,
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("energy_spectra"),
+                cfg=cfg,
             )
             dt = time.time() - _t
             module_timings.append(("energy_spectra", dt))
