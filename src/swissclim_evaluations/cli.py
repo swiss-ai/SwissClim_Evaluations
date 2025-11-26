@@ -109,6 +109,35 @@ def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -
     )
 
 
+def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
+    if not isinstance(values, list | tuple):  # ruff UP038
+        return []
+    # Case: exactly two entries without ':' → treat as single [start, end]
+    if (
+        len(values) == 2
+        and all(isinstance(v, str) for v in values)
+        and all(":" not in v for v in values)  # plain bounds
+    ):
+        return [(values[0], values[1])]
+    ranges: list[tuple[str | None, str | None]] = []
+    for it in values:
+        if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
+            s, e = it[0], it[1]
+            ranges.append(
+                (
+                    str(s) if s else None,
+                    str(e) if e else None,
+                )
+            )
+        elif isinstance(it, str) and ":" in it:
+            s, e = it.split(":", 1)
+            ranges.append((s or None, e or None))
+        elif isinstance(it, str):
+            # A single timestamp → treat as [t, t]
+            ranges.append((it, it))
+    return ranges
+
+
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     sel = cfg.get("selection", {})
     levels: list[int] | None = sel.get("levels")
@@ -186,35 +215,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if dim_name is None:
             return ds
 
-        def _parse_ranges(values) -> list[tuple[str | None, str | None]]:
-            if not isinstance(values, list | tuple):  # ruff UP038
-                return []
-            # Case: exactly two entries without ':' → treat as single [start, end]
-            if (
-                len(values) == 2
-                and all(isinstance(v, str) for v in values)
-                and all(":" not in v for v in values)  # plain bounds
-            ):
-                return [(values[0], values[1])]
-            ranges: list[tuple[str | None, str | None]] = []
-            for it in values:
-                if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
-                    s, e = it[0], it[1]
-                    ranges.append(
-                        (
-                            str(s) if s else None,
-                            str(e) if e else None,
-                        )
-                    )
-                elif isinstance(it, str) and ":" in it:
-                    s, e = it.split(":", 1)
-                    ranges.append((s or None, e or None))
-                elif isinstance(it, str):
-                    # A single timestamp → treat as [t, t]
-                    ranges.append((it, it))
-            return ranges
-
-        ranges = _parse_ranges(datetimes)
+        ranges = _parse_time_ranges(datetimes)
         if not ranges:
             # Fallback to original behavior if we couldn't parse anything meaningful
             if len(datetimes) >= 2:
@@ -403,6 +404,125 @@ def _standardize_pair(
     return (targets - mean) / std, (predictions - mean) / std
 
 
+def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str) -> list[str]:
+    errors = []
+    sel = cfg.get("selection", {})
+
+    # 1. Variables
+    variables_2d = sel.get("variables_2d") or []
+    variables_3d = sel.get("variables_3d") or []
+    requested_vars = set(variables_2d) | set(variables_3d)
+
+    missing_vars = [v for v in requested_vars if v not in ds.data_vars]
+    if missing_vars:
+        errors.append(f"{dataset_name}: Missing variables: {sorted(missing_vars)}")
+
+    # 2. Levels
+    levels = sel.get("levels")
+    if levels:
+        if "level" in ds.dims:
+            available_levels = set(ds["level"].values.tolist())
+            missing_levels = [l_val for l_val in levels if l_val not in available_levels]
+            if missing_levels:
+                errors.append(f"{dataset_name}: Missing pressure levels: {sorted(missing_levels)}")
+        elif variables_3d:
+            # If we have 3D variables but no level dimension, and levels are requested
+            errors.append(
+                f"{dataset_name}: Missing 'level' dimension "
+                f"but levels {levels} requested for 3D variables."
+            )
+
+    # 3. Time
+    datetimes = sel.get("datetimes")
+    datetimes_list = sel.get("datetimes_list")
+
+    dim_name = "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
+
+    if dim_name:
+        try:
+            available_times = ds[dim_name].values.astype("datetime64[ns]")
+        except Exception:
+            available_times = ds[dim_name].values
+
+        if datetimes_list:
+            try:
+                req_times = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
+            except Exception:
+                req_times = []
+
+            available_set = set(available_times)
+            missing_times = [str(t) for t in req_times if t not in available_set]
+            if missing_times:
+                errors.append(
+                    f"{dataset_name}: Missing timestamps (from datetimes_list): "
+                    f"{len(missing_times)} missing, e.g. {missing_times[:3]}"
+                )
+
+        elif datetimes:
+            ranges = _parse_time_ranges(datetimes)
+            if ranges and len(available_times) > 0:
+                min_time = available_times.min()
+                max_time = available_times.max()
+
+                for start_s, end_s in ranges:
+                    try:
+                        start = (
+                            np.datetime64(start_s).astype("datetime64[ns]") if start_s else min_time
+                        )
+                    except Exception:
+                        start = min_time
+                    try:
+                        end = np.datetime64(end_s).astype("datetime64[ns]") if end_s else max_time
+                    except Exception:
+                        end = max_time
+
+                    if start < min_time or end > max_time:
+                        errors.append(
+                            f"{dataset_name}: Requested time range [{start}, {end}] is not fully"
+                            f" covered by available range [{min_time}, {max_time}]"
+                        )
+            elif ranges and len(available_times) == 0:
+                errors.append(f"{dataset_name}: No timestamps available.")
+
+    else:
+        if datetimes or datetimes_list:
+            errors.append(
+                f"{dataset_name}: Missing time dimension ('init_time' or 'time') but time "
+                f"selection requested."
+            )
+
+    # 4. Lat/Lon
+    latitudes = sel.get("latitudes")
+    if latitudes and "latitude" in ds.dims:
+        req_lat_min = min(latitudes)
+        req_lat_max = max(latitudes)
+        avail_lat_min = ds.latitude.min().item()
+        avail_lat_max = ds.latitude.max().item()
+
+        tol = 0.01
+        if req_lat_min < avail_lat_min - tol or req_lat_max > avail_lat_max + tol:
+            errors.append(
+                f"{dataset_name}: Requested latitude range [{req_lat_min}, {req_lat_max}] is not "
+                f"fully covered by available range [{avail_lat_min:.2f}, {avail_lat_max:.2f}]"
+            )
+
+    longitudes = sel.get("longitudes")
+    if longitudes and "longitude" in ds.dims:
+        req_lon_min = min(longitudes)
+        req_lon_max = max(longitudes)
+        avail_lon_min = ds.longitude.min().item()
+        avail_lon_max = ds.longitude.max().item()
+
+        tol = 0.01
+        if req_lon_min < avail_lon_min - tol or req_lon_max > avail_lon_max + tol:
+            errors.append(
+                f"{dataset_name}: Requested longitude range [{req_lon_min}, {req_lon_max}] is not "
+                f"fully covered by available range [{avail_lon_min:.2f}, {avail_lon_max:.2f}]"
+            )
+
+    return errors
+
+
 def prepare_datasets(
     cfg: dict[str, Any],
 ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
@@ -437,6 +557,14 @@ def prepare_datasets(
         var_list = list(variables_2d or []) + list(variables_3d or [])
     ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
     ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
+
+    # Validate requirements
+    errors = []
+    errors.extend(validate_requirements(ds_target, cfg, "Target (NWP)"))
+    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction (ML)"))
+
+    if errors:
+        raise ValueError("Missing data requirements:\n" + "\n".join(errors))
 
     # Align dims to match config expectations
     ds_target = _slice_common(ds_target, cfg)
