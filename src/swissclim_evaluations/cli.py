@@ -145,7 +145,6 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
     datetimes_list: list[str] | None = sel.get("datetimes_list")
-    check_missing: bool = bool(sel.get("check_missing", False))
 
     if levels is not None and "level" in ds.dims:
         # Only select levels that exist to avoid KeyError when upstream datasets
@@ -157,20 +156,13 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         requested = list(levels)
         present = [lv for lv in requested if lv in available]
         missing = [lv for lv in requested if lv not in available]
-        if missing and check_missing:
+        if missing:
             raise KeyError(
                 f"Requested pressure levels not found: {missing}. Available: {sorted(available)}"
             )
         if present:
             ds = ds.sel(level=present)
-        else:
-            # No overlap; keep dataset unchanged but warn to stdout for visibility.
-            if requested:
-                c.warn(
-                    "None of the requested pressure levels are present; "
-                    f"requested={requested}, available={sorted(available)}. "
-                    "Skipping level selection."
-                )
+
     if latitudes is not None:
         ds = ds.sel(latitude=slice(*latitudes))
     if longitudes is not None:
@@ -192,17 +184,11 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 available = set()
             present = [x for x in req if x in available]
             missing = [x for x in req if x not in available]
-            if missing and check_missing:
+            if missing:
                 raise KeyError(
                     "Requested timestamps not found in "
                     f"{dim_name}: {missing[:6]}"
                     f"{' ...' if len(missing) > 6 else ''}"
-                )
-            if missing and not check_missing and len(missing) > 0:
-                c.warn(
-                    "Some requested timestamps are missing in "
-                    f"{dim_name}: {len(missing)} missing; proceeding with "
-                    f"{len(present)} present."
                 )
             if present:
                 ds = ds.sel({dim_name: present})
@@ -238,10 +224,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         count = int(mask.sum())
         if count == 0:
             msg = f"No timestamps within requested ranges on {dim_name}."
-            if check_missing:
-                raise KeyError(msg)
-            c.warn(msg + " Keeping dataset unchanged.")
-            return ds
+            raise KeyError(msg)
         # isel by positions retains labels and avoids building a long explicit label list
         idx = np.nonzero(mask)[0]
         ds = ds.isel({dim_name: idx})
