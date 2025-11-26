@@ -374,7 +374,7 @@ Notes: Members mode may include mean aggregates in some summaries (e.g., energy 
 Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
-- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof)
+- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
 - Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
 - Ensemble token (always; see "Ensemble Tokens" below)
 
@@ -410,10 +410,10 @@ is exported per init_time/lead_time and summarized. Outputs:
 - LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
 - LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
 - LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
-- LSD averaged (3D levels wide): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
-- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv`
+- LSD averaged (3D): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (scalar mean over levels and time)
+- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv` (only if `report_per_level=true`)
 - LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
-- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged, per-level, and init_time summaries.
+- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged (scalar), per-level, and init_time summaries.
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 

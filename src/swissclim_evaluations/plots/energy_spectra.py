@@ -863,8 +863,12 @@ def run(
                 )
         df_summary = pd.DataFrame(summary_levels, index=levels)
         df_summary.index.name = "Height Level"
-        # Use lsd_3d_metrics prefix for averaged multi-level summary (consistency)
-        df_summary.to_csv(
+
+        # Always aggregate over levels for the "averaged" file to provide a single scalar metric
+        # per variable (consistent with other modules).
+        df_summary_agg = df_summary.mean(axis=0).to_frame().T
+        df_summary_agg.index = pd.Index(["mean"], name="Height Level")
+        df_summary_agg.to_csv(
             section_output
             / build_output_filename(
                 metric="lsd_3d_metrics",
@@ -877,7 +881,8 @@ def run(
                 ext="csv",
             )
         )
-        # Also save as per-level long format
+
+        # Save per-level metrics if requested
         if report_per_level:
             df_long = df_summary.reset_index().melt(
                 id_vars="Height Level", var_name="variable", value_name="LSD"
@@ -941,7 +946,13 @@ def run(
                 .mean()
                 .rename(columns={"lsd": "lsd_mean"})
             )
-            df_banded3_summary.to_csv(
+
+            # Always aggregate over levels for the "averaged" file
+            group_cols_agg = [c for c in ["variable", "band"] if c in df_banded3_summary.columns]
+            df_banded3_summary_agg = df_banded3_summary.groupby(group_cols_agg, as_index=False)[
+                "lsd_mean"
+            ].mean()
+            df_banded3_summary_agg.to_csv(
                 section_output
                 / build_output_filename(
                     metric="lsd_bands_3d_metrics",
@@ -955,7 +966,8 @@ def run(
                 ),
                 index=False,
             )
-            # Also save as per-level
+
+            # Save per-level metrics if requested
             if report_per_level:
                 df_banded3_summary.to_csv(
                     section_output
