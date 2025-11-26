@@ -498,11 +498,16 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute Log Spectral Distance (LSD) metrics and optional plots."""
 
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
+
+    # Extract config
+    es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
+    report_per_level = bool(es_cfg.get("report_per_level", True))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -872,6 +877,26 @@ def run(
                 ext="csv",
             )
         )
+        # Also save as per-level long format
+        if report_per_level:
+            df_long = df_summary.reset_index().melt(
+                id_vars="Height Level", var_name="variable", value_name="LSD"
+            )
+            df_long = df_long.rename(columns={"Height Level": "level"})
+            df_long.to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_3d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token,
+                    ext="csv",
+                ),
+                index=False,
+            )
         if per_init_rows_3d:
             pd.concat(per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
@@ -930,6 +955,22 @@ def run(
                 ),
                 index=False,
             )
+            # Also save as per-level
+            if report_per_level:
+                df_banded3_summary.to_csv(
+                    section_output
+                    / build_output_filename(
+                        metric="lsd_bands_3d_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="csv",
+                    ),
+                    index=False,
+                )
         if banded_per_init_rows_3d:
             pd.concat(banded_per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
