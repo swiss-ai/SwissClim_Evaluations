@@ -7,7 +7,6 @@ from typing import Any
 import xarray as xr
 import numpy as np
 import pandas as pd
-import xarray as xr
 from scores.continuous import mae, mse, rmse, additive_bias
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
