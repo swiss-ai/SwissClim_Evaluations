@@ -226,9 +226,6 @@ def _calculate_all_metrics(
                 row["Relative L2"] = (l2_err / l2_norm) if (abs(l2_norm) > eps) else float("nan")
 
         # If include provided, trim extra keys
-        # This additional check should not be necessary
-        # if include is not None:
-        #     row = {k: v for k, v in row.items() if k in include}
 
         metrics_dict[var] = row
 
