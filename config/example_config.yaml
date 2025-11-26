@@ -108,7 +108,7 @@ selection:
     # * 'none' only if dataset truly has no ensemble dimension.
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
-  # If true, raise an error when requested pressure levels are missing from the data.
+  # If true, enables a scan for NaN values in the data (reported as warnings).
   check_missing: false
 
 plotting:
