@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)

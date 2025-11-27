@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from . import console as c, data as data_mod
 from .helpers import (

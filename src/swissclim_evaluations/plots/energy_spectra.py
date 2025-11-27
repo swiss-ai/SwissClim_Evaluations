@@ -16,7 +16,8 @@ EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 WAVE_BANDS: list[dict[str, float | str]] = [
     {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
     {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
-    {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
+    {"name": "upper_mesoscale", "min_km": 250.0, "max_km": 1000.0},
+    {"name": "lower_mesoscale", "min_km": 10.0, "max_km": 250.0},
 ]
 
 

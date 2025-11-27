@@ -13,6 +13,7 @@ def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
 ) -> pd.DataFrame:
     # ds_target (ground truth), ds_prediction (model)
+
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
