@@ -402,6 +402,8 @@ def apply_ensemble_policy(
     # Deterministic mode
     if indices_list is not None:
         if len(indices_list) == 1:
+            if preserve_full_when_unselected:
+                return ds.isel(ensemble=indices_list)
             return ds.isel(ensemble=indices_list[0], drop=True)
         # subset but keep ensemble dimension
         return ds.isel(ensemble=indices_list)
