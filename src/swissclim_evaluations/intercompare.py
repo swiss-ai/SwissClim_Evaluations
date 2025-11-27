@@ -94,13 +94,6 @@ def _report_missing(
     )
 
 
-def _scan_categories(models: list[Path], categories: dict[str, str]) -> dict[str, int]:
-    """Count common files for categories (defined by glob patterns relative to model root)."""
-    results = {}
-    for label, pattern in categories.items():
-        common = _common_files(models, pattern)
-        results[label] = len(common)
-    return results
 
 
 def _report_checklist(module: str, results: dict[str, int]) -> None:
