@@ -3,7 +3,7 @@
 ##   /capstor/store/cscs/swissai/a122/{{username}}/SwissClim_Evaluations
 ## See README Quickstart step 0 if you cloned elsewhere (adjust image/workdir/mount paths accordingly).
 ##
-## NOTE: If you installed this package in a different location than shown above,
+## NOTE: If this package is installed in a different location than shown above,
 ## you MUST update 'workdir' and 'mounts' below to point to the correct location.
 ##
 ## If the container is not available on the system, it can be built with:
