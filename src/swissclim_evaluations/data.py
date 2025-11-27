@@ -339,7 +339,7 @@ def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
     probabilistic_enabled: bool = False,
-    preserve_full_when_unselected: bool = False,
+    preserve_ensemble_dimension: bool = False,
     **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
@@ -354,8 +354,9 @@ def apply_ensemble_policy(
                     For backward compatibility we keep the old reduction to mean when
                     probabilistic_disabled and no selection requested.
           * int: select that single member and drop the 'ensemble' dimension.
-          * list[int]: subset to those members. If length==1, drop dim (acts like int). If
-                       length>1 keep 'ensemble' dim with the chosen subset.
+          * list[int]: subset to those members. If length==1, drop dim (acts like int)
+                       UNLESS preserve_ensemble_dimension is True. If length>1 keep
+                       'ensemble' dim with the chosen subset.
       - If probabilistic modules are enabled we NEVER drop or subset unless multiple
         explicit members were requested (so probabilistic metrics still see full set
         unless user intentionally restricts it). This preserves previous rule of ignoring
@@ -402,7 +403,7 @@ def apply_ensemble_policy(
     # Deterministic mode
     if indices_list is not None:
         if len(indices_list) == 1:
-            if preserve_full_when_unselected:
+            if preserve_ensemble_dimension:
                 return ds.isel(ensemble=indices_list)
             return ds.isel(ensemble=indices_list[0], drop=True)
         # subset but keep ensemble dimension
@@ -410,6 +411,6 @@ def apply_ensemble_policy(
 
     # No explicit selection: optionally preserve full ensemble for downstream pooled/members
     # handling, otherwise keep legacy collapse to mean.
-    if preserve_full_when_unselected:
+    if preserve_ensemble_dimension:
         return ds
     return ds.mean(dim="ensemble", keep_attrs=True)

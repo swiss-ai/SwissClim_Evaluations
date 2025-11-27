@@ -591,13 +591,13 @@ def prepare_datasets(
         ds_prediction,
         ensemble_members=ensemble_members,
         probabilistic_enabled=probabilistic_enabled,
-        preserve_full_when_unselected=preserve_full,
+        preserve_ensemble_dimension=preserve_full,
     )
     ds_target = data_mod.apply_ensemble_policy(
         ds_target,
         ensemble_members=None,
         probabilistic_enabled=probabilistic_enabled,
-        preserve_full_when_unselected=preserve_full,
+        preserve_ensemble_dimension=preserve_full,
     )
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
