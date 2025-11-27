@@ -1685,34 +1685,6 @@ def intercompare_probabilistic(
                         plt.close()
 
 
-def _scan_output_categories(
-    models: list[Path],
-    checks: list[tuple[str, str, str | None]],
-) -> list[set[str]]:
-    """Scan for existence of file patterns that map to a single output category.
-
-    checks: list of (rel_glob, output_name, exclude_substring)
-    """
-    per_model: list[set[str]] = [set() for _ in models]
-    for m_idx, m in enumerate(models):
-        for pattern, out_name, exclude in checks:
-            if "/" in pattern:
-                d, p = pattern.split("/", 1)
-                base = m / d
-            else:
-                base = m
-                p = pattern
-
-            # Check if any file matches the pattern (and doesn't contain exclude)
-            files = list(base.glob(p))
-            if exclude:
-                files = [f for f in files if exclude not in f.name]
-
-            if files:
-                per_model[m_idx].add(out_name)
-    return per_model
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="SwissClim Evaluations — Intercomparison runner (YAML-configured)"
