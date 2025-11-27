@@ -138,6 +138,9 @@ plotting:
   # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
   histogram_max_samples: 200000
 
+  # If true, generate histograms for each latitude band in addition to the global histogram.
+  # Global histograms are always produced.
+  histograms_per_lat_band: false
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only

@@ -469,102 +469,140 @@ def intercompare_histograms(
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-    # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
-    if not quiet:
-        _report_missing("histograms", models, labels, per_model, uni)
-    common = _common_files(models, str(src_rel / "hist_*latbands_combined*.npz"))
-    if not common:
-        return
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
-    for base in common:
+
+    # --- Global Histograms ---
+    per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
+    if not quiet:
+        _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
+
+    for base in common_g:
         payloads = [_load_npz(m / src_rel / base) for m in models]
-        # Layout: 9 rows x 2 columns (same as original)
-        lat_neg_min = payloads[0].get("neg_lat_min")
-        lat_neg_max = payloads[0].get("neg_lat_max")
-        lat_pos_min = payloads[0].get("pos_lat_min")
-        lat_pos_max = payloads[0].get("pos_lat_max")
-        n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
-        fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-        # Right column: southern hemisphere bands
-        for j in range(n_rows):
-            ax = axs[j, 1]
-            # Baseline DS from first payload
-            ds_ml_pairs = payloads[0]["neg_counts"][j]
-            # Each element is (counts_ds, counts_ml)
-            counts_ds = ds_ml_pairs[0]
-            bins_ds = payloads[0]["neg_bins"][j]
-            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-            # Plot each model ML
-            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                counts_ml = pay["neg_counts"][j][1]
-                bins_ml = pay["neg_bins"][j]
-                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = (
-                float(lat_neg_min[j])
-                if isinstance(lat_neg_min, (list | np.ndarray))
-                else float("nan")
-            )
-            lat_max = (
-                float(lat_neg_max[j])
-                if isinstance(lat_neg_max, (list | np.ndarray))
-                else float("nan")
-            )
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+        # Ground Truth (from first model)
+        counts_ds = payloads[0]["counts_ds"]
+        bins_ds = payloads[0]["bins"]
+        _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
 
-        # Left column: northern hemisphere bands
-        for j in range(n_rows):
-            ax = axs[j, 0]
-            ds_ml_pairs = payloads[0]["pos_counts"][j]
-            counts_ds = ds_ml_pairs[0]
-            bins_ds = payloads[0]["pos_bins"][j]
-            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                counts_ml = pay["pos_counts"][j][1]
-                bins_ml = pay["pos_bins"][j]
-                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = (
-                float(lat_pos_min[j])
-                if isinstance(lat_pos_min, (list | np.ndarray))
-                else float("nan")
-            )
-            lat_max = (
-                float(lat_pos_max[j])
-                if isinstance(lat_pos_max, (list | np.ndarray))
-                else float("nan")
-            )
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+        # Models
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+            counts_ml = pay["counts_ml"]
+            bins_ml = pay["bins"]
+            _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
 
-        # Legends: add a single shared legend
-        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles[: 1 + len(models)],
-                labels_leg[: 1 + len(models)],
-                loc="lower center",
-                ncol=min(6, 1 + len(models)),
-            )
-        plt.tight_layout(rect=(0, 0.05, 1, 1))
-        # Derive a variable/level label for the figure title.
-        # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
-        # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
-        stem = base[:-4] if base.endswith(".npz") else base
-        var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
-        # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
-        var_part_no_ens = (
-            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
-        )  # SIM108
-        # Remove suffix beginning with '_latbands_combined'
-        if "_latbands_combined" in var_part_no_ens:
-            var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
-        var = var_part_no_ens
-        fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        if not quiet:
-            c.success(f"Saved {out_png}")
+        ax.set_title(f"Global Histogram - {base.replace('.npz', '')}")
+        ax.legend()
+
+        out_png = dst / base.replace(".npz", ".png")
+        fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
+        if not quiet:
+            print(f"[intercompare] saved {out_png}")
+
+    # --- Latitude Bands Histograms ---
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
+    # Filter out global histograms from this scan
+    per_model = [{f for f in s if "global" not in f} for s in per_model]
+    inter = {f for f in inter if "global" not in f}
+    uni = {f for f in uni if "global" not in f}
+
+    if not quiet:
+        _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
+    common = [f for f in common if "global" not in f]
+
+    if common:
+        for base in common:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
+            # Layout: 9 rows x 2 columns (same as original)
+            lat_neg_min = payloads[0].get("neg_lat_min")
+            lat_neg_max = payloads[0].get("neg_lat_max")
+            lat_pos_min = payloads[0].get("pos_lat_min")
+            lat_pos_max = payloads[0].get("pos_lat_max")
+            n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
+            fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
+
+            # Right column: southern hemisphere bands
+            for j in range(n_rows):
+                ax = axs[j, 1]
+                # Baseline DS from first payload
+                ds_ml_pairs = payloads[0]["neg_counts"][j]
+                # Each element is (counts_ds, counts_ml)
+                counts_ds = ds_ml_pairs[0]
+                bins_ds = payloads[0]["neg_bins"][j]
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                # Plot each model ML
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    counts_ml = pay["neg_counts"][j][1]
+                    bins_ml = pay["neg_bins"][j]
+                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                lat_min = (
+                    float(lat_neg_min[j])
+                    if isinstance(lat_neg_min, (list | np.ndarray))
+                    else float("nan")
+                )
+                lat_max = (
+                    float(lat_neg_max[j])
+                    if isinstance(lat_neg_max, (list | np.ndarray))
+                    else float("nan")
+                )
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+
+            # Left column: northern hemisphere bands
+            for j in range(n_rows):
+                ax = axs[j, 0]
+                ds_ml_pairs = payloads[0]["pos_counts"][j]
+                counts_ds = ds_ml_pairs[0]
+                bins_ds = payloads[0]["pos_bins"][j]
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    counts_ml = pay["pos_counts"][j][1]
+                    bins_ml = pay["pos_bins"][j]
+                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                lat_min = (
+                    float(lat_pos_min[j])
+                    if isinstance(lat_pos_min, (list | np.ndarray))
+                    else float("nan")
+                )
+                lat_max = (
+                    float(lat_pos_max[j])
+                    if isinstance(lat_pos_max, (list | np.ndarray))
+                    else float("nan")
+                )
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+
+            # Legends: add a single shared legend
+            handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+            if handles:
+                fig.legend(
+                    handles[: 1 + len(models)],
+                    labels_leg[: 1 + len(models)],
+                    loc="lower center",
+                    ncol=min(6, 1 + len(models)),
+                )
+            plt.tight_layout(rect=(0, 0.05, 1, 1))
+            # Derive a variable/level label for the figure title.
+            # Filename schema example: hist_temperature_850_latbands_ensnone.npz
+            # We strip leading 'hist_' and everything from the first '_latbands' onwards.
+            stem = base[:-4] if base.endswith(".npz") else base
+            var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
+            # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
+            var_part_no_ens = (
+                var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+            )  # SIM108
+            # Remove suffix beginning with '_latbands'
+            if "_latbands" in var_part_no_ens:
+                var_part_no_ens = var_part_no_ens.split("_latbands")[0]
+            var = var_part_no_ens
+            fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            if not quiet:
+                c.success(f"Saved {out_png}")
+            plt.close(fig)
 
 
 def intercompare_wd_kde(

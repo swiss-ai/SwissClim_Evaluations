@@ -421,13 +421,16 @@ Histogram and KDE outputs encode:
 
 - Prefix: `hist_` or `wd_kde_`
 - Variable + optional level token
-- Latitudinal aggregation token (`latbands` or `_latbands_combined` / `_latbands_kde_combined`)
+- Latitudinal aggregation token (`latbands` or `_latbands_combined` / `_latbands_kde_combined`) or `global`
 - Optional time-range tokens
 - Ensemble token
+
+By default, histograms are computed globally (`hist_*_global.npz`). To also generate histograms per latitude band, set `plotting.histograms_per_lat_band: true` in your config.
 
 Examples (pooled vs members):
 
 ```text
+hist_2m_temperature_global_enspooled.npz
 hist_2m_temperature_latbands_enspooled.npz
 hist_temperature_500_latbands_combined_enspooled.npz
 wd_kde_2m_temperature_combined_enspooled.npz
