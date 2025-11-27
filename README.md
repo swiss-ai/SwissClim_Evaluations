@@ -432,7 +432,7 @@ Examples (pooled vs members):
 ```text
 hist_2m_temperature_global_enspooled.npz
 hist_2m_temperature_latbands_enspooled.npz
-hist_temperature_500_latbands_combined_enspooled.npz
+hist_temperature_500_latbands_enspooled.npz
 wd_kde_2m_temperature_combined_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
 wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mode)
