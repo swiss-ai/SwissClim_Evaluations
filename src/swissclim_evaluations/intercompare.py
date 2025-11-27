@@ -1208,7 +1208,7 @@ def intercompare_deterministic_metrics(
                     plt.tight_layout()
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     plt.close(fig)
-                    print(f"[intercompare] saved placeholder {out_png}")
+                    c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
                 ax = pivot.plot(kind="bar", figsize=(12, 6))
                 ax.set_title(f"{metric} by variable and model")
