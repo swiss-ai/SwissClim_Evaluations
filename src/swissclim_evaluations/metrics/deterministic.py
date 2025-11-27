@@ -442,8 +442,8 @@ def run(
             ensemble=ens_token,
             ext="csv",
         )
-        regular_metrics.to_csv(out_csv)
-        standardized_metrics.to_csv(out_csv_std)
+        regular_metrics.to_csv(out_csv, index_label="variable")
+        standardized_metrics.to_csv(out_csv_std, index_label="variable")
         print(f"[deterministic] saved {out_csv}")
         print(f"[deterministic] saved {out_csv_std}")
 
@@ -569,8 +569,8 @@ def run(
                 ensemble=token_m,
                 ext="csv",
             )
-            reg_m.to_csv(out_csv_m)
-            std_m.to_csv(out_csv_m_std)
+            reg_m.to_csv(out_csv_m, index_label="variable")
+            std_m.to_csv(out_csv_m_std, index_label="variable")
             print(f"[deterministic] saved {out_csv_m}")
             print(f"[deterministic] saved {out_csv_m_std}")
             pooled_metrics.append(reg_m)
@@ -634,7 +634,7 @@ def run(
                     ensemble="enspooled",
                     ext="csv",
                 )
-                pooled_df.to_csv(out_csv_pool)
+                pooled_df.to_csv(out_csv_pool, index_label="variable")
                 print(f"[deterministic] saved {out_csv_pool}")
 
         # Console previews for members mode
