@@ -17,7 +17,7 @@ paths:
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
 
-  # Where outputs are written; a subfolder per module will be created here.
+  # Where outputs are written; a subfolder per module will be created here (potentially GB in size).
   output_root: "output/verification_esfm"
 
 selection:
