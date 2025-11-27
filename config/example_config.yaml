@@ -142,6 +142,10 @@ plotting:
   # Global histograms are always produced.
   histograms_per_lat_band: false
 
+  # If true, generate KDE plots for each latitude band in addition to the global KDE.
+  # Global KDEs are always produced.
+  wd_kde_per_lat_band: false
+
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules

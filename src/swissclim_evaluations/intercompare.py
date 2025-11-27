@@ -609,14 +609,47 @@ def intercompare_wd_kde(
 ) -> None:
     src_rel = Path("wd_kde")
     dst = _ensure_dir(out_root / "wd_kde")
-    # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*combined*.npz")
+    colors = sns.color_palette("tab10", n_colors=len(models))
+
+    # --- Global KDE ---
+    per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
     if not quiet:
-        _report_missing("wd_kde", models, labels, per_model, uni)
-    common = _common_files(models, str(src_rel / "wd_kde_*combined*.npz"))
+        _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
+
+    for base in common_g:
+        payloads = [_load_npz(m / src_rel / base) for m in models]
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+
+        # Ground Truth (from first model)
+        x_ds = payloads[0]["x"]
+        kde_ds = payloads[0]["kde_ds"]
+        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+
+        # Models
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+            x_ml = pay["x"]
+            kde_ml = pay["kde_ml"]
+            ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
+
+        ax.set_title(f"Global Normalized KDE - {base.replace('.npz', '')}")
+        ax.legend()
+
+        out_png = dst / base.replace(".npz", "_compare.png")
+        fig.savefig(out_png, bbox_inches="tight")
+        plt.close(fig)
+        if not quiet:
+            print(f"[intercompare] saved {out_png}")
+
+    # --- Latitude Bands KDE ---
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
+    if not quiet:
+        _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
     if not common:
         return
-    colors = sns.color_palette("tab10", n_colors=len(models))
+    # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Assume each payload carries arrays of object dtype per band
@@ -673,9 +706,9 @@ def intercompare_wd_kde(
         var_part_no_ens = (
             var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
         )  # SIM108
-        # Remove '_combined' suffix (may appear with preceding level token)
-        if var_part_no_ens.endswith("_combined"):
-            var_part_no_ens = var_part_no_ens[: -len("_combined")]
+        # Remove '_latbands' suffix
+        if var_part_no_ens.endswith("_latbands"):
+            var_part_no_ens = var_part_no_ens[: -len("_latbands")]
         var = var_part_no_ens
         fig.suptitle(f"Normalized KDE by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
