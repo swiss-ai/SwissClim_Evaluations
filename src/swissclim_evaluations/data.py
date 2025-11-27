@@ -137,7 +137,7 @@ def standardize_dims(
         "number": "ensemble",
         "member": "ensemble",
         "lat": "latitude",
-        "lon": "longitude"
+        "lon": "longitude",
     }
     rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
     if rename_dims_map:
@@ -309,7 +309,7 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
     # Custom interaction based on the zarr file
-    ds = custom.modify_ds(ds, path)
+    ds = custom.modify_ds(ds, cast(str, path))
     return ds
 
 
@@ -325,7 +325,7 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
     # Custom interaction based on the zarr file
-    ds = custom.modify_ds(ds, path)
+    ds = custom.modify_ds(ds, cast(str, path))
     return ds
 
 

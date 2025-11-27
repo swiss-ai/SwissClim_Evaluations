@@ -4,25 +4,29 @@ import contextlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-import xarray as xr
+
 import numpy as np
 import pandas as pd
-from scores.continuous import mae, mse, rmse, additive_bias
+import xarray as xr
+from scores.categorical import seeps
+from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
-from scores.categorical import seeps
 
 
-def _prepare_seeps(y_true: xr.DataArray, 
-                   path_climatology="/capstor/store/cscs/swissai/weatherbench/ERA5-climatology-1990-2019-surface-6h.zarr"):
+def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
     ds_clim = xr.open_zarr(path_climatology)
     ds_clim = ds_clim.sel(latitude=y_true.latitude, longitude=y_true.longitude)
 
     prob_dry = ds_clim.total_precipitation_6hr_seeps_dry_fraction
-    prob_dry = prob_dry.sel(dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour)
+    prob_dry = prob_dry.sel(
+        dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour
+    )
 
     seeps_threshold = ds_clim.total_precipitation_6hr_seeps_threshold
-    seeps_threshold = seeps_threshold.sel(dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour)
+    seeps_threshold = seeps_threshold.sel(
+        dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour
+    )
     return prob_dry, seeps_threshold
 
 
@@ -43,6 +47,7 @@ def _calculate_all_metrics(
     n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
+    seeps_climatology_path: str | None = None,
 ) -> pd.DataFrame:
     """Compute scalar deterministic metrics per variable.
 
@@ -157,8 +162,10 @@ def _calculate_all_metrics(
             else:
                 q_da = y_true.quantile(fss_quantile, skipna=True)
                 list_event_threshold = [float(q_da.compute().item())]
-                list_fss_label = [f"FSS_{100*fss_quantile}%"]
-            for event_threshold, fss_label in zip(list_event_threshold, list_fss_label):
+                list_fss_label = [f"FSS_{100 * fss_quantile}%"]
+            for event_threshold, fss_label in zip(
+                list_event_threshold, list_fss_label, strict=False
+            ):
                 try:
                     # Early exit: if both fields have no events anywhere → perfect score
                     yt_evt = bool((y_true >= event_threshold).any().compute().item())
@@ -181,8 +188,12 @@ def _calculate_all_metrics(
                         # Reduce to scalar
                         if isinstance(out, xr.DataArray):
                             try:
-                                evt_t = (y_true >= event_threshold).any(dim=spatial_dims, skipna=True)
-                                evt_p = (y_pred >= event_threshold).any(dim=spatial_dims, skipna=True)
+                                evt_t = (y_true >= event_threshold).any(
+                                    dim=spatial_dims, skipna=True
+                                )
+                                evt_p = (y_pred >= event_threshold).any(
+                                    dim=spatial_dims, skipna=True
+                                )
                                 no_evt = (~evt_t) & (~evt_p)
                                 out = out.where(~no_evt, other=1.0)
                             except Exception:
@@ -197,10 +208,16 @@ def _calculate_all_metrics(
                         print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
                     row[fss_label] = float("nan")
 
-        if 'total_precipitation' in var and 'SEEPS' in metrics_to_compute:
-            prob_dry, seeps_threshold = _prepare_seeps(y_true)
-            seeps_val = seeps(y_pred*1000, y_true*1000, prob_dry, seeps_threshold, dry_light_threshold=0.25) # convert to mm with *1000
-            row['SEEPS'] = float(seeps_val)
+        if "total_precipitation" in var and "SEEPS" in metrics_to_compute:
+            if seeps_climatology_path is None:
+                raise ValueError(
+                    "SEEPS metric requested but 'seeps_climatology_path' not provided in config."
+                )
+            prob_dry, seeps_threshold = _prepare_seeps(y_true, seeps_climatology_path)
+            seeps_val = seeps(
+                y_pred * 1000, y_true * 1000, prob_dry, seeps_threshold, dry_light_threshold=0.25
+            )  # convert to mm with *1000
+            row["SEEPS"] = float(seeps_val)
 
         # Relative metrics
         if calc_relative:
@@ -254,6 +271,7 @@ def run(
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
+    seeps_climatology_path = cfg.get("seeps_climatology_path")
     reduce_ens_mean = True
     try:
         rem = cfg.get("reduce_ensemble_mean")
@@ -356,6 +374,7 @@ def run(
             n_points=n_points,
             include=include,
             fss_cfg=fss_cfg,
+            seeps_climatology_path=seeps_climatology_path,
         )
         standardized_metrics = _calculate_all_metrics(
             ds_target_std,
@@ -364,6 +383,7 @@ def run(
             n_points=n_points,
             include=std_include,
             fss_cfg=fss_cfg,
+            seeps_climatology_path=seeps_climatology_path,
         )
 
         out_csv = section_output / build_output_filename(
@@ -432,6 +452,7 @@ def run(
                 n_points=n_points,
                 include=include,
                 fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
             )
             std_m = _calculate_all_metrics(
                 ds_tgt_m_std,
@@ -440,6 +461,7 @@ def run(
                 n_points=n_points,
                 include=std_include,
                 fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
             )
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()

@@ -170,6 +170,9 @@ metrics:
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
+    # Path to the climatology file for SEEPS calculation.
+    seeps_climatology_path: "/capstor/store/cscs/swissai/weatherbench/ERA5-climatology-1990-2019-surface-6h.zarr"
+
     # Fractional Skill Score (FSS) configuration
     # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
     # - window_size: integer (square window) or two-element list [height, width]
@@ -184,7 +187,7 @@ metrics:
       # thresholds:              # Example: per-variable thresholds (units must match dataset)
       #   "total_precipitation": [0.001, 0.005]     # e.g., 1 mm over accumulation period
       #   "10m_u_component_of_wind": [10.0]  # e.g., 10 m/s event
-      #   
+      #
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
