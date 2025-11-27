@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
@@ -382,11 +382,15 @@ def intercompare_energy_spectra(
         if pl_files:
             _plot_group(pl_files, surface=False)
 
-    # Combine LSD summary across models (2D averaged only current naming)
+    # Combine LSD summary across models
     lsd_rows: list[pd.DataFrame] = []
+    lsd_rows_lvl: list[pd.DataFrame] = []
     lsd_banded_rows: list[pd.DataFrame] = []
+    lsd_banded_rows_lvl: list[pd.DataFrame] = []
+
     for lab, m in zip(labels, models, strict=False):
-        for f in (m / src_rel).glob("lsd_2d_metrics_*averaged*.csv"):
+        # 2D & 3D averaged
+        for f in (m / src_rel).glob("lsd_*metrics_*averaged*.csv"):
             try:
                 df = pd.read_csv(f)
             except Exception:
@@ -395,28 +399,54 @@ def intercompare_energy_spectra(
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
             df["source_file"] = f.name
-            lsd_rows.append(df)
-        # Also include banded LSD summaries if present
-        for f in (m / src_rel).glob("lsd_bands_2d_metrics_*averaged*.csv"):
+            if "bands" in f.name:
+                lsd_banded_rows.append(df)
+            else:
+                lsd_rows.append(df)
+
+        # 3D per-level
+        for f in (m / src_rel).glob("lsd_*metrics_*per_level*.csv"):
             try:
                 df = pd.read_csv(f)
             except Exception:
                 continue
-            # expected columns: variable, band, lsd_mean
+            if "variable" not in df.columns and "Unnamed: 0" in df.columns:
+                df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
             df["source_file"] = f.name
-            lsd_banded_rows.append(df)
+            if "bands" in f.name:
+                lsd_banded_rows_lvl.append(df)
+            else:
+                lsd_rows_lvl.append(df)
+
     if lsd_rows:
         dfc = pd.concat(lsd_rows, ignore_index=True)
         if dfc["model"].nunique() >= 2:
-            out_csv = dst / "lsd_2d_metrics_averaged_combined.csv"
+            out_csv = dst / "lsd_metrics_averaged_combined.csv"
             dfc.to_csv(out_csv, index=False)
             if not quiet:
                 c.success(f"Saved {out_csv}")
+
+    if lsd_rows_lvl:
+        dfc = pd.concat(lsd_rows_lvl, ignore_index=True)
+        if dfc["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_per_level_combined.csv"
+            dfc.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
+
     if lsd_banded_rows:
         dfcb = pd.concat(lsd_banded_rows, ignore_index=True)
         if dfcb["model"].nunique() >= 2:
-            out_csv = dst / "lsd_bands_2d_metrics_averaged_combined.csv"
+            out_csv = dst / "lsd_bands_metrics_averaged_combined.csv"
+            dfcb.to_csv(out_csv, index=False)
+            if not quiet:
+                c.success(f"Saved {out_csv}")
+
+    if lsd_banded_rows_lvl:
+        dfcb = pd.concat(lsd_banded_rows_lvl, ignore_index=True)
+        if dfcb["model"].nunique() >= 2:
+            out_csv = dst / "lsd_bands_metrics_per_level_combined.csv"
             dfcb.to_csv(out_csv, index=False)
             if not quiet:
                 c.success(f"Saved {out_csv}")
@@ -772,7 +802,8 @@ def intercompare_metrics_csv(
             (
                 c
                 for c in candidates
-                if (
+                if "per_level" not in c.name
+                and (
                     c.name.endswith("ensmean.csv")
                     or c.name.endswith("ensnone.csv")
                     or c.name.endswith("enspooled.csv")
@@ -802,7 +833,8 @@ def intercompare_metrics_csv(
             (
                 c
                 for c in (m / "deterministic").glob("deterministic_metrics_standardized*.csv")
-                if (
+                if "per_level" not in c.name
+                and (
                     c.name.endswith("ensmean.csv")
                     or c.name.endswith("ensnone.csv")
                     or c.name.endswith("enspooled.csv")
@@ -826,10 +858,92 @@ def intercompare_metrics_csv(
                     df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
             frames_std.append(df)
+
+    # Per-level metrics (deterministic)
+    frames_lvl: list[pd.DataFrame] = []
+    frames_lvl_std: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        # Regular per-level
+        candidates_lvl = sorted((m / "deterministic").glob("deterministic_metrics*per_level*.csv"))
+        f_lvl = next(
+            (
+                c
+                for c in candidates_lvl
+                if "standardized" not in c.name
+                and (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if f_lvl and f_lvl.is_file():
+            df = pd.read_csv(f_lvl)
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
+            df.insert(0, "model", lab)
+            frames_lvl.append(df)
+
+        # Standardized per-level
+        f_lvl_std = next(
+            (
+                c
+                for c in candidates_lvl
+                if "standardized" in c.name
+                and (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if f_lvl_std and f_lvl_std.is_file():
+            df = pd.read_csv(f_lvl_std)
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
+            df.insert(0, "model", lab)
+            frames_lvl_std.append(df)
+
     if frames:
         comb = pd.concat(frames, ignore_index=True)
         if comb["model"].nunique() >= 2:
             comb.to_csv(dst_det / "metrics_combined.csv", index=False)
+
+    if frames_lvl:
+        comb_lvl = pd.concat(frames_lvl, ignore_index=True)
+        if comb_lvl["model"].nunique() >= 2:
+            comb_lvl.to_csv(dst_det / "metrics_per_level_combined.csv", index=False)
+
+    if frames_lvl_std:
+        comb_lvl_std = pd.concat(frames_lvl_std, ignore_index=True)
+        if comb_lvl_std["model"].nunique() >= 2:
+            comb_lvl_std.to_csv(
+                dst_det / "metrics_standardized_per_level_combined.csv", index=False
+            )
+
+    if frames:
         # Optional: simple bar plots; coerce to numeric and handle all-NaN gracefully
         for metric in ("RMSE", "MAE", "FSS"):
             if metric in comb.columns:
@@ -863,27 +977,90 @@ def intercompare_metrics_csv(
                 plt.tight_layout()
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
                 plt.close()
+
     if frames_std:
         combs = pd.concat(frames_std, ignore_index=True)
         if combs["model"].nunique() >= 2:
             combs.to_csv(dst_det / "metrics_standardized_combined.csv", index=False)
 
-    # ETS
+    # ETS metrics
     dst_ets = _ensure_dir(out_root / "ets")
     frames_ets: list[pd.DataFrame] = []
+    frames_ets_lvl: list[pd.DataFrame] = []
+
     for lab, m in zip(labels, models, strict=False):
-        # ets_metrics*.csv new naming
-        for f in (m / "ets").glob("ets_metrics*.csv"):
-            try:
-                df = pd.read_csv(f)
-            except Exception:
-                continue
+        # Regular ETS
+        candidates_ets = sorted((m / "ets").glob("ets_metrics*.csv"))
+        f_ets = next(
+            (
+                c
+                for c in candidates_ets
+                if "per_level" not in c.name
+                and (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if f_ets and f_ets.is_file():
+            df = pd.read_csv(f_ets)
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
             frames_ets.append(df)
+
+        # Per-level ETS
+        f_ets_lvl = next(
+            (
+                c
+                for c in candidates_ets
+                if "per_level" in c.name
+                and (
+                    c.name.endswith("ensmean.csv")
+                    or c.name.endswith("ensnone.csv")
+                    or c.name.endswith("enspooled.csv")
+                    or c.name.endswith("ensprob.csv")
+                    or (
+                        "ens" in c.name
+                        and c.name.split("_")[-1].startswith("ens")
+                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                    )
+                )
+            ),
+            None,
+        )
+        if f_ets_lvl and f_ets_lvl.is_file():
+            df = pd.read_csv(f_ets_lvl)
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
+            df.insert(0, "model", lab)
+            frames_ets_lvl.append(df)
+
     if frames_ets:
-        comb = pd.concat(frames_ets, ignore_index=True)
-        if comb["model"].nunique() >= 2:
-            comb.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
+        comb_ets = pd.concat(frames_ets, ignore_index=True)
+        if comb_ets["model"].nunique() >= 2:
+            comb_ets.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
+
+    if frames_ets_lvl:
+        comb_ets_lvl = pd.concat(frames_ets_lvl, ignore_index=True)
+        if comb_ets_lvl["model"].nunique() >= 2:
+            comb_ets_lvl.to_csv(dst_ets / "ets_metrics_per_level_combined.csv", index=False)
 
 
 def _plot_step_from_hist(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
@@ -921,6 +1098,7 @@ def intercompare_probabilistic(
 
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
+    frames_crps_lvl: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         for f in (m / src_rel).glob("crps_summary*.csv"):
             try:
@@ -928,11 +1106,18 @@ def intercompare_probabilistic(
             except Exception:
                 continue
             df.insert(0, "model", lab)
-            frames_crps.append(df)
+            if "per_level" in f.name:
+                frames_crps_lvl.append(df)
+            else:
+                frames_crps.append(df)
     if frames_crps:
         comb = pd.concat(frames_crps, ignore_index=True)
         if comb["model"].nunique() >= 2:
             comb.to_csv(dst / "crps_summary_combined.csv", index=False)
+    if frames_crps_lvl:
+        comb_lvl = pd.concat(frames_crps_lvl, ignore_index=True)
+        if comb_lvl["model"].nunique() >= 2:
+            comb_lvl.to_csv(dst / "crps_summary_per_level_combined.csv", index=False)
 
     # 2) Combine WBX CSV summaries if present
     for basename, outname in (

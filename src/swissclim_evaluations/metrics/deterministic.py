@@ -55,6 +55,7 @@ def _calculate_all_metrics(
       - MAE, RMSE, MSE, Bias, Pearson R, FSS, SEEPS (for precipitation)
       - Relative MAE, Relative L1, Relative L2 (when calc_relative=True)
     """
+
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
@@ -248,6 +249,40 @@ def _calculate_all_metrics(
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
+def _calculate_per_level_metrics(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    calc_relative: bool,
+    n_points: int,
+    include: list[str] | None,
+    fss_cfg: dict[str, Any] | None,
+) -> pd.DataFrame | None:
+    """Compute metrics per pressure level for 3D variables."""
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    if not variables_3d:
+        return None
+
+    if "level" not in ds_target.dims:
+        return None
+
+    levels = ds_target.level.values
+    dfs = []
+    for level in levels:
+        # Select level for all 3D variables
+        ds_t_lvl = ds_target[variables_3d].sel(level=level)
+        ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
+
+        df = _calculate_all_metrics(ds_t_lvl, ds_p_lvl, calc_relative, n_points, include, fss_cfg)
+        df["level"] = int(level)
+        df["variable"] = df.index
+        dfs.append(df)
+
+    if not dfs:
+        return None
+
+    return pd.concat(dfs).reset_index(drop=True)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -272,6 +307,7 @@ def run(
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
     seeps_climatology_path = cfg.get("seeps_climatology_path")
+    report_per_level = bool(cfg.get("report_per_level", True))
     reduce_ens_mean = True
     try:
         rem = cfg.get("reduce_ensemble_mean")
@@ -411,6 +447,51 @@ def run(
         print(f"[deterministic] saved {out_csv}")
         print(f"[deterministic] saved {out_csv_std}")
 
+        if report_per_level:
+            per_level_metrics = _calculate_per_level_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+            )
+            if per_level_metrics is not None:
+                out_csv_lvl = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                per_level_metrics.to_csv(out_csv_lvl, index=False)
+                print(f"[deterministic] saved {out_csv_lvl}")
+
+            per_level_std = _calculate_per_level_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                n_points=n_points,
+                include=std_include,
+                fss_cfg=fss_cfg,
+            )
+            if per_level_std is not None:
+                out_csv_lvl_std = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="standardized_per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                per_level_std.to_csv(out_csv_lvl_std, index=False)
+                print(f"[deterministic] saved {out_csv_lvl_std}")
+
         # Console summary
         try:
             print("Deterministic metrics (targets vs predictions) — first 5 rows:")
@@ -493,6 +574,51 @@ def run(
             print(f"[deterministic] saved {out_csv_m}")
             print(f"[deterministic] saved {out_csv_m_std}")
             pooled_metrics.append(reg_m)
+
+            if report_per_level:
+                per_level_m = _calculate_per_level_metrics(
+                    ds_tgt_m,
+                    ds_pred_m,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                )
+                if per_level_m is not None:
+                    out_csv_m_lvl = section_output / build_output_filename(
+                        metric="deterministic_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=token_m,
+                        ext="csv",
+                    )
+                    per_level_m.to_csv(out_csv_m_lvl, index=False)
+                    print(f"[deterministic] saved {out_csv_m_lvl}")
+
+                per_level_m_std = _calculate_per_level_metrics(
+                    ds_tgt_m_std,
+                    ds_pred_m_std,
+                    calc_relative=False,
+                    n_points=n_points,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                )
+                if per_level_m_std is not None:
+                    out_csv_m_lvl_std = section_output / build_output_filename(
+                        metric="deterministic_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="standardized_per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=token_m,
+                        ext="csv",
+                    )
+                    per_level_m_std.to_csv(out_csv_m_lvl_std, index=False)
+                    print(f"[deterministic] saved {out_csv_m_lvl_std}")
 
         # Aggregate pooled metrics across members if requested
         if pooled_metrics and aggregate_members_mean:
