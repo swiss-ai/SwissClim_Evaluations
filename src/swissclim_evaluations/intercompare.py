@@ -995,6 +995,7 @@ def intercompare_deterministic_metrics(
                 }
                 plot_count = sum(1 for col in cols if col not in excluded)
         except Exception:
+            # If the file is missing or malformed, just skip plot counting.
             pass
     results["Deterministic Plots"] = plot_count
 
