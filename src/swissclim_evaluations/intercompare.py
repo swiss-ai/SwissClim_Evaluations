@@ -506,7 +506,6 @@ def intercompare_histograms(
     per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
     # Filter out global histograms from this scan
     per_model = [{f for f in s if "global" not in f} for s in per_model]
-    inter = {f for f in inter if "global" not in f}
     uni = {f for f in uni if "global" not in f}
 
     if not quiet:
