@@ -205,7 +205,10 @@ def run(
             ax_g.legend(loc="upper right")
 
         units = da_target_var.attrs.get("units", "")
-        ax_g.set_title(f"Global Distribution of {variable_name} ({units})")
+        if len(counts_ds_g) > 0:
+            ax_g.set_title(f"Global Distribution of {variable_name} ({units})")
+        else:
+            ax_g.set_title(f"Global Distribution of {variable_name} ({units}) (No data)")
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
