@@ -280,6 +280,25 @@ def run(
         levels = list(ds_target[var].coords.get("level", []))
         if not levels:
             continue
+
+        def _format_level_token(lvl: Any) -> str:
+            """Return a filesystem-safe token for a single level value."""
+            val = lvl.item() if hasattr(lvl, "item") else lvl
+            try:
+                as_int = int(val)
+                if float(as_int) == float(val):
+                    return str(as_int)
+            except Exception:
+                pass
+            return str(val).replace(".", "_")
+
+        level_tokens = [_format_level_token(lvl) for lvl in levels]
+        if not level_tokens:
+            level_label = "levels"
+        elif len(level_tokens) == 1:
+            level_label = level_tokens[0]
+        else:
+            level_label = f"{level_tokens[0]}_to_{level_tokens[-1]}"
         num_rows = len(levels)
         for ens in ensemble_members:
             fig, axes = plt.subplots(
@@ -390,7 +409,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=str(level_val),
+                    level=level_label,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -404,7 +423,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=str(level_val),
+                    level=level_label,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
