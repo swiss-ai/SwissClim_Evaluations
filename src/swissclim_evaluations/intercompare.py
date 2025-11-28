@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -298,7 +297,7 @@ def intercompare_energy_spectra(
         _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
 
     # Helper to plot a group of NPZ with baseline
-    def _plot_group(basenames: list[str], surface: bool) -> None:
+    def _plot_group(basenames: list[str]) -> None:
         for base in basenames:
             datas = [_load_npz(m / src_rel / base) for m in models]
             # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
@@ -342,13 +341,18 @@ def intercompare_energy_spectra(
             ax.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax.set_ylabel("Energy Density (weighted)")
             var = datas[0].get("variable") or "var"
-            level = datas[0].get("level") if not surface else None
+
+            # Determine if surface based on level content
+            lvl = datas[0].get("level")
+            is_surface = (lvl is None) or (isinstance(lvl, int | float) and lvl == -1)
+
             level_val: int | None = None
             try:
-                level_val = int(level) if level is not None else None
+                level_val = int(lvl) if not is_surface and lvl is not None else None
             except Exception:
                 level_val = None
-            if surface:
+
+            if is_surface:
                 title = f"Energy Spectra — {var} (sfc)"
             else:
                 title = (
@@ -358,6 +362,60 @@ def intercompare_energy_spectra(
                 )
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
+
+            # Add secondary wavelength axis
+            k_min, k_max = ax.get_xlim()
+            wavelength_candidates = [
+                20000,
+                10000,
+                5000,
+                2000,
+                1000,
+                500,
+                200,
+                100,
+                50,
+                20,
+                10,
+                5,
+                2,
+                1,
+                0.5,
+                0.2,
+                0.1,
+            ]
+            wl_min_possible = 1.0 / k_max
+            wl_max_possible = 1.0 / k_min
+            valid_wl = [
+                wl
+                for wl in wavelength_candidates
+                if wl_min_possible <= wl <= wl_max_possible * 1.01
+            ]
+            k_ticks = np.array([1.0 / wl for wl in valid_wl])
+            k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+            if k_ticks.size == 0:
+                k_ticks = np.geomspace(k_min, k_max, num=6)
+
+            ax_top = ax.twiny()
+            ax_top.set_xscale("log")
+            ax_top.set_xlim(ax.get_xlim())
+            ax_top.set_xticks(k_ticks)
+
+            def _fmt_wl_from_k(k: float) -> str:
+                wl = 1.0 / k
+                if wl >= 1000:
+                    return f"{wl / 1000:.0f}k"
+                if wl >= 100:
+                    return f"{wl:.0f}"
+                if wl >= 10:
+                    return f"{wl:.0f}"
+                if wl >= 1:
+                    return f"{wl:.1f}"
+                return f"{wl:.2f}"
+
+            ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+            ax_top.set_xlabel("Wavelength (km)")
+            ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
             ax.legend(frameon=False)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
@@ -374,13 +432,8 @@ def intercompare_energy_spectra(
     # e.g. '..._spectrum_ensnone.npz'.
     surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
     if surf:
-        # Decide surface vs pressure level by presence of _<digits>hPa_
-        surface_files = [b for b in surf if "hPa" not in b]
-        pl_files = [b for b in surf if "hPa" in b]
-        if surface_files:
-            _plot_group(surface_files, surface=True)
-        if pl_files:
-            _plot_group(pl_files, surface=False)
+        # Process all files together; _plot_group now determines surface/level per file
+        _plot_group(surf)
 
     # Combine LSD summary across models
     lsd_rows: list[pd.DataFrame] = []
@@ -704,6 +757,19 @@ def intercompare_maps(
             continue
         lats = payloads[0].get("latitude")
         lons = payloads[0].get("longitude")
+        var_name = payloads[0].get("variable")
+        if not var_name and key.startswith("map_"):
+            # Fallback: try to extract variable from filename key
+            # key format: map_<var>_init... or map_<var>_ens...
+            # Remove 'map_' prefix
+            rest = key[4:]
+            # Split by known tokens
+            for token in ("_init", "_lead", "_ens", "_level"):
+                if token in rest:
+                    rest = rest.split(token, 1)[0]
+            var_name = rest
+
+        units = payloads[0].get("units")
         if lats is None or lons is None:
             continue
 
@@ -747,9 +813,10 @@ def intercompare_maps(
                 vmax=vmax,
                 transform=ccrs.PlateCarree(),
             )
-            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[0].coastlines(linewidth=0.5)
             title_base = "Ground Truth"
+            if var_name:
+                title_base = f"{var_name} — {title_base}"
             if n_levels > 1:
                 level_vals = payloads[0].get("level")
                 if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
@@ -767,7 +834,6 @@ def intercompare_maps(
                     vmax=vmax,
                     transform=ccrs.PlateCarree(),
                 )
-                ax.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax.coastlines(linewidth=0.5)
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
             # Use a constrained-layout-friendly colorbar spanning all axes
@@ -779,7 +845,7 @@ def intercompare_maps(
                 pad=0.08,
             )
             with contextlib.suppress(Exception):
-                cbar.set_label("Value")
+                cbar.set_label(str(units) if units else "Value")
             # No tight_layout here; constrained_layout handles spacing
             suffix = f"_level{lvl}" if n_levels > 1 else ""
             out_png = dst / (key + suffix + "_compare.png")
@@ -1212,7 +1278,6 @@ def intercompare_probabilistic(
                 transform=ccrs.PlateCarree(),
             )
             ax.coastlines(linewidth=0.5)
-            ax.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax.set_title(lab)
         # Use a constrained-layout-friendly colorbar spanning all axes
         cbar = fig.colorbar(

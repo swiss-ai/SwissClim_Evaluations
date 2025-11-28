@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -181,7 +180,6 @@ def run(
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[0].coastlines(linewidth=0.5)
             axes[0].set_title("Ground Truth")
 
@@ -197,7 +195,6 @@ def run(
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[1].coastlines(linewidth=0.5)
             axes[1].set_title("Model Prediction")
 
@@ -269,6 +266,8 @@ def run(
                         ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
                     ),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=ds_target[var].attrs.get("units", ""),
                 )
                 print(f"[maps] saved {npz_path}")
 
@@ -341,7 +340,6 @@ def run(
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds.coastlines(linewidth=0.5)
                 ax_ds.set_title(f"Ground Truth - Level {level_val}")
 
@@ -355,7 +353,6 @@ def run(
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds_ml.coastlines(linewidth=0.5)
                 ax_ds_ml.set_title(f"Model - Level {level_val}")
 
@@ -423,6 +420,8 @@ def run(
                     ),
                     level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=ds_target[var].attrs.get("units", ""),
                 )
                 print(f"[maps] saved {npz_path}")
             plt.close(fig)
