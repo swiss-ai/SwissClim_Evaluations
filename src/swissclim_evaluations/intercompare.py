@@ -395,10 +395,28 @@ def intercompare_energy_spectra(
                 df = pd.read_csv(f)
             except Exception:
                 continue
+
+            # Normalize 3D wide format (variables as columns) to long format (variable column)
+            # 2D metrics have 'lsd_mean' column; 3D metrics (wide) do not.
+            if "lsd_mean" not in df.columns:
+                # Identify potential ID columns
+                id_vars = [c for c in df.columns if c in ("Height Level", "level", "Unnamed: 0")]
+                # If no ID column found but index might be meaningful (though read_csv usually makes
+                # it a column if named)
+                if not id_vars and df.index.name in ("Height Level", "level"):
+                    df = df.reset_index()
+                    id_vars = [df.columns[0]]
+
+                if id_vars:
+                    # Melt to long format: id_vars, variable, lsd_mean
+                    df = df.melt(id_vars=id_vars, var_name="variable", value_name="lsd_mean")
+                    # Standardize level column name if possible
+                    if "Height Level" in df.columns:
+                        df = df.rename(columns={"Height Level": "level"})
+
             if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
-            df["source_file"] = f.name
             if "bands" in f.name:
                 lsd_banded_rows.append(df)
             else:
@@ -413,7 +431,6 @@ def intercompare_energy_spectra(
             if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
-            df["source_file"] = f.name
             if "bands" in f.name:
                 lsd_banded_rows_lvl.append(df)
             else:
@@ -426,6 +443,24 @@ def intercompare_energy_spectra(
             dfc.to_csv(out_csv, index=False)
             if not quiet:
                 c.success(f"Saved {out_csv}")
+
+            # Pivot for easier comparison
+            if "lsd_mean" in dfc.columns:
+                df_piv = dfc.copy()
+                index_cols = ["variable"]
+                if "level" in df_piv.columns:
+                    df_piv["level"] = df_piv["level"].fillna("sfc")
+                    index_cols.append("level")
+                try:
+                    df_pivot = df_piv.pivot_table(
+                        index=index_cols, columns="model", values="lsd_mean", aggfunc="mean"
+                    ).reset_index()
+                    out_pivot = dst / "lsd_metrics_averaged_combined_pivot.csv"
+                    df_pivot.to_csv(out_pivot, index=False)
+                    if not quiet:
+                        c.success(f"Saved {out_pivot}")
+                except Exception as e:
+                    print(f"[intercompare] Warning: could not pivot metrics: {e}")
 
     if lsd_rows_lvl:
         dfc = pd.concat(lsd_rows_lvl, ignore_index=True)
@@ -442,6 +477,23 @@ def intercompare_energy_spectra(
             dfcb.to_csv(out_csv, index=False)
             if not quiet:
                 c.success(f"Saved {out_csv}")
+
+            if "lsd_mean" in dfcb.columns:
+                df_piv = dfcb.copy()
+                index_cols = ["variable", "band"]
+                if "level" in df_piv.columns:
+                    df_piv["level"] = df_piv["level"].fillna("sfc")
+                    index_cols.insert(1, "level")
+                try:
+                    df_pivot = df_piv.pivot_table(
+                        index=index_cols, columns="model", values="lsd_mean", aggfunc="mean"
+                    ).reset_index()
+                    out_pivot = dst / "lsd_bands_metrics_averaged_combined_pivot.csv"
+                    df_pivot.to_csv(out_pivot, index=False)
+                    if not quiet:
+                        c.success(f"Saved {out_pivot}")
+                except Exception as e:
+                    print(f"[intercompare] Warning: could not pivot banded metrics: {e}")
 
     if lsd_banded_rows_lvl:
         dfcb = pd.concat(lsd_banded_rows_lvl, ignore_index=True)
