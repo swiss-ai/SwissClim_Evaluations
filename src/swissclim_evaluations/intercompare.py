@@ -409,8 +409,6 @@ def intercompare_energy_spectra(
                 wl = 1.0 / k
                 if wl >= 1000:
                     return f"{wl / 1000:.0f}k"
-                if wl >= 100:
-                    return f"{wl:.0f}"
                 if wl >= 10:
                     return f"{wl:.0f}"
                 if wl >= 1:
