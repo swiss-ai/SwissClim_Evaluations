@@ -1081,7 +1081,7 @@ def run(
                         / build_output_filename(
                             metric="lsd",
                             variable=str(var),
-                            level=level if level is not None else "surface",
+                            level=level,
                             qualifier="spectrum",
                             init_time_range=None,
                             lead_time_range=None,
