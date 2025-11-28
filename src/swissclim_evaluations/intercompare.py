@@ -413,6 +413,12 @@ def intercompare_energy_spectra(
                     # Standardize level column name if possible
                     if "Height Level" in df.columns:
                         df = df.rename(columns={"Height Level": "level"})
+                else:
+                    # Log a warning if no ID columns are found and melting is skipped
+                    if 'c' in globals():
+                        c.warn(f"[intercompare] No ID columns found for melting in file '{f}'. Columns: {list(df.columns)}. Dataframe not normalized to long format.")
+                    else:
+                        print(f"WARNING [intercompare] No ID columns found for melting in file '{f}'. Columns: {list(df.columns)}. Dataframe not normalized to long format.")
 
             if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                 df = df.rename(columns={"Unnamed: 0": "variable"})
