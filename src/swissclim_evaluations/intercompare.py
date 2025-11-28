@@ -771,6 +771,7 @@ def intercompare_maps(
             for token in ("_init", "_lead", "_ens", "_level"):
                 if token in rest:
                     rest = rest.split(token, 1)[0]
+                    break
             var_name = rest
 
         units = payloads[0].get("units")
