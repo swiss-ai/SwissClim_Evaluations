@@ -1,5 +1,6 @@
 import contextlib
 import itertools
+from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -145,6 +146,18 @@ def build_output_filename(
         else:
             parts.append(f"ens{ensemble}")
     return "_".join(parts) + f".{ext}"
+
+
+def format_level_token(level: Any) -> str:
+    """Return a filesystem-safe label for a single level value."""
+    value = level.item() if hasattr(level, "item") else level
+    try:
+        as_int = int(value)
+        if float(as_int) == float(value):
+            return str(as_int)
+    except Exception:
+        pass
+    return str(value).replace(".", "_")
 
 
 """Helper utilities for chunking over init and lead times."""

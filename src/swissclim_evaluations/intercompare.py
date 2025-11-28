@@ -14,6 +14,8 @@ import seaborn as sns
 import xarray as xr
 import yaml
 
+from .helpers import format_level_token
+
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
     from . import console as c
@@ -718,6 +720,7 @@ def intercompare_maps(
         ):
             c.warn(f"maps: shape mismatch for {key}; skipping")
             continue
+        level_vals = payloads[0].get("level")
         for lvl in range(n_levels):
             nwp_slice = nwp[lvl] if n_levels > 1 else nwp
             ml_slices = [m[lvl] if n_levels > 1 else m for m in mls if isinstance(m, np.ndarray)]
@@ -751,11 +754,12 @@ def intercompare_maps(
             axes[0].coastlines(linewidth=0.5)
             title_base = "Ground Truth"
             if n_levels > 1:
-                level_vals = payloads[0].get("level")
                 if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
-                    title_base += f" (level {int(level_vals[lvl])})"
+                    level_token = format_level_token(level_vals[lvl])
+                    title_base += f" (level {level_token})"
                 else:
-                    title_base += f" (level {lvl})"
+                    title_token = format_level_token(lvl)
+                    title_base += f" (level {title_token})"
             axes[0].set_title(title_base)
             for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
                 ax.pcolormesh(
@@ -781,10 +785,13 @@ def intercompare_maps(
             with contextlib.suppress(Exception):
                 cbar.set_label("Value")
             # No tight_layout here; constrained_layout handles spacing
-            # Filenames produced by current plotting modules already include the
-            # level token (e.g. 'surface' for 2D or the numeric level for 3D),
-            # so use the parsed key directly for compare images.
-            out_png = dst / (key + "_compare.png")
+            suffix = ""
+            if n_levels > 1:
+                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
+                    suffix = f"_level{format_level_token(level_vals[lvl])}"
+                else:
+                    suffix = f"_level{format_level_token(lvl)}"
+            out_png = dst / (key + suffix + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             plt.close(fig)
 

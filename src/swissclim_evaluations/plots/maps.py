@@ -12,6 +12,7 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    format_level_token,
     resolve_ensemble_mode,
 )
 
@@ -281,18 +282,7 @@ def run(
         if not levels:
             continue
 
-        def _format_level_token(lvl: Any) -> str:
-            """Return a filesystem-safe token for a single level value."""
-            val = lvl.item() if hasattr(lvl, "item") else lvl
-            try:
-                as_int = int(val)
-                if float(as_int) == float(val):
-                    return str(as_int)
-            except Exception:
-                pass
-            return str(val).replace(".", "_")
-
-        level_tokens = [_format_level_token(lvl) for lvl in levels]
+        level_tokens = [format_level_token(lvl) for lvl in levels]
         if not level_tokens:
             level_label = "levels"
         elif len(level_tokens) == 1:
