@@ -237,7 +237,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -251,7 +251,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -390,7 +390,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=str(level_val),
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -404,7 +404,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=str(level_val),
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,

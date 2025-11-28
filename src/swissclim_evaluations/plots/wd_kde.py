@@ -310,7 +310,7 @@ def run(
                     str(variable_name),
                     tgt_m[variable_name],
                     pred_m[variable_name],
-                    level_token="",
+                    level_token="surface",
                     ens_token=token_m,
                 )
     else:
@@ -319,7 +319,7 @@ def run(
                 str(variable_name),
                 ds_target_std_eff[variable_name],
                 ds_prediction_std_eff[variable_name],
-                level_token="",
+                level_token="surface",
                 ens_token=ens_token_base,
             )
 

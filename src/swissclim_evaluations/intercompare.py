@@ -781,8 +781,10 @@ def intercompare_maps(
             with contextlib.suppress(Exception):
                 cbar.set_label("Value")
             # No tight_layout here; constrained_layout handles spacing
-            suffix = f"_level{lvl}" if n_levels > 1 else ""
-            out_png = dst / (key + suffix + "_compare.png")
+            # Filenames produced by current plotting modules already include the
+            # level token (e.g. 'surface' for 2D or the numeric level for 3D),
+            # so use the parsed key directly for compare images.
+            out_png = dst / (key + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             plt.close(fig)
 

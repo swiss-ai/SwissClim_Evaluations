@@ -354,7 +354,7 @@ def run(
                 ds_target_mean[variable_name],
                 ds_prediction_mean[variable_name],
                 str(variable_name),
-                level_token="",
+                level_token="surface",
                 qualifier="latbands",
                 ens_token=ensemble_mode_to_token("mean"),
             )
@@ -366,7 +366,7 @@ def run(
                     tgt_m[variable_name],
                     pred_m[variable_name],
                     str(variable_name),
-                    level_token="",
+                    level_token="surface",
                     qualifier="latbands",
                     ens_token=token,
                 )
@@ -379,7 +379,7 @@ def run(
                 ds_target[variable_name],
                 ds_prediction[variable_name],
                 str(variable_name),
-                level_token="",
+                level_token="surface",
                 qualifier="latbands",
                 ens_token=token,
             )
