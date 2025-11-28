@@ -384,17 +384,21 @@ def intercompare_energy_spectra(
                 0.2,
                 0.1,
             ]
-            wl_min_possible = 1.0 / k_max
-            wl_max_possible = 1.0 / k_min
-            valid_wl = [
-                wl
-                for wl in wavelength_candidates
-                if wl_min_possible <= wl <= wl_max_possible * 1.01
-            ]
-            k_ticks = np.array([1.0 / wl for wl in valid_wl])
-            k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-            if k_ticks.size == 0:
-                k_ticks = np.geomspace(k_min, k_max, num=6)
+            if k_min > 0 and k_max > 0:
+                wl_min_possible = 1.0 / k_max
+                wl_max_possible = 1.0 / k_min
+                valid_wl = [
+                    wl
+                    for wl in wavelength_candidates
+                    if wl_min_possible <= wl <= wl_max_possible * 1.01
+                ]
+                k_ticks = np.array([1.0 / wl for wl in valid_wl])
+                k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+                if k_ticks.size == 0:
+                    k_ticks = np.geomspace(k_min, k_max, num=6)
+            else:
+                # Fallback: use geometric spacing or skip wavelength axis
+                k_ticks = np.geomspace(max(k_min, 1e-6), max(k_max, 1e-3), num=6)
 
             ax_top = ax.twiny()
             ax_top.set_xscale("log")
