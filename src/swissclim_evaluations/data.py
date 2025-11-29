@@ -219,6 +219,28 @@ def standardize_dims(
     return ds
 
 
+def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
+    """Sort common coordinate dims to a consistent monotonic order.
+
+    This avoids xarray.combine_by_coords errors when shards have different
+    coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
+    lazy with Dask-backed arrays and preserves graph structure.
+    """
+    sort_prefs: dict[str, bool] = {
+        "level": True,  # ascending (e.g., 50, 100, ..., 1000)
+        "latitude": False,  # ERA5 typically descending 90 -> -90
+        "longitude": True,  # 0..360 ascending
+        "init_time": True,  # chronological
+        "time": True,  # chronological
+        "lead_time": True,  # increasing timedelta
+    }
+    for dim, asc in sort_prefs.items():
+        if dim in ds.dims:
+            with contextlib.suppress(Exception):
+                ds = ds.sortby(dim, ascending=asc)
+    return ds
+
+
 def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
     """Open multiple Zarr stores and combine lazily by coordinates.
 
@@ -227,27 +249,6 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     - Uses combine_by_coords to concatenate/merge along labeled coords (e.g., time/init_time).
     """
     dsets: list[xr.Dataset] = []
-
-    def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
-        """Sort common coordinate dims to a consistent monotonic order.
-
-        This avoids xarray.combine_by_coords errors when shards have different
-        coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
-        lazy with Dask-backed arrays and preserves graph structure.
-        """
-        sort_prefs: dict[str, bool] = {
-            "level": True,  # ascending (e.g., 50, 100, ..., 1000)
-            "latitude": False,  # ERA5 typically descending 90 -> -90
-            "longitude": True,  # 0..360 ascending
-            "init_time": True,  # chronological
-            "time": True,  # chronological
-            "lead_time": True,  # increasing timedelta
-        }
-        for dim, asc in sort_prefs.items():
-            if dim in ds.dims:
-                with contextlib.suppress(Exception):
-                    ds = ds.sortby(dim, ascending=asc)
-        return ds
 
     for p in paths:
         ds_i = xr.open_zarr(p, decode_timedelta=True)
@@ -308,9 +309,13 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
     return ds
+
 
 
 def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
@@ -324,6 +329,9 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
     return ds

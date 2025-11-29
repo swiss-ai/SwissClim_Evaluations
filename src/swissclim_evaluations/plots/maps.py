@@ -12,6 +12,7 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    format_level_token,
     resolve_ensemble_mode,
 )
 
@@ -237,7 +238,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -251,7 +252,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -280,6 +281,14 @@ def run(
         levels = list(ds_target[var].coords.get("level", []))
         if not levels:
             continue
+
+        level_tokens = [format_level_token(lvl) for lvl in levels]
+        if not level_tokens:
+            level_label = "levels"
+        elif len(level_tokens) == 1:
+            level_label = level_tokens[0]
+        else:
+            level_label = f"{level_tokens[0]}_to_{level_tokens[-1]}"
         num_rows = len(levels)
         for ens in ensemble_members:
             fig, axes = plt.subplots(
@@ -390,7 +399,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=level_label,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -404,7 +413,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=level_label,
                     qualifier=None,  # drop legacy 'pl' qualifier
                     init_time_range=init_range,
                     lead_time_range=lead_range,

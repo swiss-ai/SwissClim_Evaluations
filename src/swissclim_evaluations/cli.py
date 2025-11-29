@@ -808,7 +808,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Other modules use full datasets (no plot-time/ensemble filtering)
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
-    out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+    paths = cfg.get("paths", {})
+    if "output_root" not in paths:
+        raise ValueError(
+            "Configuration must specify 'paths.output_root'. "
+            "Cannot proceed without output directory."
+        )
+    out_root = _ensure_output(paths["output_root"])
     # Persist the exact configuration used for this run into the output directory
     _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
@@ -858,8 +864,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     # Basic overview
     all_vars = list(ds_target.data_vars)
-    # Classify variables: treat singleton level dimension (size==1) as non-3D
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
+    # Classify variables: check if 'level' is in dims, regardless of size
+    if "level" in ds_target.dims:
         vars_3d = [v for v in all_vars if "level" in ds_target[v].dims]
         vars_2d = [v for v in all_vars if v not in vars_3d]
     else:
