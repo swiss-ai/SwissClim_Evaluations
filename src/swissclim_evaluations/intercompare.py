@@ -781,6 +781,7 @@ def intercompare_histograms(
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
     _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -826,6 +827,7 @@ def intercompare_histograms(
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
