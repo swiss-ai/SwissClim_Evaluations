@@ -96,8 +96,6 @@ def _report_missing(
     )
 
 
-
-
 def _report_checklist(module: str, results: dict[str, int]) -> None:
     """Print a checklist panel for the module with counts."""
     lines = []
@@ -356,7 +354,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results = {}
     # Spectra: 1-to-1 mapping (each file -> one plot)
     spectra_files = _common_files(models, "energy_spectra/*_spectrum*.npz")
-    results["Energy Spectra Plots"] = len(spectra_files)
+    # We generate 2 plots per file (standard + ratio)
+    results["Energy Spectra Plots"] = len(spectra_files) * 2
 
     # LSD: Many-to-1 mapping (Combined CSVs)
     # We check for presence of inputs to determine if the Combined output
@@ -391,7 +390,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     _report_checklist("energy_spectra", results)
 
     # Helper to plot a group of NPZ with baseline
-    def _plot_group(basenames: list[str], surface: bool) -> None:
+    def _plot_group(basenames: list[str]) -> None:
         for base in basenames:
             datas = [_load_npz(m / src_rel / base) for m in models]
             # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
@@ -401,6 +400,28 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             spec_ds = datas[0].get("spectrum_target")
             if spec_ds is None:
                 spec_ds = datas[0].get("spectrum_ds")
+
+            # Determine surface vs level from metadata
+            var = datas[0].get("variable") or "var"
+            level_raw = datas[0].get("level")
+
+            # Robust check for level
+            is_surface = False
+            if level_raw is None:
+                is_surface = True
+            elif isinstance(level_raw, str):
+                if level_raw.lower() in ("surface", "", "none"):
+                    is_surface = True
+            elif isinstance(level_raw, (int | float)) and np.isnan(level_raw):
+                is_surface = True
+
+            if is_surface:
+                surface = True
+                level_val = None
+            else:
+                surface = False
+                level_val = level_raw
+
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
                 try:  # noqa: SIM105 (allow explicit clarity)
@@ -434,21 +455,12 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     continue
             ax.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax.set_ylabel("Energy Density (weighted)")
-            var = datas[0].get("variable") or "var"
-            level = datas[0].get("level") if not surface else None
-            level_val: int | None = None
-            try:
-                level_val = int(level) if level is not None else None
-            except Exception:
-                level_val = None
+
             if surface:
                 title = f"Energy Spectra — {var} (sfc)"
             else:
-                title = (
-                    f"Energy Spectra — {var} {level_val} hPa"
-                    if level_val is not None
-                    else f"Energy Spectra — {var}"
-                )
+                title = f"Energy Spectra — {var} {level_val} hPa"
+
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
 
@@ -470,8 +482,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
 
             # Ratio Plot
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
@@ -538,7 +550,16 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
                 ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
                 ax_r.set_ylabel("Energy Density Ratio (%)")
-                ax_r.set_title(title + " (Ratio)")
+
+                if surface:
+                    title_ratio = f"Energy Spectra Ratio - {var} (sfc)"
+                else:
+                    title_ratio = (
+                        f"Energy Spectra Ratio - {var} - level: {level_val} hPa"
+                        if level_val is not None
+                        else f"Energy Spectra Ratio - {var}"
+                    )
+                ax_r.set_title(title_ratio)
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
                 ax_r.legend(frameon=False)
                 ax_r.axhline(100, color="k", linestyle="--", lw=1.0, alpha=0.5)
@@ -608,6 +629,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 plt.tight_layout()
                 plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
                 plt.close(fig_r)
+                c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
 
     # Collect NPZ patterns (new first, fallback to legacy)
     # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
@@ -626,13 +648,10 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     lsd_csv = _common_files(models, str(src_rel / "lsd_*.csv"))
     if lsd_csv:
         _print_file_list(f"Found {len(lsd_csv)} common LSD CSV files", lsd_csv)
-        # Decide surface vs pressure level by presence of _<digits>hPa_
-        surface_files = [b for b in surf if "hPa" not in b]
-        pl_files = [b for b in surf if "hPa" in b]
-        if surface_files:
-            _plot_group(surface_files, surface=True)
-        if pl_files:
-            _plot_group(pl_files, surface=False)
+
+    # Plot all energy spectra files (surface/level determined dynamically)
+    if surf:
+        _plot_group(surf)
 
     # Combine LSD summary across models
     # We separate 2D and 3D metrics to avoid confusing combined outputs
@@ -756,13 +775,12 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
-    if not quiet:
-        _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -780,14 +798,26 @@ def intercompare_histograms(
             bins_ml = pay["bins"]
             _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
 
+        var = base.replace("hist_", "").replace("_global.npz", "")
+        ax.set_title(f"Global Histogram — {var}")
+        ax.set_ylabel("Frequency (log)")
+        ax.set_yscale("log")
+        ax.legend(frameon=False)
+        ax.grid(True, which="both", ls="--", alpha=0.4)
+
+        out_png = dst / base.replace(".npz", "_compare.png")
+        plt.tight_layout()
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        plt.close(fig)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
+
         ax.set_title(f"Global Histogram - {base.replace('.npz', '')}")
         ax.legend()
 
         out_png = dst / base.replace(".npz", ".png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        c.success(f"Saved {out_png.relative_to(out_root)}")
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
@@ -796,8 +826,7 @@ def intercompare_histograms(
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
-    if not quiet:
-        _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
 
@@ -887,8 +916,7 @@ def intercompare_histograms(
             fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            if not quiet:
-                c.success(f"Saved {out_png}")
+            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
 
@@ -899,8 +927,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
     # --- Global KDE ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
-    if not quiet:
-        _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
 
     for base in common_g:
@@ -924,19 +951,17 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         out_png = dst / base.replace(".npz", "_compare.png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        c.success(f"Saved {out_png.relative_to(out_root)}")
 
     # --- Latitude Bands KDE ---
     # Availability report (always display)
     per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
-    if not quiet:
-        _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
