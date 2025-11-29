@@ -96,8 +96,6 @@ def _report_missing(
     )
 
 
-
-
 def _report_checklist(module: str, results: dict[str, int]) -> None:
     """Print a checklist panel for the module with counts."""
     lines = []
@@ -756,13 +754,12 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
-    if not quiet:
-        _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -786,8 +783,7 @@ def intercompare_histograms(
         out_png = dst / base.replace(".npz", ".png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
@@ -796,8 +792,7 @@ def intercompare_histograms(
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
-    if not quiet:
-        _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
 
@@ -887,8 +882,7 @@ def intercompare_histograms(
             fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            if not quiet:
-                c.success(f"Saved {out_png}")
+            c.success(f"Saved {out_png}")
             plt.close(fig)
 
 
@@ -899,8 +893,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
     # --- Global KDE ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
-    if not quiet:
-        _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
 
     for base in common_g:
@@ -924,19 +917,17 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         out_png = dst / base.replace(".npz", "_compare.png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands KDE ---
     # Availability report (always display)
     per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
-    if not quiet:
-        _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]

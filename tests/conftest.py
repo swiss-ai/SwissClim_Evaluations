@@ -200,6 +200,9 @@ class _DummyAxis:
     def axhline(self, *a, **k):
         return None
 
+    def axvline(self, *a, **k):
+        return None
+
     def semilogx(self, *a, **k):
         return None
 
