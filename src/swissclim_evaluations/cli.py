@@ -864,8 +864,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     # Basic overview
     all_vars = list(ds_target.data_vars)
-    # Classify variables: treat singleton level dimension (size==1) as non-3D
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
+    # Classify variables: check if 'level' is in dims, regardless of size
+    if "level" in ds_target.dims:
         vars_3d = [v for v in all_vars if "level" in ds_target[v].dims]
         vars_2d = [v for v in all_vars if v not in vars_3d]
     else:
