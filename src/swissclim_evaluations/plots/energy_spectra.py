@@ -260,6 +260,12 @@ def _plot_single_spectrum(
         return
     ax.set_xlim(k_min, k_max)
 
+    # Add golden dotted line at 4*dx cutoff (k_max / 2)
+    k_cutoff = k_max / 2.0
+    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
+    # Update legend to include the cutoff line
+    ax.legend(frameon=False)
+
     wavelength_candidates = [
         40000,
         20000,

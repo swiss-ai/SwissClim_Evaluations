@@ -358,11 +358,162 @@ def intercompare_energy_spectra(
                 )
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
+
+            # Add golden dotted line at 4*dx cutoff (k_max / 2)
+            # We assume all models have roughly the same resolution/grid
+            if wn is not None:
+                k_max_inter = float(np.nanmax(wn))
+                k_cutoff_inter = k_max_inter / 2.0
+                ax.axvline(
+                    k_cutoff_inter,
+                    color="gold",
+                    linestyle=":",
+                    linewidth=2,
+                    alpha=0.8,
+                    label="4dx Cutoff",
+                )
+
             ax.legend(frameon=False)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             plt.close(fig)
+
+            # Ratio Plot
+            if wn is not None and spec_ds is not None and len(spec_ds) > 0:
+                fig_r, ax_r = plt.subplots(figsize=(10, 6), dpi=160)
+                for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
+                    specm = dat.get("spectrum_prediction")
+                    if specm is None:
+                        specm = dat.get("spectrum_ml")
+
+                    # Try to get the matching target spectrum for this model
+                    spec_t = dat.get("spectrum_target")
+                    if spec_t is None:
+                        spec_t = dat.get("spectrum_ds")
+                    # Fallback to the common spec_ds if specific one is missing
+                    if spec_t is None:
+                        spec_t = spec_ds
+
+                    wnm = dat.get("wavenumber")
+                    if wnm is None:
+                        wnm = dat.get("wavenumber_ml")
+
+                    if wnm is None or specm is None or spec_t is None:
+                        continue
+
+                    s_m = np.asarray(specm)
+                    s_t = np.asarray(spec_t)
+
+                    if s_m.shape != s_t.shape or len(s_m) == 0:
+                        continue
+
+                    try:
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            ratio = s_m / s_t
+                        ratio_pct = ratio * 100.0
+
+                        # Determine model resolution from max wavenumber (Nyquist)
+                        # k_max = 1 / (2 * dx)  =>  dx = 1 / (2 * k_max)
+                        # We want to cut off wavelengths < 4 * dx
+                        # lambda_cutoff = 4 * dx = 2 / k_max
+                        # k_cutoff = 1 / lambda_cutoff = k_max / 2
+                        k_max_model = np.nanmax(wnm)
+                        k_cutoff = k_max_model / 2.0
+
+                        mask = wnm <= k_cutoff
+
+                        # Apply the same edge trimming as the main plot [2:-2]
+                        if len(mask) > 4:
+                            mask[:2] = False
+                            mask[-2:] = False
+                        else:
+                            mask[:] = False
+
+                        if not np.any(mask):
+                            continue
+
+                        ax_r.semilogx(
+                            wnm[mask],
+                            ratio_pct[mask],
+                            label=lab,
+                            color=colors[i],
+                        )
+                    except Exception:
+                        continue
+
+                ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
+                ax_r.set_ylabel("Energy Density Ratio (%)")
+                ax_r.set_title(title + " (Ratio)")
+                ax_r.grid(True, which="both", ls="--", alpha=0.4)
+                ax_r.legend(frameon=False)
+                ax_r.axhline(100, color="k", linestyle="--", lw=1.0, alpha=0.5)
+
+                # Add secondary top axis for Wavelength (km)
+                k_min_plot, k_max_plot = ax_r.get_xlim()
+
+                # Define wavelength candidates (km)
+                wavelength_candidates = [
+                    40000,
+                    20000,
+                    10000,
+                    5000,
+                    2000,
+                    1000,
+                    500,
+                    200,
+                    100,
+                    50,
+                    20,
+                    10,
+                    5,
+                    2,
+                    1,
+                    0.5,
+                    0.2,
+                    0.1,
+                ]
+
+                wl_min_possible = 1.0 / k_max_plot if k_max_plot > 0 else 0
+                wl_max_possible = 1.0 / k_min_plot if k_min_plot > 0 else float("inf")
+
+                valid_wl = [
+                    wl
+                    for wl in wavelength_candidates
+                    if wl_min_possible <= wl <= wl_max_possible * 1.01
+                ]
+
+                k_ticks = np.array([1.0 / wl for wl in valid_wl])
+                # Filter ticks to be within plot limits
+                k_ticks = k_ticks[(k_ticks >= k_min_plot) & (k_ticks <= k_max_plot)]
+
+                if k_ticks.size == 0 and k_min_plot > 0 and k_max_plot > k_min_plot:
+                    k_ticks = np.geomspace(k_min_plot, k_max_plot, num=6)
+
+                ax_top = ax_r.twiny()
+                ax_top.set_xscale("log")
+                ax_top.set_xlim(k_min_plot, k_max_plot)
+                ax_top.set_xticks(k_ticks)
+
+                def _fmt_wl_from_k(k: float) -> str:
+                    wl = 1.0 / k
+                    if wl >= 1000:
+                        return f"{wl / 1000:.0f}k"
+                    if wl >= 100:
+                        return f"{wl:.0f}"
+                    if wl >= 10:
+                        return f"{wl:.0f}"
+                    if wl >= 1:
+                        return f"{wl:.1f}"
+                    return f"{wl:.2f}"
+
+                ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+                ax_top.set_xlabel("Wavelength (km)")
+
+                out_png_ratio = dst / base.replace(".npz", "_compare_ratio.png")
+                plt.tight_layout()
+                plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
+                plt.close(fig_r)
 
     # Collect NPZ patterns (new first, fallback to legacy)
     # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
