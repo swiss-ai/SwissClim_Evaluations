@@ -174,7 +174,7 @@ def run(
             ext="csv",
         )
         if members_indices is None:
-            df.to_csv(out_csv)
+            df.to_csv(out_csv, index_label="variable")
             print(f"[ets] saved {out_csv}")
 
             if report_per_level:
@@ -212,7 +212,7 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                df_m.to_csv(out_csv_m)
+                df_m.to_csv(out_csv_m, index_label="variable")
                 print(f"[ets] saved {out_csv_m}")
                 per_member_dfs.append(df_m)
 
@@ -247,5 +247,5 @@ def run(
                         ensemble="enspooled",
                         ext="csv",
                     )
-                    pooled_df.to_csv(out_pool)
+                    pooled_df.to_csv(out_pool, index_label="variable")
                     print(f"[ets] saved {out_pool}")
