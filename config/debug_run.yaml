@@ -1,0 +1,58 @@
+# Debug configuration for SwissClim Evaluations
+paths:
+  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
+  nwp: [
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
+    "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
+  ]
+  output_root: "output/debug_run"
+
+selection:
+  levels: [500, 850]
+  temporal_resolution_hours: null
+  datetimes: ["2023-01-02T00:2023-01-02T12"]
+  latitudes: [90.0, -89.75]
+  longitudes: [0.0, 359.75]
+  variables_2d: ["10m_u_component_of_wind"]
+  variables_3d: ["u_component_of_wind"]
+  ensemble_members: null
+  ensemble:
+    maps: members
+
+  check_missing: false
+
+plotting:
+  random_seed: 42
+  plot_datetime: null
+  plot_ensemble_members: null
+  dpi: 48
+  kde_max_samples: 10000
+  histogram_max_samples: 10000
+  output_mode: both
+
+modules:
+  maps: false
+  histograms: false
+  wd_kde: false
+  energy_spectra: false
+  vertical_profiles: false
+  deterministic: true
+  ets: true
+  probabilistic: false
+
+metrics:
+  deterministic:
+    report_per_level: true
+    include: ["MAE", "RMSE"]
+    standardized_include: ["MAE"]
+    fss:
+      quantile: 0.95
+      window_size: 9
+  ets:
+    report_per_level: true
+    thresholds: [90]
+  energy_spectra:
+    report_per_level: true
+
+probabilistic:
+  report_per_level: true

@@ -16,7 +16,8 @@ EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 WAVE_BANDS: list[dict[str, float | str]] = [
     {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
     {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
-    {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
+    {"name": "upper_mesoscale", "min_km": 250.0, "max_km": 1000.0},
+    {"name": "lower_mesoscale", "min_km": 10.0, "max_km": 250.0},
 ]
 
 
@@ -498,11 +499,16 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute Log Spectral Distance (LSD) metrics and optional plots."""
 
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
+
+    # Extract config
+    es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
+    report_per_level = bool(es_cfg.get("report_per_level", True))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -858,8 +864,12 @@ def run(
                 )
         df_summary = pd.DataFrame(summary_levels, index=levels)
         df_summary.index.name = "Height Level"
-        # Use lsd_3d_metrics prefix for averaged multi-level summary (consistency)
-        df_summary.to_csv(
+
+        # Always aggregate over levels for the "averaged" file to provide a single scalar metric
+        # per variable (consistent with other modules).
+        df_summary_agg = df_summary.mean(axis=0).to_frame().T
+        df_summary_agg.index = pd.Index(["mean"], name="Height Level")
+        df_summary_agg.to_csv(
             section_output
             / build_output_filename(
                 metric="lsd_3d_metrics",
@@ -872,6 +882,27 @@ def run(
                 ext="csv",
             )
         )
+
+        # Save per-level metrics if requested
+        if report_per_level:
+            df_long = df_summary.reset_index().melt(
+                id_vars="Height Level", var_name="variable", value_name="LSD"
+            )
+            df_long = df_long.rename(columns={"Height Level": "level"})
+            df_long.to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_3d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token,
+                    ext="csv",
+                ),
+                index=False,
+            )
         if per_init_rows_3d:
             pd.concat(per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
@@ -916,7 +947,13 @@ def run(
                 .mean()
                 .rename(columns={"lsd": "lsd_mean"})
             )
-            df_banded3_summary.to_csv(
+
+            # Always aggregate over levels for the "averaged" file
+            group_cols_agg = [c for c in ["variable", "band"] if c in df_banded3_summary.columns]
+            df_banded3_summary_agg = df_banded3_summary.groupby(group_cols_agg, as_index=False)[
+                "lsd_mean"
+            ].mean()
+            df_banded3_summary_agg.to_csv(
                 section_output
                 / build_output_filename(
                     metric="lsd_bands_3d_metrics",
@@ -930,6 +967,23 @@ def run(
                 ),
                 index=False,
             )
+
+            # Save per-level metrics if requested
+            if report_per_level:
+                df_banded3_summary.to_csv(
+                    section_output
+                    / build_output_filename(
+                        metric="lsd_bands_3d_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="csv",
+                    ),
+                    index=False,
+                )
         if banded_per_init_rows_3d:
             pd.concat(banded_per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
