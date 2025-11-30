@@ -9,8 +9,16 @@ def create_dummy_dataset(lat_ascending: bool = True):
     lats = np.linspace(-90, 90, 10) if lat_ascending else np.linspace(90, -90, 10)
 
     ds = xr.Dataset(
-        {"temp": (("latitude", "longitude"), np.random.rand(10, 20))},
+        {
+            "temp": (
+                ("init_time", "lead_time", "ensemble", "latitude", "longitude"),
+                np.random.rand(1, 1, 2, 10, 20),
+            )
+        },
         coords={
+            "init_time": [np.datetime64("2023-01-01")],
+            "lead_time": [np.timedelta64(0, "h")],
+            "ensemble": [0, 1],
             "latitude": lats,
             "longitude": np.linspace(0, 360, 20),
         },
@@ -64,8 +72,8 @@ def test_open_many_zarr_sorting(tmp_path):
 
     # Add a time dimension to distinguish them if needed, or just use them as shards
     # For this test, let's give them different init_times so they can be combined
-    ds_asc = ds_asc.expand_dims(init_time=[np.datetime64("2023-01-01")])
-    ds_desc = ds_desc.expand_dims(init_time=[np.datetime64("2023-01-02")])
+    # ds_asc already has 2023-01-01
+    ds_desc = ds_desc.assign_coords(init_time=[np.datetime64("2023-01-02")])
 
     ds_asc.to_zarr(path_asc)
     ds_desc.to_zarr(path_desc)

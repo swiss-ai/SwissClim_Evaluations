@@ -20,14 +20,14 @@ def _make_multi_lead_datasets():
     lon = np.linspace(7.0, 8.0, 2)
     ens = np.arange(4)
 
-    shape_tgt = (init.size, lead.size, lat.size, lon.size)
+    shape_tgt = (init.size, lead.size, lat.size, lon.size, 1)
     shape_pred = (init.size, lead.size, lat.size, lon.size, ens.size)
 
     rng = np.random.default_rng(0)
     targets = xr.Dataset(
         {
             "2m_temperature": (
-                ["init_time", "lead_time", "latitude", "longitude"],
+                ["init_time", "lead_time", "latitude", "longitude", "ensemble"],
                 rng.standard_normal(shape_tgt),
             )
         },
@@ -36,6 +36,7 @@ def _make_multi_lead_datasets():
             "lead_time": lead,
             "latitude": lat,
             "longitude": lon,
+            "ensemble": [0],
         },
     )
 

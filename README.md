@@ -345,6 +345,10 @@ Attributes:
     model:    model_ckpt-step=7300-loss_train=0.07.ckpt
 ```
 
+There are two special cases:
+- The `ensemble` dimension must **always** be present in both the dataset (even with a dummy value) and the data variables.
+- The `level` dimension **MUST NOT** be present in datasets containing only 2D variables. In mixed datasets, 2D variables must not have the `level` dimension.
+
 ### Chunking policy (xarray/dask)
 
 - The repository enforces a default Dask chunking policy in code:

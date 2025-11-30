@@ -24,15 +24,19 @@ def _build_continuous_target():
     )
     lat = np.linspace(46.0, 46.5, 2)
     lon = np.linspace(7.0, 7.5, 2)
-    data = np.arange(time.size * lat.size * lon.size).reshape(time.size, lat.size, lon.size)
+    # Add dummy ensemble dimension for strict compliance
+    ens = np.array([0])
+    data = np.arange(time.size * lat.size * lon.size * ens.size).reshape(
+        time.size, lat.size, lon.size, ens.size
+    )
     ds = xr.Dataset(
         {
             "2m_temperature": (
-                ["time", "latitude", "longitude"],
+                ["time", "latitude", "longitude", "ensemble"],
                 data,
             )
         },
-        coords={"time": time, "latitude": lat, "longitude": lon},
+        coords={"time": time, "latitude": lat, "longitude": lon, "ensemble": ens},
     )
     return ds
 

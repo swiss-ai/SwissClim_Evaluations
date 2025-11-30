@@ -7,21 +7,77 @@ from typing import cast
 import numpy as np
 import xarray as xr
 
-from . import customizations as custom
+from . import console as c, customizations as custom
 
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
-# be injected artificially. Earlier versions added a singleton level which led
-# to downstream misclassification of surface variables. We now treat absence of
-# 'level' as a true 2D field. Likewise 'ensemble' is optional.
+# be injected artificially. 'ensemble' is mandatory.
 ALLOWED_DIMS: tuple[str, ...] = (
     "latitude",
     "longitude",
     "level",  # optional
     "init_time",
     "lead_time",
-    "ensemble",  # optional
+    "ensemble",  # mandatory
 )
+
+
+def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
+    """Strictly validate dataset structure against requirements.
+
+    Requirements:
+    1. 'ensemble' must be a dimension and a coordinate.
+    2. All data variables must have 'ensemble' as a dimension.
+    3. 'level' dimension must NOT be present if the dataset contains only 2D variables.
+       If mixed, 2D variables must NOT have 'level' dimension.
+    """
+    errors = []
+
+    # 1. Ensemble Check
+    if "ensemble" not in ds.dims:
+        errors.append(f"Dataset '{name}' is missing required dimension 'ensemble'.")
+    if "ensemble" not in ds.coords:
+        errors.append(f"Dataset '{name}' is missing required coordinate 'ensemble'.")
+
+    # 2. Data Variables Check
+    for var_name in ds.data_vars:
+        var = ds[var_name]
+        if "ensemble" not in var.dims:
+            errors.append(f"Variable '{var_name}' in '{name}' is missing 'ensemble' dimension.")
+
+    # 3. Level Check
+    # Identify 2D vs 3D variables.
+    has_level_dim = "level" in ds.dims
+
+    # Check if any variable actually uses level
+    vars_with_level = [v for v in ds.data_vars if "level" in ds[v].dims]
+
+    if not vars_with_level and has_level_dim:
+        errors.append(
+            f"Dataset '{name}' has 'level' dimension but no variables use it (purely 2D dataset). 'level' must not be present."
+        )
+
+    # 4. Core Dimensions Check
+    required_dims = ["latitude", "longitude", "init_time", "lead_time"]
+    for dim in required_dims:
+        if dim not in ds.dims:
+            errors.append(f"Dataset '{name}' is missing required dimension '{dim}'.")
+        if dim not in ds.coords:
+            errors.append(f"Dataset '{name}' is missing required coordinate '{dim}'.")
+
+    # 5. Allowed Dimensions Check
+    for dim in ds.dims:
+        if dim not in ALLOWED_DIMS:
+            errors.append(
+                f"Dataset '{name}' has forbidden dimension '{dim}'. Allowed: {ALLOWED_DIMS}"
+            )
+
+    if errors:
+        c.console.print(f"[bold red]Data Validation Failed for {name}[/bold red]")
+        for error in errors:
+            c.console.print(f"[red] - {error}[/red]")
+        raise ValueError(f"Dataset '{name}' does not meet strict format requirements.")
+
 
 # Default chunking policy used across the repository. Values:
 #  - 1: chunk size of 1 for that dimension
@@ -191,8 +247,6 @@ def standardize_dims(
             if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
                 ds = ds.isel(lead_time=0, drop=False)
 
-    # If the dataset already has 'level' keep it; absence means purely 2D vars.
-
     # Enforce allowed dims only
     bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
     if bad_dims:
@@ -201,14 +255,14 @@ def standardize_dims(
             f"Only {ALLOWED_DIMS} are allowed. Please preprocess your data accordingly."
         )
 
-    # Relax schema: Required core dims
-    core_required = {"latitude", "longitude", "init_time", "lead_time"}
+    # Enforce schema: Required core dims
+    core_required = {"latitude", "longitude", "init_time", "lead_time", "ensemble"}
     missing_core = [d for d in core_required if d not in ds.dims]
     if missing_core:
         raise ValueError(
             f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
-            "level/ensemble."
+            "Expected at least (latitude, longitude, init_time, lead_time, ensemble) plus optional "
+            "level."
         )
     # Validate that no unsupported dims remain
     bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
@@ -260,6 +314,7 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         ds_i = _ensure_monotonic(ds_i)
         # Custom interaction based on the zarr file
         ds_i = custom.modify_ds(ds_i, p)
+        validate_dataset_structure(ds_i, p)
         dsets.append(ds_i)
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
@@ -314,8 +369,8 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    validate_dataset_structure(ds, cast(str, path))
     return ds
-
 
 
 def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
@@ -334,6 +389,7 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    validate_dataset_structure(ds, cast(str, path))
     return ds
 
 
