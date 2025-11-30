@@ -561,43 +561,13 @@ def prepare_datasets(
         ds_prediction, dataset_name="ml", first_lead_only=True
     )
 
-    # Handle optional ensemble dimension according to config and selected modules
-    modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    # Decide if we must retain full ensemble (avoid mean collapse) because user intends
-    # pooled/members handling in downstream modules. We inspect raw ensemble blocks before
-    # normalization (top-level and selection) since prepare_datasets runs early.
-    raw_ensemble_top = cfg.get("ensemble", {}) or {}
-    raw_ensemble_sel = (cfg.get("selection", {}) or {}).get("ensemble", {}) or {}
-    if raw_ensemble_top and raw_ensemble_sel:
-        raw_ensemble_cfg = {**raw_ensemble_sel, **raw_ensemble_top}
-    elif raw_ensemble_top:
-        raw_ensemble_cfg = raw_ensemble_top
-    else:
-        raw_ensemble_cfg = raw_ensemble_sel
-
-    def _wants_preserve(block: dict | None) -> bool:
-        if not block:
-            return False
-        try:
-            vals = [str(v).strip().lower() for v in block.values() if v is not None]
-        except Exception:
-            return False
-        return any(v in {"pooled", "members"} for v in vals)
-
-    preserve_full = bool(_wants_preserve(raw_ensemble_cfg))
-
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_members=ensemble_members,
-        probabilistic_enabled=probabilistic_enabled,
-        preserve_ensemble_dimension=preserve_full,
     )
     ds_target = data_mod.apply_ensemble_policy(
         ds_target,
         ensemble_members=None,
-        probabilistic_enabled=probabilistic_enabled,
-        preserve_ensemble_dimension=preserve_full,
     )
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
