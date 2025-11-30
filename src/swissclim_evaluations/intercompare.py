@@ -96,8 +96,6 @@ def _report_missing(
     )
 
 
-
-
 def _report_checklist(module: str, results: dict[str, int]) -> None:
     """Print a checklist panel for the module with counts."""
     lines = []
@@ -605,7 +603,7 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
@@ -785,7 +783,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]

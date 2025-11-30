@@ -64,17 +64,13 @@ def _make_multi_lead_datasets():
     return targets, predictions
 
 
-def test_probabilistic_uses_first_lead_time(tmp_path: Path):
+def test_probabilistic_preserves_lead_times(tmp_path: Path):
     ds_target, ds_prediction = _make_multi_lead_datasets()
 
-    # Apply standardization and enforce first lead_time (no forecasting), mimicking CLI behavior
-    ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth", first_lead_only=True
-    )
-    ds_prediction = data_mod.standardize_dims(
-        ds_prediction, dataset_name="ml", first_lead_only=True
-    )
-
+    # Mimic CLI behavior (no standardization needed with strict data)
+    # If we want to test single lead time, we should slice it manually here,
+    # but let's test that it works with whatever data is passed.
+    
     out_root = tmp_path / "out"
     run_probabilistic(
         ds_target=ds_target,
@@ -107,11 +103,6 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
     pit = xr.load_dataarray(pit_nc)
     crps = xr.load_dataarray(crps_nc)
 
-    # Expect exactly one lead_time retained
-    assert "lead_time" in pit.dims and int(pit.lead_time.size) == 1
-    assert "lead_time" in crps.dims and int(crps.lead_time.size) == 1
-
-    # Check that the single lead_time equals zero timedelta
-    lt0 = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")[0]
-    assert np.all(pit["lead_time"].values == lt0)
-    assert np.all(crps["lead_time"].values == lt0)
+    # Expect all lead_times retained (no longer forced to 1)
+    assert "lead_time" in pit.dims and int(pit.lead_time.size) == 3
+    assert "lead_time" in crps.dims and int(crps.lead_time.size) == 3

@@ -1,10 +1,8 @@
 import contextlib
 import logging
-import warnings
 from collections.abc import Sequence
 from typing import cast
 
-import numpy as np
 import xarray as xr
 
 from . import console as c, customizations as custom
@@ -54,7 +52,8 @@ def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
 
     if not vars_with_level and has_level_dim:
         errors.append(
-            f"Dataset '{name}' has 'level' dimension but no variables use it (purely 2D dataset). 'level' must not be present."
+            f"Dataset '{name}' has 'level' dimension but no variables use it (purely 2D dataset). "
+            "'level' must not be present."
         )
 
     # 4. Core Dimensions Check
@@ -168,108 +167,6 @@ def enforce_chunking(
             policy,
         )
         return ds.chunk(chunk_map)
-    return ds
-
-
-def standardize_dims(
-    ds: xr.Dataset, dataset_name: str, *, first_lead_only: bool | None = None
-) -> xr.Dataset:
-    """Standardize dataset dims and coords for this pipeline.
-
-        - Normalize alias names (initial_time->init_time, number/member->ensemble,
-            prediction_timedelta->lead_time, etc.).
-        - Convert legacy 'time' -> 'init_time' and add singleton zero 'lead_time' if absent.
-    - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
-    - Ensure spatial dims latitude/longitude exist.
-    - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
-    - Accept schemas with or without optional 'level' / 'ensemble' dims.
-    """
-    # Normalize alias dimension/coordinate names first
-    dim_aliases = {
-        "initial_time": "init_time",
-        "init": "init_time",
-        "prediction_timedelta": "lead_time",
-        "lead": "lead_time",
-        "number": "ensemble",
-        "member": "ensemble",
-        "lat": "latitude",
-        "lon": "longitude",
-    }
-    rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
-    if rename_dims_map:
-        ds = ds.rename_dims(rename_dims_map)
-    rename_coords_map = {k: v for k, v in dim_aliases.items() if k in ds.coords}
-    if rename_coords_map:
-        ds = ds.rename(rename_coords_map)
-
-    # Forbid any use of valid_time
-    if "valid_time" in ds.dims or "valid_time" in ds.coords:
-        raise ValueError(
-            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); "
-            "'valid_time' is not allowed."
-        )
-
-    # Convert legacy time -> init_time while keeping an index for label-based selection
-    if "time" in ds.dims:
-        if "time" in ds.coords:
-            # Rename both the dimension and its coordinate in one go
-            ds = ds.rename({"time": "init_time"})
-            # On newer xarray, rename drops the xindex; restore it if possible
-            with contextlib.suppress(Exception):  # xarray>=2024.10
-                ds = ds.set_xindex("init_time")
-        else:
-            # Fallback: only dimension exists (no coord var)
-            ds = ds.rename_dims({"time": "init_time"})
-
-    # Ensure latitude/longitude present
-    for d in ("latitude", "longitude"):
-        if d not in ds.dims:
-            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
-
-    # Ensure lead_time exists; add singleton zero if absent when init_time exists
-    if "init_time" in ds.dims and "lead_time" not in ds.dims:
-        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
-        ds = ds.expand_dims({"lead_time": zero_lead})
-    # Coerce lead_time dtype to timedelta64[ns]
-    if "lead_time" in ds.dims:
-        lt = ds["lead_time"].values
-        if not np.issubdtype(lt.dtype, np.timedelta64):
-            ds = ds.assign_coords(
-                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
-            )
-        # Optional policy: restrict to first lead_time (no forecasting). Default True when None.
-        if (first_lead_only is None or bool(first_lead_only)) and int(
-            ds.lead_time.size
-        ) > 1:  # SIM102
-            lead0 = ds["lead_time"].values[0]
-            with contextlib.suppress(Exception):
-                ds = ds.sel(lead_time=[lead0])
-            if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
-                ds = ds.isel(lead_time=0, drop=False)
-
-    # Enforce allowed dims only
-    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
-    if bad_dims:
-        raise ValueError(
-            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. "
-            f"Only {ALLOWED_DIMS} are allowed. Please preprocess your data accordingly."
-        )
-
-    # Enforce schema: Required core dims
-    core_required = {"latitude", "longitude", "init_time", "lead_time", "ensemble"}
-    missing_core = [d for d in core_required if d not in ds.dims]
-    if missing_core:
-        raise ValueError(
-            f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time, ensemble) plus optional "
-            "level."
-        )
-    # Validate that no unsupported dims remain
-    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
-    if bad_dims:
-        raise ValueError(
-            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. Allowed: {ALLOWED_DIMS}."
-        )
     return ds
 
 
@@ -402,38 +299,14 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
-    Extended semantics (backward compatible):
     - ensemble_members can be:
           * None: keep all members.
           * int: select that single member (keeping 'ensemble' dimension).
           * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
-    # Backward compatibility: allow legacy 'ensemble_member' kw
-    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
-        ensemble_members = legacy_kwargs.pop("ensemble_member")
-        warnings.warn(
-            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
-    if "probabilistic_enabled" in legacy_kwargs:
-        legacy_kwargs.pop("probabilistic_enabled")
-    # consume preserve_ensemble_dimension if passed
-    if "preserve_ensemble_dimension" in legacy_kwargs:
-        legacy_kwargs.pop("preserve_ensemble_dimension")
-
-    if legacy_kwargs:
-        warnings.warn(
-            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
     if "ensemble" not in ds.dims:
         return ds
 

@@ -553,14 +553,6 @@ def prepare_datasets(
     ds_target = _slice_common(ds_target, cfg)
     ds_prediction = _slice_common(ds_prediction, cfg)
 
-    # Standardize temporal dims and enforce required schema
-    ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth", first_lead_only=True
-    )
-    ds_prediction = data_mod.standardize_dims(
-        ds_prediction, dataset_name="ml", first_lead_only=True
-    )
-
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_members=ensemble_members,
