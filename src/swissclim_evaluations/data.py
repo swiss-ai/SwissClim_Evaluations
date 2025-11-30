@@ -359,7 +359,7 @@ def apply_ensemble_policy(
     # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
     if "probabilistic_enabled" in legacy_kwargs:
         legacy_kwargs.pop("probabilistic_enabled")
-    # consume preserve_ensemble_dimension if passed
+    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
     if "preserve_ensemble_dimension" in legacy_kwargs:
         legacy_kwargs.pop("preserve_ensemble_dimension")
 
