@@ -4,7 +4,7 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 ## Quickstart
 
-   We recommend the container workflow for fastest, reproducible setup.
+We recommend the container workflow for fastest, reproducible setup.
 
 1.  **Clone the repository** (see [Installation Guide](docs/INSTALLATION.md) for path conventions).
 2.  **Build the container** (Podman) or set up your environment (uenv/conda).
