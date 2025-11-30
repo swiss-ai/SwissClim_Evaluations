@@ -384,7 +384,7 @@ def apply_ensemble_policy(
 
     if indices_list is not None:
         # subset but keep ensemble dimension
-        return ds.isel(ensemble=indices_list)
+        return ds.isel(ensemble=indices_list, drop=False)
 
     # No explicit selection: keep full ensemble
     return ds
