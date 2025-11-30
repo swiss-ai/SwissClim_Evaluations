@@ -13,7 +13,7 @@ import seaborn as sns
 import xarray as xr
 import yaml
 
-from .helpers import format_level_token
+from .helpers import extract_date_from_filename, format_level_token
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
@@ -297,7 +297,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         else:
             # legacy: <variable>_pl_nmae_combined[...]
             var = var.replace("_pl_nmae_combined", "").replace("_pl_rel_error_combined", "")
-        fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
+
+        # Extract date info from filename if possible
+        date_suffix = extract_date_from_filename(base)
+
+        fig.suptitle(f"Vertical Profiles — {var} (NMAE %){date_suffix}", y=1.02)
         plt.tight_layout(rect=(0, 0.04, 1, 1))
         out_png = dst / base.replace(".npz", "_compare.png")
         # Save only if at least two models contributed lines
@@ -451,6 +455,21 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     if level_val is not None
                     else f"Energy Spectra — {var}"
                 )
+
+            # Extract date info if available (single init time)
+            init_t = datas[0].get("init_time")
+            if init_t is not None:
+                val = str(init_t)
+                # If it looks like a range "start-end", check if start == end
+                if "-" in val:
+                    parts = val.split("-")
+                    if len(parts) == 2 and parts[0] == parts[1]:
+                        title += f" ({parts[0]})"
+                else:
+                    # Single value
+                    if val and val.lower() not in ("none", "noinit"):
+                        title += f" ({val})"
+
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
 
@@ -783,7 +802,11 @@ def intercompare_histograms(
             if "_latbands" in var_part_no_ens:
                 var_part_no_ens = var_part_no_ens.split("_latbands")[0]
             var = var_part_no_ens
-            fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
+
+            # Extract date info from filename if possible
+            date_suffix = extract_date_from_filename(base)
+
+            fig.suptitle(f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png}")
@@ -893,7 +916,11 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         if var_part_no_ens.endswith("_latbands"):
             var_part_no_ens = var_part_no_ens[: -len("_latbands")]
         var = var_part_no_ens
-        fig.suptitle(f"Normalized KDE by Latitude Bands — {var}", y=1.02)
+
+        # Extract date info from filename if possible
+        date_suffix = extract_date_from_filename(base)
+
+        fig.suptitle(f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         c.success(f"Saved {out_png.relative_to(out_root)}")
@@ -1034,9 +1061,12 @@ def intercompare_maps(
                 transform=ccrs.PlateCarree(),
             )
             axes[0].coastlines(linewidth=0.5)
+            # Extract date info from filename if possible
+            date_suffix = extract_date_from_filename(key)
+
             title_base = "Ground Truth"
             if var_name:
-                title_base = f"{var_name} — {title_base}"
+                title_base = f"{var_name} — {title_base}{date_suffix}"
             if n_levels > 1:
                 if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
                     level_token = format_level_token(level_vals[lvl])
@@ -1586,7 +1616,11 @@ def intercompare_probabilistic(
                 if tok in rest:
                     rest = rest.split(tok, 1)[0]
             var = rest
-        ax.set_title(f"PIT histogram — {var}")
+
+        # Extract date info from filename if possible
+        date_suffix = extract_date_from_filename(base)
+
+        ax.set_title(f"PIT histogram — {var}{date_suffix}")
         ax.set_xlabel("PIT value")
         ax.set_ylabel("Density")
         ax.legend()
@@ -1656,6 +1690,19 @@ def intercompare_probabilistic(
         )
         with contextlib.suppress(Exception):
             cbar.set_label("CRPS")
+
+        # Extract date info from filename if possible
+        date_suffix = extract_date_from_filename(base)
+
+        # Try to extract variable from filename for title
+        var_title = base
+        if base.startswith("crps_map_"):
+            var_title = base[len("crps_map_") :]
+            if "_init" in var_title:
+                var_title = var_title.split("_init")[0]
+
+        fig.suptitle(f"CRPS Map — {var_title}{date_suffix}")
+
         # No tight_layout here; constrained_layout handles spacing
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)

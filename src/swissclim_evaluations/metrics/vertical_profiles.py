@@ -11,6 +11,8 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
     resolve_ensemble_mode,
 )
 
@@ -98,18 +100,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -310,7 +301,13 @@ def run(
                 ax_n.set_xlim(_gmin, _gmax)
             plt.gca().invert_yaxis()
             title_extra = f" member={member_index}" if member_index is not None else ""
-            plt.suptitle(f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}")
+
+            # Check for single date
+            date_str = extract_date_from_dataset(ds_target)
+
+            plt.suptitle(
+                f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}{date_str}"
+            )
             plt.tight_layout()
             if save_fig:
                 section_output.mkdir(parents=True, exist_ok=True)

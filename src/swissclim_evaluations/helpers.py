@@ -1,5 +1,6 @@
 import contextlib
 import itertools
+import re
 from typing import Any
 
 import numpy as np
@@ -43,15 +44,15 @@ def aggregate_member_dfs(dfs):
     return out[sorted(numeric_cols)]
 
 
-def _fmt_init(ts: np.ndarray) -> tuple[str, str]:
-    """Format init_time array (datetime64) to YYYYMMDDHH strings (hour precision)."""
+def format_init_time_range(ts: np.ndarray) -> tuple[str, str]:
+    """Format init_time array (datetime64) to YYYYMMDDTHH strings (hour precision)."""
     if ts.size == 0:
         return ("", "")
     start = np.datetime64(ts.min()).astype("datetime64[h]")
     end = np.datetime64(ts.max()).astype("datetime64[h]")
 
     def _fmt(x):
-        return np.datetime_as_string(x, unit="h").replace("-", "").replace(":", "").replace("T", "")
+        return np.datetime_as_string(x, unit="h").replace("-", "").replace(":", "")
 
     return _fmt(start), _fmt(end)
 
@@ -75,7 +76,7 @@ def time_range_suffix(ds: xr.Dataset) -> str:
         try:
             init_vals = np.asarray(ds["init_time"].values)
             if init_vals.size:
-                s, e = _fmt_init(init_vals)
+                s, e = format_init_time_range(init_vals)
                 if s and e:
                     segments.append(f"init_time_{s}_to_{e}")
         except Exception:
@@ -346,3 +347,40 @@ def validate_and_normalize_ensemble_config(
                 val = "none"
         normalized[module] = val
     return normalized, warnings
+
+
+def extract_date_from_filename(filename: str) -> str:
+    """Extract date suffix from filename if it contains a single init time.
+
+    Looks for pattern 'init<start>-<end>'. If start == end, returns ' (<start>)'.
+    Otherwise returns empty string.
+    """
+    match = re.search(r"init([\dT]+)-([\dT]+)", filename)
+    if match:
+        start, end = match.groups()
+        if start == end:
+            # Normalize to YYYYMMDDTHH
+            if len(start) == 10 and "T" not in start:
+                start = start[:8] + "T" + start[8:]
+            return f" ({start})"
+    return ""
+
+
+def extract_date_from_dataset(ds: Any) -> str:
+    """Extract date suffix from dataset if it contains a single init time.
+
+    Checks 'init_time' coordinate. If size is 1, formats as ' (YYYYMMDDTHH)'.
+    Otherwise returns empty string.
+    """
+    if not hasattr(ds, "coords") or "init_time" not in ds.coords:
+        return ""
+
+    try:
+        its = ds.coords["init_time"]
+        if its.size == 1:
+            val = its.values.item() if hasattr(its.values, "item") else its.values[0]
+            ts = np.datetime64(val).astype("datetime64[h]")
+            return f" ({np.datetime_as_string(ts, unit='h').replace('-', '').replace(':', '')})"
+    except Exception:
+        pass
+    return ""

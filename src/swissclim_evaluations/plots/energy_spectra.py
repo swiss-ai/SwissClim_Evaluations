@@ -1031,9 +1031,10 @@ def run(
                 and first_dt in ds_target_full["init_time"].values
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
+            dt_str = np.datetime_as_string(first_dt, unit="h").replace("-", "").replace(":", "")
             print(
                 "[energy_spectra] Plotting only first init_time: "
-                f"{np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+                f"{dt_str} (metrics cover full range)"
             )
         except Exception:
             pass

@@ -8,7 +8,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+from ..helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    extract_date_from_dataset,
+    resolve_ensemble_mode,
+)
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -205,10 +210,14 @@ def run(
             ax_g.legend(loc="upper right")
 
         units = da_target_var.attrs.get("units", "")
+
+        # Check for single date
+        date_str = extract_date_from_dataset(da_target_var)
+
         if len(counts_ds_g) > 0:
-            ax_g.set_title(f"Global Distribution of {variable_name} ({units})")
+            ax_g.set_title(f"Global Distribution of {variable_name} ({units}){date_str}")
         else:
-            ax_g.set_title(f"Global Distribution of {variable_name} ({units}) (No data)")
+            ax_g.set_title(f"Global Distribution of {variable_name} ({units}) (No data){date_str}")
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
@@ -394,8 +403,12 @@ def run(
                     combined["pos_lat_max"].append(float(lat_max))
 
             units = da_target_var.attrs.get("units", "")
+
+            # Check for single date
+            date_str = extract_date_from_dataset(da_target_var)
+
             plt.suptitle(
-                f"Distribution of {variable_name} ({units}) by latitude bands",
+                f"Distribution of {variable_name} ({units}) by latitude bands{date_str}",
                 y=1.02,
             )
 

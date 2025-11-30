@@ -27,7 +27,9 @@ def test_time_range_suffix_init_and_lead():
     )
     suffix = time_range_suffix(ds)
     # Expect both segments joined by '__' with lead_time using numeric offsets
-    pattern = r"init_time_\d{10}_to_\d{10}__lead_time_0_to_36"  # truncated to hour precision
+    pattern = (
+        r"init_time_\d{8}T\d{2}_to_\d{8}T\d{2}__lead_time_0_to_36"  # truncated to hour precision
+    )
     assert re.fullmatch(pattern, suffix), suffix
 
 

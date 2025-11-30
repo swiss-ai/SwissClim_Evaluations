@@ -11,6 +11,8 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
     format_level_token,
     resolve_ensemble_mode,
 )
@@ -51,18 +53,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -182,7 +173,9 @@ def run(
                 shading="auto",
             )
             axes[0].coastlines(linewidth=0.5)
-            axes[0].set_title("Ground Truth")
+
+            date_str = extract_date_from_dataset(ds_var)
+            axes[0].set_title(f"Ground Truth{date_str}")
 
             lon_ml = ds_ml_var.coords.get("longitude", None)
             lat_ml = ds_ml_var.coords.get("latitude", None)
@@ -350,7 +343,9 @@ def run(
                     shading="auto",
                 )
                 ax_ds.coastlines(linewidth=0.5)
-                ax_ds.set_title(f"Ground Truth - Level {level_val}")
+
+                date_str = extract_date_from_dataset(ds_var)
+                ax_ds.set_title(f"Ground Truth - Level {level_val}{date_str}")
 
                 ax_ds_ml.pcolormesh(
                     ds_ml_var_lev.coords.get("longitude"),

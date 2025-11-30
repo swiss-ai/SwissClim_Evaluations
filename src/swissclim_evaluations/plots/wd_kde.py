@@ -11,6 +11,7 @@ from scipy.stats import gaussian_kde, wasserstein_distance
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
     resolve_ensemble_mode,
 )
 
@@ -170,8 +171,12 @@ def run(
             )
             ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color="skyblue", label="Ground Truth")
             ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color="salmon", label="Model Prediction")
+            # Check for single date
+            date_str = extract_date_from_dataset(da_t_std)
+
             ax_g.set_title(
-                f"Global Normalized Distribution of {var_name} ({level_token})\nW-dist: {w_g:.3f}"
+                f"Global Normalized Distribution of {var_name} ({level_token}){date_str}\n"
+                f"W-dist: {w_g:.3f}"
             )
             ax_g.legend()
 
@@ -329,9 +334,13 @@ def run(
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
+
+        # Check for single date
+        date_str = extract_date_from_dataset(da_t_std)
+
         plt.suptitle(
             "Normalized Distribution of "
-            f"{var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: "
+            f"{var_name} ({level_token}) by latitude bands{date_str}\nMean Wasserstein distance: "
             f"{mean_w:.3f}",
             y=1.02,
         )
