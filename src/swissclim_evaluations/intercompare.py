@@ -523,6 +523,9 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                         # lambda_cutoff = 4 * dx = 2 / k_max
                         # k_cutoff = 1 / lambda_cutoff = k_max / 2
                         k_max_model = np.nanmax(wnm)
+                        # Validate k_max_model is finite and positive
+                        if not np.isfinite(k_max_model) or k_max_model <= 0:
+                            continue
                         k_cutoff = k_max_model / 2.0
 
                         mask = wnm <= k_cutoff
