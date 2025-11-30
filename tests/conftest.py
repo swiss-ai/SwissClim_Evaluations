@@ -206,6 +206,9 @@ class _DummyAxis:
     def semilogx(self, *a, **k):
         return None
 
+    def get_lines(self):
+        return []
+
 
 class _DummyFig:
     def __init__(self, axes):
