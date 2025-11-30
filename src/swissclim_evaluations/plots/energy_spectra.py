@@ -68,29 +68,35 @@ def calculate_energy_spectra(
     # physical spacing along longitude
     dx_km = EARTH_CIRCUMFERENCE_KM / n_lon
     da_fft["wavenumber"] = ("wavenumber", np.fft.rfftfreq(n_lon, d=dx_km))
-    da_fft["wavenumber"].attrs.update({
-        "units": "cycles km^-1",
-        "long_name": "zonal wavenumber (cycles per km)",
-        "note": "Not angular wavenumber; no 2π factor",
-    })
+    da_fft["wavenumber"].attrs.update(
+        {
+            "units": "cycles km^-1",
+            "long_name": "zonal wavenumber (cycles per km)",
+            "note": "Not angular wavenumber; no 2π factor",
+        }
+    )
 
     # Drop the zero wavenumber (mean) component for log scaling clarity
     da_fft = da_fft.isel(wavenumber=slice(1, None))
     # Assign wavelength coordinate using raw numpy values to avoid ambiguity errors
     da_fft["wavelength"] = ("wavenumber", 1.0 / da_fft["wavenumber"].values)
-    da_fft["wavelength"].attrs.update({
-        "units": "km",
-        "long_name": "zonal wavelength",
-    })
+    da_fft["wavelength"].attrs.update(
+        {
+            "units": "km",
+            "long_name": "zonal wavelength",
+        }
+    )
     da_fft["wavenumber_m"] = (
         "wavenumber",
         da_fft["wavenumber"].values / 1000.0,
     )
-    da_fft["wavenumber_m"].attrs.update({
-        "units": "cycles m^-1",
-        "long_name": "zonal wavenumber (cycles per meter)",
-        "note": "wavenumber / 1000",
-    })
+    da_fft["wavenumber_m"].attrs.update(
+        {
+            "units": "cycles m^-1",
+            "long_name": "zonal wavenumber (cycles per meter)",
+            "note": "wavenumber / 1000",
+        }
+    )
 
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
@@ -257,8 +263,6 @@ def _plot_single_spectrum(
     # Add golden dotted line at 4*dx cutoff (k_max / 2)
     k_cutoff = k_max / 2.0
     ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
-    # Update legend to include the cutoff line
-    ax.legend(frameon=False)
 
     add_wavelength_axis(ax, k_min, k_max)
 
@@ -364,12 +368,12 @@ def _plot_energy_spectra(
 
     for idx, key in enumerate(coords_df):
         sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(**{
-            str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims
-        })
-        spec_p_1d = spectrum_pred.isel(**{
-            str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims
-        })
+        spec_t_1d = spectrum_target.isel(
+            **{str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
+        )
+        spec_p_1d = spectrum_pred.isel(
+            **{str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
+        )
         wn = spec_t_1d["wavenumber"].values
         arr_t = spec_t_1d.values
         arr_p = spec_p_1d.values
@@ -587,15 +591,21 @@ def run(
                 banded_per_init_rows_2d.append(df_bi)
         # Summary row: non-members -> single lsd_da; members -> mean of member means
         if members_indices is None:
-            summary_rows_2d.append({
-                "variable": str(var),
-                "lsd_mean": float(detailed_rows_2d[-1]["lsd"].mean()),  # last corresponds to var
-            })
+            summary_rows_2d.append(
+                {
+                    "variable": str(var),
+                    "lsd_mean": float(
+                        detailed_rows_2d[-1]["lsd"].mean()
+                    ),  # last corresponds to var
+                }
+            )
         elif member_means:
-            summary_rows_2d.append({
-                "variable": str(var),
-                "lsd_mean": float(sum(member_means) / len(member_means)),
-            })
+            summary_rows_2d.append(
+                {
+                    "variable": str(var),
+                    "lsd_mean": float(sum(member_means) / len(member_means)),
+                }
+            )
 
     if detailed_rows_2d:
         # Per-lead_time if lead_time dim present else per-init_time (else drop 'per' file)

@@ -316,22 +316,26 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                    "metric": "NMAE",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                    "metric": "NMAE",
-                })
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -457,7 +461,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             if surface:
                 title = f"Energy Spectra — {var} (sfc)"
             else:
-                title = f"Energy Spectra — {var} {level_val} hPa"
+                title = (
+                    f"Energy Spectra — {var} {format_level_token(level_val)} hPa"
+                    if level_val is not None
+                    else f"Energy Spectra — {var}"
+                )
 
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
@@ -571,11 +579,12 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 # Define wavelength candidates (km)
                 add_wavelength_axis(ax_r, k_min_plot, k_max_plot)
 
-                out_png_ratio = dst / base.replace(".npz", "_compare_ratio.png")
-                plt.tight_layout()
-                plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
+                if ax_r.get_lines():
+                    out_png_ratio = dst / base.replace(".npz", "_compare_ratio.png")
+                    plt.tight_layout()
+                    plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
                 plt.close(fig_r)
-                c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
 
     # Collect NPZ patterns (new first, fallback to legacy)
     # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
