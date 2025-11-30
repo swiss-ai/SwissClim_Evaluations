@@ -104,6 +104,7 @@ selection:
     vertical_profiles: mean  # mean | pooled | members | none*
     deterministic: mean      # mean | pooled | members | none*
     ets: mean                # mean | pooled | members | none*
+    multivariate: mean       # mean | members | none*
     probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
@@ -162,6 +163,7 @@ modules:
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  multivariate: true         # Multivariate SSIM metric
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
@@ -207,6 +209,12 @@ metrics:
     report_per_level: true
 
     thresholds: [50, 70, 90]
+
+  # Multivariate SSIM configuration.
+  # Defaults follow Baker et al. (2019) for climate data visualization assessment.
+  # Note: Window size is implicitly determined by sigma (approx 11 for sigma=1.5).
+  multivariate:
+    ssim_sigma: 1.5
 
   # Energy Spectra configuration.
   energy_spectra:

@@ -266,6 +266,7 @@ modules:
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  multivariate: true         # Multivariate SSIM metric
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
@@ -388,6 +389,14 @@ deterministic_metrics_per_level_ensmean.csv
 deterministic_metrics_standardized_per_level_ensmean.csv
 deterministic_metrics_ens0.csv            # members mode example (member 0)
 ```
+
+### Multivariate Metrics
+
+The multivariate module computes the Structural Similarity Index (SSIM) for each variable and a combined multivariate average.
+
+Outputs:
+
+- `multivariate/multivariate_ssim_summary_ens*.csv`: Contains SSIM scores for each variable and the `MULTIVARIATE_AVERAGE`.
 
 ### Extreme Threshold Statistics (ETS)
 
@@ -541,6 +550,7 @@ What gets combined:
 - maps: panel maps with DS in the first column and each model as subsequent columns.
 - deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
 - ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
+- multivariate: merged CSVs (`multivariate_ssim_combined.csv`) and a comparison bar plot of the multivariate average SSIM (`multivariate_ssim_comparison.png`).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
   - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
   - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).

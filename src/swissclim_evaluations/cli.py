@@ -32,6 +32,7 @@ EXPECTED_SUBDIRS: set[str] = {
     "wd_kde",
     "maps",
     "vertical_profiles",
+    "multivariate",
 }
 
 
@@ -1234,6 +1235,58 @@ def run_selected(cfg: dict[str, Any]) -> None:
             module_results.append(
                 {
                     "name": "ets",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
+    # Multivariate
+    if chapter_flags.get("multivariate"):
+        from .metrics import multivariate as multi_mod
+
+        c.module_status("multivariate", "run", f"variables={len(all_vars)}")
+        if "ensemble" in ds_prediction.dims:
+            ens_size_multi: int = int(ds_prediction.sizes.get("ensemble", 0))
+            # Re-use deterministic mode for multivariate for now
+            use_mode = resolved_modes.get("deterministic", "mean")
+            c.info(
+                format_ensemble_log(
+                    "multivariate",
+                    use_mode,
+                    ens_size_multi,
+                )
+            )
+        else:
+            c.info("No ensemble dimension → multivariate inputs.")
+        _t = time.time()
+        try:
+            multi_mod.run(
+                ds_target,
+                ds_prediction,
+                ds_target_std,
+                ds_prediction_std,
+                out_root,
+                plotting,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("deterministic"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("multivariate", dt))
+            module_results.append(
+                {
+                    "name": "multivariate",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"multivariate failed: {ex}")
+            module_results.append(
+                {
+                    "name": "multivariate",
                     "status": "failed",
                     "seconds": dt,
                     "error": str(ex),
