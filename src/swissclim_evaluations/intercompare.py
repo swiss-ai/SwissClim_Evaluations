@@ -516,6 +516,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             ax_top.set_xticks(k_ticks)
 
             def _fmt_wl_from_k(k: float) -> str:
+                if k <= 0:
+                    return "∞"
                 wl = 1.0 / k
                 if wl >= 1000:
                     return f"{wl / 1000:.0f}k"
