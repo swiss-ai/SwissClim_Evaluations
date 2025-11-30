@@ -266,58 +266,7 @@ def _plot_single_spectrum(
     # Update legend to include the cutoff line
     ax.legend(frameon=False)
 
-    wavelength_candidates = [
-        40000,
-        20000,
-        10000,
-        5000,
-        2000,
-        1000,
-        500,
-        200,
-        100,
-        50,
-        20,
-        10,
-        5,
-        2,
-        1,
-        0.5,
-        0.2,
-        0.1,
-    ]
-    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
-    wl_min_possible = 1.0 / k_max
-    wl_max_possible = 1.0 / k_min
-    valid_wl = [
-        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
-    ]
-    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
-    k_ticks = np.array([1.0 / wl for wl in valid_wl])
-    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-    if k_ticks.size == 0:  # fallback to previous geometric spacing
-        k_ticks = np.geomspace(k_min, k_max, num=6)
-
-    ax_top = ax.twiny()
-    ax_top.set_xscale("log")
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(k_ticks)
-
-    def _fmt_wl_from_k(k: float) -> str:
-        wl = 1.0 / k
-        if wl >= 1000:
-            return f"{wl / 1000:.0f}k"  # show whole thousands
-        if wl >= 100:
-            return f"{wl:.0f}"
-        if wl >= 10:
-            return f"{wl:.0f}"
-        if wl >= 1:
-            return f"{wl:.1f}"
-        return f"{wl:.2f}"
-
-    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-    ax_top.set_xlabel("Wavelength (km)")
-    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
+    add_wavelength_axis(ax, k_min, k_max)
 
     lev_part = f" Level {level}" if level is not None else " (sfc)"
     ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
@@ -1102,3 +1051,59 @@ def run(
         print("[energy_spectra] Figures/NPZ saved (subset dataset)")
 
     print("[energy_spectra] Completed energy spectra metrics & plots.")
+
+
+def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:
+    """Add a top axis with wavelength labels (km) corresponding to wavenumber (cycles/km)."""
+    wavelength_candidates = [
+        40000,
+        20000,
+        10000,
+        5000,
+        2000,
+        1000,
+        500,
+        200,
+        100,
+        50,
+        20,
+        10,
+        5,
+        2,
+        1,
+        0.5,
+        0.2,
+        0.1,
+    ]
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
+    wl_min_possible = 1.0 / k_max if k_max > 0 else 0
+    wl_max_possible = 1.0 / k_min if k_min > 0 else float("inf")
+    valid_wl = [
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
+    ]
+    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
+    k_ticks = np.array([1.0 / wl for wl in valid_wl])
+    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+    if k_ticks.size == 0 and k_min > 0 and k_max > k_min:
+        k_ticks = np.geomspace(k_min, k_max, num=6)
+
+    ax_top = ax.twiny()
+    ax_top.set_xscale("log")
+    ax_top.set_xlim(k_min, k_max)
+    ax_top.set_xticks(k_ticks)
+
+    def _fmt_wl_from_k(k: float) -> str:
+        wl = 1.0 / k
+        if wl >= 1000:
+            return f"{wl / 1000:.0f}k"  # show whole thousands
+        if wl >= 100:
+            return f"{wl:.0f}"
+        if wl >= 10:
+            return f"{wl:.0f}"
+        if wl >= 1:
+            return f"{wl:.1f}"
+        return f"{wl:.2f}"
+
+    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+    ax_top.set_xlabel("Wavelength (km)")
+    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
