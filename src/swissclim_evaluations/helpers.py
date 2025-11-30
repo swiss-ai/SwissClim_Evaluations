@@ -402,8 +402,11 @@ VARIABLE_UNITS = {
 }
 
 
-def get_variable_units(ds: xr.Dataset, var_name: str) -> str:
+def get_variable_units(ds: xr.Dataset | xr.DataArray, var_name: str) -> str:
     """Get units for a variable, falling back to a default mapping if missing."""
-    if var_name in ds and "units" in ds[var_name].attrs:
+    if isinstance(ds, xr.DataArray):
+        if "units" in ds.attrs:
+            return str(ds.attrs["units"])
+    elif var_name in ds and "units" in ds[var_name].attrs:
         return str(ds[var_name].attrs["units"])
     return VARIABLE_UNITS.get(var_name, "")
