@@ -553,7 +553,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     title_ratio = f"Energy Spectra Ratio — {var} (sfc)"
                 else:
                     title_ratio = (
-                        f"Energy Spectra Ratio — {var} — level: {level_val} hPa"
+                        f"Energy Spectra Ratio — {var} — level: {format_level_token(level_val)} hPa"
                         if level_val is not None
                         else f"Energy Spectra Ratio — {var}"
                     )
