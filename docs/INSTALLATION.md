@@ -27,7 +27,7 @@
    podman build -t swissclim-eval .
    ```
 
-1. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
+1. (CSCS Alps) Export to Enroot SquashFS and set up EDF once:
 
    ```bash
    rm -f tools/swissclim-eval.sqsh
