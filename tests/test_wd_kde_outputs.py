@@ -24,11 +24,17 @@ def test_wd_kde_wasserstein_exports(tmp_path: Path):
             "output_mode": "npz",
             "kde_max_samples": 100,
             "wd_kde_include_3d": False,  # only 2D variables here anyway
+            "wd_kde_per_lat_band": True,
         },
     )
 
     wd_dir = out_root / "wd_kde"
     assert wd_dir.exists()
+    # Check for global files
+    assert any("global" in f.name for f in wd_dir.glob("*.npz"))
+    # Check for latbands files
+    assert any("latbands" in f.name for f in wd_dir.glob("*.npz"))
+
     # Wasserstein CSV naming may change; just assert some csv present
     csvs = list(wd_dir.glob("wd_kde_wasserstein_*.csv"))
     assert csvs, "Expected Wasserstein CSV outputs not found"

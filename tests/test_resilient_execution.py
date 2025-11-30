@@ -10,7 +10,7 @@ from ._smoke_data import make_synthetic_datasets
 def test_module_failure_is_captured(monkeypatch, tmp_path: Path, capsys):
     # Prepare minimal config enabling deterministic and ets (we will force deterministic to raise)
     cfg = {
-        "paths": {},
+        "paths": {"output_root": str(tmp_path / "output")},
         "modules": {
             "deterministic": True,
             "ets": True,

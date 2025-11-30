@@ -380,7 +380,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=level if level is not None else "surface",
             qualifier="single_spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -1058,7 +1058,7 @@ def run(
                     / build_output_filename(
                         metric="lsd",
                         variable=str(var),
-                        level=None,
+                        level="surface",
                         qualifier="spectrum",
                         init_time_range=None,
                         lead_time_range=None,
