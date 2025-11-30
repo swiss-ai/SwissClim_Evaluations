@@ -12,6 +12,7 @@ from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -156,6 +157,7 @@ def run(
         seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
         ds_flat_g = _subsample_values(da_t_std, max_samples, seed=seed_g)
         ml_flat_g = _subsample_values(da_p_std, max_samples, seed=seed_g)
+        units = get_variable_units(ds_target, var_name)
 
         if ds_flat_g.size > 0 and ml_flat_g.size > 0:
             w_g = wasserstein_distance(ds_flat_g, ml_flat_g)
@@ -213,6 +215,7 @@ def run(
                     x=x_eval_g,
                     kde_ds=kde_ds_g(x_eval_g),
                     kde_ml=kde_ml_g(x_eval_g),
+                    units=units,
                     allow_pickle=True,
                 )
                 print(f"[wd_kde] saved {out_npz_g}")
@@ -384,6 +387,7 @@ def run(
                 pos_kde_ml=np.array(combined["pos_kde_ml"], dtype=object),
                 pos_lat_min=np.array(combined["pos_lat_min"]),
                 pos_lat_max=np.array(combined["pos_lat_max"]),
+                units=units,
                 allow_pickle=True,
             )
             print(f"[wd_kde] saved {out_npz}")

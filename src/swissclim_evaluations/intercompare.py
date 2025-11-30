@@ -724,6 +724,7 @@ def intercompare_histograms(
     if common:
         for base in common:
             payloads = [_load_npz(m / src_rel / base) for m in models]
+            units = payloads[0].get("units")
             # Layout: 9 rows x 2 columns (same as original)
             lat_neg_min = payloads[0].get("neg_lat_min")
             lat_neg_max = payloads[0].get("neg_lat_max")
@@ -757,6 +758,8 @@ def intercompare_histograms(
                     else float("nan")
                 )
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+                if units:
+                    ax.set_xlabel(str(units))
 
             # Left column: northern hemisphere bands
             for j in range(n_rows):
@@ -780,6 +783,8 @@ def intercompare_histograms(
                     else float("nan")
                 )
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+                if units:
+                    ax.set_xlabel(str(units))
 
             # Legends: add a single shared legend
             handles, labels_leg = axs[0, 0].get_legend_handles_labels()
@@ -827,6 +832,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
     for base in common_g:
         payloads = [_load_npz(m / src_rel / base) for m in models]
+        units = payloads[0].get("units")
         fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
         # Ground Truth (from first model)
@@ -841,6 +847,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
 
         ax.set_title(f"Global Normalized KDE - {base.replace('.npz', '')}")
+        if units:
+            ax.set_xlabel(str(units))
         ax.legend()
 
         out_png = dst / base.replace(".npz", "_compare.png")
@@ -860,6 +868,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
+        units = payloads[0].get("units")
         # Assume each payload carries arrays of object dtype per band
         pos_x0 = payloads[0]["pos_x"]
         n_rows = len(pos_x0)
@@ -880,6 +889,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             lat_min = float(payloads[0]["neg_lat_min"][j])
             lat_max = float(payloads[0]["neg_lat_max"][j])
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+            if units:
+                ax.set_xlabel(str(units))
 
         # North (left)
         for j in range(n_rows):
@@ -897,6 +908,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             lat_min = float(payloads[0]["pos_lat_min"][j])
             lat_max = float(payloads[0]["pos_lat_max"][j])
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+            if units:
+                ax.set_xlabel(str(units))
 
         handles, labels_leg = axs[0, 0].get_legend_handles_labels()
         if handles:

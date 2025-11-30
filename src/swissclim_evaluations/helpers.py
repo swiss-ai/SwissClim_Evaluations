@@ -352,8 +352,8 @@ def validate_and_normalize_ensemble_config(
 def extract_date_from_filename(filename: str) -> str:
     """Extract date suffix from filename if it contains a single init time.
 
-    Looks for pattern 'init<YYYYMMDDTHHstart>-<YYYYMMDDTHHend>'. If start == end, returns ' (<start>)'.
-    Otherwise returns empty string.
+    Looks for pattern 'init<YYYYMMDDTHHstart>-<YYYYMMDDTHHend>'. If start == end, returns
+    '(<start>)'. Otherwise returns empty string.
     """
     match = re.search(r"init([\dT]+)-([\dT]+)", filename)
     if match:
@@ -385,3 +385,25 @@ def extract_date_from_dataset(ds: Any) -> str:
         # If extraction or formatting fails, return empty string as fallback.
         pass
     return ""
+
+
+# Common variable units fallback mapping
+VARIABLE_UNITS = {
+    "2m_temperature": "K",
+    "temperature": "K",
+    "10m_u_component_of_wind": "m s**-1",
+    "10m_v_component_of_wind": "m s**-1",
+    "u_component_of_wind": "m s**-1",
+    "v_component_of_wind": "m s**-1",
+    "geopotential": "m**2 s**-2",
+    "specific_humidity": "kg kg**-1",
+    "mean_sea_level_pressure": "Pa",
+    "total_precipitation": "m",
+}
+
+
+def get_variable_units(ds: xr.Dataset, var_name: str) -> str:
+    """Get units for a variable, falling back to a default mapping if missing."""
+    if var_name in ds and "units" in ds[var_name].attrs:
+        return str(ds[var_name].attrs["units"])
+    return VARIABLE_UNITS.get(var_name, "")

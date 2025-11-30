@@ -12,6 +12,7 @@ from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -209,7 +210,7 @@ def run(
             )
             ax_g.legend(loc="upper right")
 
-        units = da_target_var.attrs.get("units", "")
+        units = get_variable_units(ds_target, variable_name)
 
         # Check for single date
         date_str = extract_date_from_dataset(da_target_var)
@@ -251,6 +252,7 @@ def run(
                 counts_ds=counts_ds_g,
                 counts_ml=counts_ml_g,
                 bins=edges_g,
+                units=units,
                 allow_pickle=True,
             )
             print(f"[histograms] saved {out_npz_g}")
@@ -402,7 +404,7 @@ def run(
                     combined["pos_lat_min"].append(float(lat_min))
                     combined["pos_lat_max"].append(float(lat_max))
 
-            units = da_target_var.attrs.get("units", "")
+            units = get_variable_units(ds_target, variable_name)
 
             # Check for single date
             date_str = extract_date_from_dataset(da_target_var)
@@ -448,6 +450,7 @@ def run(
                     neg_lat_max=np.array(combined["neg_lat_max"]),
                     pos_lat_min=np.array(combined["pos_lat_min"]),
                     pos_lat_max=np.array(combined["pos_lat_max"]),
+                    units=units,
                     allow_pickle=True,
                 )
                 print(f"[histograms] saved {out_npz}")

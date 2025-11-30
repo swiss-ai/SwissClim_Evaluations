@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    get_variable_units,
+    resolve_ensemble_mode,
+)
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -101,7 +108,7 @@ def calculate_energy_spectra(
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
     # Add units for power spectrum if input had units
-    in_units = da_var.attrs.get("units")
+    in_units = get_variable_units(da_var, da_var.name)
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
@@ -368,7 +375,6 @@ def _plot_energy_spectra(
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
-    from ..helpers import build_output_filename
 
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
@@ -513,7 +519,6 @@ def run(
     # Preserve full datasets for metrics
     ds_target_full = ds_target
     ds_prediction_full = ds_prediction
-    from ..helpers import ensemble_mode_to_token, resolve_ensemble_mode
 
     resolved_mode = resolve_ensemble_mode(
         "energy_spectra", ensemble_mode, ds_target_full, ds_prediction_full
@@ -547,7 +552,6 @@ def run(
         ens_token = None
 
     # Unified suffix based on init_time/lead_time only
-    from ..helpers import build_output_filename
 
     # --- Determine variables & levels ---------------------------------------------
     if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:

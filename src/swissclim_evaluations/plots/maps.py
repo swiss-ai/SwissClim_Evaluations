@@ -14,6 +14,7 @@ from ..helpers import (
     extract_date_from_dataset,
     format_init_time_range,
     format_level_token,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -203,7 +204,7 @@ def run(
             # In test mode, colorbar may be a dummy (None); guard the label call
             try:
                 if cb is not None:
-                    cb.set_label(ds_target[var].attrs.get("units", ""))
+                    cb.set_label(get_variable_units(ds_target, str(var)))
             except Exception:
                 # Non-fatal: continue without setting label
                 pass
@@ -261,7 +262,7 @@ def run(
                     ),
                     ensemble=int(ens) if ens is not None else -1,
                     variable=str(var),
-                    units=ds_target[var].attrs.get("units", ""),
+                    units=get_variable_units(ds_target, str(var)),
                 )
                 print(f"[maps] saved {npz_path}")
 
@@ -366,7 +367,7 @@ def run(
                     orientation="horizontal",
                     fraction=0.05,
                     pad=0.07,
-                    label=f"{ds_target[var].attrs.get('units', '')} (level {level_val})",
+                    label=f"{get_variable_units(ds_target, str(var))} (level {level_val})",
                 )
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
@@ -425,7 +426,7 @@ def run(
                     level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
                     ensemble=int(ens) if ens is not None else -1,
                     variable=str(var),
-                    units=ds_target[var].attrs.get("units", ""),
+                    units=get_variable_units(ds_target, str(var)),
                 )
                 print(f"[maps] saved {npz_path}")
             plt.close(fig)
