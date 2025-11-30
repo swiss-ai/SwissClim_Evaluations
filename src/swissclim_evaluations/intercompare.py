@@ -417,12 +417,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             elif isinstance(level_raw, (int | float)) and np.isnan(level_raw):
                 is_surface = True
 
-            if is_surface:
-                surface = True
-                level_val = None
-            else:
-                surface = False
-                level_val = level_raw
+            surface = is_surface
+            level_val = None if is_surface else level_raw
 
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
