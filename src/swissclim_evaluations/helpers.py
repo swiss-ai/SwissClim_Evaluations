@@ -352,7 +352,7 @@ def validate_and_normalize_ensemble_config(
 def extract_date_from_filename(filename: str) -> str:
     """Extract date suffix from filename if it contains a single init time.
 
-    Looks for pattern 'init<start>-<end>'. If start == end, returns ' (<start>)'.
+    Looks for pattern 'init<YYYYMMDDTHHstart>-<YYYYMMDDTHHend>'. If start == end, returns ' (<start>)'.
     Otherwise returns empty string.
     """
     match = re.search(r"init([\dT]+)-([\dT]+)", filename)
