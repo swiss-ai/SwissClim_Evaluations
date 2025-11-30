@@ -552,12 +552,12 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 ax_r.set_ylabel("Energy Density Ratio (%)")
 
                 if surface:
-                    title_ratio = f"Energy Spectra Ratio - {var} (sfc)"
+                    title_ratio = f"Energy Spectra Ratio — {var} (sfc)"
                 else:
                     title_ratio = (
-                        f"Energy Spectra Ratio - {var} - level: {level_val} hPa"
+                        f"Energy Spectra Ratio — {var} — level: {level_val} hPa"
                         if level_val is not None
-                        else f"Energy Spectra Ratio - {var}"
+                        else f"Energy Spectra Ratio — {var}"
                     )
                 ax_r.set_title(title_ratio)
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
