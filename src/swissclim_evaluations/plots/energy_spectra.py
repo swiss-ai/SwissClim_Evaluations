@@ -1075,23 +1075,24 @@ def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:
     if k_ticks.size == 0 and k_min > 0 and k_max > k_min:
         k_ticks = np.geomspace(k_min, k_max, num=6)
 
-    ax_top = ax.twiny()
-    ax_top.set_xscale("log")
-    ax_top.set_xlim(k_min, k_max)
-    ax_top.set_xticks(k_ticks)
+    if k_ticks.size > 0:
+        ax_top = ax.twiny()
+        ax_top.set_xscale("log")
+        ax_top.set_xlim(k_min, k_max)
+        ax_top.set_xticks(k_ticks)
 
-    def _fmt_wl_from_k(k: float) -> str:
-        wl = 1.0 / k
-        if wl >= 1000:
-            return f"{wl / 1000:.0f}k"  # show whole thousands
-        if wl >= 100:
-            return f"{wl:.0f}"
-        if wl >= 10:
-            return f"{wl:.0f}"
-        if wl >= 1:
-            return f"{wl:.1f}"
-        return f"{wl:.2f}"
+        def _fmt_wl_from_k(k: float) -> str:
+            wl = 1.0 / k
+            if wl >= 1000:
+                return f"{wl / 1000:.0f}k"  # show whole thousands
+            if wl >= 100:
+                return f"{wl:.0f}"
+            if wl >= 10:
+                return f"{wl:.0f}"
+            if wl >= 1:
+                return f"{wl:.1f}"
+            return f"{wl:.2f}"
 
-    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-    ax_top.set_xlabel("Wavelength (km)")
-    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
+        ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+        ax_top.set_xlabel("Wavelength (km)")
+        ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
