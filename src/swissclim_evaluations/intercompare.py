@@ -582,6 +582,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     plt.tight_layout()
                     plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
+                else:
+                    c.warn("No lines were added to the plot; no output saved.")
                 plt.close(fig_r)
 
     # Collect NPZ patterns (new first, fallback to legacy)
