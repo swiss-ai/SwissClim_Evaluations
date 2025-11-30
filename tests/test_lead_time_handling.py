@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from swissclim_evaluations import data as data_mod
 from swissclim_evaluations.metrics.probabilistic import run_probabilistic
 
 
@@ -70,7 +69,7 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
     # Mimic CLI behavior (no standardization needed with strict data)
     # If we want to test single lead time, we should slice it manually here,
     # but let's test that it works with whatever data is passed.
-    
+
     out_root = tmp_path / "out"
     run_probabilistic(
         ds_target=ds_target,

@@ -123,12 +123,10 @@ def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
     for it in values:
         if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
             s, e = it[0], it[1]
-            ranges.append(
-                (
-                    str(s) if s else None,
-                    str(e) if e else None,
-                )
-            )
+            ranges.append((
+                str(s) if s else None,
+                str(e) if e else None,
+            ))
         elif isinstance(it, str) and ":" in it:
             s, e = it.split(":", 1)
             ranges.append((s or None, e or None))
@@ -576,13 +574,11 @@ def prepare_datasets(
     if "init_time" in ds_prediction.dims:
         # Ensure predictions have lead_time
         if "lead_time" not in ds_prediction.dims:
-            ds_prediction = ds_prediction.expand_dims(
-                {
-                    "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
-                        "timedelta64[ns]"
-                    )
-                }
-            )
+            ds_prediction = ds_prediction.expand_dims({
+                "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
+                    "timedelta64[ns]"
+                )
+            })
 
         # Build stacked predictions with valid_time
         ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
@@ -595,13 +591,11 @@ def prepare_datasets(
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
             if "lead_time" not in ds_target.dims:
-                ds_target = ds_target.expand_dims(
-                    {
-                        "lead_time": np.array(
-                            [np.timedelta64(0, "h")], dtype="timedelta64[h]"
-                        ).astype("timedelta64[ns]")
-                    }
-                )
+                ds_target = ds_target.expand_dims({
+                    "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
+                        "timedelta64[ns]"
+                    )
+                })
             nwp_init = ds_target["init_time"].astype("datetime64[ns]")
             nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
@@ -909,25 +903,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("maps", dt))
-            module_results.append(
-                {
-                    "name": "maps",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "maps",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover - robustness
             dt = time.time() - _t
             c.error(f"maps failed: {ex}")
-            module_results.append(
-                {
-                    "name": "maps",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "maps",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
@@ -953,25 +943,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("histograms", dt))
-            module_results.append(
-                {
-                    "name": "histograms",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "histograms",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"histograms failed: {ex}")
-            module_results.append(
-                {
-                    "name": "histograms",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "histograms",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -995,25 +981,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("wd_kde", dt))
-            module_results.append(
-                {
-                    "name": "wd_kde",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "wd_kde",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"wd_kde failed: {ex}")
-            module_results.append(
-                {
-                    "name": "wd_kde",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "wd_kde",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
@@ -1045,25 +1027,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("energy_spectra", dt))
-            module_results.append(
-                {
-                    "name": "energy_spectra",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"energy_spectra failed: {ex}")
-            module_results.append(
-                {
-                    "name": "energy_spectra",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "energy_spectra",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
@@ -1090,25 +1068,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("vertical_profiles", dt))
-            module_results.append(
-                {
-                    "name": "vertical_profiles",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"vertical_profiles failed: {ex}")
-            module_results.append(
-                {
-                    "name": "vertical_profiles",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "vertical_profiles",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -1141,25 +1115,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("deterministic", dt))
-            module_results.append(
-                {
-                    "name": "deterministic",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "deterministic",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"deterministic failed: {ex}")
-            module_results.append(
-                {
-                    "name": "deterministic",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "deterministic",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     if chapter_flags.get("ets"):
         from .metrics import ets as ets_mod
@@ -1182,25 +1152,21 @@ def run_selected(cfg: dict[str, Any]) -> None:
             )
             dt = time.time() - _t
             module_timings.append(("ets", dt))
-            module_results.append(
-                {
-                    "name": "ets",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
+            module_results.append({
+                "name": "ets",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
         except Exception as ex:  # pragma: no cover
             dt = time.time() - _t
             c.error(f"ets failed: {ex}")
-            module_results.append(
-                {
-                    "name": "ets",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            module_results.append({
+                "name": "ets",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
+            })
 
     # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
     if chapter_flags.get("probabilistic"):
@@ -1224,14 +1190,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 )
                 # Register skipped modules
                 for suffix in ("xarray", "plots", "wbx"):
-                    module_results.append(
-                        {
-                            "name": f"probabilistic:{suffix}",
-                            "status": "skipped",
-                            "seconds": 0.0,
-                            "error": "ensemble size <2",
-                        }
-                    )
+                    module_results.append({
+                        "name": f"probabilistic:{suffix}",
+                        "status": "skipped",
+                        "seconds": 0.0,
+                        "error": "ensemble size <2",
+                    })
                 # Continue to completion without executing probabilistic submodules
                 pass
             else:
@@ -1249,73 +1213,61 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     )
                     dt = time.time() - _t
                     module_timings.append(("probabilistic:xarray", dt))
-                    module_results.append(
-                        {
-                            "name": "probabilistic:xarray",
-                            "status": "success",
-                            "seconds": dt,
-                            "error": None,
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:xarray",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    })
                 except Exception as ex:  # pragma: no cover
                     dt = time.time() - _t
                     c.error(f"probabilistic:xarray failed: {ex}")
-                    module_results.append(
-                        {
-                            "name": "probabilistic:xarray",
-                            "status": "failed",
-                            "seconds": dt,
-                            "error": str(ex),
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:xarray",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    })
                 _t = time.time()
                 try:
                     plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
                     dt = time.time() - _t
                     module_timings.append(("probabilistic:plots", dt))
-                    module_results.append(
-                        {
-                            "name": "probabilistic:plots",
-                            "status": "success",
-                            "seconds": dt,
-                            "error": None,
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:plots",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    })
                 except Exception as ex:  # pragma: no cover
                     dt = time.time() - _t
                     c.error(f"probabilistic:plots failed: {ex}")
-                    module_results.append(
-                        {
-                            "name": "probabilistic:plots",
-                            "status": "failed",
-                            "seconds": dt,
-                            "error": str(ex),
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:plots",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    })
                 _t = time.time()
                 try:
                     run_probabilistic_wbx(ds_target, ds_prediction, out_root, plotting, cfg)
                     dt = time.time() - _t
                     module_timings.append(("probabilistic:wbx", dt))
-                    module_results.append(
-                        {
-                            "name": "probabilistic:wbx",
-                            "status": "success",
-                            "seconds": dt,
-                            "error": None,
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:wbx",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    })
                 except Exception as ex:  # pragma: no cover
                     dt = time.time() - _t
                     c.error(f"probabilistic:wbx failed: {ex}")
-                    module_results.append(
-                        {
-                            "name": "probabilistic:wbx",
-                            "status": "failed",
-                            "seconds": dt,
-                            "error": str(ex),
-                        }
-                    )
+                    module_results.append({
+                        "name": "probabilistic:wbx",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    })
         else:
             c.warn("No ensemble dimension → skipping probabilistic metrics (requires 'ensemble').")
     # Final completion message + timings summary + module results summary (pass/fail)
