@@ -13,21 +13,29 @@ import seaborn as sns
 import xarray as xr
 import yaml
 
+from .helpers import format_level_token
+
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
     from . import console as c
-except Exception:  # pragma: no cover
+except ImportError:
+    try:
+        from swissclim_evaluations import console as c  # type: ignore[no-redef]
+    except ImportError:
+        try:
+            import console as c  # type: ignore[no-redef]
+        except ImportError:
 
-    class _DummyConsole:
-        def __getattr__(self, _name):
-            def _noop(*args, **kwargs):
-                # Fallback to basic print when console is not available
-                if args:
-                    print(*args)
+            class _DummyConsole:
+                def __getattr__(self, _name):
+                    def _noop(*args, **kwargs):
+                        # Fallback to basic print when console is not available
+                        if args:
+                            print(*args)
 
-            return _noop
+                    return _noop
 
-    c = _DummyConsole()  # type: ignore
+            c = _DummyConsole()  # type: ignore
 
 
 def _scan_model_sets(
@@ -57,7 +65,17 @@ def _report_missing(
     union: set[str],
 ) -> None:
     """Pretty-print which basenames were missing per model for a module scan."""
+    if not union:
+        c.warn(f"[{module}] No files found in any model.")
+        return
+
+    intersection = set.intersection(*per_model) if per_model else set()
+
     rows: list[str] = []
+    rows.append(f"Total unique files: {len(union)}")
+    rows.append(f"Common files (in all models): {len(intersection)}")
+    rows.append("")  # Spacer
+
     for lab, files in zip(labels, per_model, strict=False):
         missing = sorted(union - files)
         rows.append(f"• {lab}: present={len(files)} missing={len(missing)}")
@@ -65,12 +83,45 @@ def _report_missing(
             preview = ", ".join(missing[:8])
             if len(missing) > 8:
                 preview += ", …"
-            rows.append(f"  ↳ missing examples: {preview}")
+            rows.append(f"  ↳ missing: {preview}")
+
+    rows.append("")
+    rows.append("(Missing counts are relative to the union of files found across all models)")
+
     c.panel(
-        "\n".join(rows) if rows else "No files discovered for this module.",
-        title=f"Intercompare — {module}: availability by model",
+        "\n".join(rows),
+        title=f"Input Availability — {module}",
         style="yellow",
     )
+
+
+def _report_checklist(module: str, results: dict[str, int]) -> None:
+    """Print a checklist panel for the module with counts."""
+    lines = []
+    for label, count in results.items():
+        if count > 0:
+            if "(Ignored)" in label:
+                lines.append(f"❌ {label} ({count})")
+            else:
+                lines.append(f"✅ {label} ({count})")
+        else:
+            clean_label = label.replace(" (Ignored)", "")
+            lines.append(f"❌ {clean_label} (Missing)")
+
+    c.panel(
+        "\n".join(lines),
+        title=f"Output Checklist — {module}",
+        style="blue",
+    )
+
+
+def _print_file_list(msg: str, items: list[str]) -> None:
+    """Print a list of files with a header message, using bullets on new lines."""
+    if not items:
+        return
+    # Format: "Header:\n  • item1\n  • item2"
+    bullet_list = "\n".join(f"  • {i}" for i in items)
+    c.info(f"{msg}:\n{bullet_list}")
 
 
 def _as_paths(items: Iterable[str]) -> list[Path]:
@@ -136,9 +187,7 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
     return sorted(common)
 
 
-def intercompare_vertical_profiles(
-    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
-) -> None:
+def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Overlay vertical profile NMAE (or legacy relative error) curves.
 
     For each variable present in all model folders we create per-lat-band figure
@@ -149,7 +198,7 @@ def intercompare_vertical_profiles(
     We therefore only plot model curves. If legacy rel_error files are used we
     label plots accordingly.
     """
-    # Availability across models for both new and legacy patterns
+    # Availability report
     per_model_vp: list[set[str]] = []
     for m in models:
         s: set[str] = set()
@@ -158,143 +207,185 @@ def intercompare_vertical_profiles(
         per_model_vp.append(s)
     union_vp = set().union(*per_model_vp) if per_model_vp else set()
     if union_vp:
-        if not quiet:
-            _report_missing("vertical_profiles", models, labels, per_model_vp, union_vp)
+        _report_missing("vertical_profiles", models, labels, per_model_vp, union_vp)
 
-        basenames = _find_vertical_profile_files(models)
-        if not basenames:
-            return
-        dst = _ensure_dir(out_root / "vertical_profiles")
-        color_palette = sns.color_palette("tab10", n_colors=len(models))
-        for base in basenames:
-            payloads = []
-            for m in models:
-                try:
-                    payloads.append(_load_npz(m / "vertical_profiles" / base))
-                except Exception:
-                    payloads.append({})
-            # Require at least two models with payload
-            valid_models = [
-                p
-                for p in payloads
-                if p.get("nmae_pos") is not None and p.get("nmae_neg") is not None
-            ]
-            if len(valid_models) < 2:
-                continue
-            key_neg = "nmae_neg"
-            key_pos = "nmae_pos"
-            if key_neg not in payloads[0] or key_pos not in payloads[0]:
-                continue
-            neg_arr0 = np.asarray(payloads[0][key_neg])
-            bands = neg_arr0.shape[0]
-            neg_lat_min = payloads[0].get("neg_lat_min")
-            neg_lat_max = payloads[0].get("neg_lat_max")
-            pos_lat_min = payloads[0].get("pos_lat_min")
-            pos_lat_max = payloads[0].get("pos_lat_max")
-            level_values = payloads[0].get("level")
-            if level_values is None:
-                continue
-            fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
-            for j in range(bands):
-                axn = axs[j, 0]
-                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    arr = np.asarray(pay.get(key_pos))
-                    if arr is None or arr.shape[0] <= j:
-                        continue
-                    axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
-                if pos_lat_min is not None and pos_lat_max is not None:
-                    axn.set_title(
-                        f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)"
-                    )
-                axn.invert_yaxis()
-                axn.set_xlabel("NMAE (%)")
-                axsou = axs[j, 1]
-                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    arr = np.asarray(pay.get(key_neg))
-                    if arr is None or arr.shape[0] <= j:
-                        continue
-                    axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
-                if neg_lat_min is not None and neg_lat_max is not None:
-                    axsou.set_title(
-                        f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)"
-                    )
-                axsou.invert_yaxis()
-                axsou.set_xlabel("NMAE (%)")
-            handles, labels_leg = axs[0, 0].get_legend_handles_labels()
-            if handles:
-                fig.legend(
-                    handles,
-                    labels_leg,
-                    loc="lower center",
-                    ncol=min(6, len(models)),
-                )
-            # Derive variable name from filename robustly
-            var = base[:-4] if base.endswith(".npz") else base
-            if var.startswith("vprof_nmae_"):
-                # vprof_nmae_<variable>_multi_combined[...]
-                tail = var[len("vprof_nmae_") :]
-                if "_multi_combined" in tail:
-                    var = tail.split("_multi_combined", 1)[0]
-                else:  # fallback: strip from first _combined
-                    var = tail.split("_combined", 1)[0]
-            else:
-                # legacy: <variable>_pl_nmae_combined[...]
-                var = var.replace("_pl_nmae_combined", "").replace("_pl_rel_error_combined", "")
-            fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
-            plt.tight_layout(rect=(0, 0.04, 1, 1))
-            out_png = dst / base.replace(".npz", "_compare.png")
-            # Save only if at least two models contributed lines
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            plt.close(fig)
-            rows = []
-            for lab, pay in zip(labels, payloads, strict=False):
-                neg_arr = np.asarray(pay.get(key_neg))
-                pos_arr = np.asarray(pay.get(key_pos))
-                if neg_arr is None or pos_arr is None:
+    results = {}
+    all_vprof = _common_files(models, "vertical_profiles/vprof_*.npz")
+    processed = _find_vertical_profile_files(models)
+
+    results["Vertical Profiles"] = len(processed)
+
+    processed_set = set(processed)
+    ignored_count = sum(1 for f in all_vprof if f not in processed_set)
+    if ignored_count > 0:
+        results["Vertical Profiles (Ignored)"] = ignored_count
+
+    _report_checklist("vertical_profiles", results)
+
+    basenames = _find_vertical_profile_files(models)
+    if not basenames:
+        c.warn("No common vertical profile files found. Skipping plots.")
+        return
+    _print_file_list(f"Found {len(basenames)} common vertical profile files", basenames)
+    dst = _ensure_dir(out_root / "vertical_profiles")
+    color_palette = sns.color_palette("tab10", n_colors=len(models))
+    for base in basenames:
+        payloads = []
+        for m in models:
+            try:
+                payloads.append(_load_npz(m / "vertical_profiles" / base))
+            except Exception:
+                payloads.append({})
+        # Require at least two models with payload
+        valid_models = [
+            p for p in payloads if p.get("nmae_pos") is not None and p.get("nmae_neg") is not None
+        ]
+        if len(valid_models) < 2:
+            continue
+        key_neg = "nmae_neg"
+        key_pos = "nmae_pos"
+        if key_neg not in payloads[0] or key_pos not in payloads[0]:
+            continue
+        neg_arr0 = np.asarray(payloads[0][key_neg])
+        bands = neg_arr0.shape[0]
+        neg_lat_min = payloads[0].get("neg_lat_min")
+        neg_lat_max = payloads[0].get("neg_lat_max")
+        pos_lat_min = payloads[0].get("pos_lat_min")
+        pos_lat_max = payloads[0].get("pos_lat_max")
+        level_values = payloads[0].get("level")
+        if level_values is None:
+            continue
+        fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
+        for j in range(bands):
+            axn = axs[j, 0]
+            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                arr = np.asarray(pay.get(key_pos))
+                if arr is None or arr.shape[0] <= j:
                     continue
-                for j in range(bands):
-                    with np.errstate(all="ignore"):
-                        val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                    rows.append(
-                        {
-                            "variable": var,
-                            "band_index": j,
-                            "hemisphere": "north",
-                            "model": lab,
-                            "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                            "metric": "NMAE",
-                        }
-                    )
-                    rows.append(
-                        {
-                            "variable": var,
-                            "band_index": j,
-                            "hemisphere": "south",
-                            "model": lab,
-                            "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                            "metric": "NMAE",
-                        }
-                    )
-            # Save summary only if we have at least two distinct models with values
-            if rows:
-                df = pd.DataFrame(rows)
-                if df["model"].nunique() >= 2:
-                    out_csv = dst / base.replace(".npz", "_summary.csv")
-                    df.to_csv(out_csv, index=False)
-                    if not quiet:
-                        c.success(f"Saved {out_csv}")
+                axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
+            if pos_lat_min is not None and pos_lat_max is not None:
+                axn.set_title(f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)")
+            axn.invert_yaxis()
+            axn.set_xlabel("NMAE (%)")
+            axsou = axs[j, 1]
+            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                arr = np.asarray(pay.get(key_neg))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
+            if neg_lat_min is not None and neg_lat_max is not None:
+                axsou.set_title(f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)")
+            axsou.invert_yaxis()
+            axsou.set_xlabel("NMAE (%)")
+        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+        if handles:
+            fig.legend(
+                handles,
+                labels_leg,
+                loc="lower center",
+                ncol=min(6, len(models)),
+            )
+        # Derive variable name from filename robustly
+        var = base[:-4] if base.endswith(".npz") else base
+        if var.startswith("vprof_nmae_"):
+            # vprof_nmae_<variable>_multi_combined[...]
+            tail = var[len("vprof_nmae_") :]
+            if "_multi_combined" in tail:
+                var = tail.split("_multi_combined", 1)[0]
+            else:  # fallback: strip from first _combined
+                var = tail.split("_combined", 1)[0]
+        else:
+            # legacy: <variable>_pl_nmae_combined[...]
+            var = var.replace("_pl_nmae_combined", "").replace("_pl_rel_error_combined", "")
+        fig.suptitle(f"Vertical Profiles — {var} (NMAE %)", y=1.02)
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
+        out_png = dst / base.replace(".npz", "_compare.png")
+        # Save only if at least two models contributed lines
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
+        plt.close(fig)
+        rows = []
+        for lab, pay in zip(labels, payloads, strict=False):
+            neg_arr = np.asarray(pay.get(key_neg))
+            pos_arr = np.asarray(pay.get(key_pos))
+            if neg_arr is None or pos_arr is None:
+                continue
+            for j in range(bands):
+                with np.errstate(all="ignore"):
+                    val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
+        # Save summary only if we have at least two distinct models with values
+        if rows:
+            df = pd.DataFrame(rows)
+            if df["model"].nunique() >= 2:
+                out_csv = dst / base.replace(".npz", "_summary.csv")
+                df.to_csv(out_csv, index=False)
+                c.success(f"Saved {out_csv.relative_to(out_root)}")
 
 
-def intercompare_energy_spectra(
-    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
-) -> None:
+def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root: Path) -> None:
     src_rel = Path("energy_spectra")
     dst = _ensure_dir(out_root / "energy_spectra")
 
     # Availability report
     per_model, inter, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
-    if not quiet:
-        _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
+    _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
+
+    results = {}
+    # Spectra: 1-to-1 mapping (each file -> one plot)
+    spectra_files = _common_files(models, "energy_spectra/*_spectrum*.npz")
+    results["Energy Spectra Plots"] = len(spectra_files)
+
+    # LSD: Many-to-1 mapping (Combined CSVs)
+    # We check for presence of inputs to determine if the Combined output
+    # will be generated (1) or not (0).
+    all_lsd = _common_files(models, "energy_spectra/lsd_*.csv")
+
+    avg_no_bands = [f for f in all_lsd if "averaged" in f and "bands" not in f]
+    lvl_no_bands = [f for f in all_lsd if "per_level" in f and "bands" not in f]
+    avg_bands = [f for f in all_lsd if "averaged" in f and "bands" in f]
+    lvl_bands = [f for f in all_lsd if "per_level" in f and "bands" in f]
+
+    # Ignored files (present but not currently processed)
+    init_time = [f for f in all_lsd if "init_time" in f]
+    lead_time = [f for f in all_lsd if "per_lead_time" in f]
+
+    def _count_2d_3d(files: list[str]) -> int:
+        has_2d = any("2d" in f for f in files)
+        has_3d = any("3d" in f for f in files)
+        # If neither explicit tag is found but files exist, assume 1 generic output
+        if not has_2d and not has_3d and files:
+            return 1
+        return (1 if has_2d else 0) + (1 if has_3d else 0)
+
+    results["LSD Averaged Metrics"] = _count_2d_3d(avg_no_bands)
+    results["LSD Banded Averaged Metrics"] = _count_2d_3d(avg_bands)
+    results["LSD Per-Level Metrics"] = _count_2d_3d(lvl_no_bands)
+    results["LSD Banded Per-Level Metrics"] = _count_2d_3d(lvl_bands)
+
+    results["LSD Init Time Metrics (Ignored)"] = len(init_time)
+    results["LSD Per Lead Time Metrics (Ignored)"] = len(lead_time)
+
+    _report_checklist("energy_spectra", results)
 
     # Helper to plot a group of NPZ with baseline
     def _plot_group(basenames: list[str]) -> None:
@@ -422,6 +513,7 @@ def intercompare_energy_spectra(
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
     # Collect NPZ patterns (new first, fallback to legacy)
@@ -433,18 +525,31 @@ def intercompare_energy_spectra(
     # Spectrum files in current schema include an ensemble token after '_spectrum',
     # e.g. '..._spectrum_ensnone.npz'.
     surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
+    if not surf:
+        c.warn("No common energy spectra files found. Skipping plots.")
     if surf:
+        _print_file_list(f"Found {len(surf)} common energy spectra files", surf)
+
+    lsd_csv = _common_files(models, str(src_rel / "lsd_*.csv"))
+    if lsd_csv:
+        _print_file_list(f"Found {len(lsd_csv)} common LSD CSV files", lsd_csv)
         # Process all files together; _plot_group now determines surface/level per file
         _plot_group(surf)
 
     # Combine LSD summary across models
-    lsd_rows: list[pd.DataFrame] = []
-    lsd_rows_lvl: list[pd.DataFrame] = []
-    lsd_banded_rows: list[pd.DataFrame] = []
-    lsd_banded_rows_lvl: list[pd.DataFrame] = []
+    # We separate 2D and 3D metrics to avoid confusing combined outputs
+    lsd_2d_rows: list[pd.DataFrame] = []
+    lsd_3d_rows: list[pd.DataFrame] = []
+    lsd_2d_rows_lvl: list[pd.DataFrame] = []
+    lsd_3d_rows_lvl: list[pd.DataFrame] = []
+
+    lsd_banded_2d_rows: list[pd.DataFrame] = []
+    lsd_banded_3d_rows: list[pd.DataFrame] = []
+    lsd_banded_2d_rows_lvl: list[pd.DataFrame] = []
+    lsd_banded_3d_rows_lvl: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        # 2D & 3D averaged
+        # Averaged (2D & 3D)
         for f in (m / src_rel).glob("lsd_*metrics_*averaged*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -454,12 +559,20 @@ def intercompare_energy_spectra(
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
             df["source_file"] = f.name
-            if "bands" in f.name:
-                lsd_banded_rows.append(df)
-            else:
-                lsd_rows.append(df)
 
-        # 3D per-level
+            is_3d = "3d" in f.name
+            if "bands" in f.name:
+                if is_3d:
+                    lsd_banded_3d_rows.append(df)
+                else:
+                    lsd_banded_2d_rows.append(df)
+            else:
+                if is_3d:
+                    lsd_3d_rows.append(df)
+                else:
+                    lsd_2d_rows.append(df)
+
+        # Per-level (2D & 3D)
         for f in (m / src_rel).glob("lsd_*metrics_*per_level*.csv"):
             try:
                 df = pd.read_csv(f)
@@ -469,42 +582,43 @@ def intercompare_energy_spectra(
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
             df["source_file"] = f.name
+
+            is_3d = "3d" in f.name
             if "bands" in f.name:
-                lsd_banded_rows_lvl.append(df)
+                if is_3d:
+                    lsd_banded_3d_rows_lvl.append(df)
+                else:
+                    lsd_banded_2d_rows_lvl.append(df)
             else:
-                lsd_rows_lvl.append(df)
+                if is_3d:
+                    lsd_3d_rows_lvl.append(df)
+                else:
+                    lsd_2d_rows_lvl.append(df)
 
-    if lsd_rows:
-        dfc = pd.concat(lsd_rows, ignore_index=True)
+    # Helper to save combined CSVs
+    def _save_combined(rows: list[pd.DataFrame], name: str) -> None:
+        if not rows:
+            return
+        dfc = pd.concat(rows, ignore_index=True)
         if dfc["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_averaged_combined.csv"
+            out_csv = dst / name
             dfc.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    if lsd_rows_lvl:
-        dfc = pd.concat(lsd_rows_lvl, ignore_index=True)
-        if dfc["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_per_level_combined.csv"
-            dfc.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+    _save_combined(lsd_2d_rows, "lsd_2d_metrics_averaged_combined.csv")
+    _save_combined(lsd_3d_rows, "lsd_3d_metrics_averaged_combined.csv")
+    # Fallback for legacy files without 2d/3d distinction?
+    # If neither 2d nor 3d is in name, they went to 2d list (is_3d=False).
+    # We might want to rename the output if it's generic, but explicit is better.
 
-    if lsd_banded_rows:
-        dfcb = pd.concat(lsd_banded_rows, ignore_index=True)
-        if dfcb["model"].nunique() >= 2:
-            out_csv = dst / "lsd_bands_metrics_averaged_combined.csv"
-            dfcb.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+    _save_combined(lsd_2d_rows_lvl, "lsd_2d_metrics_per_level_combined.csv")
+    _save_combined(lsd_3d_rows_lvl, "lsd_3d_metrics_per_level_combined.csv")
 
-    if lsd_banded_rows_lvl:
-        dfcb = pd.concat(lsd_banded_rows_lvl, ignore_index=True)
-        if dfcb["model"].nunique() >= 2:
-            out_csv = dst / "lsd_bands_metrics_per_level_combined.csv"
-            dfcb.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+    _save_combined(lsd_banded_2d_rows, "lsd_bands_2d_metrics_averaged_combined.csv")
+    _save_combined(lsd_banded_3d_rows, "lsd_bands_3d_metrics_averaged_combined.csv")
+
+    _save_combined(lsd_banded_2d_rows_lvl, "lsd_bands_2d_metrics_per_level_combined.csv")
+    _save_combined(lsd_banded_3d_rows_lvl, "lsd_bands_3d_metrics_per_level_combined.csv")
 
 
 def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
@@ -519,122 +633,206 @@ def intercompare_histograms(
     labels: list[str],
     out_root: Path,
     max_models_in_legend: int = 12,
-    *,
-    quiet: bool = False,
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-    # Availability report (always display)
+    # Availability report
     per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
-    if not quiet:
-        _report_missing("histograms", models, labels, per_model, uni)
+    _report_missing("histograms", models, labels, per_model, uni)
+
+    results = {}
+    # Plots: 1-to-1
+    plots = _common_files(models, "histograms/hist_*latbands_combined*.npz")
+    results["Histograms"] = len(plots)
+
+    # Check for ignored
+    all_hist = _common_files(models, "histograms/hist_*.npz")
+    ignored = [f for f in all_hist if "latbands_combined" not in f]
+    if ignored:
+        results["Other Histograms (Ignored)"] = len(ignored)
+
+    _report_checklist("histograms", results)
+
     common = _common_files(models, str(src_rel / "hist_*latbands_combined*.npz"))
     if not common:
+        c.warn("No common histogram files found. Skipping plots.")
         return
+    _print_file_list(f"Found {len(common)} common histogram files", common)
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
-    for base in common:
+
+    # --- Global Histograms ---
+    per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
+
+    for base in common_g:
         payloads = [_load_npz(m / src_rel / base) for m in models]
-        # Layout: 9 rows x 2 columns (same as original)
-        lat_neg_min = payloads[0].get("neg_lat_min")
-        lat_neg_max = payloads[0].get("neg_lat_max")
-        lat_pos_min = payloads[0].get("pos_lat_min")
-        lat_pos_max = payloads[0].get("pos_lat_max")
-        n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
-        fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-        # Right column: southern hemisphere bands
-        for j in range(n_rows):
-            ax = axs[j, 1]
-            # Baseline DS from first payload
-            ds_ml_pairs = payloads[0]["neg_counts"][j]
-            # Each element is (counts_ds, counts_ml)
-            counts_ds = ds_ml_pairs[0]
-            bins_ds = payloads[0]["neg_bins"][j]
-            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-            # Plot each model ML
-            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                counts_ml = pay["neg_counts"][j][1]
-                bins_ml = pay["neg_bins"][j]
-                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = (
-                float(lat_neg_min[j])
-                if isinstance(lat_neg_min, (list | np.ndarray))
-                else float("nan")
-            )
-            lat_max = (
-                float(lat_neg_max[j])
-                if isinstance(lat_neg_max, (list | np.ndarray))
-                else float("nan")
-            )
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+        # Ground Truth (from first model)
+        counts_ds = payloads[0]["counts_ds"]
+        bins_ds = payloads[0]["bins"]
+        _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
 
-        # Left column: northern hemisphere bands
-        for j in range(n_rows):
-            ax = axs[j, 0]
-            ds_ml_pairs = payloads[0]["pos_counts"][j]
-            counts_ds = ds_ml_pairs[0]
-            bins_ds = payloads[0]["pos_bins"][j]
-            _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                counts_ml = pay["pos_counts"][j][1]
-                bins_ml = pay["pos_bins"][j]
-                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
-            lat_min = (
-                float(lat_pos_min[j])
-                if isinstance(lat_pos_min, (list | np.ndarray))
-                else float("nan")
-            )
-            lat_max = (
-                float(lat_pos_max[j])
-                if isinstance(lat_pos_max, (list | np.ndarray))
-                else float("nan")
-            )
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+        # Models
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+            counts_ml = pay["counts_ml"]
+            bins_ml = pay["bins"]
+            _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
 
-        # Legends: add a single shared legend
-        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles[: 1 + len(models)],
-                labels_leg[: 1 + len(models)],
-                loc="lower center",
-                ncol=min(6, 1 + len(models)),
-            )
-        plt.tight_layout(rect=(0, 0.05, 1, 1))
-        # Derive a variable/level label for the figure title.
-        # Filename schema example: hist_temperature_850_latbands_combined_ensnone.npz
-        # We strip leading 'hist_' and everything from the first '_latbands_combined' onwards.
-        stem = base[:-4] if base.endswith(".npz") else base
-        var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
-        # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
-        var_part_no_ens = (
-            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
-        )  # SIM108
-        # Remove suffix beginning with '_latbands_combined'
-        if "_latbands_combined" in var_part_no_ens:
-            var_part_no_ens = var_part_no_ens.split("_latbands_combined")[0]
-        var = var_part_no_ens
-        fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        if not quiet:
-            c.success(f"Saved {out_png}")
+        ax.set_title(f"Global Histogram - {base.replace('.npz', '')}")
+        ax.legend()
+
+        out_png = dst / base.replace(".npz", ".png")
+        fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
+        print(f"[intercompare] saved {out_png}")
+
+    # --- Latitude Bands Histograms ---
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
+    # Filter out global histograms from this scan
+    per_model = [{f for f in s if "global" not in f} for s in per_model]
+    uni = {f for f in uni if "global" not in f}
+
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
+    common = [f for f in common if "global" not in f]
+
+    if common:
+        for base in common:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
+            # Layout: 9 rows x 2 columns (same as original)
+            lat_neg_min = payloads[0].get("neg_lat_min")
+            lat_neg_max = payloads[0].get("neg_lat_max")
+            lat_pos_min = payloads[0].get("pos_lat_min")
+            lat_pos_max = payloads[0].get("pos_lat_max")
+            n_rows = len(lat_neg_min) if isinstance(lat_neg_min, (list | np.ndarray)) else 0
+            fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
+
+            # Right column: southern hemisphere bands
+            for j in range(n_rows):
+                ax = axs[j, 1]
+                # Baseline DS from first payload
+                ds_ml_pairs = payloads[0]["neg_counts"][j]
+                # Each element is (counts_ds, counts_ml)
+                counts_ds = ds_ml_pairs[0]
+                bins_ds = payloads[0]["neg_bins"][j]
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                # Plot each model ML
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    counts_ml = pay["neg_counts"][j][1]
+                    bins_ml = pay["neg_bins"][j]
+                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                lat_min = (
+                    float(lat_neg_min[j])
+                    if isinstance(lat_neg_min, (list | np.ndarray))
+                    else float("nan")
+                )
+                lat_max = (
+                    float(lat_neg_max[j])
+                    if isinstance(lat_neg_max, (list | np.ndarray))
+                    else float("nan")
+                )
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+
+            # Left column: northern hemisphere bands
+            for j in range(n_rows):
+                ax = axs[j, 0]
+                ds_ml_pairs = payloads[0]["pos_counts"][j]
+                counts_ds = ds_ml_pairs[0]
+                bins_ds = payloads[0]["pos_bins"][j]
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    counts_ml = pay["pos_counts"][j][1]
+                    bins_ml = pay["pos_bins"][j]
+                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                lat_min = (
+                    float(lat_pos_min[j])
+                    if isinstance(lat_pos_min, (list | np.ndarray))
+                    else float("nan")
+                )
+                lat_max = (
+                    float(lat_pos_max[j])
+                    if isinstance(lat_pos_max, (list | np.ndarray))
+                    else float("nan")
+                )
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+
+            # Legends: add a single shared legend
+            handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+            if handles:
+                fig.legend(
+                    handles[: 1 + len(models)],
+                    labels_leg[: 1 + len(models)],
+                    loc="lower center",
+                    ncol=min(6, 1 + len(models)),
+                )
+            plt.tight_layout(rect=(0, 0.05, 1, 1))
+            # Derive a variable/level label for the figure title.
+            # Filename schema example: hist_temperature_850_latbands_ensnone.npz
+            # We strip leading 'hist_' and everything from the first '_latbands' onwards.
+            stem = base[:-4] if base.endswith(".npz") else base
+            var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
+            # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
+            var_part_no_ens = (
+                var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
+            )  # SIM108
+            # Remove suffix beginning with '_latbands'
+            if "_latbands" in var_part_no_ens:
+                var_part_no_ens = var_part_no_ens.split("_latbands")[0]
+            var = var_part_no_ens
+            fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png}")
+            plt.close(fig)
 
 
-def intercompare_wd_kde(
-    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
-) -> None:
+def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -> None:
     src_rel = Path("wd_kde")
     dst = _ensure_dir(out_root / "wd_kde")
-    # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*combined*.npz")
-    if not quiet:
-        _report_missing("wd_kde", models, labels, per_model, uni)
-    common = _common_files(models, str(src_rel / "wd_kde_*combined*.npz"))
-    if not common:
-        return
     colors = sns.color_palette("tab10", n_colors=len(models))
+
+    # --- Global KDE ---
+    per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
+    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
+
+    for base in common_g:
+        payloads = [_load_npz(m / src_rel / base) for m in models]
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+
+        # Ground Truth (from first model)
+        x_ds = payloads[0]["x"]
+        kde_ds = payloads[0]["kde_ds"]
+        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+
+        # Models
+        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+            x_ml = pay["x"]
+            kde_ml = pay["kde_ml"]
+            ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
+
+        ax.set_title(f"Global Normalized KDE - {base.replace('.npz', '')}")
+        ax.legend()
+
+        out_png = dst / base.replace(".npz", "_compare.png")
+        fig.savefig(out_png, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[intercompare] saved {out_png}")
+
+    # --- Latitude Bands KDE ---
+    # Availability report (always display)
+    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
+    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
+    if not common:
+        c.warn("No common WD KDE files found. Skipping plots.")
+        return
+
+    # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Assume each payload carries arrays of object dtype per band
@@ -691,13 +889,14 @@ def intercompare_wd_kde(
         var_part_no_ens = (
             var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
         )  # SIM108
-        # Remove '_combined' suffix (may appear with preceding level token)
-        if var_part_no_ens.endswith("_combined"):
-            var_part_no_ens = var_part_no_ens[: -len("_combined")]
+        # Remove '_latbands' suffix
+        if var_part_no_ens.endswith("_latbands"):
+            var_part_no_ens = var_part_no_ens[: -len("_latbands")]
         var = var_part_no_ens
         fig.suptitle(f"Normalized KDE by Latitude Bands — {var}", y=1.02)
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
         plt.close(fig)
 
     # Combine averaged Wasserstein summary across models if present
@@ -708,8 +907,13 @@ def intercompare_wd_kde(
                 df = pd.read_csv(f)
             except Exception:
                 continue
-            if df.empty or "wasserstein_mean" not in df.columns:
+            if df.empty or (
+                "wasserstein_mean" not in df.columns and "wasserstein" not in df.columns
+            ):
                 continue
+            # Normalize column name
+            if "wasserstein" in df.columns and "wasserstein_mean" not in df.columns:
+                df = df.rename(columns={"wasserstein": "wasserstein_mean"})
             df.insert(0, "model", lab)
             df["source_file"] = f.name
             frames_w.append(df)
@@ -718,8 +922,7 @@ def intercompare_wd_kde(
         if combined["model"].nunique() >= 2:
             out_csv = dst / "wd_kde_wasserstein_averaged_combined.csv"
             combined.to_csv(out_csv, index=False)
-            if not quiet:
-                print(f"[intercompare] saved {out_csv}")
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
 
 
 def _parse_map_filename(name: str) -> str:
@@ -735,19 +938,32 @@ def intercompare_maps(
     labels: list[str],
     out_root: Path,
     max_panels: int = 4,
-    *,
-    quiet: bool = False,
 ) -> None:
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
-    # Availability report (always display)
+    # Availability report
     per_model, inter, uni = _scan_model_sets(models, "maps/map_*.npz")
-    if not quiet:
-        _report_missing("maps", models, labels, per_model, uni)
+    _report_missing("maps", models, labels, per_model, uni)
+
+    results = {}
+    maps = _common_files(models, "maps/map_*.npz")
+
+    # Maps are 1-to-1, but limited by max_panels
+    processed_count = min(len(maps), max_panels)
+    ignored_count = max(0, len(maps) - max_panels)
+
+    results["Maps"] = processed_count
+    if ignored_count > 0:
+        results["Maps (Ignored)"] = ignored_count
+
+    _report_checklist("maps", results)
+
     # New schema: map_<var>[ _<level>][ _init...][ _lead...]_ens*.npz
     common = _common_files(models, str(src_rel / "map_*.npz"))
     if not common:
+        c.warn("No common map files found. Skipping plots.")
         return
+    _print_file_list(f"Found {len(common)} common map files", common)
     # Limit to first N common map artifacts to avoid huge outputs
     for base in common[:max_panels]:
         key = _parse_map_filename(base)
@@ -787,6 +1003,7 @@ def intercompare_maps(
         ):
             c.warn(f"maps: shape mismatch for {key}; skipping")
             continue
+        level_vals = payloads[0].get("level")
         for lvl in range(n_levels):
             nwp_slice = nwp[lvl] if n_levels > 1 else nwp
             ml_slices = [m[lvl] if n_levels > 1 else m for m in mls if isinstance(m, np.ndarray)]
@@ -821,11 +1038,12 @@ def intercompare_maps(
             if var_name:
                 title_base = f"{var_name} — {title_base}"
             if n_levels > 1:
-                level_vals = payloads[0].get("level")
                 if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
-                    title_base += f" (level {int(level_vals[lvl])})"
+                    level_token = format_level_token(level_vals[lvl])
+                    title_base += f" (level {level_token})"
                 else:
-                    title_base += f" (level {lvl})"
+                    title_token = format_level_token(lvl)
+                    title_base += f" (level {title_token})"
             axes[0].set_title(title_base)
             for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
                 ax.pcolormesh(
@@ -850,15 +1068,83 @@ def intercompare_maps(
             with contextlib.suppress(Exception):
                 cbar.set_label(str(units) if units else "Value")
             # No tight_layout here; constrained_layout handles spacing
-            suffix = f"_level{lvl}" if n_levels > 1 else ""
+            suffix = ""
+            if n_levels > 1:
+                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
+                    suffix = f"_level{format_level_token(level_vals[lvl])}"
+                else:
+                    suffix = f"_level{format_level_token(lvl)}"
             out_png = dst / (key + suffix + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
 
-def intercompare_metrics_csv(
-    models: list[Path], labels: list[str], out_root: Path, *, quiet: bool = False
+def intercompare_deterministic_metrics(
+    models: list[Path], labels: list[str], out_root: Path
 ) -> None:
+    # Availability report
+    per_model, inter, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
+    _report_missing("deterministic_metrics", models, labels, per_model, uni)
+
+    results = {}
+    all_det = _common_files(models, "deterministic/deterministic_metrics*.csv")
+
+    avg = [f for f in all_det if "averaged" in f]
+    lvl = [f for f in all_det if "per_level" in f and "standardized" not in f]
+    std = [f for f in all_det if "standardized" in f and "per_level" not in f]
+    std_lvl = [f for f in all_det if "standardized" in f and "per_level" in f]
+
+    results["Deterministic Averaged"] = 1 if avg else 0
+    results["Deterministic Per Level"] = 1 if lvl else 0
+    results["Deterministic Standardized"] = 1 if std else 0
+    results["Deterministic Standardized Per Level"] = 1 if std_lvl else 0
+
+    # Count potential plots by inspecting the first averaged file
+    plot_count = 0
+    if avg:
+        try:
+            # Read just the header of the first available file
+            first_file = models[0] / "deterministic" / avg[0]
+            if first_file.is_file():
+                with open(first_file) as fh:
+                    header = fh.readline()
+                cols = [col.strip() for col in header.split(",")]
+                # Exclude known non-metric columns
+                excluded = {
+                    "variable",
+                    "model",
+                    "level",
+                    "lead_time",
+                    "init_time",
+                    "valid_time",
+                    "Unnamed: 0",
+                    "source_file",
+                    "member",
+                    "threshold",
+                    "",
+                }
+                plot_count = sum(1 for col in cols if col not in excluded)
+        except Exception:
+            # If the file is missing or malformed, just skip plot counting.
+            pass
+    results["Deterministic Plots"] = plot_count
+
+    # Ignored
+    init_time = [f for f in all_det if "init_time" in f]
+    lead_time = [f for f in all_det if "per_lead_time" in f]
+    if init_time:
+        results["Deterministic Init Time (Ignored)"] = len(init_time)
+    if lead_time:
+        results["Deterministic Lead Time (Ignored)"] = len(lead_time)
+
+    _report_checklist("deterministic_metrics", results)
+
+    # Report common files found (to match panel counts)
+    det_csv = _common_files(models, "deterministic/deterministic_metrics*.csv")
+    if det_csv:
+        _print_file_list(f"Found {len(det_csv)} common deterministic metric files", det_csv)
+
     # Deterministic metrics
     dst_det = _ensure_dir(out_root / "deterministic")
     frames: list[pd.DataFrame] = []
@@ -869,18 +1155,18 @@ def intercompare_metrics_csv(
         # Prefer exact base (no averaged/time tokens) for primary combined table
         f = next(
             (
-                c
-                for c in candidates
-                if "per_level" not in c.name
+                cand
+                for cand in candidates
+                if "per_level" not in cand.name
                 and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
+                    cand.name.endswith("ensmean.csv")
+                    or cand.name.endswith("ensnone.csv")
+                    or cand.name.endswith("enspooled.csv")
+                    or cand.name.endswith("ensprob.csv")
                     or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                        "ens" in cand.name
+                        and cand.name.split("_")[-1].startswith("ens")
+                        and cand.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
                     )
                 )
             ),
@@ -900,18 +1186,18 @@ def intercompare_metrics_csv(
             frames.append(df)
         fstd = next(
             (
-                c
-                for c in (m / "deterministic").glob("deterministic_metrics_standardized*.csv")
-                if "per_level" not in c.name
+                cand
+                for cand in (m / "deterministic").glob("deterministic_metrics_standardized*.csv")
+                if "per_level" not in cand.name
                 and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
+                    cand.name.endswith("ensmean.csv")
+                    or cand.name.endswith("ensnone.csv")
+                    or cand.name.endswith("enspooled.csv")
+                    or cand.name.endswith("ensprob.csv")
                     or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                        "ens" in cand.name
+                        and cand.name.split("_")[-1].startswith("ens")
+                        and cand.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
                     )
                 )
             ),
@@ -936,18 +1222,18 @@ def intercompare_metrics_csv(
         candidates_lvl = sorted((m / "deterministic").glob("deterministic_metrics*per_level*.csv"))
         f_lvl = next(
             (
-                c
-                for c in candidates_lvl
-                if "standardized" not in c.name
+                cand
+                for cand in candidates_lvl
+                if "standardized" not in cand.name
                 and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
+                    cand.name.endswith("ensmean.csv")
+                    or cand.name.endswith("ensnone.csv")
+                    or cand.name.endswith("enspooled.csv")
+                    or cand.name.endswith("ensprob.csv")
                     or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                        "ens" in cand.name
+                        and cand.name.split("_")[-1].startswith("ens")
+                        and cand.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
                     )
                 )
             ),
@@ -967,18 +1253,18 @@ def intercompare_metrics_csv(
         # Standardized per-level
         f_lvl_std = next(
             (
-                c
-                for c in candidates_lvl
-                if "standardized" in c.name
+                cand
+                for cand in candidates_lvl
+                if "standardized" in cand.name
                 and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
+                    cand.name.endswith("ensmean.csv")
+                    or cand.name.endswith("ensnone.csv")
+                    or cand.name.endswith("enspooled.csv")
+                    or cand.name.endswith("ensprob.csv")
                     or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
+                        "ens" in cand.name
+                        and cand.name.split("_")[-1].startswith("ens")
+                        and cand.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
                     )
                 )
             ),
@@ -999,22 +1285,39 @@ def intercompare_metrics_csv(
         comb = pd.concat(frames, ignore_index=True)
         if comb["model"].nunique() >= 2:
             comb.to_csv(dst_det / "metrics_combined.csv", index=False)
+            c.success(f"Saved {(dst_det / 'metrics_combined.csv').relative_to(out_root)}")
 
     if frames_lvl:
         comb_lvl = pd.concat(frames_lvl, ignore_index=True)
         if comb_lvl["model"].nunique() >= 2:
             comb_lvl.to_csv(dst_det / "metrics_per_level_combined.csv", index=False)
+            c.success(f"Saved {(dst_det / 'metrics_per_level_combined.csv').relative_to(out_root)}")
 
     if frames_lvl_std:
         comb_lvl_std = pd.concat(frames_lvl_std, ignore_index=True)
         if comb_lvl_std["model"].nunique() >= 2:
-            comb_lvl_std.to_csv(
-                dst_det / "metrics_standardized_per_level_combined.csv", index=False
-            )
+            out_path = dst_det / "metrics_standardized_per_level_combined.csv"
+            comb_lvl_std.to_csv(out_path, index=False)
+            c.success(f"Saved {out_path.relative_to(out_root)}")
 
     if frames:
         # Optional: simple bar plots; coerce to numeric and handle all-NaN gracefully
-        for metric in ("RMSE", "MAE", "FSS"):
+        excluded = {
+            "variable",
+            "model",
+            "level",
+            "lead_time",
+            "init_time",
+            "valid_time",
+            "Unnamed: 0",
+            "source_file",
+            "member",
+            "threshold",
+            "",
+        }
+        metric_cols = [c for c in comb.columns if c not in excluded]
+
+        for metric in metric_cols:
             if metric in comb.columns:
                 tmp = comb.copy()
                 tmp[metric] = pd.to_numeric(tmp[metric], errors="coerce")
@@ -1037,105 +1340,114 @@ def intercompare_metrics_csv(
                     plt.tight_layout()
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     plt.close(fig)
-                    if not quiet:
-                        print(f"[intercompare] saved placeholder {out_png}")
+                    c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
                 ax = pivot.plot(kind="bar", figsize=(12, 6))
                 ax.set_title(f"{metric} by variable and model")
                 ax.set_ylabel(metric)
                 plt.tight_layout()
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close()
 
     if frames_std:
         combs = pd.concat(frames_std, ignore_index=True)
         if combs["model"].nunique() >= 2:
             combs.to_csv(dst_det / "metrics_standardized_combined.csv", index=False)
+            c.success(
+                f"Saved {(dst_det / 'metrics_standardized_combined.csv').relative_to(out_root)}"
+            )
 
-    # ETS metrics
+
+def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Path) -> None:
+    # Availability report
+    results = {}
+    all_ets = _common_files(models, "ets/ets_metrics*.csv")
+
+    avg = [f for f in all_ets if "averaged" in f]
+    lvl = [f for f in all_ets if "per_level" in f]
+
+    results["ETS Averaged"] = 1 if avg else 0
+    results["ETS Per Level"] = 1 if lvl else 0
+
+    if len(avg) > 1:
+        results["ETS Averaged (Ignored)"] = len(avg) - 1
+    if len(lvl) > 1:
+        results["ETS Per Level (Ignored)"] = len(lvl) - 1
+
+    # Ignored
+    init_time = [f for f in all_ets if "init_time" in f]
+    lead_time = [f for f in all_ets if "per_lead_time" in f]
+    if init_time:
+        results["ETS Init Time (Ignored)"] = len(init_time)
+    if lead_time:
+        results["ETS Lead Time (Ignored)"] = len(lead_time)
+
+    _report_checklist("ets_metrics", results)
+
+    # Report common files found
+    ets_csv = _common_files(models, "ets/ets_metrics*.csv")
+    if ets_csv:
+        _print_file_list(f"Found {len(ets_csv)} common ETS metric files", ets_csv)
+
+    # Actually process and save ETS metrics (was missing!)
     dst_ets = _ensure_dir(out_root / "ets")
-    frames_ets: list[pd.DataFrame] = []
-    frames_ets_lvl: list[pd.DataFrame] = []
+    frames: list[pd.DataFrame] = []
+    frames_lvl: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        # Regular ETS
-        candidates_ets = sorted((m / "ets").glob("ets_metrics*.csv"))
-        f_ets = next(
+        # Averaged
+        candidates = sorted((m / "ets").glob("ets_metrics*.csv"))
+        f = next(
             (
                 c
-                for c in candidates_ets
+                for c in candidates
                 if "per_level" not in c.name
-                and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
-                    or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
-                    )
-                )
+                and "init_time" not in c.name
+                and "per_lead_time" not in c.name
             ),
             None,
         )
-        if f_ets and f_ets.is_file():
-            df = pd.read_csv(f_ets)
-            if "variable" not in df.columns:
-                if "Unnamed: 0" in df.columns:
+        # Fallback: try to find one that is averaged but might have init/lead tokens
+        # if that's the only one
+        if f is None:
+            f = next((cand for cand in candidates if "averaged" in cand.name), None)
+
+        if f is not None and f.is_file():
+            try:
+                df = pd.read_csv(f)
+                if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                     df = df.rename(columns={"Unnamed: 0": "variable"})
-                else:
-                    first = df.columns[0]
-                    df = df.rename(columns={first: "variable"})
-            df.insert(0, "model", lab)
-            frames_ets.append(df)
+                df.insert(0, "model", lab)
+                frames.append(df)
+            except Exception:
+                pass
 
-        # Per-level ETS
-        f_ets_lvl = next(
-            (
-                c
-                for c in candidates_ets
-                if "per_level" in c.name
-                and (
-                    c.name.endswith("ensmean.csv")
-                    or c.name.endswith("ensnone.csv")
-                    or c.name.endswith("enspooled.csv")
-                    or c.name.endswith("ensprob.csv")
-                    or (
-                        "ens" in c.name
-                        and c.name.split("_")[-1].startswith("ens")
-                        and c.name.split("_")[-1].replace("ens", "").split(".")[0].isdigit()
-                    )
-                )
-            ),
-            None,
-        )
-        if f_ets_lvl and f_ets_lvl.is_file():
-            df = pd.read_csv(f_ets_lvl)
-            if "variable" not in df.columns:
-                if "Unnamed: 0" in df.columns:
+        # Per Level
+        f_lvl = next((c for c in candidates if "per_level" in c.name), None)
+        if f_lvl is not None and f_lvl.is_file():
+            try:
+                df = pd.read_csv(f_lvl)
+                if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                     df = df.rename(columns={"Unnamed: 0": "variable"})
-                else:
-                    first = df.columns[0]
-                    df = df.rename(columns={first: "variable"})
-            df.insert(0, "model", lab)
-            frames_ets_lvl.append(df)
+                df.insert(0, "model", lab)
+                frames_lvl.append(df)
+            except Exception:
+                pass
 
-    if frames_ets:
-        comb_ets = pd.concat(frames_ets, ignore_index=True)
-        if comb_ets["model"].nunique() >= 2:
-            comb_ets.to_csv(dst_ets / "ets_metrics_combined.csv", index=False)
+    if frames:
+        comb = pd.concat(frames, ignore_index=True)
+        if comb["model"].nunique() >= 2:
+            out_csv = dst_ets / "ets_metrics_combined.csv"
+            comb.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    if frames_ets_lvl:
-        comb_ets_lvl = pd.concat(frames_ets_lvl, ignore_index=True)
-        if comb_ets_lvl["model"].nunique() >= 2:
-            comb_ets_lvl.to_csv(dst_ets / "ets_metrics_per_level_combined.csv", index=False)
-
-
-def _plot_step_from_hist(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
-    counts = np.asarray(counts, dtype=float)
-    edges = np.asarray(edges, dtype=float)
-    ax.stairs(counts, edges, label=label, color=color)
+    if frames_lvl:
+        comb_lvl = pd.concat(frames_lvl, ignore_index=True)
+        if comb_lvl["model"].nunique() >= 2:
+            out_csv = dst_ets / "ets_metrics_per_level_combined.csv"
+            comb_lvl.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
 
 
 def intercompare_probabilistic(
@@ -1143,8 +1455,6 @@ def intercompare_probabilistic(
     labels: list[str],
     out_root: Path,
     max_crps_map_panels: int = 4,
-    *,
-    quiet: bool = False,
 ) -> None:
     src_rel = Path("probabilistic")
     dst = _ensure_dir(out_root / "probabilistic")
@@ -1162,8 +1472,45 @@ def intercompare_probabilistic(
         union_total |= uni
         for i, s in enumerate(per_model):
             per_model_accum[i] |= s
-    if not quiet:
-        _report_missing("probabilistic", models, labels, per_model_accum, union_total)
+    _report_missing("probabilistic", models, labels, per_model_accum, union_total)
+
+    # Availability report
+    results = {}
+
+    # CSVs
+    all_csv = _common_files(models, "probabilistic/*.csv")
+    crps_sum = [f for f in all_csv if "crps_summary" in f]
+    crps_sum_avg = [f for f in crps_sum if "per_level" not in f]
+    crps_sum_lvl = [f for f in crps_sum if "per_level" in f]
+
+    spread = [f for f in all_csv if "spread_skill_ratio" in f]
+    crps_ens = [f for f in all_csv if "crps_ensemble" in f]
+
+    results["CRPS Summary"] = 1 if crps_sum_avg else 0
+    results["CRPS Summary Per Level"] = 1 if crps_sum_lvl else 0
+    results["Spread Skill Ratio"] = 1 if spread else 0
+    results["CRPS Ensemble"] = 1 if crps_ens else 0
+
+    # PIT Histograms
+    pit = _common_files(models, "probabilistic/pit_hist_*.npz")
+    results["PIT Histograms"] = len(pit)
+
+    # CRPS Maps
+    maps = _common_files(models, "probabilistic/crps_map_*.npz")
+    processed_maps = min(len(maps), max_crps_map_panels)
+    ignored_maps = max(0, len(maps) - max_crps_map_panels)
+    results["CRPS Maps"] = processed_maps
+    if ignored_maps > 0:
+        results["CRPS Maps (Ignored)"] = ignored_maps
+
+    # NC files
+    spatial = _common_files(models, "probabilistic/prob_metrics_spatial*.nc")
+    temporal = _common_files(models, "probabilistic/prob_metrics_temporal*.nc")
+
+    results["Spatial Metrics"] = 1 if spatial else 0
+    results["Temporal Metrics"] = 1 if temporal else 0
+
+    _report_checklist("probabilistic", results)
 
     # 1) Combine CRPS summary (non-WBX) across models
     frames_crps: list[pd.DataFrame] = []
@@ -1207,6 +1554,8 @@ def intercompare_probabilistic(
 
     # 3) Overlay PIT histograms by variable
     common_pit = _common_files(models, str(src_rel / "pit_hist_*.npz"))
+    if common_pit:
+        _print_file_list(f"Found {len(common_pit)} common PIT histogram files", common_pit)
     colors = sns.color_palette("tab10", n_colors=len(models))
     for base in common_pit:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -1220,7 +1569,7 @@ def intercompare_probabilistic(
             if counts is None or edges is None:
                 continue
             contributed += 1
-            _plot_step_from_hist(ax, edges, counts, label=lab, color=colors[i])
+            _plot_hist_counts(ax, edges, counts, label=lab, color=colors[i])
         if contributed < 2:
             plt.close(fig)
             continue
@@ -1244,10 +1593,25 @@ def intercompare_probabilistic(
         plt.tight_layout()
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
         plt.close(fig)
 
     # 4) Panel CRPS maps from saved NPZ (if available)
     common_crps_map_npz = _common_files(models, str(src_rel / "crps_map_*.npz"))
+    if common_crps_map_npz:
+        _print_file_list(
+            f"Found {len(common_crps_map_npz)} common CRPS map files", common_crps_map_npz
+        )
+
+    # Report other common probabilistic files (CSVs, NCs)
+    prob_csv = _common_files(models, str(src_rel / "*.csv"))
+    if prob_csv:
+        _print_file_list(f"Found {len(prob_csv)} common probabilistic CSV files", prob_csv)
+
+    prob_nc = _common_files(models, str(src_rel / "*.nc"))
+    if prob_nc:
+        _print_file_list(f"Found {len(prob_nc)} common probabilistic NC files", prob_nc)
+
     for base in common_crps_map_npz[:max_crps_map_panels]:
         payloads = [_load_npz(m / src_rel / base) for m in models]
         # Compute global vmin/vmax across models for consistent color scale
@@ -1295,6 +1659,7 @@ def intercompare_probabilistic(
         # No tight_layout here; constrained_layout handles spacing
         out_png = dst / base.replace(".npz", "_compare.png")
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
         plt.close(fig)
 
     # 5) Combine spatial/temporal WBX NetCDF aggregates into tidy CSVs and simple plots
@@ -1341,8 +1706,7 @@ def intercompare_probabilistic(
         if spatial_df["model"].nunique() >= 2:
             out_csv = dst / "spatial_metrics_combined.csv"
             spatial_df.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
             # Simple plot: if a region-like column exists, average across
             # variables and plot by region
             region_col = None
@@ -1371,8 +1735,7 @@ def intercompare_probabilistic(
                         plt.tight_layout()
                         out_png = dst / f"spatial_{metric}_compare.png"
                         plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        if not quiet:
-                            c.success(f"Saved {out_png}")
+                        c.success(f"Saved {out_png.relative_to(out_root)}")
                         plt.close()
 
     # Temporal aggregates
@@ -1414,8 +1777,7 @@ def intercompare_probabilistic(
         if temporal_df["model"].nunique() >= 2:
             out_csv = dst / "temporal_metrics_combined.csv"
             temporal_df.to_csv(out_csv, index=False)
-            if not quiet:
-                c.success(f"Saved {out_csv}")
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
             # Pick a time-bin column to plot if present (e.g., 'season'); else skip plotting
             timebin_col = None
             pref_cols = ["season", "month", "time_bin"]
@@ -1450,8 +1812,7 @@ def intercompare_probabilistic(
                         plt.tight_layout()
                         out_png = dst / f"temporal_{metric}_compare.png"
                         plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        if not quiet:
-                            c.success(f"Saved {out_png}")
+                        c.success(f"Saved {out_png.relative_to(out_root)}")
                         plt.close()
 
 
@@ -1463,7 +1824,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         required=True,
-        help="Path to intercomparison YAML config (models, labels, output_root, modules, quiet)",
+        help="Path to intercomparison YAML config (models, labels, output_root, modules)",
     )
     return p
 
@@ -1485,13 +1846,13 @@ def run_from_config(cfg: dict) -> None:
         labels = [_model_label(p) for p in models]
     # Output root
     out_root = _ensure_dir(Path(cfg.get("output_root", "output/intercomparison")).resolve())
+    c.info(f"Output directory: {out_root}")
     # Modules
     modules = cfg.get("modules") or ["spectra", "hist", "kde", "maps", "metrics", "prob", "vprof"]
     modules = [str(m).lower() for m in modules]
     # Other options
     max_map_panels = int(cfg.get("max_map_panels", 4))
     max_crps_map_panels = int(cfg.get("max_crps_map_panels", 4))
-    quiet = bool(cfg.get("quiet", False))
 
     # Light validation: warn on missing model dirs
     for m in models:
@@ -1500,21 +1861,22 @@ def run_from_config(cfg: dict) -> None:
 
     mods = set(modules)
     if "spectra" in mods:
-        intercompare_energy_spectra(models, labels, out_root, quiet=quiet)
+        intercompare_energy_spectra(models, labels, out_root)
     if "hist" in mods:
-        intercompare_histograms(models, labels, out_root, quiet=quiet)
+        intercompare_histograms(models, labels, out_root)
     if "kde" in mods:
-        intercompare_wd_kde(models, labels, out_root, quiet=quiet)
+        intercompare_wd_kde(models, labels, out_root)
     if "maps" in mods:
-        intercompare_maps(models, labels, out_root, max_panels=max_map_panels, quiet=quiet)
+        intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "metrics" in mods:
-        intercompare_metrics_csv(models, labels, out_root, quiet=quiet)
+        intercompare_deterministic_metrics(models, labels, out_root)
+        intercompare_ets_metrics(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
-            models, labels, out_root, max_crps_map_panels=max_crps_map_panels, quiet=quiet
+            models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
     if "vprof" in mods:
-        intercompare_vertical_profiles(models, labels, out_root, quiet=quiet)
+        intercompare_vertical_profiles(models, labels, out_root)
 
 
 def main(argv: list[str] | None = None) -> None:

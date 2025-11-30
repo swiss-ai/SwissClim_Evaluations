@@ -1,6 +1,9 @@
 import pandas as pd
 
-from swissclim_evaluations.intercompare import intercompare_metrics_csv, intercompare_probabilistic
+from swissclim_evaluations.intercompare import (
+    intercompare_deterministic_metrics,
+    intercompare_probabilistic,
+)
 
 
 def test_intercompare_metrics_per_level(tmp_path):
@@ -27,7 +30,7 @@ def test_intercompare_metrics_per_level(tmp_path):
 
     # Run intercomparison
     out_root = tmp_path / "output"
-    intercompare_metrics_csv([model_a, model_b], ["ModelA", "ModelB"], out_root, quiet=True)
+    intercompare_deterministic_metrics([model_a, model_b], ["ModelA", "ModelB"], out_root)
 
     # Check result
     out_file = out_root / "deterministic" / "metrics_per_level_combined.csv"
@@ -59,7 +62,7 @@ def test_intercompare_probabilistic_per_level(tmp_path):
 
     # Run intercomparison
     out_root = tmp_path / "output"
-    intercompare_probabilistic([model_a, model_b], ["ModelA", "ModelB"], out_root, quiet=True)
+    intercompare_probabilistic([model_a, model_b], ["ModelA", "ModelB"], out_root)
 
     # Check result
     out_file = out_root / "probabilistic" / "crps_summary_per_level_combined.csv"
