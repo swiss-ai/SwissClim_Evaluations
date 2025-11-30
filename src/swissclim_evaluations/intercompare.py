@@ -470,15 +470,17 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             # We assume all models have roughly the same resolution/grid
             if wn is not None:
                 k_max_inter = float(np.nanmax(wn))
-                k_cutoff_inter = k_max_inter / 2.0
-                ax.axvline(
-                    k_cutoff_inter,
-                    color="gold",
-                    linestyle=":",
-                    linewidth=2,
-                    alpha=0.8,
-                    label="4dx Cutoff",
-                )
+                # Validation: only plot cutoff if k_max_inter is finite and > 0
+                if np.isfinite(k_max_inter) and k_max_inter > 0:
+                    k_cutoff_inter = k_max_inter / 2.0
+                    ax.axvline(
+                        k_cutoff_inter,
+                        color="gold",
+                        linestyle=":",
+                        linewidth=2,
+                        alpha=0.8,
+                        label="4dx Cutoff",
+                    )
 
             ax.legend(frameon=False)
             out_png = dst / base.replace(".npz", "_compare.png")
