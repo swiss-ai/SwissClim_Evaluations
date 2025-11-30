@@ -382,5 +382,6 @@ def extract_date_from_dataset(ds: Any) -> str:
             ts = np.datetime64(val).astype("datetime64[h]")
             return f" ({np.datetime_as_string(ts, unit='h').replace('-', '').replace(':', '')})"
     except Exception:
+        # If extraction or formatting fails, return empty string as fallback.
         pass
     return ""
