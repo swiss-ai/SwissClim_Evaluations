@@ -14,7 +14,15 @@ Modes → tokens:
 - `prob` → `_ensprob`
 - `none` → only when no ensemble dim (still names `_ensmean`)
 
-Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets mean|pooled|members; probabilistic prob only.
+**Allowed ensemble modes by module:**
+- **maps**: mean, members
+- **vertical_profiles**: mean, pooled, members
+- **histograms**: mean, pooled, members
+- **wd_kde**: mean, pooled, members
+- **energy_spectra**: mean, pooled, members
+- **deterministic**: mean, pooled, members
+- **ets**: mean, pooled, members
+- **probabilistic**: prob only
 
 If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
 
