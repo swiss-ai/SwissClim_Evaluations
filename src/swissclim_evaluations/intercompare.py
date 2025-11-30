@@ -550,12 +550,12 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 ax_r.set_ylabel("Energy Density Ratio (%)")
 
                 if surface:
-                    title_ratio = f"Energy Spectra Ratio - {var} (sfc)"
+                    title_ratio = f"Energy Spectra Ratio — {var} (sfc)"
                 else:
                     title_ratio = (
-                        f"Energy Spectra Ratio - {var} - level: {level_val} hPa"
+                        f"Energy Spectra Ratio — {var} — level: {level_val} hPa"
                         if level_val is not None
-                        else f"Energy Spectra Ratio - {var}"
+                        else f"Energy Spectra Ratio — {var}"
                     )
                 ax_r.set_title(title_ratio)
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
@@ -724,7 +724,6 @@ def intercompare_histograms(
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
     _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
-    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -762,7 +761,6 @@ def intercompare_histograms(
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
-    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
