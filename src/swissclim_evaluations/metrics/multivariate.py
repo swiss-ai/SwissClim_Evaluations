@@ -120,7 +120,7 @@ def run(
 
     # Resolve ensemble mode
     # Default for multivariate/SSIM is usually 'mean' (compare ensemble mean to target)
-    # But we support 'member' too.
+    # But we support 'members' too.
     mode = resolve_ensemble_mode("multivariate", ensemble_mode, ds_target, ds_prediction)
 
     # Handle ensemble dimension
