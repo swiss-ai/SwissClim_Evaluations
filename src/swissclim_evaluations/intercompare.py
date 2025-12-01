@@ -1799,9 +1799,17 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             # Convert ssim to numeric
             melted["ssim"] = pd.to_numeric(melted["ssim"], errors="coerce")
 
+            # Define order: all variables sorted, with 'average' last
+            unique_vars = sorted(melted["physical_variable"].unique())
+            if "average" in unique_vars:
+                unique_vars.remove("average")
+                unique_vars.append("average")
+
             if not melted.empty:
                 plt.figure(figsize=(10, 6))
-                sns.barplot(data=melted, x="physical_variable", y="ssim", hue="model")
+                sns.barplot(
+                    data=melted, x="physical_variable", y="ssim", hue="model", order=unique_vars
+                )
                 plt.title("SSIM Comparison")
                 plt.ylabel("SSIM")
                 plt.xlabel("Variable")
