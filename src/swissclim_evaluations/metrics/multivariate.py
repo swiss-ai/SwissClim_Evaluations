@@ -42,32 +42,28 @@ def calculate_ssim(
 
     results = {}
 
+    # Define a wrapper for apply_ufunc
+    def _wrapper(a, b):
+        # a and b are 2D arrays (lat, lon)
+        # Determine data_range from the slice
+        dr = max(a.max() - a.min(), b.max() - b.min())
+        if dr == 0:
+            dr = 1.0
+
+        return structural_similarity(
+            a,
+            b,
+            data_range=dr,
+            sigma=sigma,
+            K1=k1,
+            K2=k2,
+            gaussian_weights=gaussian_weights,
+            use_sample_covariance=use_sample_covariance,
+        )
+
     for var in variables:
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
-
-        # Ensure we have lat/lon dimensions
-        if "latitude" not in da_target.dims or "longitude" not in da_target.dims:
-            continue
-
-        # Define a wrapper for apply_ufunc
-        def _wrapper(a, b):
-            # a and b are 2D arrays (lat, lon)
-            # Determine data_range from the slice
-            dr = max(a.max() - a.min(), b.max() - b.min())
-            if dr == 0:
-                dr = 1.0
-
-            return structural_similarity(
-                a,
-                b,
-                data_range=dr,
-                sigma=sigma,
-                K1=k1,
-                K2=k2,
-                gaussian_weights=gaussian_weights,
-                use_sample_covariance=use_sample_covariance,
-            )
 
         # Determine input core dims
         input_core_dims = [["latitude", "longitude"], ["latitude", "longitude"]]
@@ -156,6 +152,36 @@ def run(
             out_path = out_root / "multivariate" / filename
             out_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(out_path)
+    elif mode == "pooled" and "ensemble" in ds_prediction.dims:
+        # Stack ensemble into the sample dimension (e.g., "time")
+        sample_dim = "time" if "time" in ds_prediction.dims else list(ds_prediction.dims)[0]
+        ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
+        ds_target_stacked = ds_target
+        if "ensemble" in ds_target.dims:
+            ds_target_stacked = ds_target.stack(pooled_sample=("ensemble", sample_dim))
+        # Drop the original dimensions to avoid confusion
+        # Note: stack() already removes the original dimensions from the variables,
+        # but they might remain as coordinates. We don't need to explicitly drop_dims
+        # if we just use the stacked dataset.
+
+        df = calculate_ssim(
+            ds_target_stacked,
+            ds_prediction_stacked,
+            sigma=sigma,
+            k1=k1,
+            k2=k2,
+            gaussian_weights=gaussian_weights,
+            use_sample_covariance=use_sample_covariance,
+        )
+
+        ens_token = ensemble_mode_to_token(mode)
+        filename = build_output_filename(
+            metric="multivariate", qualifier="ssim", ensemble=ens_token, ext="csv"
+        )
+        out_path = out_root / "multivariate" / filename
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        df.to_csv(out_path)
     else:
         # Single output (mean, none, or pooled if supported)
         df = calculate_ssim(
