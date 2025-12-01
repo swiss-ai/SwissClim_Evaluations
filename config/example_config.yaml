@@ -227,7 +227,6 @@ metrics:
       use_sample_covariance: false
     # Bivariate histograms configuration
     # List of variable pairs to generate 2D histograms and density plots for.
-    # Plots are generated immediately during the evaluation run (Model vs Reference).
     bivariate_pairs:
       - ["u10m", "v10m"]
       - ["t2m", "u10m"]
