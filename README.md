@@ -416,22 +416,22 @@ Additionally, bivariate density plots (histograms) are generated for specified v
 
 To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
 
-1.  **Surface Dynamics (Wind Vector):** $u_{10m}$ vs $v_{10m}$.
+1.  **Surface Dynamics (Wind Vector):** `10m_u_component_of_wind` vs `10m_v_component_of_wind`.
     *   *Suggested Level:* Surface (10m).
     *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
-2.  **Upper-level Dynamics (Wind Vector):** $u$ vs $v$.
+2.  **Upper-level Dynamics (Wind Vector):** `u_component_of_wind` vs `v_component_of_wind`.
     *   *Suggested Level:* 250 hPa (Jet Stream).
     *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
-3.  **Thermodynamics (Clausius-Clapeyron):** Temperature ($T$) vs Specific Humidity ($q$).
+3.  **Thermodynamics (Clausius-Clapeyron):** `temperature` vs `specific_humidity`.
     *   *Suggested Level:* 850 hPa (Lower Troposphere).
     *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve, which follows the Clausius-Clapeyron relation. Points beyond this curve indicate unphysical supersaturation.
-4.  **Hydrostatics:** Geopotential ($z$) vs Temperature ($T$).
+4.  **Hydrostatics:** `geopotential` vs `temperature`.
     *   *Suggested Level:* 500 hPa (Mid-troposphere).
     *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
-5.  **Precipitation Physics:** Total Precipitation ($tp$) vs Column Water Vapor ($TCWV$).
+5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapor`.
     *   *Suggested Level:* Surface / Column-integrated.
     *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
-6.  **Vertical Motion:** Vertical Velocity ($w$) vs Temperature ($T$).
+6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
     *   *Suggested Level:* 500 hPa (Mid-troposphere).
     *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
 
