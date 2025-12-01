@@ -103,55 +103,15 @@ def calculate_bivariate_histograms(
 ) -> None:
     """
     Calculate and save bivariate histograms for specified pairs.
+    Delegates to calculate_and_plot_bivariate_histograms to avoid code duplication.
     """
-    for pair in pairs:
-        if len(pair) != 2:
-            continue
-        var_x, var_y = pair
-
-        # Compute for Prediction
-        hist_pred, xedges, yedges = None, None, None
-        if var_x in ds_prediction and var_y in ds_prediction:
-            x_data = ds_prediction[var_x].values.flatten()
-            y_data = ds_prediction[var_y].values.flatten()
-            mask = np.isfinite(x_data) & np.isfinite(y_data)
-            x_data = x_data[mask]
-            y_data = y_data[mask]
-
-            if len(x_data) > 0:
-                hist_pred, xedges, yedges = np.histogram2d(x_data, y_data, bins=bins)
-
-        # Compute for Target
-        hist_target = None
-        if ds_target is not None and var_x in ds_target and var_y in ds_target:
-            x_data_t = ds_target[var_x].values.flatten()
-            y_data_t = ds_target[var_y].values.flatten()
-            mask_t = np.isfinite(x_data_t) & np.isfinite(y_data_t)
-            x_data_t = x_data_t[mask_t]
-            y_data_t = y_data_t[mask_t]
-
-            if len(x_data_t) > 0:
-                # Use same bins as prediction if available
-                if xedges is not None and yedges is not None:
-                    hist_target, _, _ = np.histogram2d(x_data_t, y_data_t, bins=[xedges, yedges])
-                else:
-                    hist_target, xedges, yedges = np.histogram2d(x_data_t, y_data_t, bins=bins)
-
-        if hist_pred is not None:
-            out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}.npz"
-            out_file.parent.mkdir(parents=True, exist_ok=True)
-
-            save_dict = {
-                "hist": hist_pred,
-                "bins_x": xedges,
-                "bins_y": yedges,
-            }
-            if hist_target is not None:
-                save_dict["hist_target"] = hist_target
-
-            np.savez(out_file, **save_dict)
-
-
+    calculate_and_plot_bivariate_histograms(
+        ds_target=ds_target,
+        ds_prediction=ds_prediction,
+        pairs=pairs,
+        bins=bins,
+        out_root=out_root,
+    )
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
