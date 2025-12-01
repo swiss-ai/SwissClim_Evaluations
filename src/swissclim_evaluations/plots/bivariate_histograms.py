@@ -149,6 +149,20 @@ def plot_bivariate_histogram(
     # Assuming uniform bins for simplicity in area calculation.
     dx = bins_x[1] - bins_x[0]
     dy = bins_y[1] - bins_y[0]
+
+    if dx <= 0 or dy <= 0:
+        # Avoid division by zero or invalid bin sizes
+        if ax:
+            ax.text(
+                0.5,
+                0.5,
+                "Invalid bin sizes (dx/dy <= 0)",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+        return ax
+
     bin_area = dx * dy
 
     sum_1 = hist_1.sum()
@@ -161,6 +175,14 @@ def plot_bivariate_histogram(
     # Define levels based on the filled distribution (Model 2)
     valid_2 = dens_2[dens_2 > 0]
     if len(valid_2) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data in reference distribution",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return ax
 
     vmin = valid_2.min()
@@ -184,7 +206,9 @@ def plot_bivariate_histogram(
         norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap="plasma",
         extend="both",
-    )  # Plot Model 1 (Lines, Greyscale) - Prediction
+    )
+
+    # Plot Model 1 (Lines, Greyscale) - Prediction
     # Use a truncated Greys colormap so low density is light grey (not white) and high is black
     cmap_base = plt.get_cmap("Greys")
     colors_sampled = cmap_base(np.linspace(0.3, 1.0, 256))

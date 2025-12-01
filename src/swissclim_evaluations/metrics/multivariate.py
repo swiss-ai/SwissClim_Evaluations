@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity
@@ -112,6 +111,8 @@ def calculate_bivariate_histograms(
         bins=bins,
         out_root=out_root,
     )
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -139,7 +140,7 @@ def run(
     # But we support 'members' too.
     mode = resolve_ensemble_mode("multivariate", ensemble_mode, ds_target, ds_prediction)
 
-    # Handle ensemble dimension
+    # Handle ensemble dimension according to mode
     if "ensemble" in ds_prediction.dims and mode == "mean":
         ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)
         if "ensemble" in ds_target.dims:
@@ -172,38 +173,12 @@ def run(
             out_path = out_root / "multivariate" / filename
             out_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(out_path)
-    elif mode == "pooled" and "ensemble" in ds_prediction.dims:
-        # Stack ensemble into the sample dimension (e.g., "time")
-        sample_dim = "time" if "time" in ds_prediction.dims else list(ds_prediction.dims)[0]
-        ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
-        ds_target_stacked = ds_target
-        if "ensemble" in ds_target.dims:
-            ds_target_stacked = ds_target.stack(pooled_sample=("ensemble", sample_dim))
-        # Drop the original dimensions to avoid confusion
-        # Note: stack() already removes the original dimensions from the variables,
-        # but they might remain as coordinates. We don't need to explicitly drop_dims
-        # if we just use the stacked dataset.
-
-        df = calculate_ssim(
-            ds_target_stacked,
-            ds_prediction_stacked,
-            sigma=sigma,
-            K1=k1,
-            K2=k2,
-            gaussian_weights=gaussian_weights,
-            use_sample_covariance=use_sample_covariance,
-        )
-
-        ens_token = ensemble_mode_to_token(mode)
-        filename = build_output_filename(
-            metric="multivariate", qualifier="ssim", ensemble=ens_token, ext="csv"
-        )
-        out_path = out_root / "multivariate" / filename
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        df.to_csv(out_path)
     else:
-        # Single output (mean, none, or pooled if supported)
+        # Single output (mean or pooled)
+        # For pooled mode, we pass the full dataset (with ensemble dim).
+        # calculate_ssim uses apply_ufunc which broadcasts over ensemble,
+        # and the final .mean() averages over all dimensions (including ensemble),
+        # effectively pooling all samples.
         df = calculate_ssim(
             ds_target,
             ds_prediction,
