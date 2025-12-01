@@ -131,7 +131,7 @@ def calculate_and_plot_bivariate_histograms(
         fig.savefig(plot_out, bbox_inches="tight")
         plt.close(fig)
 
-        c.success(f"[multivariate] Saved bivariate plot: {plot_out.name}")
+        print(f"[multivariate] Saved bivariate plot: {plot_out.name}")
         plotted_pairs.append(f"{var_x} vs {var_y}")
 
     # Summary output
