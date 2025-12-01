@@ -424,7 +424,7 @@ To evaluate physical consistency, we recommend plotting pairs that capture funda
     *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
 3.  **Thermodynamics (Clausius-Clapeyron):** Temperature ($T$) vs Specific Humidity ($q$).
     *   *Suggested Level:* 850 hPa (Lower Troposphere).
-    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve ($e_s(T) \approx \exp(-L/R_v T)$). Points beyond this curve indicate unphysical supersaturation.
+    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve, which follows the Clausius-Clapeyron relation. Points beyond this curve indicate unphysical supersaturation.
 4.  **Hydrostatics:** Geopotential ($z$) vs Temperature ($T$).
     *   *Suggested Level:* 500 hPa (Mid-troposphere).
     *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
