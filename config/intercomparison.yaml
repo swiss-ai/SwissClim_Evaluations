@@ -23,11 +23,3 @@ modules: [spectra, hist, kde, maps, metrics, prob, vprof, bivariate]
 max_map_panels: 4
 max_crps_map_panels: 4
 
-# Bivariate histograms configuration
-# List of variable pairs to compare. Each pair is a list [var_x, var_y].
-# IMPORTANT: These pairs must be a subset of the 'bivariate_pairs' defined in the
-# evaluation config (e.g., example_config.yaml) used to generate the model outputs.
-# If a pair was not computed during the evaluation run, it cannot be plotted here.
-bivariate_pairs:
-  - ["u10m", "v10m"]
-  - ["t2m", "u10m"]

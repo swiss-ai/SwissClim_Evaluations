@@ -414,7 +414,7 @@ Additionally, bivariate density plots (histograms) are generated for specified v
 
 Outputs:
 - `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
-- `bivariate_<var1>_<var2>_<model>_vs_<ref>.png`: The generated density plot (created during intercomparison).
+- `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.
 
 ### Energy Spectra Analysis
 

@@ -7,7 +7,6 @@ import yaml
 
 # Import the modules to test
 import swissclim_evaluations.cli as cli_mod
-from swissclim_evaluations.intercompare import run_from_config
 
 
 def _synthetic_prepared_multivariate():
@@ -84,29 +83,14 @@ def test_bivariate_workflow(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(sys, "argv", ["swissclim-evaluations", "--config", str(cli_cfg_file_b)])
     cli_mod.main()
 
-    # 6. Verify CLI output (.npz files)
+    # 6. Verify CLI output (.npz files AND .png plots)
     npz_dir_a = model_dir_a / "multivariate"
     assert (npz_dir_a / "bivariate_hist_u10m_v10m.npz").exists()
     assert (npz_dir_a / "bivariate_hist_t2m_u10m.npz").exists()
 
-    # 7. Setup Intercomparison config
-    inter_out_root = tmp_path / "output" / "intercomparison"
-    inter_cfg = {
-        "models": [str(model_dir_a), str(model_dir_b)],
-        "labels": ["Model A", "Model B"],
-        "output_root": str(inter_out_root),
-        "modules": ["bivariate"],
-        "bivariate_pairs": [["u10m", "v10m"], ["t2m", "u10m"]],
-    }
+    # Verify that plots are generated directly by the CLI
+    assert (npz_dir_a / "bivariate_u10m_v10m.png").exists()
+    assert (npz_dir_a / "bivariate_t2m_u10m.png").exists()
 
-    # 8. Run Intercomparison
-    # Note: run_from_config takes the dict directly
-    run_from_config(inter_cfg)
-
-    # 9. Verify Intercomparison output (.png files)
-    plot_dir = inter_out_root / "bivariate"
-    assert plot_dir.exists()
-    # The naming convention in intercompare.py is bivariate_{var_x}_{var_y}_{lab}_vs_{ref}.png
-    # Labels are "Model A" and "Model B", so safe labels are "Model_A" and "Model_B"
-    assert (plot_dir / "bivariate_u10m_v10m_Model_B_vs_Model_A.png").exists()
-    assert (plot_dir / "bivariate_t2m_u10m_Model_B_vs_Model_A.png").exists()
+    # Intercomparison step for bivariate plots is no longer needed/supported
+    # as plots are generated per-model.

@@ -9,6 +9,7 @@ import xarray as xr
 from skimage.metrics import structural_similarity
 
 from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+from ..plots.bivariate_histograms import calculate_and_plot_bivariate_histograms
 
 
 def calculate_ssim(
@@ -266,4 +267,4 @@ def run(
     bivariate_pairs = cfg.get("bivariate_pairs")
     if bivariate_pairs:
         # Use the full dataset (effectively pooling ensemble members if present)
-        calculate_bivariate_histograms(ds_prediction, ds_target, bivariate_pairs, out_root)
+        calculate_and_plot_bivariate_histograms(ds_prediction, ds_target, bivariate_pairs, out_root)
