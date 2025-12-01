@@ -72,17 +72,11 @@ def run(
         print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    # Resolve ensemble handling (pooled/mean/members/none). Prob not allowed here.
+    # Resolve ensemble handling (pooled/mean/members). Prob not allowed here.
     resolved_mode = resolve_ensemble_mode("wd_kde", ensemble_mode, ds_target_std, ds_prediction_std)
     has_ens = "ensemble" in ds_prediction_std.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for wd_kde")
-    if resolved_mode == "none" and has_ens:
-        # Force user to choose pooling semantics instead of implicitly ignoring ensemble
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
 
     def _iter_members():
         if not has_ens:
@@ -106,12 +100,10 @@ def run(
         )
         ds_prediction_std_eff = ds_prediction_std.mean(dim="ensemble")
         ens_token_base = ensemble_mode_to_token("mean")
-    elif resolved_mode in ("pooled", "none"):
+    elif resolved_mode == "pooled":
         ds_target_std_eff = ds_target_std
         ds_prediction_std_eff = ds_prediction_std
-        ens_token_base = (
-            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
-        )
+        ens_token_base = ensemble_mode_to_token("pooled") if has_ens else None
     else:  # members
         ds_target_std_eff = ds_target_std  # used only for 2D variable discovery
         ds_prediction_std_eff = ds_prediction_std

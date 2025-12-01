@@ -98,13 +98,11 @@ def run(
 
     # Assume no missing data per project requirement; use direct min/max.
 
-    # Resolve ensemble handling (maps: mean/pooled/members/none). Prob invalid.
+    # Resolve ensemble handling (maps: mean/pooled/members). Prob invalid.
     resolved_mode = resolve_ensemble_mode("maps", ensemble_mode, ds_target, ds_prediction)
     has_ens = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for maps")
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # degrade to historical behaviour
 
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target.dims:

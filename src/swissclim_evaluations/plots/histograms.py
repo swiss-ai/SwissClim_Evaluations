@@ -68,11 +68,6 @@ def run(
     # Resolve ensemble handling
     resolved_mode = resolve_ensemble_mode("histograms", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
-    if resolved_mode == "none" and has_ens:
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for histograms")
 
@@ -451,7 +446,7 @@ def run(
                 yield i, tgt_m, pred_m
 
     if resolved_mode == "members" and not has_ens:
-        resolved_mode = "none"  # degrade silently
+        resolved_mode = "pooled"  # degrade silently
 
     if resolved_mode == "mean" and has_ens:
         ds_prediction_mean = ds_prediction.mean(dim="ensemble")
@@ -479,10 +474,8 @@ def run(
                     qualifier="latbands",
                     ens_token=token,
                 )
-    else:  # pooled or none
-        token = (
-            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
-        )
+    else:  # pooled
+        token = ensemble_mode_to_token("pooled") if has_ens else None
         for variable_name in variables_2d:
             _plot_variable(
                 ds_target[variable_name],

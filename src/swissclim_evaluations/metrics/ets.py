@@ -91,8 +91,6 @@ def run(
     members_indices: list[int] | None = None
     if resolved_mode == "members" and has_ens:
         members_indices = list(range(int(ds_prediction.sizes["ensemble"])))
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # preserve historical behaviour
     if resolved_mode == "mean" and has_ens and reduce_ens_mean:
         if "ensemble" in ds_prediction.dims:
             ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)

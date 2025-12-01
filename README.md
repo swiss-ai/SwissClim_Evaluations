@@ -365,11 +365,11 @@ Datasets may include an `ensemble` dimension. You can pre‑select members (`sel
 
 Modes → tokens:
 
-- mean → `_ensmean`; pooled → `_enspooled`; members → `_ens<i>`; prob → `_ensprob`; none → only when no ensemble dim (still names `_ensmean`).
+- mean → `_ensmean`; pooled → `_enspooled`; members → `_ens<i>`; prob → `_ensprob`.
 
 Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets mean|pooled|members; probabilistic prob only.
 
-If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
+If ensemble size is 1, non‑probabilistic modules behave deterministically; filenames include `_ensmean`.
 
 Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
 

@@ -198,18 +198,18 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "maps": "members",
 }
 
-_VALID_MODES = {"none", "mean", "pooled", "prob", "members"}
+_VALID_MODES = {"mean", "pooled", "prob", "members"}
 
 # Explicit per-module allowed modes (logical + implemented semantics).
 _ALLOWED_PER_MODULE: dict[str, set[str]] = {
-    "maps": {"none", "mean", "members"},
-    "vertical_profiles": {"none", "mean", "pooled", "members"},
+    "maps": {"mean", "members"},
+    "vertical_profiles": {"mean", "pooled", "members"},
     "probabilistic": {"prob"},
-    "histograms": {"none", "mean", "pooled", "members"},
-    "wd_kde": {"none", "mean", "pooled", "members"},
-    "energy_spectra": {"none", "mean", "pooled", "members"},
-    "deterministic": {"none", "mean", "pooled", "members"},
-    "ets": {"none", "mean", "pooled", "members"},
+    "histograms": {"mean", "pooled", "members"},
+    "wd_kde": {"mean", "pooled", "members"},
+    "energy_spectra": {"mean", "pooled", "members"},
+    "deterministic": {"mean", "pooled", "members"},
+    "ets": {"mean", "pooled", "members"},
 }
 
 
@@ -222,19 +222,14 @@ def resolve_ensemble_mode(
     """Determine effective ensemble handling mode for a module.
 
     Modes:
-      - none: no ensemble behaviour (or ensemble dim absent)
       - mean: reduce ensemble → single field (ensmean)
       - pooled: treat all members' samples jointly (enspooled)
       - prob: keep ensemble dimension intrinsically (ensprob)
       - members: iterate per member producing separate per-member artifacts (ens<idx>)
     """
-    has_ens = "ensemble" in getattr(ds_prediction, "dims", {})
-    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "none")).lower()
+    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "mean")).lower()
     if base not in _VALID_MODES:
-        base = _DEFAULT_ENSEMBLE_MODES.get(module, "none")
-    if not has_ens:
-        # If no ensemble dim, collapse to none (probabilistic handled upstream).
-        return "none"
+        base = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
     if module == "probabilistic":
         # Force prob; other modes invalid here.
         return "prob"
@@ -247,8 +242,6 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     Returns token WITHOUT leading underscore; build_output_filename will append as part list.
     For members mode we expect caller to invoke once per member with member_index.
     """
-    if mode == "none":
-        return None  # builder will inject default 'ensmean'
     if mode == "mean":
         return "mean"  # builder normalises to ensmean
     if mode == "pooled":

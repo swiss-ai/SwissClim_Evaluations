@@ -531,8 +531,6 @@ def run(
                 )
             )
         )
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # historical behaviour (mean reduction)
     # Track members mode for metrics naming (per-member metrics aggregated without token)
     metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
