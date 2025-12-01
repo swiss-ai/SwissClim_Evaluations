@@ -15,6 +15,7 @@ import xarray as xr
 import yaml
 
 from .helpers import format_level_token
+from .plots.bivariate_histograms import plot_bivariate_histogram
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
@@ -1824,6 +1825,99 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
     _report_checklist("multivariate", checklist)
 
 
+def intercompare_bivariate_histograms(
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    pairs: list[list[str]] | None = None,
+) -> None:
+    """
+    Generate bivariate histogram plots for specified pairs.
+
+    Requires pre-computed bivariate histograms in 'multivariate/bivariate_hist_{var_x}_{var_y}.npz'.
+    """
+    if not pairs:
+        c.warn("No bivariate pairs specified in config. Skipping bivariate histograms.")
+        return
+
+    dst = _ensure_dir(out_root / "bivariate")
+
+    # We need at least 2 models.
+    # The first model is treated as "Reference" (filled contours)
+    # Subsequent models are treated as "Prediction" (contours) and plotted over the reference.
+
+    if len(models) < 2:
+        c.warn("Bivariate histograms require at least 2 models (Reference and Prediction).")
+        return
+
+    ref_model = models[0]
+    ref_label = labels[0]
+
+    pred_models = models[1:]
+    pred_labels = labels[1:]
+
+    for pair in pairs:
+        if len(pair) != 2:
+            c.warn(f"Invalid pair definition: {pair}. Must be [var_x, var_y].")
+            continue
+        var_x, var_y = pair
+        filename = f"bivariate_hist_{var_x}_{var_y}.npz"
+
+        # Load Reference
+        ref_file = ref_model / "multivariate" / filename
+        if not ref_file.exists():
+            # Try checking if it exists in 'metrics' or 'plots' just in case?
+            # But we agreed on 'multivariate' module output.
+            c.warn(f"Missing bivariate histogram for {ref_label}: {ref_file}")
+            continue
+
+        try:
+            ref_data = np.load(ref_file)
+            hist_ref = ref_data["hist"]
+            bins_x = ref_data["bins_x"]
+            bins_y = ref_data["bins_y"]
+        except Exception as e:
+            c.warn(f"Failed to load {ref_file}: {e}")
+            continue
+
+        # For each prediction model
+        for m, lab in zip(pred_models, pred_labels, strict=False):
+            pred_file = m / "multivariate" / filename
+            if not pred_file.exists():
+                c.warn(f"Missing bivariate histogram for {lab}: {pred_file}")
+                continue
+
+            try:
+                pred_data = np.load(pred_file)
+                hist_pred = pred_data["hist"]
+            except Exception as e:
+                c.warn(f"Failed to load {pred_file}: {e}")
+                continue
+
+            # Plot
+            fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
+            plot_bivariate_histogram(
+                hist_1=hist_pred,  # Prediction (contours)
+                hist_2=hist_ref,  # Reference (filled)
+                bins_x=bins_x,
+                bins_y=bins_y,
+                label_1=lab,
+                label_2=ref_label,
+                var_x=var_x,
+                var_y=var_y,
+                ax=ax,
+            )
+
+            # Sanitize filename
+            safe_lab = lab.replace(" ", "_").replace("/", "-")
+            safe_ref = ref_label.replace(" ", "_").replace("/", "-")
+            out_name = f"bivariate_{var_x}_{var_y}_{safe_lab}_vs_{safe_ref}.png"
+            out_path = dst / out_name
+            fig.savefig(out_path, bbox_inches="tight")
+            plt.close(fig)
+            c.success(f"Saved {out_path.relative_to(out_root)}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="SwissClim Evaluations — Intercomparison runner (YAML-configured)"
@@ -1887,6 +1981,9 @@ def run_from_config(cfg: dict) -> None:
         )
     if "vprof" in mods:
         intercompare_vertical_profiles(models, labels, out_root)
+    if "bivariate" in mods:
+        pairs = cfg.get("bivariate_pairs")
+        intercompare_bivariate_histograms(models, labels, out_root, pairs=pairs)
 
 
 def main(argv: list[str] | None = None) -> None:

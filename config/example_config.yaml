@@ -225,6 +225,13 @@ metrics:
       k2: 0.03
       gaussian_weights: true
       use_sample_covariance: false
+    # Bivariate histograms configuration
+    # List of variable pairs to generate 2D histograms for.
+    # These pairs must be defined here so that the necessary data (.npz) is produced during the evaluation run.
+    # The intercomparison step will then pick a subset of these pairs to plot.
+    bivariate_pairs:
+      - ["u10m", "v10m"]
+      - ["t2m", "u10m"]
 
 probabilistic:
   # If true, compute and report CRPS summaries per pressure level (for 3D variables).

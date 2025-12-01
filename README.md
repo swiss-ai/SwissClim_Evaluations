@@ -410,6 +410,12 @@ multivariate_ssim_ensmean.csv
 multivariate_ssim_ens0.csv
 ```
 
+Additionally, bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
+
+Outputs:
+- `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
+- `bivariate_<var1>_<var2>_<model>_vs_<ref>.png`: The generated density plot (created during intercomparison).
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
@@ -551,7 +557,7 @@ What gets combined:
 - maps: panel maps with DS in the first column and each model as subsequent columns.
 - deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
 - ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
-- multivariate: merged CSVs (`multivariate_ssim_combined.csv`).
+- multivariate: merged CSVs (`multivariate_ssim_combined.csv`) and bivariate density plots (`bivariate_<var1>_<var2>_<model>_vs_<ref>.png`). These plots compare the joint distribution of two variables (e.g., u10m vs v10m) between a prediction model (grey contours) and a reference model (filled plasma contours).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
   - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
   - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
