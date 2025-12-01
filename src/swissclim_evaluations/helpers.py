@@ -4,6 +4,114 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
+from matplotlib.colors import Colormap
+
+# Consistent colors for single-model evaluation plots
+COLOR_GROUND_TRUTH = "black"
+COLOR_MODEL_PREDICTION = "#D55E00"  # Vermilion (colorblind-friendly)
+
+
+def get_colormap_for_variable(variable_name: str) -> str | Colormap:
+    """
+    Returns an appropriate colormap for a given physical variable.
+    """
+    variable_name = variable_name.lower()
+
+    # Diverging variables (wind components, vertical velocity, anomalies, fluxes)
+    diverging_vars = [
+        "u_component_of_wind",
+        "v_component_of_wind",
+        "vertical_velocity",
+        "divergence",
+        "vorticity",
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind",
+        "mean_surface_latent_heat_flux",
+        "mean_surface_sensible_heat_flux",
+        "mean_vertically_integrated_moisture_divergence",
+        "integrated_vapor_transport",  # Often vector magnitude but sometimes treated as flux
+    ]
+
+    if any(v in variable_name for v in diverging_vars):
+        return "RdBu_r"
+
+    # Precipitation / Water / Moisture (sequential - Blues)
+    if any(
+        x in variable_name
+        for x in [
+            "precipitation",
+            "total_column_water",
+            "total_column_water_vapour",
+            "total_column_vapor",
+            "volumetric_soil_water",
+            "snow_depth",
+            "sea_ice_cover",
+            "lake_cover",
+        ]
+    ):
+        return "Blues"
+
+    # Temperature / Heat / Radiation (sequential - Magma/Inferno/Hot)
+    if any(
+        x in variable_name
+        for x in [
+            "temperature",
+            "2m_temperature",
+            "2m_dewpoint_temperature",
+            "sea_surface_temperature",
+            "radiation_flux",  # short/long wave fluxes
+        ]
+    ):
+        return "magma"
+
+    # Humidity / Vegetation (sequential - Greens)
+    if any(
+        x in variable_name
+        for x in [
+            "humidity",
+            "specific_humidity",
+            "relative_humidity",
+            "leaf_area_index",
+            "vegetation_cover",
+        ]
+    ):
+        return "Greens"
+
+    # Pressure / Geopotential / Orography (sequential - Viridis)
+    if any(
+        x in variable_name
+        for x in [
+            "geopotential",
+            "pressure",
+            "mean_sea_level_pressure",
+            "surface_pressure",
+            "orography",
+            "land_sea_mask",
+            "soil_type",
+            "boundary_layer_height",
+            "lapse_rate",
+        ]
+    ):
+        return "viridis"
+
+    # Cloud cover (sequential - Greys)
+    if "cloud_cover" in variable_name:
+        return "Greys_r"
+
+    # Wind speed / Energy (sequential - YlOrRd)
+    if any(
+        x in variable_name
+        for x in [
+            "wind_speed",
+            "10m_wind_speed",
+            "eddy_kinetic_energy",
+            "potential_vorticity",
+        ]
+    ):
+        return "YlOrRd"
+
+    # Default
+    return "viridis"
 
 
 def aggregate_member_dfs(dfs):

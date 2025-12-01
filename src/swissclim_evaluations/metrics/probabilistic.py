@@ -20,7 +20,11 @@ from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
-from ..helpers import build_output_filename, time_chunks
+from ..helpers import (
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    time_chunks,
+)
 
 
 def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
@@ -346,13 +350,11 @@ def run_probabilistic(
             crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
 
             for lvl in crps_per_level.level.values:
-                crps_rows_per_level.append(
-                    {
-                        "variable": var,
-                        "level": int(lvl),
-                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
-                    }
-                )
+                crps_rows_per_level.append({
+                    "variable": var,
+                    "level": int(lvl),
+                    "CRPS": float(crps_per_level.sel(level=lvl).item()),
+                })
 
         pit_da = probability_integral_transform(
             da_target,
@@ -609,7 +611,7 @@ def plot_probabilistic(
         counts,
         width=widths,
         align="edge",
-        color="#4C78A8",
+        color=COLOR_MODEL_PREDICTION,
         edgecolor="white",
     )
     ax.set_title(f"PIT histogram — {base_var}")

@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..helpers import COLOR_GROUND_TRUTH, COLOR_MODEL_PREDICTION
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -235,8 +237,8 @@ def _plot_single_spectrum(
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-    ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
-    ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
+    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Ground Truth")
+    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Model Prediction")
     props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,

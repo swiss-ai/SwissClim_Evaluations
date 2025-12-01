@@ -14,7 +14,7 @@ import seaborn as sns
 import xarray as xr
 import yaml
 
-from .helpers import format_level_token
+from .helpers import COLOR_GROUND_TRUTH, format_level_token
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
@@ -96,8 +96,6 @@ def _report_missing(
     )
 
 
-
-
 def _report_checklist(module: str, results: dict[str, int]) -> None:
     """Print a checklist panel for the module with counts."""
     lines = []
@@ -143,7 +141,7 @@ def _ensure_dir(p: Path) -> Path:
 def _common_files(models: list[Path], rel_glob: str) -> list[str]:
     """Find filenames (basenames) that exist in ALL model folders for a given relative glob.
 
-    Returns a sorted list of basenames present in each folder's pattern.
+    Returns a sorted list of basenames present in each folder pattern.
     """
     sets: list[set[str]] = []
     for m in models:
@@ -316,26 +314,22 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "north",
-                        "model": lab,
-                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "south",
-                        "model": lab,
-                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "north",
+                    "model": lab,
+                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                    "metric": "NMAE",
+                })
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "south",
+                    "model": lab,
+                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                    "metric": "NMAE",
+                })
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -605,13 +599,12 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
-    if not quiet:
-        _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -621,7 +614,7 @@ def intercompare_histograms(
         # Ground Truth (from first model)
         counts_ds = payloads[0]["counts_ds"]
         bins_ds = payloads[0]["bins"]
-        _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+        _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color=COLOR_GROUND_TRUTH)
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -635,8 +628,7 @@ def intercompare_histograms(
         out_png = dst / base.replace(".npz", ".png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
@@ -645,8 +637,7 @@ def intercompare_histograms(
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
-    if not quiet:
-        _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
 
@@ -669,7 +660,9 @@ def intercompare_histograms(
                 # Each element is (counts_ds, counts_ml)
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["neg_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                _plot_hist_counts(
+                    ax, bins_ds, counts_ds, label="Ground Truth", color=COLOR_GROUND_TRUTH
+                )
                 # Plot each model ML
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["neg_counts"][j][1]
@@ -693,7 +686,9 @@ def intercompare_histograms(
                 ds_ml_pairs = payloads[0]["pos_counts"][j]
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["pos_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                _plot_hist_counts(
+                    ax, bins_ds, counts_ds, label="Ground Truth", color=COLOR_GROUND_TRUTH
+                )
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["pos_counts"][j][1]
                     bins_ml = pay["pos_bins"][j]
@@ -736,8 +731,7 @@ def intercompare_histograms(
             fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            if not quiet:
-                c.success(f"Saved {out_png}")
+            c.success(f"Saved {out_png}")
             plt.close(fig)
 
 
@@ -748,8 +742,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
     # --- Global KDE ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
-    if not quiet:
-        _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
 
     for base in common_g:
@@ -759,7 +752,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         # Ground Truth (from first model)
         x_ds = payloads[0]["x"]
         kde_ds = payloads[0]["kde_ds"]
-        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+        ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Ground Truth")
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -773,19 +766,17 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         out_png = dst / base.replace(".npz", "_compare.png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands KDE ---
     # Availability report (always display)
     per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
-    if not quiet:
-        _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -798,7 +789,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 1]
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+            ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Ground Truth")
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
@@ -815,7 +806,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 0]
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+            ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Ground Truth")
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],

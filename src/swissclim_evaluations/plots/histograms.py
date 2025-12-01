@@ -8,7 +8,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    ensemble_mode_to_token,
+    resolve_ensemble_mode,
+)
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -190,7 +196,7 @@ def run(
                 width=width,
                 align="edge",
                 alpha=0.5,
-                color="skyblue",
+                color=COLOR_GROUND_TRUTH,
                 label="Ground Truth",
             )
             ax_g.bar(
@@ -199,7 +205,7 @@ def run(
                 width=width,
                 align="edge",
                 alpha=0.5,
-                color="salmon",
+                color=COLOR_MODEL_PREDICTION,
                 label="Model Prediction",
             )
             ax_g.legend(loc="upper right")
@@ -312,7 +318,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="skyblue",
+                    color=COLOR_GROUND_TRUTH,
                     label="Ground Truth",
                 )
                 axs[j, 1].bar(
@@ -321,7 +327,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="salmon",
+                    color=COLOR_MODEL_PREDICTION,
                     label="Model Prediction",
                 )
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
@@ -373,7 +379,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="skyblue",
+                    color=COLOR_GROUND_TRUTH,
                     label="Ground Truth",
                 )
                 axs[j, 0].bar(
@@ -382,7 +388,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="salmon",
+                    color=COLOR_MODEL_PREDICTION,
                     label="Model Prediction",
                 )
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")

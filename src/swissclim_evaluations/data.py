@@ -317,7 +317,6 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     return ds
 
 
-
 def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
     """Open ERA5 dataset(s) from Zarr and optionally subset variables.
 
