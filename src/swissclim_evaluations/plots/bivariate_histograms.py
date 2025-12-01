@@ -12,12 +12,22 @@ from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
 
 
+def _get_label(da: xr.DataArray, var_name: str) -> str:
+    """Get a formatted label with unit for a variable from DataArray attributes."""
+    name = var_name
+    unit = da.attrs.get("units", "")
+    if unit:
+        return f"{name} [{unit}]"
+    return name
+
+
 def calculate_and_plot_bivariate_histograms(
     ds_prediction: xr.Dataset,
     ds_target: xr.Dataset | None,
     pairs: list[list[str]],
     out_root: Path,
     bins: int = 100,
+    ensemble_token: str | None = None,
 ) -> None:
     """
     Calculate and save bivariate histograms for specified pairs.
@@ -57,7 +67,8 @@ def calculate_and_plot_bivariate_histograms(
                     hist_target, xedges, yedges = np.histogram2d(x_data_t, y_data_t, bins=bins)
 
         if hist_pred is not None:
-            out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}.npz"
+            suffix = f"_{ensemble_token}" if ensemble_token else ""
+            out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
             out_file.parent.mkdir(parents=True, exist_ok=True)
 
             save_dict = {
@@ -80,8 +91,10 @@ def calculate_and_plot_bivariate_histograms(
                     var_x=var_x,
                     var_y=var_y,
                     ax=ax,
+                    xlabel=_get_label(ds_prediction[var_x], var_x),
+                    ylabel=_get_label(ds_prediction[var_y], var_y),
                 )
-                plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}.png"
+                plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
                 fig.savefig(plot_out, bbox_inches="tight")
                 plt.close(fig)
 
@@ -196,6 +209,20 @@ def plot_bivariate_histogram(
     ax.set_xlabel(xlabel if xlabel else var_x)
     ax.set_ylabel(ylabel if ylabel else var_y)
     ax.set_title(f"{var_x} vs {var_y}")
+
+    # Zoom out by 25%
+    x_min, x_max = bins_x.min(), bins_x.max()
+    y_min, y_max = bins_y.min(), bins_y.max()
+
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+
+    x_center = (x_max + x_min) / 2
+    y_center = (y_max + y_min) / 2
+
+    # Expand by 25% (factor 1.25)
+    ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
+    ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
 
     # Add legend for the contours
     # Use 3 representative colors for the filled contours (low, mid, high)
