@@ -73,13 +73,15 @@ def _fast_plot_algorithms(monkeypatch):
                 ext="npz",
             )
             np.savez(out_npz, mean_w=np.array([0.0]))
-            rows.append({
-                "variable": var,
-                "hemisphere": "both",
-                "lat_min": -90,
-                "lat_max": 90,
-                "wasserstein": 0.0,
-            })
+            rows.append(
+                {
+                    "variable": var,
+                    "hemisphere": "both",
+                    "lat_min": -90,
+                    "lat_max": 90,
+                    "wasserstein": 0.0,
+                }
+            )
         if rows:
             csv_path = section / build_output_filename(
                 metric="wd_kde_wasserstein",
