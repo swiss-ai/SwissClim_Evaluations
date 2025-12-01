@@ -130,8 +130,8 @@ def run(
 
     # Extract SSIM parameters
     sigma = ssim_cfg.get("sigma", 1.5)
-    k1 = ssim_cfg.get("k1", 0.01)
-    k2 = ssim_cfg.get("k2", 0.03)
+    K1 = ssim_cfg.get("K1", 0.01)
+    K2 = ssim_cfg.get("K2", 0.03)
     gaussian_weights = ssim_cfg.get("gaussian_weights", True)
     use_sample_covariance = ssim_cfg.get("use_sample_covariance", False)
 
@@ -141,10 +141,14 @@ def run(
     mode = resolve_ensemble_mode("multivariate", ensemble_mode, ds_target, ds_prediction)
 
     # Handle ensemble dimension according to mode
+    # Use separate variables to avoid confusion and side effects
+    ds_p_run = ds_prediction
+    ds_t_run = ds_target
+
     if "ensemble" in ds_prediction.dims and mode == "mean":
-        ds_prediction = ds_prediction.mean(dim="ensemble", keep_attrs=True)
+        ds_p_run = ds_prediction.mean(dim="ensemble", keep_attrs=True)
         if "ensemble" in ds_target.dims:
-            ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
+            ds_t_run = ds_target.mean(dim="ensemble", keep_attrs=True)
 
     if mode == "members" and "ensemble" in ds_prediction.dims:
         # Per-member outputs
@@ -160,8 +164,8 @@ def run(
                 ds_t_mem,
                 ds_p_mem,
                 sigma=sigma,
-                K1=k1,
-                K2=k2,
+                K1=K1,
+                K2=K2,
                 gaussian_weights=gaussian_weights,
                 use_sample_covariance=use_sample_covariance,
             )
@@ -180,11 +184,11 @@ def run(
         # and the final .mean() averages over all dimensions (including ensemble),
         # effectively pooling all samples.
         df = calculate_ssim(
-            ds_target,
-            ds_prediction,
+            ds_t_run,
+            ds_p_run,
             sigma=sigma,
-            K1=k1,
-            K2=k2,
+            K1=K1,
+            K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )
@@ -221,12 +225,12 @@ def run(
                     ensemble_token=ens_token,
                 )
         else:
-            # If mode is mean, ds_prediction is already reduced to mean above
+            # If mode is mean, ds_p_run is already reduced to mean above
             # If mode is pooled, we pass the full dataset and the plotter flattens it (pooling)
             ens_token = ensemble_mode_to_token(mode) if mode != "none" else None
             calculate_and_plot_bivariate_histograms(
-                ds_prediction,
-                ds_target,
+                ds_p_run,
+                ds_t_run,
                 bivariate_pairs,
                 out_root,
                 bins=100,
