@@ -105,8 +105,8 @@ def calculate_bivariate_histograms(
     Delegates to calculate_and_plot_bivariate_histograms to avoid code duplication.
     """
     calculate_and_plot_bivariate_histograms(
-        ds_target=ds_target,
         ds_prediction=ds_prediction,
+        ds_target=ds_target,
         pairs=pairs,
         bins=bins,
         out_root=out_root,

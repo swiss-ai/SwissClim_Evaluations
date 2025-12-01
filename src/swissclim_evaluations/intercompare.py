@@ -314,26 +314,22 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "north",
-                        "model": lab,
-                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "south",
-                        "model": lab,
-                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "north",
+                    "model": lab,
+                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                    "metric": "NMAE",
+                })
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "south",
+                    "model": lab,
+                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                    "metric": "NMAE",
+                })
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -1800,9 +1796,10 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             melted["ssim"] = pd.to_numeric(melted["ssim"], errors="coerce")
 
             # Define order: all variables sorted, with 'average' last
-            unique_vars = sorted(melted["physical_variable"].unique())
-            if "average" in unique_vars:
-                unique_vars.remove("average")
+            unique_vars = [
+                v for v in sorted(melted["physical_variable"].unique()) if v != "average"
+            ]
+            if "average" in melted["physical_variable"].unique():
                 unique_vars.append("average")
 
             if not melted.empty:

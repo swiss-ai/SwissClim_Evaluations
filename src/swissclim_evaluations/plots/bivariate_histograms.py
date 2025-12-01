@@ -135,6 +135,9 @@ def calculate_and_plot_bivariate_histograms(
         plotted_pairs.append(f"{var_x} vs {var_y}")
 
     # Summary output
+    if plotted_pairs:
+        print(f"[multivariate] Plotted {len(plotted_pairs)} pairs: {', '.join(plotted_pairs)}")
+
     if skipped_pairs:
         # Only show unique reasons
         unique_skips = sorted(set(skipped_pairs))
@@ -187,8 +190,9 @@ def plot_bivariate_histogram(
     # Normalize histograms to density
     # We divide by the sum to get probability mass, then divide by bin area to get density.
     # Assuming uniform bins for simplicity in area calculation.
-    dx = bins_x[1] - bins_x[0]
-    dy = bins_y[1] - bins_y[0]
+    # Use average bin width for area calculation to support non-uniform bins.
+    dx = np.diff(bins_x).mean()
+    dy = np.diff(bins_y).mean()
 
     if dx <= 0 or dy <= 0:
         # Avoid division by zero or invalid bin sizes
@@ -227,6 +231,10 @@ def plot_bivariate_histogram(
 
     vmin = valid_2.min()
     vmax = valid_2.max()
+
+    # Ensure vmin is positive for log scale
+    if vmin <= 0:
+        vmin = 1e-10
 
     # Create log-spaced levels
     # We generate N+2 levels and take the inner N to ensure the contour lines are visible
