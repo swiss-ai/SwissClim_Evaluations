@@ -96,8 +96,6 @@ def _report_missing(
     )
 
 
-
-
 def _report_checklist(module: str, results: dict[str, int]) -> None:
     """Print a checklist panel for the module with counts."""
     lines = []
@@ -350,7 +348,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     dst = _ensure_dir(out_root / "energy_spectra")
 
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
+    per_model, _, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
     _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
 
     results = {}
@@ -584,7 +582,7 @@ def intercompare_histograms(
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
     _report_missing("histograms", models, labels, per_model, uni)
 
     results = {}
@@ -605,13 +603,12 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
-    per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
-    if not quiet:
-        _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
+    per_model_g, _, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
+    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global.npz"))
 
     for base in common_g:
@@ -635,18 +632,16 @@ def intercompare_histograms(
         out_png = dst / base.replace(".npz", ".png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
     # Filter out global histograms from this scan
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
 
-    if not quiet:
-        _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    _report_missing("histograms (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
     common = [f for f in common if "global" not in f]
 
@@ -736,8 +731,7 @@ def intercompare_histograms(
             fig.suptitle(f"Distributions by Latitude Bands — {var}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            if not quiet:
-                c.success(f"Saved {out_png}")
+            c.success(f"Saved {out_png}")
             plt.close(fig)
 
 
@@ -747,9 +741,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
     colors = sns.color_palette("tab10", n_colors=len(models))
 
     # --- Global KDE ---
-    per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
-    if not quiet:
-        _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
+    per_model_g, _, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global.npz")
+    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "wd_kde_*global.npz"))
 
     for base in common_g:
@@ -773,19 +766,17 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         out_png = dst / base.replace(".npz", "_compare.png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        if not quiet:
-            print(f"[intercompare] saved {out_png}")
+        print(f"[intercompare] saved {out_png}")
 
     # --- Latitude Bands KDE ---
     # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
-    if not quiet:
-        _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
+    per_model, _, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
+    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
@@ -896,7 +887,7 @@ def intercompare_maps(
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "maps/map_*.npz")
+    per_model, _, uni = _scan_model_sets(models, "maps/map_*.npz")
     _report_missing("maps", models, labels, per_model, uni)
 
     results = {}
@@ -1024,7 +1015,7 @@ def intercompare_deterministic_metrics(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
+    per_model, _, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
     _report_missing("deterministic_metrics", models, labels, per_model, uni)
 
     results = {}
@@ -1408,7 +1399,7 @@ def intercompare_probabilistic(
         "probabilistic/prob_metrics_spatial*.nc",
         "probabilistic/prob_metrics_temporal*.nc",
     ):
-        per_model, inter, uni = _scan_model_sets(models, pattern)
+        per_model, _, uni = _scan_model_sets(models, pattern)
         union_total |= uni
         for i, s in enumerate(per_model):
             per_model_accum[i] |= s
@@ -1757,6 +1748,74 @@ def intercompare_probabilistic(
                         plt.close()
 
 
+def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine multivariate SSIM metrics from multiple models."""
+    per_model, _, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
+    _report_missing("multivariate", models, labels, per_model, uni)
+
+    checklist = {"SSIM Metrics": 0}
+    dst_multi = _ensure_dir(out_root / "multivariate")
+
+    frames: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        candidates = sorted((m / "multivariate").glob("multivariate_ssim_*.csv"))
+        # Prefer ensmean, then others
+        f = next(
+            (c for c in candidates if c.name.endswith("ensmean.csv")),
+            next(iter(candidates), None),
+        )
+        if f and f.is_file():
+            df = pd.read_csv(f)
+            # Ensure 'variable' column exists or rename unnamed index
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    # If the first column is string-like, assume it's variable
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
+
+            # Add model column
+            df.insert(0, "model", lab)
+            frames.append(df)
+
+    if frames:
+        comb = pd.concat(frames, ignore_index=True)
+        if comb["model"].nunique() >= 2:
+            out_csv = dst_multi / "ssim_metrics_combined.csv"
+            comb.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            checklist["SSIM Metrics"] += 1
+
+            # Filter for SSIM row if multiple metrics exist (currently only SSIM)
+            ssim_df = comb[comb["variable"] == "SSIM"].copy()
+
+            # Drop the 'variable' column as it's just "SSIM"
+            ssim_df = ssim_df.drop(columns=["variable"])
+
+            # Melt: id_vars="model", var_name="physical_variable", value_name="ssim"
+            melted = ssim_df.melt(id_vars="model", var_name="physical_variable", value_name="ssim")
+
+            # Convert ssim to numeric
+            melted["ssim"] = pd.to_numeric(melted["ssim"], errors="coerce")
+
+            if not melted.empty:
+                plt.figure(figsize=(10, 6))
+                sns.barplot(data=melted, x="physical_variable", y="ssim", hue="model")
+                plt.title("SSIM Comparison")
+                plt.ylabel("SSIM")
+                plt.xlabel("Variable")
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                out_plot = dst_multi / "ssim_comparison.png"
+                plt.savefig(out_plot)
+                plt.close()
+                c.success(f"Saved {out_plot.relative_to(out_root)}")
+                checklist["SSIM Metrics"] += 1
+
+    _report_checklist("multivariate", checklist)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="SwissClim Evaluations — Intercomparison runner (YAML-configured)"
@@ -1812,6 +1871,8 @@ def run_from_config(cfg: dict) -> None:
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
         intercompare_ets_metrics(models, labels, out_root)
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels

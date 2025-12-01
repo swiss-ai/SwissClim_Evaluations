@@ -104,6 +104,7 @@ selection:
     vertical_profiles: mean  # mean | pooled | members | none*
     deterministic: mean      # mean | pooled | members | none*
     ets: mean                # mean | pooled | members | none*
+    multivariate: mean       # mean | pooled | members | none*
     probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
@@ -163,6 +164,7 @@ modules:
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
+  multivariate: true         # Multivariate metrics (SSIM)
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
@@ -212,6 +214,17 @@ metrics:
   energy_spectra:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
+
+  # Multivariate metrics configuration.
+  multivariate:
+    # SSIM configuration
+    ssim:
+      # Parameters for SSIM (defaults from Wang et al. 2004)
+      sigma: 1.5
+      k1: 0.01
+      k2: 0.03
+      gaussian_weights: true
+      use_sample_covariance: false
 
 probabilistic:
   # If true, compute and report CRPS summaries per pressure level (for 3D variables).
