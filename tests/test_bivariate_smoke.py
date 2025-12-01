@@ -11,7 +11,8 @@ import swissclim_evaluations.cli as cli_mod
 
 def _synthetic_prepared_multivariate():
     """
-    Create synthetic datasets with u10m, v10m, t2m for bivariate testing.
+    Create synthetic datasets with 10m_u_component_of_wind, 10m_v_component_of_wind, 2m_temperature
+    for bivariate testing.
     """
     init_time = np.array([np.datetime64("2025-01-01T00")])
     lead_time = np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]")
@@ -26,9 +27,9 @@ def _synthetic_prepared_multivariate():
 
     ds = xr.Dataset(
         {
-            "u10m": (["init_time", "lead_time", "latitude", "longitude"], u10m),
-            "v10m": (["init_time", "lead_time", "latitude", "longitude"], v10m),
-            "t2m": (["init_time", "lead_time", "latitude", "longitude"], t2m),
+            "10m_u_component_of_wind": (["init_time", "lead_time", "latitude", "longitude"], u10m),
+            "10m_v_component_of_wind": (["init_time", "lead_time", "latitude", "longitude"], v10m),
+            "2m_temperature": (["init_time", "lead_time", "latitude", "longitude"], t2m),
         },
         coords={
             "init_time": init_time,
@@ -61,7 +62,14 @@ def test_bivariate_workflow(monkeypatch, tmp_path: Path):
     cli_cfg_a = {
         "paths": {"nwp": "dummy.zarr", "ml": "dummy.zarr", "output_root": str(model_dir_a)},
         "modules": {"multivariate": True},
-        "metrics": {"multivariate": {"bivariate_pairs": [["u10m", "v10m"], ["t2m", "u10m"]]}},
+        "metrics": {
+            "multivariate": {
+                "bivariate_pairs": [
+                    ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+                    ["2m_temperature", "10m_u_component_of_wind"],
+                ]
+            }
+        },
         "plotting": {"output_mode": "both"},
     }
 
@@ -85,12 +93,14 @@ def test_bivariate_workflow(monkeypatch, tmp_path: Path):
 
     # 6. Verify CLI output (.npz files AND .png plots)
     npz_dir_a = model_dir_a / "multivariate"
-    assert (npz_dir_a / "bivariate_hist_u10m_v10m.npz").exists()
-    assert (npz_dir_a / "bivariate_hist_t2m_u10m.npz").exists()
+    assert (
+        npz_dir_a / "bivariate_hist_10m_u_component_of_wind_10m_v_component_of_wind.npz"
+    ).exists()
+    assert (npz_dir_a / "bivariate_hist_2m_temperature_10m_u_component_of_wind.npz").exists()
 
     # Verify that plots are generated directly by the CLI
-    assert (npz_dir_a / "bivariate_u10m_v10m.png").exists()
-    assert (npz_dir_a / "bivariate_t2m_u10m.png").exists()
+    assert (npz_dir_a / "bivariate_10m_u_component_of_wind_10m_v_component_of_wind.png").exists()
+    assert (npz_dir_a / "bivariate_2m_temperature_10m_u_component_of_wind.png").exists()
 
     # Intercomparison step for bivariate plots is no longer needed/supported
     # as plots are generated per-model.

@@ -412,6 +412,29 @@ multivariate_ssim_ens0.csv
 
 Additionally, bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
 
+**Recommended Bivariate Pairs:**
+
+To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
+
+1.  **Surface Dynamics (Wind Vector):** $u_{10m}$ vs $v_{10m}$.
+    *   *Suggested Level:* Surface (10m).
+    *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
+2.  **Upper-level Dynamics (Wind Vector):** $u$ vs $v$.
+    *   *Suggested Level:* 250 hPa (Jet Stream).
+    *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
+3.  **Thermodynamics (Clausius-Clapeyron):** Temperature ($T$) vs Specific Humidity ($q$).
+    *   *Suggested Level:* 850 hPa (Lower Troposphere).
+    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve ($e_s(T) \approx \exp(-L/R_v T)$). Points beyond this curve indicate unphysical supersaturation.
+4.  **Hydrostatics:** Geopotential ($z$) vs Temperature ($T$).
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
+5.  **Precipitation Physics:** Total Precipitation ($tp$) vs Column Water Vapor ($TCWV$).
+    *   *Suggested Level:* Surface / Column-integrated.
+    *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
+6.  **Vertical Motion:** Vertical Velocity ($w$) vs Temperature ($T$).
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
+
 Outputs:
 - `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
 - `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.

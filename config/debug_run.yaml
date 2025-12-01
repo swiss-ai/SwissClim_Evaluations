@@ -13,8 +13,8 @@ selection:
   datetimes: ["2023-01-02T00:2023-01-02T12"]
   latitudes: [90.0, -89.75]
   longitudes: [0.0, 359.75]
-  variables_2d: ["10m_u_component_of_wind"]
-  variables_3d: ["u_component_of_wind"]
+  variables_2d: ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+  variables_3d: ["u_component_of_wind", "v_component_of_wind"]
   ensemble_members: null
   ensemble:
     maps: members
@@ -38,6 +38,7 @@ modules:
   vertical_profiles: false
   deterministic: true
   ets: true
+  multivariate: true
   probabilistic: false
 
 metrics:
@@ -53,6 +54,12 @@ metrics:
     thresholds: [90]
   energy_spectra:
     report_per_level: true
+  multivariate:
+    ssim:
+      sigma: 1.5
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
 
 probabilistic:
   report_per_level: true

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import matplotlib.colors as mcolors
@@ -10,6 +11,15 @@ import xarray as xr
 from matplotlib.colors import LogNorm
 from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
+
+# Import console for rich output
+try:
+    from .. import console as c
+except ImportError:
+    try:
+        from swissclim_evaluations import console as c  # type: ignore
+    except ImportError:
+        import console as c  # type: ignore
 
 
 def _get_label(da: xr.DataArray, var_name: str) -> str:
@@ -33,72 +43,102 @@ def calculate_and_plot_bivariate_histograms(
     Calculate and save bivariate histograms for specified pairs.
     Also generates the plot immediately if target is available.
     """
+    plotted_pairs = []
+    skipped_pairs = []
+
     for pair in pairs:
         if len(pair) != 2:
             continue
         var_x, var_y = pair
 
-        # Compute for Prediction
-        hist_pred, xedges, yedges = None, None, None
-        if var_x in ds_prediction and var_y in ds_prediction:
-            x_data = ds_prediction[var_x].values.flatten()
-            y_data = ds_prediction[var_y].values.flatten()
-            mask = np.isfinite(x_data) & np.isfinite(y_data)
-            x_data = x_data[mask]
-            y_data = y_data[mask]
+        # Check if variables exist in prediction dataset
+        if var_x not in ds_prediction or var_y not in ds_prediction:
+            skipped_pairs.append(f"{var_x} vs {var_y} (missing in prediction)")
+            continue
 
-            if len(x_data) > 0:
-                hist_pred, xedges, yedges = np.histogram2d(x_data, y_data, bins=bins)
+        # Check if variables exist in target dataset
+        if ds_target is None:
+            skipped_pairs.append(f"{var_x} vs {var_y} (no target dataset)")
+            continue
+
+        if var_x not in ds_target or var_y not in ds_target:
+            skipped_pairs.append(f"{var_x} vs {var_y} (missing in target)")
+            continue
+
+        # Compute for Prediction
+        x_data = ds_prediction[var_x].values.flatten()
+        y_data = ds_prediction[var_y].values.flatten()
+        mask = np.isfinite(x_data) & np.isfinite(y_data)
+        x_data = x_data[mask]
+        y_data = y_data[mask]
+
+        if len(x_data) == 0:
+            skipped_pairs.append(f"{var_x} vs {var_y} (empty prediction data)")
+            continue
+
+        hist_pred, xedges, yedges = np.histogram2d(x_data, y_data, bins=bins)
 
         # Compute for Target
-        hist_target = None
-        if ds_target is not None and var_x in ds_target and var_y in ds_target:
-            x_data_t = ds_target[var_x].values.flatten()
-            y_data_t = ds_target[var_y].values.flatten()
-            mask_t = np.isfinite(x_data_t) & np.isfinite(y_data_t)
-            x_data_t = x_data_t[mask_t]
-            y_data_t = y_data_t[mask_t]
+        x_data_t = ds_target[var_x].values.flatten()
+        y_data_t = ds_target[var_y].values.flatten()
+        mask_t = np.isfinite(x_data_t) & np.isfinite(y_data_t)
+        x_data_t = x_data_t[mask_t]
+        y_data_t = y_data_t[mask_t]
 
-            if len(x_data_t) > 0:
-                # Use same bins as prediction if available
-                if xedges is not None and yedges is not None:
-                    hist_target, _, _ = np.histogram2d(x_data_t, y_data_t, bins=[xedges, yedges])
-                else:
-                    hist_target, xedges, yedges = np.histogram2d(x_data_t, y_data_t, bins=bins)
+        if len(x_data_t) == 0:
+            skipped_pairs.append(f"{var_x} vs {var_y} (empty target data)")
+            continue
 
-        if hist_pred is not None:
-            suffix = f"_{ensemble_token}" if ensemble_token else ""
-            out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
-            out_file.parent.mkdir(parents=True, exist_ok=True)
+        # Use same bins as prediction
+        hist_target, _, _ = np.histogram2d(x_data_t, y_data_t, bins=[xedges, yedges])
 
-            save_dict = {
-                "hist": hist_pred,
-                "bins_x": xedges,
-                "bins_y": yedges,
-            }
-            if hist_target is not None:
-                save_dict["hist_target"] = hist_target
+        # Save and Plot
+        suffix = f"_{ensemble_token}" if ensemble_token else ""
+        out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
+        out_file.parent.mkdir(parents=True, exist_ok=True)
 
-                # Generate plot immediately
-                fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
-                plot_bivariate_histogram(
-                    hist_1=hist_pred,
-                    hist_2=hist_target,
-                    bins_x=xedges,
-                    bins_y=yedges,
-                    label_1="Model Prediction",
-                    label_2="Ground Truth",
-                    var_x=var_x,
-                    var_y=var_y,
-                    ax=ax,
-                    xlabel=_get_label(ds_prediction[var_x], var_x),
-                    ylabel=_get_label(ds_prediction[var_y], var_y),
-                )
-                plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
-                fig.savefig(plot_out, bbox_inches="tight")
-                plt.close(fig)
+        np.savez(
+            out_file,
+            hist=hist_pred,
+            bins_x=xedges,
+            bins_y=yedges,
+            hist_target=hist_target,
+        )
 
-            np.savez(out_file, **save_dict)
+        # Generate plot immediately
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
+
+        # Suppress log scale warnings for zero values
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="Log scale: values of z <= 0 have been masked"
+            )
+            plot_bivariate_histogram(
+                hist_1=hist_pred,
+                hist_2=hist_target,
+                bins_x=xedges,
+                bins_y=yedges,
+                label_1="Model Prediction",
+                label_2="Ground Truth",
+                var_x=var_x,
+                var_y=var_y,
+                ax=ax,
+                xlabel=_get_label(ds_prediction[var_x], var_x),
+                ylabel=_get_label(ds_prediction[var_y], var_y),
+            )
+
+        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
+        fig.savefig(plot_out, bbox_inches="tight")
+        plt.close(fig)
+
+        c.success(f"[multivariate] Saved bivariate plot: {plot_out.name}")
+        plotted_pairs.append(f"{var_x} vs {var_y}")
+
+    # Summary output
+    if skipped_pairs:
+        # Only show unique reasons
+        unique_skips = sorted(set(skipped_pairs))
+        c.warn("[multivariate] Skipped pairs:\n  • " + "\n  • ".join(unique_skips))
 
 
 def plot_bivariate_histogram(
