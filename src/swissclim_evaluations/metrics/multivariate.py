@@ -15,8 +15,8 @@ def calculate_ssim(
     ds_prediction: xr.Dataset,
     variables: list[str] | None = None,
     sigma: float = 1.5,
-    k1: float = 0.01,
-    k2: float = 0.03,
+    K1: float = 0.01,
+    K2: float = 0.03,
     gaussian_weights: bool = True,
     use_sample_covariance: bool = False,
 ) -> pd.DataFrame:
@@ -28,8 +28,8 @@ def calculate_ssim(
         ds_prediction: Prediction dataset.
         variables: List of variables to compute SSIM for. If None, use all common variables.
         sigma: Standard deviation for the Gaussian filter. Default 1.5 (Wang et al. 2004).
-        k1: Constant 1. Default 0.01 (Wang et al. 2004).
-        k2: Constant 2. Default 0.03 (Wang et al. 2004).
+        K1: Constant 1. Default 0.01 (Wang et al. 2004).
+        K2: Constant 2. Default 0.03 (Wang et al. 2004).
         gaussian_weights: Whether to use Gaussian weights. Default True (Wang et al. 2004).
         use_sample_covariance: Whether to use sample covariance (N-1) or population covariance (N).
                                Default False (matches Wang et al. 2004 implementation).
@@ -55,8 +55,8 @@ def calculate_ssim(
             b,
             data_range=dr,
             sigma=sigma,
-            K1=k1,
-            K2=k2,
+            K1=K1,
+            K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )
@@ -139,8 +139,8 @@ def run(
                 ds_t_mem,
                 ds_p_mem,
                 sigma=sigma,
-                k1=k1,
-                k2=k2,
+                K1=k1,
+                K2=k2,
                 gaussian_weights=gaussian_weights,
                 use_sample_covariance=use_sample_covariance,
             )
@@ -168,8 +168,8 @@ def run(
             ds_target_stacked,
             ds_prediction_stacked,
             sigma=sigma,
-            k1=k1,
-            k2=k2,
+            K1=k1,
+            K2=k2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )
@@ -188,8 +188,8 @@ def run(
             ds_target,
             ds_prediction,
             sigma=sigma,
-            k1=k1,
-            k2=k2,
+            K1=k1,
+            K2=k2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )
