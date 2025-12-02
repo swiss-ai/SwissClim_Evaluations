@@ -468,14 +468,12 @@ pit_hist_2m_temperature_ensprob.npz
 pit_field_2m_temperature_ensprob.nc
 crps_field_2m_temperature_ensprob.nc
 crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
-crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map
 ```
 
 WBX summary tables / fields:
 
 ```text
 spread_skill_ratio_ensprob.csv
-crps_ensemble_ensprob.csv
 prob_metrics_temporal_ensprob.nc
 prob_metrics_spatial_ensprob.nc
 ```
@@ -514,8 +512,7 @@ All modules print concise progress like:
 You can explore the outputs interactively using the provided notebooks:
 
 - notebooks/deterministic_verification.ipynb (classic deterministic metrics, maps, histograms, spectra, profiles)
-- notebooks/probabilistic_verification.ipynb (classic CRPS/PIT using our xarray-based implementation)
-- notebooks/probabilistic_verification_wbx.ipynb (WeatherBenchX Spread–Skill Ratio and CRPS summaries)
+- notebooks/probabilistic_verification.ipynb (Probabilistic metrics: CRPS/PIT via Xarray, Spread–Skill Ratio and temporal/spatial metrics via WeatherBenchX)
 
 Notebook tips
 
