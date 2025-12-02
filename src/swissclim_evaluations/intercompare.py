@@ -141,7 +141,7 @@ def _ensure_dir(p: Path) -> Path:
 def _common_files(models: list[Path], rel_glob: str) -> list[str]:
     """Find filenames (basenames) that exist in ALL model folders for a given relative glob.
 
-    Returns a sorted list of basenames present in each folder pattern.
+    Returns a sorted list of basenames present in all model folders that match the pattern.
     """
     sets: list[set[str]] = []
     for m in models:

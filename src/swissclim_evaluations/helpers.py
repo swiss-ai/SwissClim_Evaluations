@@ -15,6 +15,28 @@ COLOR_DIAGNOSTIC = "#4C78A8"  # Neutral blue for diagnostic metrics (e.g. PIT hi
 def get_colormap_for_variable(variable_name: str) -> str | Colormap:
     """
     Returns an appropriate colormap for a given physical variable.
+
+    Args:
+        variable_name (str): Name of the variable (case-insensitive). Can contain underscores or spaces.
+            Matching is performed using substring search after converting to lowercase.
+
+    Returns:
+        str or Colormap: A matplotlib-compatible colormap name (string) or Colormap object.
+            Returns "viridis" as default if no match is found.
+
+    Matching logic:
+        - Substring matching via `in` is used to determine the appropriate colormap.
+        - For example, if "temperature" is in the variable name, "magma" is returned.
+
+    Examples:
+        >>> get_colormap_for_variable("temperature")
+        'magma'
+        >>> get_colormap_for_variable("U_Component_Of_Wind")
+        'RdBu_r'
+        >>> get_colormap_for_variable("precipitation")
+        'Blues'
+        >>> get_colormap_for_variable("unknown_variable")
+        'viridis'
     """
     variable_name = variable_name.lower()
 
