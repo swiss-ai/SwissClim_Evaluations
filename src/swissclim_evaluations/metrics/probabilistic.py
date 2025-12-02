@@ -22,7 +22,6 @@ from weatherbenchX.metrics.probabilistic import (
 
 from ..helpers import (
     COLOR_DIAGNOSTIC,
-    COLOR_MODEL_PREDICTION,
     build_output_filename,
     time_chunks,
 )
@@ -351,11 +350,13 @@ def run_probabilistic(
             crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
 
             for lvl in crps_per_level.level.values:
-                crps_rows_per_level.append({
-                    "variable": var,
-                    "level": int(lvl),
-                    "CRPS": float(crps_per_level.sel(level=lvl).item()),
-                })
+                crps_rows_per_level.append(
+                    {
+                        "variable": var,
+                        "level": int(lvl),
+                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
+                    }
+                )
 
         pit_da = probability_integral_transform(
             da_target,
