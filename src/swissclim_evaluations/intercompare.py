@@ -16,6 +16,9 @@ import yaml
 
 from .helpers import format_level_token
 
+# Global flag for quiet mode (can be overridden if needed)
+quiet = False
+
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
     from . import console as c
@@ -94,8 +97,6 @@ def _report_missing(
         title=f"Input Availability — {module}",
         style="yellow",
     )
-
-
 
 
 def _report_checklist(module: str, results: dict[str, int]) -> None:
@@ -502,6 +503,37 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 df = pd.read_csv(f)
             except Exception:
                 continue
+
+            # Normalize 3D wide format (variables as columns) to long format (variable column)
+            # 2D metrics have 'lsd_mean' column; 3D metrics (wide) do not.
+            if "lsd_mean" not in df.columns:
+                # Identify potential ID columns
+                id_vars = [c for c in df.columns if c in ("Height Level", "level", "Unnamed: 0")]
+                # If no ID column found but index might be meaningful (though read_csv usually makes
+                # it a column if named)
+                if not id_vars and df.index.name in ("Height Level", "level"):
+                    df = df.reset_index()
+                    id_vars = [df.columns[0]]
+
+                if id_vars:
+                    # Melt to long format: id_vars, variable, lsd_mean
+                    df = df.melt(id_vars=id_vars, var_name="variable", value_name="lsd_mean")
+                    # Standardize level column name if possible
+                    if "Height Level" in df.columns:
+                        df = df.rename(columns={"Height Level": "level"})
+                else:
+                    # Log a warning if no ID columns are found and melting is skipped
+                    if "c" in globals():
+                        c.warn(
+                            f"[intercompare] No ID columns found for melting in file '{f}'. "
+                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
+                        )
+                    else:
+                        print(
+                            f"WARNING [intercompare] No ID columns found for melting in file '{f}'."
+                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
+                        )
+
             if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
@@ -550,13 +582,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         if dfc["model"].nunique() >= 2:
             out_csv = dst / name
             dfc.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            if not quiet:
+                c.success(f"Saved {out_csv}")
 
     _save_combined(lsd_2d_rows, "lsd_2d_metrics_averaged_combined.csv")
     _save_combined(lsd_3d_rows, "lsd_3d_metrics_averaged_combined.csv")
-    # Fallback for legacy files without 2d/3d distinction?
-    # If neither 2d nor 3d is in name, they went to 2d list (is_3d=False).
-    # We might want to rename the output if it's generic, but explicit is better.
 
     _save_combined(lsd_2d_rows_lvl, "lsd_2d_metrics_per_level_combined.csv")
     _save_combined(lsd_3d_rows_lvl, "lsd_3d_metrics_per_level_combined.csv")
@@ -605,7 +635,7 @@ def intercompare_histograms(
         c.warn("No common histogram files found. Skipping plots.")
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
-    
+
     colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
 
     # --- Global Histograms ---
@@ -785,7 +815,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
     if not common:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
-      
+
     # colors already defined
     for base in common:
         payloads = [_load_npz(m / src_rel / base) for m in models]
