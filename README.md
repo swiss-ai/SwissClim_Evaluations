@@ -128,6 +128,10 @@ paths:
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
 
+  # Note: If the datasets lacks an 'ensemble' dimension (e.g. deterministic model), it will be
+  # automatically added with a single member (index 0).
+
+
   # Where outputs are written; a subfolder per module will be created here.
   output_root: "output/verification_esfm"
 
@@ -346,7 +350,7 @@ Attributes:
 ```
 
 There are two special cases:
-- The `ensemble` dimension must **always** be present in both the dataset (even with a dummy value) and the data variables.
+- The `ensemble` dimension must **always** be present in both the dataset. If your data (e.g., ERA5 ground truth) lacks this dimension, it will be automatically added with a single member (index 0).
 - The `level` dimension **MUST NOT** be present in datasets containing only 2D variables. In mixed datasets, 2D variables must not have the `level` dimension.
 
 ### Chunking policy (xarray/dask)

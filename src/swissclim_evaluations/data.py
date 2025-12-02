@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import warnings
 from collections.abc import Sequence
 from typing import cast
 
@@ -9,7 +10,7 @@ from . import console as c, customizations as custom
 
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
-# be injected artificially. 'ensemble' is mandatory.
+# be injected artificially. 'ensemble' is mandatory (will be auto-created if missing).
 ALLOWED_DIMS: tuple[str, ...] = (
     "latitude",
     "longitude",
@@ -18,6 +19,19 @@ ALLOWED_DIMS: tuple[str, ...] = (
     "lead_time",
     "ensemble",  # mandatory
 )
+
+
+def ensure_ensemble_dim(ds: xr.Dataset) -> xr.Dataset:
+    """Ensure 'ensemble' dimension exists.
+
+    If missing, inject a dummy ensemble dimension of size 1 with coordinate value 0.
+    This allows deterministic datasets (like ERA5 ground truth) to pass validation
+    and be processed uniformly.
+    """
+    if "ensemble" not in ds.dims:
+        # Expand dims injects the dimension and coordinate
+        ds = ds.expand_dims(ensemble=[0])
+    return ds
 
 
 def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
@@ -211,6 +225,7 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         ds_i = _ensure_monotonic(ds_i)
         # Custom interaction based on the zarr file
         ds_i = custom.modify_ds(ds_i, p)
+        ds_i = ensure_ensemble_dim(ds_i)
         validate_dataset_structure(ds_i, p)
         dsets.append(ds_i)
 
@@ -266,6 +281,7 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
     validate_dataset_structure(ds, cast(str, path))
     return ds
 
@@ -286,6 +302,7 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
     validate_dataset_structure(ds, cast(str, path))
     return ds
 
