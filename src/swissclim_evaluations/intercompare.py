@@ -13,7 +13,12 @@ import seaborn as sns
 import xarray as xr
 import yaml
 
+from swissclim_evaluations.plots.energy_spectra import add_wavelength_axis
+
 from .helpers import extract_date_from_filename, format_level_token
+
+# Global flag for quiet mode (can be overridden if needed)
+quiet = False
 
 # Rich-style console utilities for consistent terminal output
 try:  # pragma: no cover (console printing)
@@ -317,26 +322,22 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "north",
-                        "model": lab,
-                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
-                rows.append(
-                    {
-                        "variable": var,
-                        "band_index": j,
-                        "hemisphere": "south",
-                        "model": lab,
-                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                        "metric": "NMAE",
-                    }
-                )
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "north",
+                    "model": lab,
+                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                    "metric": "NMAE",
+                })
+                rows.append({
+                    "variable": var,
+                    "band_index": j,
+                    "hemisphere": "south",
+                    "model": lab,
+                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                    "metric": "NMAE",
+                })
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -357,7 +358,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results = {}
     # Spectra: 1-to-1 mapping (each file -> one plot)
     spectra_files = _common_files(models, "energy_spectra/*_spectrum*.npz")
-    results["Energy Spectra Plots"] = len(spectra_files)
+    # We generate 2 plots per file (standard + ratio)
+    results["Energy Spectra Plots"] = len(spectra_files) * 2
 
     # LSD: Many-to-1 mapping (Combined CSVs)
     # We check for presence of inputs to determine if the Combined output
@@ -402,6 +404,24 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             spec_ds = datas[0].get("spectrum_target")
             if spec_ds is None:
                 spec_ds = datas[0].get("spectrum_ds")
+
+            # Determine surface vs level from metadata
+            var = datas[0].get("variable") or "var"
+            level_raw = datas[0].get("level")
+
+            # Robust check for level
+            is_surface = False
+            if level_raw is None:
+                is_surface = True
+            elif isinstance(level_raw, str):
+                if level_raw.lower() in ("surface", "", "none"):
+                    is_surface = True
+            elif isinstance(level_raw, (int | float)) and np.isnan(level_raw):
+                is_surface = True
+
+            surface = is_surface
+            level_val = None if is_surface else level_raw
+
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
                 try:  # noqa: SIM105 (allow explicit clarity)
@@ -435,23 +455,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     continue
             ax.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax.set_ylabel("Energy Density (weighted)")
-            var = datas[0].get("variable") or "var"
-
-            # Determine if surface based on level content
-            lvl = datas[0].get("level")
-            is_surface = (lvl is None) or (isinstance(lvl, int | float) and lvl == -1)
-
-            level_val: int | None = None
-            try:
-                level_val = int(lvl) if not is_surface and lvl is not None else None
-            except Exception:
-                level_val = None
-
-            if is_surface:
+            if surface:
                 title = f"Energy Spectra — {var} (sfc)"
             else:
                 title = (
-                    f"Energy Spectra — {var} {level_val} hPa"
+                    f"Energy Spectra — {var} {format_level_token(level_val)} hPa"
                     if level_val is not None
                     else f"Energy Spectra — {var}"
                 )
@@ -473,69 +481,128 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             ax.set_title(title)
             ax.grid(True, which="both", ls="--", alpha=0.4)
 
+            # Add golden dotted line at 4*dx cutoff (k_max / 2)
+            # We assume all models have roughly the same resolution/grid
+            if wn is not None:
+                k_max_inter = float(np.nanmax(wn))
+                # Validation: only plot cutoff if k_max_inter is finite and > 0
+                if np.isfinite(k_max_inter) and k_max_inter > 0:
+                    k_cutoff_inter = k_max_inter / 2.0
+                    ax.axvline(
+                        k_cutoff_inter,
+                        color="gold",
+                        linestyle=":",
+                        linewidth=2,
+                        alpha=0.8,
+                        label="4dx Cutoff",
+                    )
+
             # Add secondary wavelength axis
             k_min, k_max = ax.get_xlim()
-            wavelength_candidates = [
-                20000,
-                10000,
-                5000,
-                2000,
-                1000,
-                500,
-                200,
-                100,
-                50,
-                20,
-                10,
-                5,
-                2,
-                1,
-                0.5,
-                0.2,
-                0.1,
-            ]
-            if k_min > 0 and k_max > 0:
-                wl_min_possible = 1.0 / k_max
-                wl_max_possible = 1.0 / k_min
-                valid_wl = [
-                    wl
-                    for wl in wavelength_candidates
-                    if wl_min_possible <= wl <= wl_max_possible * 1.01
-                ]
-                k_ticks = np.array([1.0 / wl for wl in valid_wl])
-                k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-                if k_ticks.size == 0:
-                    k_ticks = np.geomspace(k_min, k_max, num=6)
-            else:
-                # Fallback: use geometric spacing or skip wavelength axis
-                k_ticks = np.geomspace(max(k_min, 1e-6), max(k_max, 1e-3), num=6)
-
-            ax_top = ax.twiny()
-            ax_top.set_xscale("log")
-            ax_top.set_xlim(ax.get_xlim())
-            ax_top.set_xticks(k_ticks)
-
-            def _fmt_wl_from_k(k: float) -> str:
-                if k <= 0:
-                    return "∞"
-                wl = 1.0 / k
-                if wl >= 1000:
-                    return f"{wl / 1000:.0f}k"
-                if wl >= 10:
-                    return f"{wl:.0f}"
-                if wl >= 1:
-                    return f"{wl:.1f}"
-                return f"{wl:.2f}"
-
-            ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-            ax_top.set_xlabel("Wavelength (km)")
-            ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
+            add_wavelength_axis(ax, k_min, k_max)
             ax.legend(frameon=False)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+
+            # Ratio Plot
+            if wn is not None and spec_ds is not None and len(spec_ds) > 0:
+                fig_r, ax_r = plt.subplots(figsize=(10, 6), dpi=160)
+                for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
+                    specm = dat.get("spectrum_prediction")
+                    if specm is None:
+                        specm = dat.get("spectrum_ml")
+
+                    # Try to get the matching target spectrum for this model
+                    spec_t = dat.get("spectrum_target")
+                    if spec_t is None:
+                        spec_t = dat.get("spectrum_ds")
+                    # Fallback to the common spec_ds if specific one is missing
+                    if spec_t is None:
+                        spec_t = spec_ds
+
+                    wnm = dat.get("wavenumber")
+                    if wnm is None:
+                        wnm = dat.get("wavenumber_ml")
+
+                    if wnm is None or specm is None or spec_t is None:
+                        continue
+
+                    s_m = np.asarray(specm)
+                    s_t = np.asarray(spec_t)
+
+                    if s_m.shape != s_t.shape or len(s_m) == 0:
+                        continue
+
+                    try:
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            ratio = s_m / s_t
+                        ratio_pct = ratio * 100.0
+
+                        # Determine model resolution from max wavenumber (Nyquist)
+                        # k_max = 1 / (2 * dx)  =>  dx = 1 / (2 * k_max)
+                        # We want to cut off wavelengths < 4 * dx
+                        # lambda_cutoff = 4 * dx = 2 / k_max
+                        # k_cutoff = 1 / lambda_cutoff = k_max / 2
+                        k_max_model = np.nanmax(wnm)
+                        # Validate k_max_model is finite and positive
+                        if not np.isfinite(k_max_model) or k_max_model <= 0:
+                            continue
+                        k_cutoff = k_max_model / 2.0
+
+                        mask = wnm <= k_cutoff
+
+                        # Apply the same edge trimming as the main plot [2:-2]
+                        if len(mask) > 4:
+                            mask[:2] = False
+                            mask[-2:] = False
+                        else:
+                            mask[:] = False
+
+                        if not np.any(mask):
+                            continue
+
+                        ax_r.semilogx(
+                            wnm[mask],
+                            ratio_pct[mask],
+                            label=lab,
+                            color=colors[i],
+                        )
+                    except Exception:
+                        continue
+
+                ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
+                ax_r.set_ylabel("Energy Density Ratio (%)")
+
+                if surface:
+                    title_ratio = f"Energy Spectra Ratio — {var} (sfc)"
+                else:
+                    title_ratio = (
+                        f"Energy Spectra Ratio — {var} {format_level_token(level_val)} hPa"
+                        if level_val is not None
+                        else f"Energy Spectra Ratio — {var}"
+                    )
+                ax_r.set_title(title_ratio)
+                ax_r.grid(True, which="both", ls="--", alpha=0.4)
+                ax_r.legend(frameon=False)
+                ax_r.axhline(100, color="k", linestyle="--", lw=1.0, alpha=0.5)
+
+                # Add secondary top axis for Wavelength (km)
+                k_min_plot, k_max_plot = ax_r.get_xlim()
+
+                # Define wavelength candidates (km)
+                add_wavelength_axis(ax_r, k_min_plot, k_max_plot)
+
+                if ax_r.get_lines():
+                    out_png_ratio = dst / base.replace(".npz", "_compare_ratio.png")
+                    plt.tight_layout()
+                    plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
+                else:
+                    c.warn("No lines were added to the plot; no output saved.")
+                plt.close(fig_r)
 
     # Collect NPZ patterns (new first, fallback to legacy)
     # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
@@ -554,7 +621,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     lsd_csv = _common_files(models, str(src_rel / "lsd_*.csv"))
     if lsd_csv:
         _print_file_list(f"Found {len(lsd_csv)} common LSD CSV files", lsd_csv)
-        # Process all files together; _plot_group now determines surface/level per file
+    # Plot all energy spectra files (surface/level determined dynamically)
+    if surf:
         _plot_group(surf)
 
     # Combine LSD summary across models
@@ -576,6 +644,37 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 df = pd.read_csv(f)
             except Exception:
                 continue
+
+            # Normalize 3D wide format (variables as columns) to long format (variable column)
+            # 2D metrics have 'lsd_mean' column; 3D metrics (wide) do not.
+            if "lsd_mean" not in df.columns:
+                # Identify potential ID columns
+                id_vars = [c for c in df.columns if c in ("Height Level", "level", "Unnamed: 0")]
+                # If no ID column found but index might be meaningful (though read_csv usually makes
+                # it a column if named)
+                if not id_vars and df.index.name in ("Height Level", "level"):
+                    df = df.reset_index()
+                    id_vars = [df.columns[0]]
+
+                if id_vars:
+                    # Melt to long format: id_vars, variable, lsd_mean
+                    df = df.melt(id_vars=id_vars, var_name="variable", value_name="lsd_mean")
+                    # Standardize level column name if possible
+                    if "Height Level" in df.columns:
+                        df = df.rename(columns={"Height Level": "level"})
+                else:
+                    # Log a warning if no ID columns are found and melting is skipped
+                    if "c" in globals():
+                        c.warn(
+                            f"[intercompare] No ID columns found for melting in file '{f}'. "
+                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
+                        )
+                    else:
+                        print(
+                            f"WARNING [intercompare] No ID columns found for melting in file '{f}'."
+                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
+                        )
+
             if "variable" not in df.columns and "Unnamed: 0" in df.columns:
                 df = df.rename(columns={"Unnamed: 0": "variable"})
             df.insert(0, "model", lab)
@@ -624,13 +723,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         if dfc["model"].nunique() >= 2:
             out_csv = dst / name
             dfc.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            if not quiet:
+                c.success(f"Saved {out_csv}")
 
     _save_combined(lsd_2d_rows, "lsd_2d_metrics_averaged_combined.csv")
     _save_combined(lsd_3d_rows, "lsd_3d_metrics_averaged_combined.csv")
-    # Fallback for legacy files without 2d/3d distinction?
-    # If neither 2d nor 3d is in name, they went to 2d list (is_3d=False).
-    # We might want to rename the output if it's generic, but explicit is better.
 
     _save_combined(lsd_2d_rows_lvl, "lsd_2d_metrics_per_level_combined.csv")
     _save_combined(lsd_3d_rows_lvl, "lsd_3d_metrics_per_level_combined.csv")
@@ -702,13 +799,18 @@ def intercompare_histograms(
             bins_ml = pay["bins"]
             _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
 
-        ax.set_title(f"Global Histogram - {base.replace('.npz', '')}")
-        ax.legend()
+        var = base.replace("hist_", "").replace("_global.npz", "")
+        ax.set_title(f"Global Histogram — {var}")
+        ax.set_ylabel("Frequency (log)")
+        ax.set_yscale("log")
+        ax.legend(frameon=False)
+        ax.grid(True, which="both", ls="--", alpha=0.4)
 
-        out_png = dst / base.replace(".npz", ".png")
-        fig.savefig(out_png, bbox_inches="tight")
+        out_png = dst / base.replace(".npz", "_compare.png")
+        plt.tight_layout()
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
-        print(f"[intercompare] saved {out_png}")
+        c.success(f"Saved {out_png.relative_to(out_root)}")
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
@@ -816,7 +918,7 @@ def intercompare_histograms(
             fig.suptitle(f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            c.success(f"Saved {out_png}")
+            c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
 
@@ -854,7 +956,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         out_png = dst / base.replace(".npz", "_compare.png")
         fig.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
-        print(f"[intercompare] saved {out_png}")
+        c.success(f"Saved {out_png.relative_to(out_root)}")
 
     # --- Latitude Bands KDE ---
     # Availability report (always display)
