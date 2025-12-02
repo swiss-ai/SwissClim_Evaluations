@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -15,7 +16,12 @@ import yaml
 
 from swissclim_evaluations.plots.energy_spectra import add_wavelength_axis
 
-from .helpers import extract_date_from_filename, format_level_token
+from .helpers import (
+    extract_date_from_filename,
+    format_level_label,
+    format_level_token,
+    format_variable_name,
+)
 
 # Global flag for quiet mode (can be overridden if needed)
 quiet = False
@@ -409,19 +415,6 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             var = datas[0].get("variable") or "var"
             level_raw = datas[0].get("level")
 
-            # Robust check for level
-            is_surface = False
-            if level_raw is None:
-                is_surface = True
-            elif isinstance(level_raw, str):
-                if level_raw.lower() in ("surface", "", "none"):
-                    is_surface = True
-            elif isinstance(level_raw, (int | float)) and np.isnan(level_raw):
-                is_surface = True
-
-            surface = is_surface
-            level_val = None if is_surface else level_raw
-
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
             if wn is not None and spec_ds is not None and len(spec_ds) > 0:
                 try:  # noqa: SIM105 (allow explicit clarity)
@@ -455,26 +448,20 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     continue
             ax.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax.set_ylabel("Energy Density (weighted)")
-            if surface:
-                title = f"Energy Spectra — {var} (sfc)"
-            else:
-                title = (
-                    f"Energy Spectra — {var} {format_level_token(level_val)} hPa"
-                    if level_val is not None
-                    else f"Energy Spectra — {var}"
-                )
+            title = f"Energy Spectra — {var}{format_level_label(level_raw)}"
 
             # Extract date info if available (single init time)
             init_t = datas[0].get("init_time")
             if init_t is not None:
                 val = str(init_t)
-                # If it looks like a range "start-end", check if start == end
-                if "-" in val:
-                    parts = val.split("-")
-                    if len(parts) == 2 and parts[0] == parts[1]:
-                        title += f" ({parts[0]})"
+                # Check for range pattern first
+                match = re.search(r"^(\d{4}-?\d{2}-?\d{2}T\d{2})-(\d{4}-?\d{2}-?\d{2}T\d{2})$", val)
+                if match:
+                    start, end = match.groups()
+                    if start == end:
+                        title += f" ({start})"
                 else:
-                    # Single value
+                    # Single value or other format
                     if val and val.lower() not in ("none", "noinit"):
                         title += f" ({val})"
 
@@ -576,14 +563,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
                 ax_r.set_ylabel("Energy Density Ratio (%)")
 
-                if surface:
-                    title_ratio = f"Energy Spectra Ratio — {var} (sfc)"
-                else:
-                    title_ratio = (
-                        f"Energy Spectra Ratio — {var} {format_level_token(level_val)} hPa"
-                        if level_val is not None
-                        else f"Energy Spectra Ratio — {var}"
-                    )
+                title_ratio = f"Energy Spectra Ratio — {var}{format_level_label(level_raw)}"
                 ax_r.set_title(title_ratio)
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
                 ax_r.legend(frameon=False)
@@ -739,6 +719,29 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     _save_combined(lsd_banded_3d_rows_lvl, "lsd_bands_3d_metrics_per_level_combined.csv")
 
 
+def _clean_var_from_filename(filename: str, prefix: str = "") -> str:
+    """Clean variable name from filename for plot titles."""
+    stem = filename[:-4] if filename.endswith(".npz") else filename
+    if prefix and stem.startswith(prefix):
+        stem = stem[len(prefix) :]
+
+    # Remove common suffixes/tokens
+    for token in ["_global", "_latbands", "_combined"]:
+        stem = stem.replace(token, "")
+
+    # Remove ensemble token
+    if "_ens" in stem:
+        stem = stem.rsplit("_ens", 1)[0]
+
+    # Remove init/lead time patterns
+    # initYYYY-MM-DDTHH-YYYY-MM-DDTHH
+    stem = re.sub(r"_init\d{4}-?\d{2}-?\d{2}T\d{2}-\d{4}-?\d{2}-?\d{2}T\d{2}", "", stem)
+    # leadXXXh-YYYh
+    stem = re.sub(r"_lead\d+h-\d+h", "", stem)
+
+    return format_variable_name(stem)
+
+
 def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
     # Draw as stairs to avoid bar clutter across models and ensure proper alignment
     counts = np.asarray(counts, dtype=float)
@@ -799,8 +802,9 @@ def intercompare_histograms(
             bins_ml = pay["bins"]
             _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
 
-        var = base.replace("hist_", "").replace("_global.npz", "")
-        ax.set_title(f"Global Histogram — {var}")
+        var = _clean_var_from_filename(base, prefix="hist_")
+        date_suffix = extract_date_from_filename(base)
+        ax.set_title(f"Global Histogram — {var}{date_suffix}")
         ax.set_ylabel("Frequency (log)")
         ax.set_yscale("log")
         ax.legend(frameon=False)
@@ -899,20 +903,7 @@ def intercompare_histograms(
                 )
             plt.tight_layout(rect=(0, 0.05, 1, 1))
             # Derive a variable/level label for the figure title.
-            # Filename schema example: hist_temperature_850_latbands_ensnone.npz
-            # We strip leading 'hist_' and everything from the first '_latbands' onwards.
-            stem = base[:-4] if base.endswith(".npz") else base
-            var_part = stem[len("hist_") :] if stem.startswith("hist_") else stem  # SIM108
-            # Remove trailing ensemble token first (e.g., '_ensnone') to simplify pattern removal
-            var_part_no_ens = (
-                var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
-            )  # SIM108
-            # Remove suffix beginning with '_latbands'
-            if "_latbands" in var_part_no_ens:
-                var_part_no_ens = var_part_no_ens.split("_latbands")[0]
-            var = var_part_no_ens
-
-            # Extract date info from filename if possible
+            var = _clean_var_from_filename(base, prefix="hist_")
             date_suffix = extract_date_from_filename(base)
 
             fig.suptitle(f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02)
@@ -948,7 +939,9 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             kde_ml = pay["kde_ml"]
             ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
 
-        ax.set_title(f"Global Normalized KDE - {base.replace('.npz', '')}")
+        var = _clean_var_from_filename(base, prefix="wd_kde_")
+        date_suffix = extract_date_from_filename(base)
+        ax.set_title(f"Global Normalized KDE — {var}{date_suffix}")
         if units:
             ax.set_xlabel(str(units))
         ax.legend()
@@ -1023,18 +1016,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             )
         plt.tight_layout(rect=(0, 0.05, 1, 1))
         # Extract variable/level part.
-        stem = base[:-4] if base.endswith(".npz") else base
-        var_part = stem[len("wd_kde_") :] if stem.startswith("wd_kde_") else stem  # SIM108
-        # Remove trailing ensemble token if present
-        var_part_no_ens = (
-            var_part.rsplit("_ens", 1)[0] if "_ens" in var_part else var_part
-        )  # SIM108
-        # Remove '_latbands' suffix
-        if var_part_no_ens.endswith("_latbands"):
-            var_part_no_ens = var_part_no_ens[: -len("_latbands")]
-        var = var_part_no_ens
-
-        # Extract date info from filename if possible
+        var = _clean_var_from_filename(base, prefix="wd_kde_")
         date_suffix = extract_date_from_filename(base)
 
         fig.suptitle(f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02)
@@ -1183,7 +1165,7 @@ def intercompare_maps(
 
             title_base = "Ground Truth"
             if var_name:
-                title_base = f"{var_name} — {title_base}{date_suffix}"
+                title_base = f"{format_variable_name(str(var_name))} — {title_base}{date_suffix}"
             if n_levels > 1:
                 if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
                     level_token = format_level_token(level_vals[lvl])
@@ -1737,7 +1719,7 @@ def intercompare_probabilistic(
         # Extract date info from filename if possible
         date_suffix = extract_date_from_filename(base)
 
-        ax.set_title(f"PIT histogram — {var}{date_suffix}")
+        ax.set_title(f"PIT histogram — {format_variable_name(var)}{date_suffix}")
         ax.set_xlabel("PIT value")
         ax.set_ylabel("Density")
         ax.legend()
@@ -1818,7 +1800,7 @@ def intercompare_probabilistic(
             if "_init" in var_title:
                 var_title = var_title.split("_init")[0]
 
-        fig.suptitle(f"CRPS Map — {var_title}{date_suffix}")
+        fig.suptitle(f"CRPS Map — {format_variable_name(var_title)}{date_suffix}")
 
         # No tight_layout here; constrained_layout handles spacing
         out_png = dst / base.replace(".npz", "_compare.png")

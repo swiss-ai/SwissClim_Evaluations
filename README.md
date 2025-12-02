@@ -375,7 +375,7 @@ Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
 - Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
-- Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
+- Optional time range tokens if an init and/or lead range exists: `initYYYY-MM-DDTHH-YYYY-MM-DDTHH` and `leadXXXh-YYYh`
 - Ensemble token (always; see "Ensemble Tokens" below)
 
 Examples (mean reduction vs members):

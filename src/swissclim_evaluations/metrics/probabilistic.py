@@ -25,6 +25,7 @@ from ..helpers import (
     ensemble_mode_to_token,
     extract_date_from_dataset,
     format_init_time_range,
+    format_variable_name,
     time_chunks,
 )
 
@@ -499,12 +500,12 @@ def plot_probabilistic(
         transform=ccrs.PlateCarree(),
     )
     cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    cbar.set_label(f"CRPS — {base_var}")
+    cbar.set_label("CRPS")
 
     # Check for single date
     date_str = extract_date_from_dataset(ds_target)
 
-    ax.set_title(f"CRPS map (mean over time): {base_var}{date_str}")
+    ax.set_title(f"CRPS Map — {format_variable_name(base_var)}{date_str}")
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -601,7 +602,7 @@ def plot_probabilistic(
     # Check for single date
     date_str = extract_date_from_dataset(ds_target)
 
-    ax.set_title(f"PIT histogram — {base_var}{date_str}")
+    ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}{date_str}")
     ax.set_xlabel("PIT value")
     ax.set_ylabel("Density")
     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
@@ -963,8 +964,11 @@ def run_probabilistic_wbx(
                     cmap="viridis",
                     shading="auto",
                 )
-                plt.colorbar(mesh, ax=ax, orientation="vertical", label=crps_name)
-                ax.set_title(f"CRPS map: {base_var}")
+                plt.colorbar(
+                    mesh, ax=ax, orientation="horizontal", label="CRPS", pad=0.08, fraction=0.05
+                )
+                date_str = extract_date_from_dataset(ds_targ)
+                ax.set_title(f"CRPS Map: {format_variable_name(base_var)}{date_str}")
                 # Avoid clashing with non-WBX CRPS map by using a distinct filename
                 out_png = section / build_output_filename(
                     metric="crps_map_wbx",

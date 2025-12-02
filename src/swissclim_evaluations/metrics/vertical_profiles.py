@@ -13,6 +13,7 @@ from ..helpers import (
     ensemble_mode_to_token,
     extract_date_from_dataset,
     format_init_time_range,
+    format_variable_name,
     resolve_ensemble_mode,
 )
 
@@ -306,7 +307,8 @@ def run(
             date_str = extract_date_from_dataset(ds_target)
 
             plt.suptitle(
-                f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}{date_str}"
+                f"Vertical Profiles of NMAE for {format_variable_name(_var_name)} "
+                f"(band-wise){title_extra}{date_str}"
             )
             plt.tight_layout()
             if save_fig:

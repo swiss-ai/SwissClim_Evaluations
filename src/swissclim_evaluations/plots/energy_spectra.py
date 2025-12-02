@@ -12,6 +12,8 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    format_level_label,
+    format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
 )
@@ -273,8 +275,13 @@ def _plot_single_spectrum(
 
     add_wavelength_axis(ax, k_min, k_max)
 
-    lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
+    lev_part = format_level_label(level)
+    # Simplify title to just show init date if available, matching other plots
+    date_suffix = f" ({init_label})" if init_label and init_label != "noInit" else ""
+    ax.set_title(
+        f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
+        pad=24,
+    )
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -400,7 +407,7 @@ def _plot_energy_spectra(
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
-            init_label = init_label.replace(":", "").replace("-", "")
+            init_label = init_label.replace(":", "")
         else:
             init_label = "noinit"
 
@@ -988,7 +995,7 @@ def run(
                 and first_dt in ds_target_full["init_time"].values
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
-            dt_str = np.datetime_as_string(first_dt, unit="h").replace("-", "").replace(":", "")
+            dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
             print(
                 "[energy_spectra] Plotting only first init_time: "
                 f"{dt_str} (metrics cover full range)"

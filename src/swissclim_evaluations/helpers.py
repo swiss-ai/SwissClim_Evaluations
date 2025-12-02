@@ -45,14 +45,14 @@ def aggregate_member_dfs(dfs):
 
 
 def format_init_time_range(ts: np.ndarray) -> tuple[str, str]:
-    """Format init_time array (datetime64) to YYYYMMDDTHH strings (hour precision)."""
+    """Format init_time array (datetime64) to YYYY-MM-DDTHH strings (hour precision)."""
     if ts.size == 0:
         return ("", "")
     start = np.datetime64(ts.min()).astype("datetime64[h]")
     end = np.datetime64(ts.max()).astype("datetime64[h]")
 
     def _fmt(x):
-        return np.datetime_as_string(x, unit="h").replace("-", "").replace(":", "")
+        return np.datetime_as_string(x, unit="h").replace(":", "")
 
     return _fmt(start), _fmt(end)
 
@@ -69,7 +69,7 @@ def time_range_suffix(ds: xr.Dataset) -> str:
     Patterns required by tests:
       - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
       - Only one dim present → single segment without separator.
-    Datetime formatted as YYYYMMDDHH (no separators). Lead times in hours (ints).
+    Datetime formatted as YYYY-MM-DDTHH. Lead times in hours (ints).
     """
     segments: list[str] = []
     if "init_time" in ds.coords:
@@ -110,7 +110,7 @@ def build_output_filename(
         variable: Variable name; list/None omitted.
         level: Pressure level value.
         qualifier: Extra discriminator (averaged, combined, plot, spectrum, etc.).
-        init_time_range: (start,end) timestamps YYYYMMDDHH → init<start>-<end>.
+        init_time_range: (start,end) timestamps YYYY-MM-DDTHH → init<start>-<end>.
         lead_time_range: (start,end) lead hours → lead<start>-<end>.
         ensemble: Index, 'mean', or None.
         ext: File extension without dot.
@@ -352,16 +352,18 @@ def validate_and_normalize_ensemble_config(
 def extract_date_from_filename(filename: str) -> str:
     """Extract date suffix from filename if it contains a single init time.
 
-    Looks for pattern 'init<YYYYMMDDTHHstart>-<YYYYMMDDTHHend>'. If start == end, returns
-    '(<start>)'. Otherwise returns empty string.
+    Looks for pattern 'init<YYYY-MM-DDTHHstart>-<YYYY-MM-DDTHHend>'. If start == end, returns
+    ' (<start>)'. Otherwise returns empty string.
     """
-    match = re.search(r"init([\dT]+)-([\dT]+)", filename)
+    match = re.search(r"init(\d{4}-?\d{2}-?\d{2}T\d{2})-(\d{4}-?\d{2}-?\d{2}T\d{2})", filename)
     if match:
         start, end = match.groups()
         if start == end:
-            # Normalize to YYYYMMDDTHH
+            # Normalize to YYYY-MM-DDTHH
             if len(start) == 10 and "T" not in start:
                 start = start[:8] + "T" + start[8:]
+            if len(start) == 11 and "T" in start and "-" not in start:
+                start = f"{start[:4]}-{start[4:6]}-{start[6:8]}{start[8:]}"
             return f" ({start})"
     return ""
 
@@ -369,7 +371,7 @@ def extract_date_from_filename(filename: str) -> str:
 def extract_date_from_dataset(ds: Any) -> str:
     """Extract date suffix from dataset if it contains a single init time.
 
-    Checks 'init_time' coordinate. If size is 1, formats as ' (YYYYMMDDTHH)'.
+    Checks 'init_time' coordinate. If size is 1, formats as ' (YYYY-MM-DDTHH)'.
     Otherwise returns empty string.
     """
     if not hasattr(ds, "coords") or "init_time" not in ds.coords:
@@ -378,13 +380,41 @@ def extract_date_from_dataset(ds: Any) -> str:
     try:
         its = ds.coords["init_time"]
         if its.size == 1:
-            val = its.values.item() if hasattr(its.values, "item") else its.values[0]
-            ts = np.datetime64(val).astype("datetime64[h]")
-            return f" ({np.datetime_as_string(ts, unit='h').replace('-', '').replace(':', '')})"
+            # Use values directly to avoid .item() converting datetime64 to int (ns)
+            # Handle both scalar (0-d) and 1-d arrays
+            ts_val = its.values if its.ndim == 0 else its.values.flatten()[0]
+            ts = np.datetime64(ts_val).astype("datetime64[h]")
+            return f" ({np.datetime_as_string(ts, unit='h').replace(':', '')})"
     except Exception:
         # If extraction or formatting fails, return empty string as fallback.
         pass
     return ""
+
+
+def format_variable_name(var_name: str) -> str:
+    """Format variable name for plot titles (e.g. '2m_temperature' -> '2m Temperature')."""
+    formatted = " ".join(word.capitalize() for word in var_name.replace("_", " ").split())
+    # Remove trailing 2d/3d indicators
+    lower = formatted.lower()
+    if lower.endswith(" 2d") or lower.endswith(" 3d"):
+        formatted = formatted[:-3]
+    return formatted
+
+
+def format_level_label(level: str | int | float | None) -> str:
+    """Format level label for plot titles.
+
+    Returns empty string for surface levels ('sfc', 'surface', 0),
+    otherwise returns ' (Level {level})'.
+    """
+    if level is None:
+        return ""
+
+    lvl_str = str(level).lower().strip()
+    if lvl_str in ("sfc", "surface", "0", "0.0", "-1", "-1.0"):
+        return ""
+
+    return f" (Level {level})"
 
 
 # Common variable units fallback mapping
