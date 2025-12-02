@@ -48,3 +48,4 @@ logs
 *.sqsh
 output
 config/my_run.yaml
+.vscode/settings.json
