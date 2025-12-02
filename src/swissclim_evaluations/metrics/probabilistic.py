@@ -21,6 +21,7 @@ from weatherbenchX.metrics.probabilistic import (
 )
 
 from ..helpers import (
+    COLOR_DIAGNOSTIC,
     COLOR_MODEL_PREDICTION,
     build_output_filename,
     time_chunks,
@@ -611,7 +612,7 @@ def plot_probabilistic(
         counts,
         width=widths,
         align="edge",
-        color=COLOR_MODEL_PREDICTION,
+        color=COLOR_DIAGNOSTIC,
         edgecolor="white",
     )
     ax.set_title(f"PIT histogram — {base_var}")

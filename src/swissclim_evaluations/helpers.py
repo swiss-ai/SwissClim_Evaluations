@@ -9,6 +9,7 @@ from matplotlib.colors import Colormap
 # Consistent colors for single-model evaluation plots
 COLOR_GROUND_TRUTH = "black"
 COLOR_MODEL_PREDICTION = "#D55E00"  # Vermilion (colorblind-friendly)
+COLOR_DIAGNOSTIC = "#4C78A8"  # Neutral blue for diagnostic metrics (e.g. PIT histogram)
 
 
 def get_colormap_for_variable(variable_name: str) -> str | Colormap:
@@ -16,6 +17,12 @@ def get_colormap_for_variable(variable_name: str) -> str | Colormap:
     Returns an appropriate colormap for a given physical variable.
     """
     variable_name = variable_name.lower()
+
+    # Note: The order of checks matters!
+    # Some variables might match multiple categories (e.g. "integrated_vapor_transport"
+    # contains "vapor" which is also in the precipitation list).
+    # We check for diverging variables first to catch things like fluxes/transport
+    # before checking for general water/moisture terms.
 
     # Diverging variables (wind components, vertical velocity, anomalies, fluxes)
     diverging_vars = [

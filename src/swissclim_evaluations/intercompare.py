@@ -401,7 +401,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     ax.loglog(
                         wn[2:-2],
                         np.asarray(spec_ds)[2:-2],
-                        color="k",
+                        color=COLOR_GROUND_TRUTH,
                         lw=2.0,
                         label="Ground Truth",
                     )
