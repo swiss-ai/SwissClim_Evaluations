@@ -26,7 +26,9 @@ See [config/example_config.yaml](config/example_config.yaml) for a fully comment
 ## Dataset Requirements
 
 This verification is based on xarray Datasets with the following structure.
-Currently the dataloader expects the a zarr archive of the following shape:
+Currently the dataloader expects a zarr archive of the following type:
+- the dataset **must** have the same dimensions and coordinates as shown below
+- the size of these dimensions and coordinates may vary
 
 ```bash
 <xarray.Dataset> Size: 297GB
@@ -52,7 +54,7 @@ Attributes:
 ### Chunking policy (xarray/dask)
 
 - The level dimension is required for 3D variables, but must be absent for 2D variables.
-- The ensemble dimension is required and should be present even for deterministic datasets (use ensemble=1).
+- The ensemble dimension is required and should be present even for deterministic datasets (use ensemble dimension of size 1, e.g. coordinate value `[0]`).
 - The repository enforces a default Dask chunking policy in code:
   - init_time: 1, lead_time: 1, level: 1, latitude: -1, longitude: -1, ensemble: -1 (-1 = no chunking)
   - If a dataset deviates, it will be rechunked automatically with a warning.

@@ -1,5 +1,7 @@
 # Output Overview
 
+This document explains the naming conventions of the output files, but the user should not need to care about this in general use cases. Files are read automatically by the notebooks and this is the main interaction the user has with outputs.
+
 The evaluation generates organized results for each enabled module.
 
 ## Ensemble handling: modes and filename tokens
@@ -15,6 +17,9 @@ Modes → tokens:
 - `none` → only when no ensemble dim (still names `_ensmean`)
 
 **Allowed ensemble modes by module:**
+
+If the dataset contains multiple ensembles, metrics can be computed on the mean of all ensembles (mean setting below), individually per ensemble (members setting below), or pooled across all members (pooled setting below).
+
 - **maps**: mean, members
 - **vertical_profiles**: mean, pooled, members
 - **histograms**: mean, pooled, members
@@ -24,7 +29,7 @@ Modes → tokens:
 - **ets**: mean, pooled, members
 - **probabilistic**: prob only
 
-If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
+The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
 
 Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
 
