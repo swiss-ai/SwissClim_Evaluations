@@ -315,22 +315,26 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                    "metric": "NMAE",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                    "metric": "NMAE",
-                })
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -1797,24 +1801,28 @@ def intercompare_probabilistic(
                 # Flatten the data array and create rows
                 if data_arr.ndim == 0:
                     # Scalar value
-                    spatial_rows.append({
-                        "model": lab,
-                        "metric": metric,
-                        "variable": variable,
-                        "value": float(data_arr),
-                    })
+                    spatial_rows.append(
+                        {
+                            "model": lab,
+                            "metric": metric,
+                            "variable": variable,
+                            "value": float(data_arr),
+                        }
+                    )
                 else:
                     # Multi-dimensional - need to iterate
                     # This is a simplified approach; adjust based on actual structure
                     flat_data = data_arr.flatten()
                     for val in flat_data:
                         if np.isfinite(val):
-                            spatial_rows.append({
-                                "model": lab,
-                                "metric": metric,
-                                "variable": variable,
-                                "value": float(val),
-                            })
+                            spatial_rows.append(
+                                {
+                                    "model": lab,
+                                    "metric": metric,
+                                    "variable": variable,
+                                    "value": float(val),
+                                }
+                            )
             except Exception:
                 pass
     if spatial_rows:
@@ -1896,23 +1904,27 @@ def intercompare_probabilistic(
                 # Create dataframe rows
                 if data_arr.ndim == 0:
                     # Scalar value
-                    temporal_rows.append({
-                        "model": lab,
-                        "metric": metric,
-                        "variable": variable,
-                        "value": float(data_arr),
-                    })
+                    temporal_rows.append(
+                        {
+                            "model": lab,
+                            "metric": metric,
+                            "variable": variable,
+                            "value": float(data_arr),
+                        }
+                    )
                 else:
                     # Multi-dimensional - flatten and create rows
                     flat_data = data_arr.flatten()
                     for val in flat_data:
                         if np.isfinite(val):
-                            temporal_rows.append({
-                                "model": lab,
-                                "metric": metric,
-                                "variable": variable,
-                                "value": float(val),
-                            })
+                            temporal_rows.append(
+                                {
+                                    "model": lab,
+                                    "metric": metric,
+                                    "variable": variable,
+                                    "value": float(val),
+                                }
+                            )
             except Exception:
                 pass
     if temporal_rows:
