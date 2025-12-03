@@ -71,7 +71,23 @@ def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
         )
 
     # 4. Core Dimensions Check
-    required_dims = ["latitude", "longitude", "init_time", "lead_time"]
+    # We allow either (init_time, lead_time) OR (time) to support raw WeatherBench format
+    has_time = "time" in ds.dims
+
+    has_init_lead = "init_time" in ds.dims and "lead_time" in ds.dims
+
+    if not has_time and not has_init_lead:
+        errors.append(
+            f"Dataset '{name}' is missing required dimensions: "
+            "either ('init_time', 'lead_time') or ('time')."
+        )
+
+    required_dims = ["latitude", "longitude"]
+    if has_init_lead:
+        required_dims.extend(["init_time", "lead_time"])
+    elif has_time:
+        required_dims.append("time")
+
     for dim in required_dims:
         if dim not in ds.dims:
             errors.append(f"Dataset '{name}' is missing required dimension '{dim}'.")
@@ -79,10 +95,14 @@ def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
             errors.append(f"Dataset '{name}' is missing required coordinate '{dim}'.")
 
     # 5. Allowed Dimensions Check
+    allowed = set(ALLOWED_DIMS)
+    if has_time:
+        allowed.add("time")
+
     for dim in ds.dims:
-        if dim not in ALLOWED_DIMS:
+        if dim not in allowed:
             errors.append(
-                f"Dataset '{name}' has forbidden dimension '{dim}'. Allowed: {ALLOWED_DIMS}"
+                f"Dataset '{name}' has forbidden dimension '{dim}'. Allowed: {sorted(allowed)}"
             )
 
     if errors:
