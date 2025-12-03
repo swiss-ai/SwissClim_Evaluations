@@ -1915,7 +1915,7 @@ def intercompare_probabilistic(
 def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Combine multivariate SSIM metrics from multiple models."""
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
+    per_model, _, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
     _report_missing("multivariate_ssim", models, labels, per_model, uni)
 
     results = {}
