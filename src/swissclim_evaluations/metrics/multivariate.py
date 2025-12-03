@@ -3,18 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
 
-from swissclim_evaluations.helpers import build_output_filename, ensemble_mode_to_token
+from swissclim_evaluations.helpers import (
+    build_output_filename,
+    ensemble_mode_to_token,
+    resolve_ensemble_mode,
+)
 
 
-def _calculate_multivariate_ssim(
+def calculate_ssim(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
-    sigma: float,
+    sigma: float = 1.5,
+    k1: float = 0.01,
+    k2: float = 0.03,
+    gaussian_weights: bool = True,
+    use_sample_covariance: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate SSIM for each variable.
@@ -57,9 +64,11 @@ def _calculate_multivariate_ssim(
                 t,
                 p,
                 data_range=data_range,
-                gaussian_weights=True,
+                gaussian_weights=gaussian_weights,
                 sigma=sigma,
-                use_sample_covariance=True,  # Match MATLAB default (N-1 normalization)
+                use_sample_covariance=use_sample_covariance,
+                K1=k1,
+                K2=k2,
             )
 
         # Apply SSIM over spatial dimensions
@@ -84,96 +93,104 @@ def _calculate_multivariate_ssim(
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
-    ds_target_std: xr.Dataset,  # Unused but kept for signature compatibility
-    ds_prediction_std: xr.Dataset,  # Unused but kept for signature compatibility
     out_root: Path,
-    plotting_cfg: dict[str, Any] | None,
     metrics_cfg: dict[str, Any] | None,
     ensemble_mode: str | None = None,
 ) -> None:
-    """Compute and write multivariate SSIM metrics."""
+    """
+    Compute and write multivariate metrics (SSIM) CSVs.
+    """
+    cfg = (metrics_cfg or {}).get("multivariate", {})
 
-    # Determine output directory
-    section_output = out_root / "multivariate"
-    section_output.mkdir(parents=True, exist_ok=True)
+    # SSIM configuration
+    ssim_cfg = cfg.get("ssim", {})
 
-    # Resolve ensemble token
-    token = ensemble_mode_to_token(ensemble_mode) if ensemble_mode else "det"
+    # Extract SSIM parameters
+    sigma = float(ssim_cfg.get("sigma", 1.5))
+    k1 = float(ssim_cfg.get("k1", 0.01))
+    k2 = float(ssim_cfg.get("k2", 0.03))
+    gaussian_weights = bool(ssim_cfg.get("gaussian_weights", True))
+    use_sample_covariance = bool(ssim_cfg.get("use_sample_covariance", True))
 
-    # Helper functions to extract time ranges (copied from deterministic.py)
-    def _extract_init_range(ds: xr.Dataset):
-        if "init_time" not in ds.coords and "init_time" not in ds.dims:
-            return None
-        try:
-            vals = ds["init_time"].values
-            if vals.size == 0:
-                return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
+    # Resolve ensemble mode
+    mode = resolve_ensemble_mode("multivariate", ensemble_mode, ds_target, ds_prediction)
 
-            def _fmt_init(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
+    # Helper to save output
+    def _save_output(df: pd.DataFrame, ens_token: str):
+        if df.empty:
+            return
 
-            return (_fmt_init(start), _fmt_init(end))
-        except Exception:
-            return None
-
-    def _extract_lead_range(ds: xr.Dataset):
-        if "lead_time" not in ds.coords and "lead_time" not in ds.dims:
-            return None
-        try:
-            vals = ds["lead_time"].values
-            if vals.size == 0:
-                return None
-            hours = (vals / np.timedelta64(1, "h")).astype(int)
-            start_h = int(hours.min())
-            end_h = int(hours.max())
-
-            def _fmt_lead(h: int) -> str:
-                return f"{h:03d}h"
-
-            return (_fmt_lead(start_h), _fmt_lead(end_h))
-        except Exception:
-            return None
-
-    init_range = _extract_init_range(ds_prediction)
-    lead_range = _extract_lead_range(ds_prediction)
-
-    # Calculate SSIM
-    print("[multivariate] Calculating SSIM metrics...")
-    multi_cfg = (metrics_cfg or {}).get("multivariate", {})
-    sigma = float(multi_cfg.get("ssim_sigma", 1.5))
-
-    df_ssim = _calculate_multivariate_ssim(ds_target, ds_prediction, sigma=sigma)
-
-    if not df_ssim.empty:
-        # Calculate multivariate average (average of SSIM across all variables)
-        multivariate_score = df_ssim["SSIM"].mean()
-
-        # Add a summary row
+        # Calculate multivariate average
+        multivariate_score = df["SSIM"].mean()
         summary_row = pd.DataFrame({"SSIM": [multivariate_score]}, index=["MULTIVARIATE_AVERAGE"])
-        df_final = pd.concat([df_ssim, summary_row])
+        df_final = pd.concat([df, summary_row])
 
-        # Build output filename
-        out_csv = section_output / build_output_filename(
-            metric="multivariate_ssim",
-            variable=None,
-            level=None,
-            qualifier="summary",
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=token,
-            ext="csv",
+        filename = build_output_filename(
+            metric="multivariate", qualifier="ssim", ensemble=ens_token, ext="csv"
         )
+        out_path = out_root / "multivariate" / filename
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final.to_csv(out_path, index_label="variable")
+        print(f"[multivariate] saved {out_path}")
 
-        df_final.to_csv(out_csv, index_label="variable")
-        print(f"[multivariate] saved {out_csv}")
+    # Handle ensemble dimension
+    if "ensemble" in ds_prediction.dims and mode == "mean":
+        ds_prediction = ds_prediction.mean(dim="ensemble")
+        if "ensemble" in ds_target.dims:
+            ds_target = ds_target.mean(dim="ensemble")
 
-        # Print preview
-        print("Multivariate SSIM metrics — first 5 rows:")
-        print(df_final.head())
+    if mode == "members" and "ensemble" in ds_prediction.dims:
+        # Per-member outputs
+        n_members = ds_prediction.sizes["ensemble"]
+        for m in range(n_members):
+            ds_p_mem = ds_prediction.isel(ensemble=m, drop=True)
+            if "ensemble" in ds_target.dims:
+                ds_t_mem = ds_target.isel(ensemble=m, drop=True)
+            else:
+                ds_t_mem = ds_target
+
+            df = calculate_ssim(
+                ds_t_mem,
+                ds_p_mem,
+                sigma=sigma,
+                k1=k1,
+                k2=k2,
+                gaussian_weights=gaussian_weights,
+                use_sample_covariance=use_sample_covariance,
+            )
+            ens_token = ensemble_mode_to_token(mode, member_index=m)
+            _save_output(df, ens_token)
+
+    elif mode == "pooled" and "ensemble" in ds_prediction.dims:
+        # Stack ensemble into the sample dimension (e.g., "time")
+        sample_dim = "time" if "time" in ds_prediction.dims else list(ds_prediction.dims)[0]
+        ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
+        ds_target_stacked = ds_target
+        if "ensemble" in ds_target.dims:
+            ds_target_stacked = ds_target.stack(pooled_sample=("ensemble", sample_dim))
+
+        df = calculate_ssim(
+            ds_target_stacked,
+            ds_prediction_stacked,
+            sigma=sigma,
+            k1=k1,
+            k2=k2,
+            gaussian_weights=gaussian_weights,
+            use_sample_covariance=use_sample_covariance,
+        )
+        ens_token = ensemble_mode_to_token(mode)
+        _save_output(df, ens_token)
+
+    else:
+        # Single output (mean, none, or pooled if supported)
+        df = calculate_ssim(
+            ds_target,
+            ds_prediction,
+            sigma=sigma,
+            k1=k1,
+            k2=k2,
+            gaussian_weights=gaussian_weights,
+            use_sample_covariance=use_sample_covariance,
+        )
+        ens_token = ensemble_mode_to_token(mode)
+        _save_output(df, ens_token)

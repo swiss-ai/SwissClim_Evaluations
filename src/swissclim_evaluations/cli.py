@@ -821,6 +821,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "vertical_profiles",
         "deterministic",
         "ets",
+        "multivariate",
         "probabilistic",
     ]
     resolved_modes: dict[str, str] = {}
@@ -1217,29 +1218,19 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
         c.module_status("multivariate", "run", f"variables={len(all_vars)}")
         if "ensemble" in ds_prediction.dims:
-            ens_size_multi: int = int(ds_prediction.sizes.get("ensemble", 0))
-            # Re-use deterministic mode for multivariate for now
-            use_mode = resolved_modes.get("deterministic", "mean")
-            c.info(
-                format_ensemble_log(
-                    "multivariate",
-                    use_mode,
-                    ens_size_multi,
-                )
-            )
+            ens_size_multi = int(ds_prediction.sizes.get("ensemble", 0))
+            use_mode = resolved_modes.get("multivariate", "mean")
+            c.info(format_ensemble_log("multivariate", use_mode, ens_size_multi))
         else:
-            c.info("No ensemble dimension → multivariate inputs.")
+            c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
             multi_mod.run(
                 ds_target,
                 ds_prediction,
-                ds_target_std,
-                ds_prediction_std,
                 out_root,
-                plotting,
                 cfg.get("metrics", {}),
-                ensemble_mode=ensemble_cfg.get("deterministic"),
+                ensemble_mode=ensemble_cfg.get("multivariate"),
             )
             dt = time.time() - _t
             module_timings.append(("multivariate", dt))

@@ -104,7 +104,7 @@ selection:
     vertical_profiles: mean  # mean | pooled | members | none*
     deterministic: mean      # mean | pooled | members | none*
     ets: mean                # mean | pooled | members | none*
-    multivariate: mean       # mean | members | none*
+    multivariate: mean       # mean | pooled | members | none*
     probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
@@ -165,6 +165,7 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   multivariate: true         # Multivariate SSIM metric
   ets: true                  # Equitable Threat Score across quantile thresholds
+  multivariate: true         # Multivariate metrics (SSIM)
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
@@ -210,16 +211,23 @@ metrics:
 
     thresholds: [50, 70, 90]
 
-  # Multivariate SSIM configuration.
-  # Defaults follow Baker et al. (2019) for climate data visualization assessment.
-  # Note: Window size is implicitly determined by sigma (approx 11 for sigma=1.5).
+    # Multivariate metrics configuration.
   multivariate:
-    ssim_sigma: 1.5
+    # SSIM configuration
+    ssim:
+      # Parameters for SSIM (defaults from Wang et al. 2004)
+      sigma: 1.5
+      k1: 0.01
+      k2: 0.03
+      gaussian_weights: true
+      use_sample_covariance: true
 
   # Energy Spectra configuration.
   energy_spectra:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
+
+
 
 probabilistic:
   # If true, compute and report CRPS summaries per pressure level (for 3D variables).

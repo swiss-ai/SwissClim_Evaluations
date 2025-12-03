@@ -268,6 +268,7 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   multivariate: true         # Multivariate SSIM metric
   ets: true                  # Equitable Threat Score across quantile thresholds
+  multivariate: true         # Multivariate metrics (SSIM)
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
@@ -364,7 +365,7 @@ Modes → tokens:
 
 - mean → `_ensmean`; pooled → `_enspooled`; members → `_ens<i>`; prob → `_ensprob`; none → only when no ensemble dim (still names `_ensmean`).
 
-Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets mean|pooled|members; probabilistic prob only.
+Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets, multivariate mean|pooled|members; probabilistic prob only.
 
 If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
 
@@ -407,6 +408,15 @@ ets_metrics_ensmean.csv
 ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
 ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
+```
+
+### Multivariate Metrics
+
+Multivariate metrics (SSIM) filenames follow the standard pattern:
+
+```text
+multivariate_ssim_ensmean.csv
+multivariate_ssim_ens0.csv
 ```
 
 ### Energy Spectra Analysis

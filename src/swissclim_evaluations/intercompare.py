@@ -353,7 +353,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     dst = _ensure_dir(out_root / "energy_spectra")
 
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
+    per_model, _, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
     _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
 
     results = {}
@@ -741,7 +741,7 @@ def intercompare_histograms(
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
     _report_missing("histograms", models, labels, per_model, uni)
 
     results = {}
@@ -800,7 +800,7 @@ def intercompare_histograms(
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
     # Filter out global histograms from this scan
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
@@ -1051,7 +1051,7 @@ def intercompare_maps(
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "maps/map_*.npz")
+    per_model, _, uni = _scan_model_sets(models, "maps/map_*.npz")
     _report_missing("maps", models, labels, per_model, uni)
 
     results = {}
@@ -1179,7 +1179,7 @@ def intercompare_deterministic_metrics(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
+    per_model, _, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
     _report_missing("deterministic_metrics", models, labels, per_model, uni)
 
     results = {}
@@ -1563,7 +1563,7 @@ def intercompare_probabilistic(
         "probabilistic/prob_metrics_spatial*.nc",
         "probabilistic/prob_metrics_temporal*.nc",
     ):
-        per_model, inter, uni = _scan_model_sets(models, pattern)
+        per_model, _, uni = _scan_model_sets(models, pattern)
         union_total |= uni
         for i, s in enumerate(per_model):
             per_model_accum[i] |= s
@@ -1912,23 +1912,22 @@ def intercompare_probabilistic(
                         plt.close()
 
 
-def intercompare_multivariate_metrics(
-    models: list[Path], labels: list[str], out_root: Path
-) -> None:
+def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine multivariate SSIM metrics from multiple models."""
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "multivariate/multivariate_ssim*.csv")
+    per_model, inter, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
     _report_missing("multivariate_ssim", models, labels, per_model, uni)
 
     results = {}
-    all_multi = _common_files(models, "multivariate/multivariate_ssim*.csv")
+    all_multi = _common_files(models, "multivariate/multivariate_ssim_*.csv")
 
-    summary = [f for f in all_multi if "summary" in f]
-    results["Multivariate Summary"] = 1 if summary else 0
+    # Check for any files
+    results["Multivariate Summary"] = 1 if all_multi else 0
 
     _report_checklist("multivariate_ssim", results)
 
     # Report common files found
-    multi_csv = _common_files(models, "multivariate/multivariate_ssim*.csv")
+    multi_csv = _common_files(models, "multivariate/multivariate_ssim_*.csv")
     if multi_csv:
         _print_file_list(f"Found {len(multi_csv)} common multivariate metric files", multi_csv)
 
@@ -1937,12 +1936,13 @@ def intercompare_multivariate_metrics(
     frames: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        candidates = sorted((m / "multivariate").glob("multivariate_ssim*.csv"))
-        # Prefer summary file
+        candidates = sorted((m / "multivariate").glob("multivariate_ssim_*.csv"))
+        # Prefer ensmean or det
         f = next(
-            (cand for cand in candidates if "summary" in cand.name),
-            None,
+            (c for c in candidates if "ensmean" in c.name or "det" in c.name),
+            next(iter(candidates), None),
         )
+
         if f is not None and f.is_file():
             df = pd.read_csv(f)
             # Normalize variable column
@@ -1953,6 +1953,7 @@ def intercompare_multivariate_metrics(
                     # assume first column is variable name
                     first = df.columns[0]
                     df = df.rename(columns={first: "variable"})
+
             df.insert(0, "model", lab)
             frames.append(df)
 
@@ -2032,7 +2033,8 @@ def run_from_config(cfg: dict) -> None:
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
         intercompare_ets_metrics(models, labels, out_root)
-        intercompare_multivariate_metrics(models, labels, out_root)
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
