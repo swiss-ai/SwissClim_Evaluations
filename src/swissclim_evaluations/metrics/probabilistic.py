@@ -13,12 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from weatherbenchX.metrics.probabilistic import UnbiasedSpreadSkillRatio
 
 # Use official WeatherBenchX metrics instead of local copies
-from weatherbenchX.metrics.probabilistic import (
-    UnbiasedSpreadSkillRatio as WBXSpreadSkillRatio,
-)
-
 from ..helpers import build_output_filename, time_chunks
 
 
@@ -643,13 +640,6 @@ def plot_probabilistic(
     plt.close(fig)
 
 
-"""
-Expose WeatherBenchX metric classes under this module for convenient imports.
-Public API: SpreadSkillRatio.
-"""
-SpreadSkillRatio = WBXSpreadSkillRatio
-
-
 def _wbx_metric_to_df(
     metric: Any,
     ds_prediction: xr.Dataset,
@@ -733,15 +723,15 @@ def run_probabilistic_wbx(
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
-    # CSV summaries using WBX metrics (SpreadSkillRatio)
+    # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
     if m_ens < 2:
         raise RuntimeError(
-            "WBX probabilistic metrics require ensemble size >=2 (SpreadSkillRatio). "
+            "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-    ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
+    ssr_metric = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
     try:
         ssr_df = _wbx_metric_to_df(
             ssr_metric,
@@ -751,7 +741,7 @@ def run_probabilistic_wbx(
         )
     except Exception as e:  # pragma: no cover - defensive clarity wrapper
         raise RuntimeError(
-            "Failed computing SpreadSkillRatio via WeatherBenchX. "
+            "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
             "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
         ) from e
 
@@ -853,7 +843,7 @@ def run_probabilistic_wbx(
     )
 
     metrics = {}
-    metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
+    metrics["SSR"] = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
 
     variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
