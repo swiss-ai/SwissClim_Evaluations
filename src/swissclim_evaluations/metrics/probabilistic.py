@@ -26,6 +26,22 @@ from ..helpers import (
 )
 
 
+def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
+    """Save DataArray to NPZ with coordinates, handling missing ones gracefully."""
+    coords = {}
+    # Standard coordinates we care about
+    for coord_name in ["latitude", "longitude", "init_time", "lead_time", "level", "region"]:
+        if coord_name in da.coords:
+            coords[coord_name] = da.coords[coord_name].values
+        else:
+            coords[coord_name] = np.array([])
+
+    # Add any extra kwargs
+    coords.update(kwargs)
+
+    np.savez(path, data=da.values, **coords)
+
+
 def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
     M: int = da_prediction.shape[-1]
     e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
@@ -352,13 +368,11 @@ def run_probabilistic(
             crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
 
             for lvl in crps_per_level.level.values:
-                crps_rows_per_level.append(
-                    {
-                        "variable": var,
-                        "level": int(lvl),
-                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
-                    }
-                )
+                crps_rows_per_level.append({
+                    "variable": var,
+                    "level": int(lvl),
+                    "CRPS": float(crps_per_level.sel(level=lvl).item()),
+                })
 
         pit_da = probability_integral_transform(
             da_target,
@@ -407,24 +421,8 @@ def run_probabilistic(
         )
         # Use NPZ format (same lightweight approach as maps.py)
         # Saves essential arrays without full xarray overhead - memory efficient
-        np.savez(
-            pit_npz_field,
-            data=pit_da.values,
-            latitude=pit_da.latitude.values if "latitude" in pit_da.coords else np.array([]),
-            longitude=pit_da.longitude.values if "longitude" in pit_da.coords else np.array([]),
-            init_time=pit_da.init_time.values if "init_time" in pit_da.coords else np.array([]),
-            lead_time=pit_da.lead_time.values if "lead_time" in pit_da.coords else np.array([]),
-            level=pit_da.level.values if "level" in pit_da.coords else np.array([]),
-        )
-        np.savez(
-            crps_npz_field,
-            data=crps_da.values,
-            latitude=crps_da.latitude.values if "latitude" in crps_da.coords else np.array([]),
-            longitude=crps_da.longitude.values if "longitude" in crps_da.coords else np.array([]),
-            init_time=crps_da.init_time.values if "init_time" in crps_da.coords else np.array([]),
-            lead_time=crps_da.lead_time.values if "lead_time" in crps_da.coords else np.array([]),
-            level=crps_da.level.values if "level" in crps_da.coords else np.array([]),
-        )
+        _save_npz_with_coords(pit_npz_field, pit_da)
+        _save_npz_with_coords(crps_npz_field, crps_da)
         print(f"[probabilistic] saved {pit_npz_field}")
         print(f"[probabilistic] saved {crps_npz_field}")
 
@@ -936,25 +934,7 @@ def run_probabilistic_wbx(
             ensemble=ens_token_prob,
             ext="npz",
         )
-        np.savez(
-            npz_path,
-            data=temporal_results[var_name].values,
-            latitude=temporal_results[var_name].latitude.values
-            if "latitude" in temporal_results[var_name].coords
-            else np.array([]),
-            longitude=temporal_results[var_name].longitude.values
-            if "longitude" in temporal_results[var_name].coords
-            else np.array([]),
-            init_time=temporal_results[var_name].init_time.values
-            if "init_time" in temporal_results[var_name].coords
-            else np.array([]),
-            lead_time=temporal_results[var_name].lead_time.values
-            if "lead_time" in temporal_results[var_name].coords
-            else np.array([]),
-            level=temporal_results[var_name].level.values
-            if "level" in temporal_results[var_name].coords
-            else np.array([]),
-        )
+        _save_npz_with_coords(npz_path, temporal_results[var_name])
         print("Wrote:", npz_path)
 
     for var_name, _da in spatial_results.data_vars.items():
@@ -969,25 +949,7 @@ def run_probabilistic_wbx(
             ensemble=ens_token_prob,
             ext="npz",
         )
-        np.savez(
-            npz_path,
-            data=spatial_results[var_name].values,
-            latitude=spatial_results[var_name].latitude.values
-            if "latitude" in spatial_results[var_name].coords
-            else np.array([]),
-            longitude=spatial_results[var_name].longitude.values
-            if "longitude" in spatial_results[var_name].coords
-            else np.array([]),
-            init_time=spatial_results[var_name].init_time.values
-            if "init_time" in spatial_results[var_name].coords
-            else np.array([]),
-            lead_time=spatial_results[var_name].lead_time.values
-            if "lead_time" in spatial_results[var_name].coords
-            else np.array([]),
-            level=spatial_results[var_name].level.values
-            if "level" in spatial_results[var_name].coords
-            else np.array([]),
-        )
+        _save_npz_with_coords(npz_path, spatial_results[var_name])
         print("Wrote:", npz_path)
 
     # Optional CRPS map similar to notebook for a selected variable

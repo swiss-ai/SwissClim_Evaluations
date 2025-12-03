@@ -105,18 +105,17 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
     assert pit_npz.exists() and crps_npz.exists()
 
     # Load NPZ files and reconstruct basic shape info
-    pit_data = np.load(pit_npz)
-    crps_data = np.load(crps_npz)
+    with np.load(pit_npz) as pit_data:
+        assert "lead_time" in pit_data
+        pit_lead = pit_data["lead_time"]
+        assert len(pit_lead) == 1
+        # Check that the single lead_time equals zero timedelta
+        lt0 = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")[0]
+        # ...existing code...
 
-    # Verify lead_time coordinate exists and has size 1
-    assert "lead_time" in pit_data
-    assert "lead_time" in crps_data
-    pit_lead = pit_data["lead_time"]
-    crps_lead = crps_data["lead_time"]
-    assert len(pit_lead) == 1
-    assert len(crps_lead) == 1
-
-    # Check that the single lead_time equals zero timedelta
-    lt0 = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")[0]
+    with np.load(crps_npz) as crps_data:
+        assert "lead_time" in crps_data
+        crps_lead = crps_data["lead_time"]
+        assert len(crps_lead) == 1
     assert np.all(pit_lead == lt0)
     assert np.all(crps_lead == lt0)
