@@ -16,7 +16,7 @@ import xarray as xr
 
 # Use official WeatherBenchX metrics instead of local copies
 from weatherbenchX.metrics.probabilistic import (
-    SpreadSkillRatio as WBXSpreadSkillRatio,
+    UnbiasedSpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
 from ..helpers import build_output_filename, time_chunks
