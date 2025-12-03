@@ -197,6 +197,18 @@ class _DummyAxis:
     def invert_yaxis(self):
         return None
 
+    def axhline(self, *a, **k):
+        return None
+
+    def axvline(self, *a, **k):
+        return None
+
+    def semilogx(self, *a, **k):
+        return None
+
+    def get_lines(self):
+        return []
+
 
 class _DummyFig:
     def __init__(self, axes):
