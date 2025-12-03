@@ -40,73 +40,49 @@ def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -> str:
-    sel = cfg.get("selection", {})
-    modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    # Prefer new plural key; fall back to legacy singular.
-    if "ensemble_members" in sel:
-        ensemble_members = sel.get("ensemble_members")
-    else:
-        ensemble_members = sel.get("ensemble_member")
-        if ensemble_members is not None:
-            c.warn(
-                "Config key 'selection.ensemble_member' is deprecated; "
-                "use 'selection.ensemble_members'."
-            )
-    # Normalize ensemble_members to int | list[int] | None for apply_ensemble_policy
-    if isinstance(ensemble_members, list):
-        try:
-            ensemble_members = [int(i) for i in ensemble_members]
-        except Exception:
-            c.warn("Invalid values in ensemble_members list; ignoring selection.")
-            ensemble_members = None
-        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
-            ensemble_members = ensemble_members[0]
-    # Normalize possible list/int forms for messaging only
-    if isinstance(ensemble_members, list):
-        if len(ensemble_members) == 1:
-            ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
-        else:
-            ensemble_member_norm = [int(i) for i in ensemble_members]
-    else:
-        ensemble_member_norm = ensemble_members
-
+def _ensemble_handling_message(
+    ds_prediction: xr.Dataset, cfg: dict[str, Any], resolved_modes: dict[str, str] | None = None
+) -> str:
     if "ensemble" not in ds_prediction.dims:
-        if ensemble_member_norm is not None and not probabilistic_enabled:
-            return (
-                "Ensemble: deterministic mode with "
-                f"ensemble_members={ensemble_member_norm} → selected single member; "
-                "'ensemble' removed."
-            )
-        return (
-            "Ensemble: no 'ensemble' dimension present (either source is single-member "
-            "or reduced deterministically)."
-        )
-    # ensemble present
+        return "Ensemble: No 'ensemble' dimension present."
+
+    # Ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
-    if probabilistic_enabled:
-        return (
-            "Ensemble: probabilistic mode active "
-            f"(size={ens_size}) → token=ensprob for probabilistic outputs."
-        )
-    # Deterministic paths
-    if ensemble_member_norm is None:
-        return (
-            "Ensemble: deterministic mode without explicit member → reduced to mean (ensmean)."
-            if "ensemble" not in ds_prediction.dims or ens_size == 0
-            else "Ensemble: deterministic mode without explicit member; original size="
-            f"{ens_size} (reduced internally where applicable)."
-        )
-    if isinstance(ensemble_member_norm, list):
-        return (
-            "Ensemble: deterministic mode with subset members="
-            f"{ensemble_member_norm} (size={len(ensemble_member_norm)} retained)."
-        )
-    return (
-        "Ensemble: deterministic mode with ensemble_members="
-        f"{ensemble_member_norm} → single member path."
-    )
+    base_msg = f"Ensemble Size: {ens_size}."
+
+    if ens_size == 1:
+        return f"{base_msg} Ensemble settings disregarded; probabilistic module disabled."
+
+    if resolved_modes:
+        modules_cfg = cfg.get("modules", {})
+        # Filter modes by enabled modules
+        active_modes = set()
+        for module, mode in resolved_modes.items():
+            if modules_cfg.get(module):
+                active_modes.add(mode)
+
+        details = []
+        if "prob" in active_modes:
+            details.append("Probabilistic")
+        if "members" in active_modes:
+            details.append("Members")
+        if "pooled" in active_modes:
+            details.append("Pooled")
+
+        if details:
+            return f"{base_msg} Active evaluation modes: {', '.join(details)}."
+
+        if "mean" in active_modes:
+            return f"{base_msg} All modules use mean reduction."
+
+        return f"{base_msg} No ensemble operations active."
+
+    # Fallback if resolved_modes not provided
+    modules_cfg = cfg.get("modules", {})
+    if bool(modules_cfg.get("probabilistic")):
+        return f"{base_msg} Probabilistic evaluation enabled."
+
+    return f"{base_msg} Deterministic/Mean evaluation."
 
 
 def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
@@ -862,7 +838,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         print(ds_prediction)
     # Consolidated ensemble information (fallbacks + resolved modes + high-level message)
     try:
-        ens_msg = _ensemble_handling_message(ds_prediction, cfg)
+        ens_msg = _ensemble_handling_message(ds_prediction, cfg, resolved_modes)
         blocks: list[str] = []
         if fallback_notes:
             blocks.append("Fallbacks:\n" + "\n".join(fallback_notes))
