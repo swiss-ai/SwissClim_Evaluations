@@ -211,7 +211,7 @@ metrics:
 
     thresholds: [50, 70, 90]
 
-    # Multivariate metrics configuration.
+  # Multivariate metrics configuration.
   multivariate:
     # SSIM configuration
     ssim:
