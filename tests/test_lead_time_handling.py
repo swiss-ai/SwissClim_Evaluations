@@ -109,10 +109,10 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
     crps_data = np.load(crps_npz)
 
     # Verify lead_time coordinate exists and has size 1
-    assert "coord_lead_time" in pit_data
-    assert "coord_lead_time" in crps_data
-    pit_lead = pit_data["coord_lead_time"]
-    crps_lead = crps_data["coord_lead_time"]
+    assert "lead_time" in pit_data
+    assert "lead_time" in crps_data
+    pit_lead = pit_data["lead_time"]
+    crps_lead = crps_data["lead_time"]
     assert len(pit_lead) == 1
     assert len(crps_lead) == 1
 
