@@ -6,87 +6,86 @@ Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or 
 
 1. Clone into the expected CSCS path (important)
 
-Several paths in the provided `tools/edf_template.toml` as well as example YAML configs assume the repository lives under:
+   Several paths in the provided `tools/edf_template.toml` as well as example YAML configs assume the repository lives under:
 
-```bash
-/capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
-```
+   ```bash
+   /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+   ```
 
-If you place the repo elsewhere, you must adapt those absolute paths (image, workdir, mounts) in your generated EDF TOML and any YAML configs that reference model/data locations. To follow the convention used by collaborators, clone like this:
+   If you place the repo elsewhere, you must adapt those absolute paths (image, workdir, mounts) in your generated EDF TOML and any YAML configs that reference model/data locations. To follow the convention used by collaborators, clone like this:
 
-```bash
-mkdir -p /capstor/store/cscs/swissai/a122/$USER
-git clone git@github.com:swiss-ai/SwissClim_Evaluations.git /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
-cd /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
-```
+   ```bash
+   mkdir -p /capstor/store/cscs/swissai/a122/$USER
+   git clone git@github.com:swiss-ai/SwissClim_Evaluations.git /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+   cd /capstor/store/cscs/swissai/a122/$USER/SwissClim_Evaluations
+   ```
 
-We recommend the container workflow for fastest, reproducible setup.
+   We recommend the container workflow for fastest, reproducible setup.
 
-1. Build the container (Podman) at repo root in an interactive session:
+2. Build the container (Podman) at repo root in an interactive session:
 
-```bash
-srun --container-writable -t 01:00:00 -A a122 -p debug --pty bash
-podman build -t swissclim-eval .
-```
+   ```bash
+   srun --container-writable -t 01:00:00 -A a122 -p debug --pty bash
+   podman build -t swissclim-eval .
+   ```
 
-1. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
+3. (CSCS Alps) Export to Enroot SQuashFS and set up EDF once:
 
-```bash
-rm -f tools/swissclim-eval.sqsh
-enroot import -x mount -o tools/swissclim-eval.sqsh podman://swissclim-eval
-exit # exit the interactive build session
-mkdir -p ~/.edf
-sed "s/{{username}}/$USER/g" tools/edf_template.toml > ~/.edf/swissclim-eval.toml
-```
+   ```bash
+   rm -f tools/swissclim-eval.sqsh
+   enroot import -x mount -o tools/swissclim-eval.sqsh podman://swissclim-eval
+   exit # exit the interactive build session
+   mkdir -p ~/.edf
+   sed "s/{{username}}/$USER/g" tools/edf_template.toml > ~/.edf/swissclim-eval.toml
+   ```
 
-1. Review and edit the example config:
+4. Review and edit the example config:
 
-The project ships with a commented config that explains every key and valid
-values. Copy it and adjust the paths and selections as needed.
+   The project ships with a commented config that explains every key and valid
+   values. Copy it and adjust the paths and selections as needed.
 
-```bash
-cp config/example_config.yaml config/my_run.yaml
-```
+   ```bash
+   cp config/example_config.yaml config/my_run.yaml
+   ```
 
-1. (CSCS Alps) Launch an interactive session using the container:
+5. (CSCS Alps) Launch an interactive session using the container:
 
-```bash
-srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
-```
+   ```bash
+   srun --container-writable --environment=swissclim-eval -A a122 -t 01:30:00 -p debug --pty /bin/bash
+   ```
 
-You are now inside the container with all dependencies installed.
-For a richer debugging experience we recommend using `code tunnel`.
+   You are now inside the container with all dependencies installed.
+   For a richer debugging experience we recommend using `code tunnel`.
 
-1. Run:
+6. Run:
 
-```bash
-python -m swissclim_evaluations.cli --config config/my_run.yaml
-```
+   ```bash
+   python -m swissclim_evaluations.cli --config config/my_run.yaml
+   ```
 
-Outputs appear under paths.output_root (one sub-folder per module).
+   Outputs appear under paths.output_root (one sub-folder per module).
 
-Note: For reproducibility, the CLI copies the exact YAML config you pass with `--config`
-into the output_root directory at the start of the run (using the original filename).
+   Note: For reproducibility, the CLI copies the exact YAML config you pass with `--config`
+   into the output_root directory at the start of the run (using the original filename).
 
-1. Or submit a batch job (CSCS Alps):
+7. Or submit a batch job (CSCS Alps):
 
-```bash
-sbatch launchscript.sh
-```
+   ```bash
+   sbatch launchscript.sh
+   ```
 
-Don't forget to adjust the path to your `config/my_run.yaml` in
-`launchscript.sh` if you placed it elsewhere.
+   Don't forget to adjust the path to your `config/my_run.yaml` in
+   `launchscript.sh` if you placed it elsewhere.
 
-1. Here is a one-liner with `srun` instead of the `launchscript`:
+8. Here is a one-liner with `srun` instead of the `launchscript`:
 
-```bash
-srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'
-```
+   ```bash
+   srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'
+   ```
 
 > Prefer a plain virtual environment? Use one of the alternatives below.
 
-<details>
-<summary>Install with uenv + uv</summary>
+### Install with uenv + uv
 
 ```bash
 bash tools/setup_env_uenv.sh # activates uenv and exits
@@ -95,10 +94,7 @@ bash tools/setup_env_uenv.sh # installs deps with uv
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-</details>
-
-<details>
-<summary>Install with conda + uv</summary>
+### Install with conda + uv
 
 ```bash
 bash tools/setup_env_conda.sh
@@ -106,15 +102,11 @@ conda activate swissclim-eval
 python -m swissclim_evaluations.cli --config config/my_run.yaml
 ```
 
-</details>
-
 ## Configure
 
 The YAML is the single source of truth. Use the commented example directly:
 
-<!-- markdownlint-disable MD033 -->
-<details>
-<summary><strong>Example config (click to expand)</strong></summary>
+### Example config
 
 ```yaml
 # Global configuration for SwissClim Evaluations
@@ -219,14 +211,15 @@ selection:
     maps: members            # members | mean | none*
     histograms: pooled       # pooled | members | mean | none*
     wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    deterministic: mean      # mean | members | none*
-    ets: mean                # mean | members | none*
-    probabilistic: prob      # prob (only valid choice; module forces prob)
+    energy_spectra: mean     # mean | pooled | members | none*
+    vertical_profiles: mean  # mean | pooled | members | none*
+    deterministic: mean      # mean | pooled | members | none*
+    ets: mean                # mean | pooled | members | none*
+    probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
+    # Validation raises an error if an unsupported mode is configured (e.g. maps: pooled).
 
-  # If true, raise an error when requested pressure levels are missing from the data.
+  # If true, enables a scan for NaN values in the data (reported as warnings).
   check_missing: false
 
 plotting:
@@ -283,6 +276,9 @@ metrics:
   #   "FSS", "Relative L1", "Relative L2"
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
+    # If true, compute and report metrics per pressure level (for 3D variables).
+    report_per_level: true
+
     include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
@@ -306,11 +302,22 @@ metrics:
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
-    thresholds: [50, 70, 90]
-```
+    # If true, compute and report ETS per pressure level (for 3D variables).
+    report_per_level: true
 
-</details>
-<!-- markdownlint-enable MD033 -->
+    thresholds: [50, 70, 90]
+
+  # Energy Spectra configuration.
+  energy_spectra:
+    # If true, compute and report LSD metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+probabilistic:
+  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+  report_per_level: true
+
+
+```
 
 ## Dataset Requirements
 
@@ -348,12 +355,26 @@ Attributes:
 
 The evaluation generates organized results for each enabled module:
 
+## Ensemble handling: modes and filename tokens
+
+Datasets may include an `ensemble` dimension. You can pre‑select members (`selection.ensemble_members`) and set per‑module modes under `ensemble`. Invalid combinations are rejected early.
+
+Modes → tokens:
+
+- mean → `_ensmean`; pooled → `_enspooled`; members → `_ens<i>`; prob → `_ensprob`; none → only when no ensemble dim (still names `_ensmean`).
+
+Allowed sets: maps mean|members; vertical_profiles mean|pooled|members; histograms, wd_kde mean|pooled|members; energy_spectra mean|pooled|members; deterministic, ets mean|pooled|members; probabilistic prob only.
+
+If no ensemble dim, non‑probabilistic modules behave deterministically; filenames still include `_ensmean` (legacy `_ensnone` remains accepted by intercomparison).
+
+Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
+
 ### Deterministic Metrics
 
 Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
-- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof)
+- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
 - Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
 - Ensemble token (always; see "Ensemble Tokens" below)
 
@@ -363,6 +384,8 @@ Examples (mean reduction vs members):
 deterministic_metrics_ensmean.csv
 deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensmean.csv
 deterministic_metrics_standardized_ensmean.csv
+deterministic_metrics_per_level_ensmean.csv
+deterministic_metrics_standardized_per_level_ensmean.csv
 deterministic_metrics_ens0.csv            # members mode example (member 0)
 ```
 
@@ -373,6 +396,7 @@ ETS filenames follow the same minimal pattern as deterministic metrics and inclu
 ```text
 ets_metrics_ensmean.csv
 ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
+ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
 ```
 
@@ -386,9 +410,10 @@ is exported per init_time/lead_time and summarized. Outputs:
 - LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
 - LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
 - LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
-- LSD averaged (3D levels wide): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (rows=levels, columns=variables)
+- LSD averaged (3D): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (scalar mean over levels and time)
+- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv` (only if `report_per_level=true`)
 - LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
-- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged, and init_time summaries.
+- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged (scalar), per-level, and init_time summaries.
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
@@ -396,18 +421,20 @@ Histogram and KDE outputs encode:
 
 - Prefix: `hist_` or `wd_kde_`
 - Variable + optional level token
-- Latitudinal aggregation token (`latbands` or `_latbands_combined` / `_latbands_kde_combined`)
+- Latitudinal aggregation token (`latbands` or `global`)
 - Optional time-range tokens
 - Ensemble token
+
+By default, histograms and KDEs are computed globally (`*_global.npz`). To also generate them per latitude band, set `plotting.histograms_per_lat_band: true` or `plotting.wd_kde_per_lat_band: true` in your config.
 
 Examples (pooled vs members):
 
 ```text
+hist_2m_temperature_global_enspooled.npz
 hist_2m_temperature_latbands_enspooled.npz
-hist_temperature_500_latbands_combined_enspooled.npz
-wd_kde_2m_temperature_combined_enspooled.npz
+wd_kde_2m_temperature_global_enspooled.npz
+wd_kde_2m_temperature_latbands_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
-wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mode)
 ```
 
 Time ranges (if present) appear just before the ensemble token: `..._init2023010200-2023010412_lead000h-036h_enspooled.npz`.
@@ -460,6 +487,7 @@ spread_skill_ratio_ensprob.csv
 crps_ensemble_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
+crps_summary_per_level_ensprob.csv
 ```
 
 ### Details for probabilistic outputs
@@ -511,14 +539,14 @@ Outputs are written under `output/intercomparison/` mirroring the module folders
 
 What gets combined:
 
-- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_2d_metrics_combined.csv` and `lsd_bands_2d_metrics_averaged_combined.csv` when available.
+- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_metrics_averaged_combined.csv`, `lsd_metrics_per_level_combined.csv`, and banded variants when available.
 - histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
 - wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
 - maps: panel maps with DS in the first column and each model as subsequent columns.
-- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
-- ets: merged CSV (`ets_metrics_combined.csv`).
-- probabilistic: merged CSVs (`crps_summary_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
-  - Additionally merges WBX spatial and temporal aggregates from `*_temporal_wbx_*_ensprob.npz` and `*_spatial_wbx_*_ensprob.npz` files into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
+- ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
+- probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
+  - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
   - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
 - vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/vprof_nmae_<variable>_multi_combined_compare.png` — plus per-variable summary tables (`vprof_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model. Legacy `*_pl_nmae_combined*` files are still supported as input.
 

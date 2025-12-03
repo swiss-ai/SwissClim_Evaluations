@@ -1,5 +1,6 @@
 import contextlib
 import itertools
+from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -102,7 +103,7 @@ def build_output_filename(
 ) -> str:
     """Build standardized output filename.
 
-    Always includes ensemble token (ensnone if not present).
+    Always includes ensemble token (ensmean by default).
     Args:
         metric: Short identifier.
         variable: Variable name; list/None omitted.
@@ -131,7 +132,8 @@ def build_output_filename(
         parts.append(f"lead{lead_time_range[0]}-{lead_time_range[1]}")
     # Ensemble token always last before extension
     if ensemble is None:
-        parts.append("ensnone")
+        # Default: treat deterministic/no-explicit-ensemble as mean for naming consistency
+        parts.append("ensmean")
     else:
         ens_lower = str(ensemble).lower()
         # Accept already fully-qualified tokens from resolver
@@ -144,6 +146,18 @@ def build_output_filename(
         else:
             parts.append(f"ens{ensemble}")
     return "_".join(parts) + f".{ext}"
+
+
+def format_level_token(level: Any) -> str:
+    """Return a filesystem-safe label for a single level value."""
+    value = level.item() if hasattr(level, "item") else level
+    try:
+        as_int = int(value)
+        if float(as_int) == float(value):
+            return str(as_int)
+    except Exception:
+        pass
+    return str(value).replace(".", "_")
 
 
 """Helper utilities for chunking over init and lead times."""
@@ -186,6 +200,18 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
 
 _VALID_MODES = {"none", "mean", "pooled", "prob", "members"}
 
+# Explicit per-module allowed modes (logical + implemented semantics).
+_ALLOWED_PER_MODULE: dict[str, set[str]] = {
+    "maps": {"none", "mean", "members"},
+    "vertical_profiles": {"none", "mean", "pooled", "members"},
+    "probabilistic": {"prob"},
+    "histograms": {"none", "mean", "pooled", "members"},
+    "wd_kde": {"none", "mean", "pooled", "members"},
+    "energy_spectra": {"none", "mean", "pooled", "members"},
+    "deterministic": {"none", "mean", "pooled", "members"},
+    "ets": {"none", "mean", "pooled", "members"},
+}
+
 
 def resolve_ensemble_mode(
     module: str,
@@ -222,7 +248,7 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     For members mode we expect caller to invoke once per member with member_index.
     """
     if mode == "none":
-        return None  # builder will inject ensnone
+        return None  # builder will inject default 'ensmean'
     if mode == "mean":
         return "mean"  # builder normalises to ensmean
     if mode == "pooled":
@@ -295,6 +321,14 @@ def validate_and_normalize_ensemble_config(
                 f"ensemble.{module}='{val_raw}' is invalid; falling back to default '{default}'."
             )
             val = default
+        # Enforce per-module allowed set (before handling 'none' degradations).
+        allowed = _ALLOWED_PER_MODULE.get(module)
+        if allowed is not None and val not in allowed:
+            # If user provided 'pooled' for maps or vertical_profiles, provide actionable message.
+            raise ValueError(
+                "Unsupported ensemble mode for module: "
+                f"ensemble.{module}='{val_raw}' not in allowed set {sorted(allowed)}."
+            )
         if has_ensemble:
             if val == "none" and module != "probabilistic":
                 default = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")

@@ -8,9 +8,26 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scores.continuous import mae, mse, rmse
+from scores.categorical import seeps
+from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
+
+
+def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
+    ds_clim = xr.open_zarr(path_climatology)
+    ds_clim = ds_clim.sel(latitude=y_true.latitude, longitude=y_true.longitude)
+
+    prob_dry = ds_clim.total_precipitation_6hr_seeps_dry_fraction
+    prob_dry = prob_dry.sel(
+        dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour
+    )
+
+    seeps_threshold = ds_clim.total_precipitation_6hr_seeps_threshold
+    seeps_threshold = seeps_threshold.sel(
+        dayofyear=y_true.valid_time.dt.dayofyear, hour=y_true.valid_time.dt.hour
+    )
+    return prob_dry, seeps_threshold
 
 
 def _window_size(ds: xr.Dataset) -> tuple[int, int]:
@@ -30,13 +47,15 @@ def _calculate_all_metrics(
     n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
+    seeps_climatology_path: str | None = None,
 ) -> pd.DataFrame:
     """Compute scalar deterministic metrics per variable.
 
     Metrics supported:
-      - MAE, RMSE, MSE, Pearson R, FSS
+      - MAE, RMSE, MSE, Bias, Pearson R, FSS, SEEPS (for precipitation)
       - Relative MAE, Relative L1, Relative L2 (when calc_relative=True)
     """
+
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
@@ -44,7 +63,7 @@ def _calculate_all_metrics(
     auto_window_size = _window_size(ds_target)
     fss_quantile = 0.90
     fss_window_size: tuple[int, int] | None = None
-    fss_thresholds_per_var: dict[str, float] | None = None
+    fss_thresholds_per_var: dict[str, list] | None = None
     no_event_value: float = 1.0  # perfect score if both fields have no events
 
     if isinstance(fss_cfg, dict):
@@ -77,10 +96,10 @@ def _calculate_all_metrics(
         # thresholds: per-variable mapping only
         th_map = fss_cfg.get("thresholds")
         if isinstance(th_map, dict):
-            tmp: dict[str, float] = {}
+            tmp: dict[str, list] = {}
             for k, v in th_map.items():
                 try:
-                    tmp[str(k)] = float(v)
+                    tmp[str(k)] = [float(vi) for vi in v]
                 except Exception:
                     continue
             if tmp:
@@ -94,10 +113,12 @@ def _calculate_all_metrics(
         "RMSE",
         "MSE",
         "Relative MAE",
+        "Bias",
         "Pearson R",
         "FSS",
         "Relative L1",
         "Relative L2",
+        "SEEPS",
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
@@ -108,70 +129,96 @@ def _calculate_all_metrics(
 
         # Base error metrics
         if (include is None) or ("MAE" in metrics_to_compute):
-            mae_val = float(mae(y_true, y_pred))
+            mae_val = float(mae(y_pred, y_true))
             row["MAE"] = mae_val
         else:
             mae_val = np.nan
 
         if (include is None) or ("RMSE" in metrics_to_compute):
-            rmse_val = float(rmse(y_true, y_pred))
+            rmse_val = float(rmse(y_pred, y_true))
             row["RMSE"] = rmse_val
         else:
             rmse_val = np.nan
 
         if (include is None) or ("MSE" in metrics_to_compute):
-            mse_val = float(mse(y_true, y_pred))
+            mse_val = float(mse(y_pred, y_true))
             row["MSE"] = mse_val
+
+        if (include is None) or ("Bias" in metrics_to_compute):
+            bias_val = float(additive_bias(y_pred, y_true))
+            row["Bias"] = bias_val
+        else:
+            bias_val = np.nan
 
         # Correlation
         if (include is None) or ("Pearson R" in metrics_to_compute):
-            row["Pearson R"] = float(pearsonr(y_true, y_pred))
+            row["Pearson R"] = float(pearsonr(y_pred, y_true))
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):
             # Determine event threshold: explicit per-variable threshold wins, else quantile
             if fss_thresholds_per_var and (var in fss_thresholds_per_var):
-                event_threshold = float(fss_thresholds_per_var[var])
+                list_event_threshold = [float(f) for f in fss_thresholds_per_var[var]]
+                list_fss_label = [f"FSS_{et}" for et in list_event_threshold]
             else:
                 q_da = y_true.quantile(fss_quantile, skipna=True)
-                event_threshold = float(q_da.compute().item())
-            try:
-                # Early exit: if both fields have no events anywhere → perfect score
-                yt_evt = bool((y_true >= event_threshold).any().compute().item())
-                yp_evt = bool((y_pred >= event_threshold).any().compute().item())
-                if (not yt_evt) and (not yp_evt):
-                    row["FSS"] = no_event_value
-                else:
-                    spatial_dims = ["latitude", "longitude"]
-
-                    # Proper call to fss_2d with config-driven arguments only
-                    out = fss_2d(
-                        y_pred.compute(),
-                        y_true.compute(),
-                        event_threshold=event_threshold,
-                        window_size=fss_window_size,
-                        spatial_dims=spatial_dims,
-                        # this has no effect here, unfortunately we need to compute() above
-                        dask="parallelized",
-                    )
-                    # Reduce to scalar
-                    if isinstance(out, xr.DataArray):
-                        try:
-                            evt_t = (y_true >= event_threshold).any(dim=spatial_dims, skipna=True)
-                            evt_p = (y_pred >= event_threshold).any(dim=spatial_dims, skipna=True)
-                            no_evt = (~evt_t) & (~evt_p)
-                            out = out.where(~no_evt, other=1.0)
-                        except Exception:
-                            pass
-                        fss_scalar = float(out.mean(skipna=True).compute().item())
+                list_event_threshold = [float(q_da.compute().item())]
+                list_fss_label = [f"FSS_{100 * fss_quantile}%"]
+            for event_threshold, fss_label in zip(
+                list_event_threshold, list_fss_label, strict=False
+            ):
+                try:
+                    # Early exit: if both fields have no events anywhere → perfect score
+                    yt_evt = bool((y_true >= event_threshold).any().compute().item())
+                    yp_evt = bool((y_pred >= event_threshold).any().compute().item())
+                    if (not yt_evt) and (not yp_evt):
+                        row[fss_label] = no_event_value
                     else:
-                        fss_scalar = float(out)
-                    row["FSS"] = fss_scalar
-            except Exception as e:
-                # Surface the error context once while keeping pipeline resilient
-                with contextlib.suppress(Exception):
-                    print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
-                row["FSS"] = float("nan")
+                        spatial_dims = ["latitude", "longitude"]
+
+                        # Proper call to fss_2d with config-driven arguments only
+                        out = fss_2d(
+                            y_pred.compute(),
+                            y_true.compute(),
+                            event_threshold=event_threshold,
+                            window_size=fss_window_size,
+                            spatial_dims=spatial_dims,
+                            # this has no effect here, unfortunately we need to compute() above
+                            dask="parallelized",
+                        )
+                        # Reduce to scalar
+                        if isinstance(out, xr.DataArray):
+                            try:
+                                evt_t = (y_true >= event_threshold).any(
+                                    dim=spatial_dims, skipna=True
+                                )
+                                evt_p = (y_pred >= event_threshold).any(
+                                    dim=spatial_dims, skipna=True
+                                )
+                                no_evt = (~evt_t) & (~evt_p)
+                                out = out.where(~no_evt, other=1.0)
+                            except Exception:
+                                pass
+                            fss_scalar = float(out.mean(skipna=True).compute().item())
+                        else:
+                            fss_scalar = float(out)
+                        row[fss_label] = fss_scalar
+                except Exception as e:
+                    # Surface the error context once while keeping pipeline resilient
+                    with contextlib.suppress(Exception):
+                        print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
+                    row[fss_label] = float("nan")
+
+        if "total_precipitation" in var and "SEEPS" in metrics_to_compute:
+            if seeps_climatology_path is None:
+                raise ValueError(
+                    "SEEPS metric requested but 'seeps_climatology_path' not provided in config."
+                )
+            prob_dry, seeps_threshold = _prepare_seeps(y_true, seeps_climatology_path)
+            seeps_val = seeps(
+                y_pred * 1000, y_true * 1000, prob_dry, seeps_threshold, dry_light_threshold=0.25
+            )  # convert to mm with *1000
+            row["SEEPS"] = float(seeps_val)
 
         # Relative metrics
         if calc_relative:
@@ -196,12 +243,44 @@ def _calculate_all_metrics(
                 row["Relative L2"] = (l2_err / l2_norm) if (abs(l2_norm) > eps) else float("nan")
 
         # If include provided, trim extra keys
-        if include is not None:
-            row = {k: v for k, v in row.items() if k in include}
 
         metrics_dict[var] = row
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
+
+
+def _calculate_per_level_metrics(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    calc_relative: bool,
+    n_points: int,
+    include: list[str] | None,
+    fss_cfg: dict[str, Any] | None,
+) -> pd.DataFrame | None:
+    """Compute metrics per pressure level for 3D variables."""
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    if not variables_3d:
+        return None
+
+    if "level" not in ds_target.dims:
+        return None
+
+    levels = ds_target.level.values
+    dfs = []
+    for level in levels:
+        # Select level for all 3D variables
+        ds_t_lvl = ds_target[variables_3d].sel(level=level)
+        ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
+
+        df = _calculate_all_metrics(ds_t_lvl, ds_p_lvl, calc_relative, n_points, include, fss_cfg)
+        df["level"] = int(level)
+        df["variable"] = df.index
+        dfs.append(df)
+
+    if not dfs:
+        return None
+
+    return pd.concat(dfs).reset_index(drop=True)
 
 
 def run(
@@ -227,6 +306,8 @@ def run(
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
+    seeps_climatology_path = cfg.get("seeps_climatology_path")
+    report_per_level = bool(cfg.get("report_per_level", True))
     reduce_ens_mean = True
     try:
         rem = cfg.get("reduce_ensemble_mean")
@@ -329,6 +410,7 @@ def run(
             n_points=n_points,
             include=include,
             fss_cfg=fss_cfg,
+            seeps_climatology_path=seeps_climatology_path,
         )
         standardized_metrics = _calculate_all_metrics(
             ds_target_std,
@@ -337,6 +419,7 @@ def run(
             n_points=n_points,
             include=std_include,
             fss_cfg=fss_cfg,
+            seeps_climatology_path=seeps_climatology_path,
         )
 
         out_csv = section_output / build_output_filename(
@@ -359,10 +442,55 @@ def run(
             ensemble=ens_token,
             ext="csv",
         )
-        regular_metrics.to_csv(out_csv)
-        standardized_metrics.to_csv(out_csv_std)
+        regular_metrics.to_csv(out_csv, index_label="variable")
+        standardized_metrics.to_csv(out_csv_std, index_label="variable")
         print(f"[deterministic] saved {out_csv}")
         print(f"[deterministic] saved {out_csv_std}")
+
+        if report_per_level:
+            per_level_metrics = _calculate_per_level_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+            )
+            if per_level_metrics is not None:
+                out_csv_lvl = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                per_level_metrics.to_csv(out_csv_lvl, index=False)
+                print(f"[deterministic] saved {out_csv_lvl}")
+
+            per_level_std = _calculate_per_level_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                n_points=n_points,
+                include=std_include,
+                fss_cfg=fss_cfg,
+            )
+            if per_level_std is not None:
+                out_csv_lvl_std = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="standardized_per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                per_level_std.to_csv(out_csv_lvl_std, index=False)
+                print(f"[deterministic] saved {out_csv_lvl_std}")
 
         # Console summary
         try:
@@ -405,6 +533,7 @@ def run(
                 n_points=n_points,
                 include=include,
                 fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
             )
             std_m = _calculate_all_metrics(
                 ds_tgt_m_std,
@@ -413,6 +542,7 @@ def run(
                 n_points=n_points,
                 include=std_include,
                 fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
             )
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
@@ -439,11 +569,56 @@ def run(
                 ensemble=token_m,
                 ext="csv",
             )
-            reg_m.to_csv(out_csv_m)
-            std_m.to_csv(out_csv_m_std)
+            reg_m.to_csv(out_csv_m, index_label="variable")
+            std_m.to_csv(out_csv_m_std, index_label="variable")
             print(f"[deterministic] saved {out_csv_m}")
             print(f"[deterministic] saved {out_csv_m_std}")
             pooled_metrics.append(reg_m)
+
+            if report_per_level:
+                per_level_m = _calculate_per_level_metrics(
+                    ds_tgt_m,
+                    ds_pred_m,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                )
+                if per_level_m is not None:
+                    out_csv_m_lvl = section_output / build_output_filename(
+                        metric="deterministic_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=token_m,
+                        ext="csv",
+                    )
+                    per_level_m.to_csv(out_csv_m_lvl, index=False)
+                    print(f"[deterministic] saved {out_csv_m_lvl}")
+
+                per_level_m_std = _calculate_per_level_metrics(
+                    ds_tgt_m_std,
+                    ds_pred_m_std,
+                    calc_relative=False,
+                    n_points=n_points,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                )
+                if per_level_m_std is not None:
+                    out_csv_m_lvl_std = section_output / build_output_filename(
+                        metric="deterministic_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="standardized_per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=token_m,
+                        ext="csv",
+                    )
+                    per_level_m_std.to_csv(out_csv_m_lvl_std, index=False)
+                    print(f"[deterministic] saved {out_csv_m_lvl_std}")
 
         # Aggregate pooled metrics across members if requested
         if pooled_metrics and aggregate_members_mean:
@@ -459,7 +634,7 @@ def run(
                     ensemble="enspooled",
                     ext="csv",
                 )
-                pooled_df.to_csv(out_csv_pool)
+                pooled_df.to_csv(out_csv_pool, index_label="variable")
                 print(f"[deterministic] saved {out_csv_pool}")
 
         # Console previews for members mode

@@ -17,7 +17,7 @@ paths:
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
 
-  # Where outputs are written; a subfolder per module will be created here.
+  # Where outputs are written; a subfolder per module will be created here (potentially GB in size).
   output_root: "output/verification_esfm"
 
 selection:
@@ -100,14 +100,15 @@ selection:
     maps: members            # members | mean | none*
     histograms: pooled       # pooled | members | mean | none*
     wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    deterministic: mean      # mean | members | none*
-    ets: mean                # mean | members | none*
-    probabilistic: prob      # prob (only valid choice; module forces prob)
+    energy_spectra: mean     # mean | pooled | members | none*
+    vertical_profiles: mean  # mean | pooled | members | none*
+    deterministic: mean      # mean | pooled | members | none*
+    ets: mean                # mean | pooled | members | none*
+    probabilistic: prob      # prob (only valid choice)
     # * 'none' only if dataset truly has no ensemble dimension.
+    # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
-  # If true, raise an error when requested pressure levels are missing from the data.
+  # If true, enables a scan for NaN values in the data (reported as warnings).
   check_missing: false
 
 plotting:
@@ -137,6 +138,13 @@ plotting:
   # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
   histogram_max_samples: 200000
 
+  # If true, generate histograms for each latitude band in addition to the global histogram.
+  # Global histograms are always produced.
+  histograms_per_lat_band: false
+
+  # If true, generate KDE plots for each latitude band in addition to the global KDE.
+  # Global KDEs are always produced.
+  wd_kde_per_lat_band: false
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only
@@ -160,13 +168,20 @@ modules:
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
-  #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
+  #   "MAE", "RMSE", "MSE", "Relative MAE", "Bias", "Pearson R",
   #   "FSS", "Relative L1", "Relative L2"
+  #   "SEEPS" (only for precipitation)
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
-    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
+    # If true, compute and report metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+    include: ["MAE", "RMSE", "MSE", "Bias", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
+
+    # Path to the climatology file for SEEPS calculation.
+    seeps_climatology_path: "/capstor/store/cscs/swissai/weatherbench/ERA5-climatology-1990-2019-surface-6h.zarr"
 
     # Fractional Skill Score (FSS) configuration
     # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
@@ -180,11 +195,24 @@ metrics:
       window_size: 9            # Example: square window of 9x9
       # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
       # thresholds:              # Example: per-variable thresholds (units must match dataset)
-      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
-      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
+      #   "total_precipitation": [0.001, 0.005]     # e.g., 1 mm over accumulation period
+      #   "10m_u_component_of_wind": [10.0]  # e.g., 10 m/s event
+      #
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
+    # If true, compute and report ETS per pressure level (for 3D variables).
+    report_per_level: true
+
     thresholds: [50, 70, 90]
+
+  # Energy Spectra configuration.
+  energy_spectra:
+    # If true, compute and report LSD metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+probabilistic:
+  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+  report_per_level: true

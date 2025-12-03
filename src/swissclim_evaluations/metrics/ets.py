@@ -13,6 +13,7 @@ def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
 ) -> pd.DataFrame:
     # ds_target (ground truth), ds_prediction (model)
+
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
@@ -33,6 +34,32 @@ def _calculate_ets_for_thresholds(
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
+def _calculate_ets_per_level(
+    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
+) -> pd.DataFrame | None:
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    if not variables_3d:
+        return None
+    if "level" not in ds_target.dims:
+        return None
+
+    levels = ds_target.level.values
+    dfs = []
+    for level in levels:
+        ds_t_lvl = ds_target[variables_3d].sel(level=level)
+        ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
+
+        df = _calculate_ets_for_thresholds(ds_t_lvl, ds_p_lvl, thresholds)
+        df["level"] = int(level)
+        df["variable"] = df.index
+        dfs.append(df)
+
+    if not dfs:
+        return None
+
+    return pd.concat(dfs).reset_index(drop=True)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -42,6 +69,7 @@ def run(
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
+    report_per_level = bool(ets_cfg.get("report_per_level", True))
     reduce_ens_mean = True
     try:
         rem = ets_cfg.get("reduce_ensemble_mean")
@@ -146,8 +174,24 @@ def run(
             ext="csv",
         )
         if members_indices is None:
-            df.to_csv(out_csv)
+            df.to_csv(out_csv, index_label="variable")
             print(f"[ets] saved {out_csv}")
+
+            if report_per_level:
+                per_level_df = _calculate_ets_per_level(ds_target, ds_prediction, thresholds)
+                if per_level_df is not None:
+                    out_csv_lvl = section_output / build_output_filename(
+                        metric="ets_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="csv",
+                    )
+                    per_level_df.to_csv(out_csv_lvl, index=False)
+                    print(f"[ets] saved {out_csv_lvl}")
         else:
             # per-member
             per_member_dfs = []
@@ -168,9 +212,26 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                df_m.to_csv(out_csv_m)
+                df_m.to_csv(out_csv_m, index_label="variable")
                 print(f"[ets] saved {out_csv_m}")
                 per_member_dfs.append(df_m)
+
+                if report_per_level:
+                    per_level_m = _calculate_ets_per_level(ds_tgt_m, ds_pred_m, thresholds)
+                    if per_level_m is not None:
+                        out_csv_m_lvl = section_output / build_output_filename(
+                            metric="ets_metrics",
+                            variable=None,
+                            level=None,
+                            qualifier="per_level",
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=token_m,
+                            ext="csv",
+                        )
+                        per_level_m.to_csv(out_csv_m_lvl, index=False)
+                        print(f"[ets] saved {out_csv_m_lvl}")
+
             if per_member_dfs and aggregate_members_mean:
                 from ..helpers import aggregate_member_dfs
 
@@ -186,5 +247,5 @@ def run(
                         ensemble="enspooled",
                         ext="csv",
                     )
-                    pooled_df.to_csv(out_pool)
+                    pooled_df.to_csv(out_pool, index_label="variable")
                     print(f"[ets] saved {out_pool}")

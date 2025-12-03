@@ -7,7 +7,6 @@
 # - modules: subset of modules to run: spectra, hist, kde, maps, metrics, prob, vprof
 # - max_map_panels: limit number of map panels rendered
 # - max_crps_map_panels: limit CRPS map panels in probabilistic section
-# - quiet: if true, suppress availability panels and "Saved ..." messages (cleaner notebooks)
 
 models:
   - output/modelA
@@ -23,5 +22,3 @@ modules: [spectra, hist, kde, maps, metrics, prob, vprof]
 
 max_map_panels: 4
 max_crps_map_panels: 4
-
-quiet: false # suppress messages and availability panels output

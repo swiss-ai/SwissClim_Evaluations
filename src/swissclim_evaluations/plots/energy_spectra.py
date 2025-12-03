@@ -16,7 +16,8 @@ EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 WAVE_BANDS: list[dict[str, float | str]] = [
     {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
     {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
-    {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
+    {"name": "upper_mesoscale", "min_km": 250.0, "max_km": 1000.0},
+    {"name": "lower_mesoscale", "min_km": 10.0, "max_km": 250.0},
 ]
 
 
@@ -259,58 +260,11 @@ def _plot_single_spectrum(
         return
     ax.set_xlim(k_min, k_max)
 
-    wavelength_candidates = [
-        40000,
-        20000,
-        10000,
-        5000,
-        2000,
-        1000,
-        500,
-        200,
-        100,
-        50,
-        20,
-        10,
-        5,
-        2,
-        1,
-        0.5,
-        0.2,
-        0.1,
-    ]
-    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
-    wl_min_possible = 1.0 / k_max
-    wl_max_possible = 1.0 / k_min
-    valid_wl = [
-        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
-    ]
-    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
-    k_ticks = np.array([1.0 / wl for wl in valid_wl])
-    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-    if k_ticks.size == 0:  # fallback to previous geometric spacing
-        k_ticks = np.geomspace(k_min, k_max, num=6)
+    # Add golden dotted line at 4*dx cutoff (k_max / 2)
+    k_cutoff = k_max / 2.0
+    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
 
-    ax_top = ax.twiny()
-    ax_top.set_xscale("log")
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(k_ticks)
-
-    def _fmt_wl_from_k(k: float) -> str:
-        wl = 1.0 / k
-        if wl >= 1000:
-            return f"{wl / 1000:.0f}k"  # show whole thousands
-        if wl >= 100:
-            return f"{wl:.0f}"
-        if wl >= 10:
-            return f"{wl:.0f}"
-        if wl >= 1:
-            return f"{wl:.1f}"
-        return f"{wl:.2f}"
-
-    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-    ax_top.set_xlabel("Wavelength (km)")
-    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
+    add_wavelength_axis(ax, k_min, k_max)
 
     lev_part = f" Level {level}" if level is not None else " (sfc)"
     ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
@@ -379,7 +333,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=level if level is not None else "surface",
             qualifier="single_spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -498,11 +452,16 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute Log Spectral Distance (LSD) metrics and optional plots."""
 
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
+
+    # Extract config
+    es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
+    report_per_level = bool(es_cfg.get("report_per_level", True))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -858,8 +817,12 @@ def run(
                 )
         df_summary = pd.DataFrame(summary_levels, index=levels)
         df_summary.index.name = "Height Level"
-        # Use lsd_3d_metrics prefix for averaged multi-level summary (consistency)
-        df_summary.to_csv(
+
+        # Always aggregate over levels for the "averaged" file to provide a single scalar metric
+        # per variable (consistent with other modules).
+        df_summary_agg = df_summary.mean(axis=0).to_frame().T
+        df_summary_agg.index = pd.Index(["mean"], name="Height Level")
+        df_summary_agg.to_csv(
             section_output
             / build_output_filename(
                 metric="lsd_3d_metrics",
@@ -872,6 +835,27 @@ def run(
                 ext="csv",
             )
         )
+
+        # Save per-level metrics if requested
+        if report_per_level:
+            df_long = df_summary.reset_index().melt(
+                id_vars="Height Level", var_name="variable", value_name="LSD"
+            )
+            df_long = df_long.rename(columns={"Height Level": "level"})
+            df_long.to_csv(
+                section_output
+                / build_output_filename(
+                    metric="lsd_3d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token,
+                    ext="csv",
+                ),
+                index=False,
+            )
         if per_init_rows_3d:
             pd.concat(per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
@@ -916,7 +900,13 @@ def run(
                 .mean()
                 .rename(columns={"lsd": "lsd_mean"})
             )
-            df_banded3_summary.to_csv(
+
+            # Always aggregate over levels for the "averaged" file
+            group_cols_agg = [c for c in ["variable", "band"] if c in df_banded3_summary.columns]
+            df_banded3_summary_agg = df_banded3_summary.groupby(group_cols_agg, as_index=False)[
+                "lsd_mean"
+            ].mean()
+            df_banded3_summary_agg.to_csv(
                 section_output
                 / build_output_filename(
                     metric="lsd_bands_3d_metrics",
@@ -930,6 +920,23 @@ def run(
                 ),
                 index=False,
             )
+
+            # Save per-level metrics if requested
+            if report_per_level:
+                df_banded3_summary.to_csv(
+                    section_output
+                    / build_output_filename(
+                        metric="lsd_bands_3d_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="csv",
+                    ),
+                    index=False,
+                )
         if banded_per_init_rows_3d:
             pd.concat(banded_per_init_rows_3d, ignore_index=True).to_csv(
                 section_output
@@ -1004,7 +1011,7 @@ def run(
                     / build_output_filename(
                         metric="lsd",
                         variable=str(var),
-                        level=None,
+                        level="surface",
                         qualifier="spectrum",
                         init_time_range=None,
                         lead_time_range=None,
@@ -1042,3 +1049,60 @@ def run(
         print("[energy_spectra] Figures/NPZ saved (subset dataset)")
 
     print("[energy_spectra] Completed energy spectra metrics & plots.")
+
+
+def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:
+    """Add a top axis with wavelength labels (km) corresponding to wavenumber (cycles/km)."""
+    wavelength_candidates = [
+        40000,
+        20000,
+        10000,
+        5000,
+        2000,
+        1000,
+        500,
+        200,
+        100,
+        50,
+        20,
+        10,
+        5,
+        2,
+        1,
+        0.5,
+        0.2,
+        0.1,
+    ]
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
+    wl_min_possible = 1.0 / k_max if k_max > 0 else 0
+    wl_max_possible = 1.0 / k_min if k_min > 0 else float("inf")
+    valid_wl = [
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
+    ]
+    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
+    k_ticks = np.array([1.0 / wl for wl in valid_wl])
+    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+    if k_ticks.size == 0 and k_min > 0 and k_max > k_min:
+        k_ticks = np.geomspace(k_min, k_max, num=6)
+
+    if k_ticks.size > 0:
+        ax_top = ax.twiny()
+        ax_top.set_xscale("log")
+        ax_top.set_xlim(k_min, k_max)
+        ax_top.set_xticks(k_ticks)
+
+        def _fmt_wl_from_k(k: float) -> str:
+            wl = 1.0 / k
+            if wl >= 1000:
+                return f"{wl / 1000:.0f}k"  # show whole thousands
+            if wl >= 100:
+                return f"{wl:.0f}"
+            if wl >= 10:
+                return f"{wl:.0f}"
+            if wl >= 1:
+                return f"{wl:.1f}"
+            return f"{wl:.2f}"
+
+        ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+        ax_top.set_xlabel("Wavelength (km)")
+        ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)

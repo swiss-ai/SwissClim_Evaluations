@@ -7,6 +7,8 @@ from typing import cast
 import numpy as np
 import xarray as xr
 
+from . import customizations as custom
+
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
 # be injected artificially. Earlier versions added a singleton level which led
@@ -134,6 +136,8 @@ def standardize_dims(
         "lead": "lead_time",
         "number": "ensemble",
         "member": "ensemble",
+        "lat": "latitude",
+        "lon": "longitude",
     }
     rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
     if rename_dims_map:
@@ -215,6 +219,28 @@ def standardize_dims(
     return ds
 
 
+def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
+    """Sort common coordinate dims to a consistent monotonic order.
+
+    This avoids xarray.combine_by_coords errors when shards have different
+    coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
+    lazy with Dask-backed arrays and preserves graph structure.
+    """
+    sort_prefs: dict[str, bool] = {
+        "level": True,  # ascending (e.g., 50, 100, ..., 1000)
+        "latitude": False,  # ERA5 typically descending 90 -> -90
+        "longitude": True,  # 0..360 ascending
+        "init_time": True,  # chronological
+        "time": True,  # chronological
+        "lead_time": True,  # increasing timedelta
+    }
+    for dim, asc in sort_prefs.items():
+        if dim in ds.dims:
+            with contextlib.suppress(Exception):
+                ds = ds.sortby(dim, ascending=asc)
+    return ds
+
+
 def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
     """Open multiple Zarr stores and combine lazily by coordinates.
 
@@ -224,27 +250,6 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     """
     dsets: list[xr.Dataset] = []
 
-    def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
-        """Sort common coordinate dims to a consistent monotonic order.
-
-        This avoids xarray.combine_by_coords errors when shards have different
-        coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
-        lazy with Dask-backed arrays and preserves graph structure.
-        """
-        sort_prefs: dict[str, bool] = {
-            "level": True,  # ascending (e.g., 50, 100, ..., 1000)
-            "latitude": False,  # ERA5 typically descending 90 -> -90
-            "longitude": True,  # 0..360 ascending
-            "init_time": True,  # chronological
-            "time": True,  # chronological
-            "lead_time": True,  # increasing timedelta
-        }
-        for dim, asc in sort_prefs.items():
-            if dim in ds.dims:
-                with contextlib.suppress(Exception):
-                    ds = ds.sortby(dim, ascending=asc)
-        return ds
-
     for p in paths:
         ds_i = xr.open_zarr(p, decode_timedelta=True)
         if variables:
@@ -253,6 +258,8 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
             if keep:
                 ds_i = ds_i[keep]
         ds_i = _ensure_monotonic(ds_i)
+        # Custom interaction based on the zarr file
+        ds_i = custom.modify_ds(ds_i, p)
         dsets.append(ds_i)
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
@@ -302,6 +309,11 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, cast(str, path))
     return ds
 
 
@@ -316,6 +328,11 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, cast(str, path))
     return ds
 
 
@@ -328,27 +345,15 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    probabilistic_enabled: bool = False,
     **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
     Extended semantics (backward compatible):
     - ensemble_members can be:
-          * None: keep all members (unless probabilistic disabled → may later be reduced
-                    by per‑module logic; here we do NOT pre-reduce to mean anymore to allow
-                    downstream flexibility). NOTE: previous behaviour reduced to mean here;
-                    to preserve existing expectations, we only change behaviour when
-                    probabilistic_enabled is False and historical callers relied on mean.
-                    For backward compatibility we keep the old reduction to mean when
-                    probabilistic_disabled and no selection requested.
-          * int: select that single member and drop the 'ensemble' dimension.
-          * list[int]: subset to those members. If length==1, drop dim (acts like int). If
-                       length>1 keep 'ensemble' dim with the chosen subset.
-      - If probabilistic modules are enabled we NEVER drop or subset unless multiple
-        explicit members were requested (so probabilistic metrics still see full set
-        unless user intentionally restricts it). This preserves previous rule of ignoring
-        single-member selection in probabilistic mode.
+          * None: keep all members.
+          * int: select that single member (keeping 'ensemble' dimension).
+          * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
     # Backward compatibility: allow legacy 'ensemble_member' kw
     if "ensemble_member" in legacy_kwargs and ensemble_members is None:
@@ -358,6 +363,13 @@ def apply_ensemble_policy(
             DeprecationWarning,
             stacklevel=2,
         )
+    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
+    if "probabilistic_enabled" in legacy_kwargs:
+        legacy_kwargs.pop("probabilistic_enabled")
+    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
+    if "preserve_ensemble_dimension" in legacy_kwargs:
+        legacy_kwargs.pop("preserve_ensemble_dimension")
+
     if legacy_kwargs:
         warnings.warn(
             f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
@@ -377,23 +389,9 @@ def apply_ensemble_policy(
     else:
         indices_list = [int(ensemble_members)]
 
-    if probabilistic_enabled:
-        # In probabilistic mode only respect explicit multi-member subsetting; ignore single
-        # int (previous behaviour) but allow user-specified list to intentionally reduce.
-        if indices_list is None:
-            return ds
-        if len(indices_list) == 1:
-            # Keep full set to avoid accidental collapse; match previous behaviour of ignoring
-            # single selection. (Could alternatively drop; chosen for safety.)
-            return ds
-        return ds.isel(ensemble=indices_list)
-
-    # Deterministic mode
     if indices_list is not None:
-        if len(indices_list) == 1:
-            return ds.isel(ensemble=indices_list[0], drop=True)
         # subset but keep ensemble dimension
-        return ds.isel(ensemble=indices_list)
+        return ds.isel(ensemble=indices_list, drop=False)
 
-    # No explicit selection: preserve legacy behaviour -> reduce to mean
-    return ds.mean(dim="ensemble", keep_attrs=True)
+    # No explicit selection: keep full ensemble
+    return ds

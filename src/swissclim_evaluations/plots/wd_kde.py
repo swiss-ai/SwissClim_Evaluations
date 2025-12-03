@@ -58,6 +58,8 @@ def run(
     except Exception:
         max_levels = None
 
+    per_lat_band = bool(plotting_cfg.get("wd_kde_per_lat_band", False))
+
     # Select only genuine 2D variables (no 'level' dimension) and 3D ones
     variables_2d = [v for v in ds_target_std.data_vars if "level" not in ds_target_std[v].dims]
     variables_3d = [v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims]
@@ -148,6 +150,83 @@ def run(
             return arr[np.isfinite(arr)]
 
         print(f"[wd_kde] variable: {var_name} level={level_token}")
+
+        # --- Global KDE ---
+        seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
+        ds_flat_g = _subsample_values(da_t_std, max_samples, seed=seed_g)
+        ml_flat_g = _subsample_values(da_p_std, max_samples, seed=seed_g)
+
+        if ds_flat_g.size > 0 and ml_flat_g.size > 0:
+            w_g = wasserstein_distance(ds_flat_g, ml_flat_g)
+            kde_ds_g = gaussian_kde(ds_flat_g)
+            kde_ml_g = gaussian_kde(ml_flat_g)
+
+            # Plot Global
+            fig_g, ax_g = plt.subplots(figsize=(10, 6), dpi=dpi)
+            x_eval_g = np.linspace(
+                min(ds_flat_g.min(), ml_flat_g.min()),
+                max(ds_flat_g.max(), ml_flat_g.max()),
+                100,
+            )
+            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color="skyblue", label="Ground Truth")
+            ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color="salmon", label="Model Prediction")
+            ax_g.set_title(
+                f"Global Normalized Distribution of {var_name} ({level_token})\nW-dist: {w_g:.3f}"
+            )
+            ax_g.legend()
+
+            if save_fig:
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_png_g = section_output / build_output_filename(
+                    metric="wd_kde",
+                    variable=var_name,
+                    level=level_token,
+                    qualifier="global",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                fig_g.savefig(out_png_g, bbox_inches="tight", dpi=200)
+                print(f"[wd_kde] saved {out_png_g}")
+
+            if save_npz:
+                section_output.mkdir(parents=True, exist_ok=True)
+                out_npz_g = section_output / build_output_filename(
+                    metric="wd_kde",
+                    variable=var_name,
+                    level=level_token,
+                    qualifier="global",
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                np.savez(
+                    out_npz_g,
+                    w_dist=w_g,
+                    x=x_eval_g,
+                    kde_ds=kde_ds_g(x_eval_g),
+                    kde_ml=kde_ml_g(x_eval_g),
+                    allow_pickle=True,
+                )
+                print(f"[wd_kde] saved {out_npz_g}")
+            plt.close(fig_g)
+
+            # Add to CSV rows
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "global",
+                    "lat_min": -90.0,
+                    "lat_max": 90.0,
+                    "wasserstein": float(w_g),
+                }
+            )
+
+        if not per_lat_band:
+            return
+
         fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
         combined: dict[str, list[np.ndarray | float]] = {
@@ -263,7 +342,7 @@ def run(
                 metric="wd_kde",
                 variable=var_name,
                 level=level_token,
-                qualifier="plot",
+                qualifier="latbands",
                 init_time_range=None,
                 lead_time_range=None,
                 ensemble=ens_token,
@@ -277,7 +356,7 @@ def run(
                 metric="wd_kde",
                 variable=var_name,
                 level=level_token,
-                qualifier="combined",
+                qualifier="latbands",
                 init_time_range=None,
                 lead_time_range=None,
                 ensemble=ens_token,
@@ -310,7 +389,7 @@ def run(
                     str(variable_name),
                     tgt_m[variable_name],
                     pred_m[variable_name],
-                    level_token="",
+                    level_token="surface",
                     ens_token=token_m,
                 )
     else:
@@ -319,7 +398,7 @@ def run(
                 str(variable_name),
                 ds_target_std_eff[variable_name],
                 ds_prediction_std_eff[variable_name],
-                level_token="",
+                level_token="surface",
                 ens_token=ens_token_base,
             )
 
