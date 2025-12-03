@@ -268,7 +268,6 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   multivariate: true         # Multivariate SSIM metric
   ets: true                  # Equitable Threat Score across quantile thresholds
-  multivariate: true         # Multivariate metrics (SSIM)
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
