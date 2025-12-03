@@ -923,6 +923,12 @@ def run_probabilistic_wbx(
     # Save individual metric/variable combinations (like other modules)
     # temporal_results has vars like "CRPS.2m_temperature", "SSR.2m_temperature", etc.
     for var_name, _da in temporal_results.data_vars.items():
+        # Validate that variable names do not contain dots, as this is assumed in the split below.
+        if var_name.count(".") != 1:
+            raise ValueError(
+                f"Expected var_name to contain exactly one dot separating metric and variable, got: '{var_name}'. "
+                "Variable names must not contain dots."
+            )
         metric_name, variable = var_name.split(".", 1)
         npz_path = section / build_output_filename(
             metric=f"{metric_name.lower()}_temporal_wbx",

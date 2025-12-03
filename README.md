@@ -461,7 +461,7 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (o
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
 
-Per-variable artifacts (xarray-based):
+Per-variable artifacts (NPZ format):
 
 ```text
 pit_hist_2m_temperature_ensprob.npz
