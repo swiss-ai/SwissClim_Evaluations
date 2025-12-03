@@ -1889,12 +1889,6 @@ def intercompare_probabilistic(
                     continue
 
                 # Build coordinate arrays
-                coords = {}
-                for coord_name in ("latitude", "longitude", "init_time", "lead_time", "level"):
-                    coord_data = npz_data.get(coord_name)
-                    if coord_data is not None and len(coord_data) > 0:
-                        coords[coord_name] = coord_data
-
                 # Create dataframe rows
                 if data_arr.ndim == 0:
                     # Scalar value
