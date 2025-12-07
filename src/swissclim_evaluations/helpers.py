@@ -346,3 +346,70 @@ def validate_and_normalize_ensemble_config(
                 val = "none"
         normalized[module] = val
     return normalized, warnings
+
+
+def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=None):
+    """Display all images and tables in the given directory matching the patterns.
+
+    Args:
+        output_dir: Path to the directory containing outputs.
+        pattern_img: Glob pattern for images (default: "*.png"). Set to None or "" to skip.
+        pattern_csv: Glob pattern for CSV tables (default: "*.csv"). Set to None or "" to skip.
+        limit: Maximum number of images to display (default: None, show all).
+    """
+    from itertools import islice
+    from pathlib import Path
+
+    import pandas as pd
+    from IPython.display import HTML, Image, display
+
+    def natural_key(file_path):
+        """Key for natural sorting (numbers sorted numerically)."""
+        parts = file_path.stem.split("_")
+        key = []
+        for part in parts:
+            try:
+                val = int(part)
+                key.append((0, val))
+            except ValueError:
+                key.append((1, part))
+        return key
+
+    path = Path(output_dir)
+    if not path.exists():
+        print(f"Directory not found: {path}")
+        return
+
+    # Images
+    if pattern_img:
+        images = sorted(path.glob(pattern_img), key=natural_key)
+        if images:
+            to_show = images if limit is None else list(islice(images, 0, limit))
+            count_str = f"({len(to_show)}/{len(images)})" if limit is not None else ""
+            print(f"--- Images in {path.name} {count_str} ---")
+            for img in to_show:
+                print(f"Displaying: {img.name}")
+                display(Image(filename=str(img)))
+        else:
+            print(f"No images found for pattern '{pattern_img}' in {path.name}")
+
+    # Tables
+    if pattern_csv:
+        tables = sorted(path.glob(pattern_csv), key=natural_key)
+        if tables:
+            print(f"--- Tables in {path.name} ---")
+            for tbl in tables:
+                print(f"Table: {tbl.name}")
+                try:
+                    df = pd.read_csv(tbl)
+                    with pd.option_context("display.max_rows", None):
+                        display(
+                            HTML(
+                                f"<div style='max-height: 350px; overflow: "
+                                f"auto;'>{df.to_html()}</div>"
+                            )
+                        )
+                except Exception as e:
+                    print(f"Could not read {tbl.name}: {e}")
+        else:
+            print(f"No tables found for pattern '{pattern_csv}' in {path.name}")
