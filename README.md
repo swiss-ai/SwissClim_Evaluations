@@ -476,6 +476,7 @@ WBX summary tables / fields:
 spread_skill_ratio_ensprob.csv
 prob_metrics_temporal_ensprob.nc
 prob_metrics_spatial_ensprob.nc
+prob_metrics_map_ensprob.nc           # map-based probabilistic metrics (Lat, Lon dimensions)
 ```
 
 Aggregated CRPS summaries (xarray based):
