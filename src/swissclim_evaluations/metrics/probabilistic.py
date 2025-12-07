@@ -571,14 +571,7 @@ def _wbx_metric_to_df(
         reduced: dict[Hashable, xr.DataArray] = {}
         for var, da in stat_vals.items():
             dims = [d for d in dims_all if d in da.dims]
-            # Apply area weighting if latitude is present
-            if "latitude" in da.dims:
-                weights = np.cos(np.deg2rad(da.latitude))
-                weights.name = "weights"
-                da_weighted = da.weighted(weights)
-                reduced[var] = da_weighted.mean(dim=dims, skipna=True)
-            else:
-                reduced[var] = da.mean(dim=dims, skipna=True)
+            reduced[var] = da.mean(dim=dims, skipna=True)
         mean_stats[stat_name] = reduced
 
     # Derive metric values from averaged statistics
@@ -609,7 +602,7 @@ def run_probabilistic_wbx(
     section.mkdir(parents=True, exist_ok=True)
 
     # Imports only when needed to avoid hard dependency during other runs
-    from weatherbenchX import aggregation, binning, weighting
+    from weatherbenchX import aggregation, binning
 
     if "ensemble" not in ds_prediction.dims:
         print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
@@ -730,7 +723,6 @@ def run_probabilistic_wbx(
     spatial_aggregator = aggregation.Aggregator(
         reduce_dims=["latitude", "longitude"],
         bin_by=[binning.Regions(regions=regions)],
-        weigh_by=[weighting.GridAreaWeighting()],
     )
 
     seasonal = (
