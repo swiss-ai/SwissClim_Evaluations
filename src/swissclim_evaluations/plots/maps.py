@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -12,7 +11,12 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_level_label,
     format_level_token,
+    format_variable_name,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -35,10 +39,8 @@ def run(
     rng = np.random.default_rng(seed)
     time_index = 0
     lead_index = 0
-    time_selected = None
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
         time_index = int(rng.integers(0, ds_target.init_time.size))
-        time_selected = ds_target.init_time[time_index]
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
     if "time" in ds_target.dims and ds_target.time.size > 0:
@@ -52,18 +54,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -142,6 +133,12 @@ def run(
 
             ds_var = ds_target[var]
             ds_ml_var = ds_prediction[var]
+
+            # Check if original variable has multiple init times (before slicing)
+            is_single_init = True
+            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
+                is_single_init = False
+
             if ens is not None:
                 if "ensemble" in ds_var.dims:
                     ds_var = ds_var.isel(ensemble=ens)
@@ -182,9 +179,10 @@ def run(
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[0].coastlines(linewidth=0.5)
-            axes[0].set_title("Ground Truth")
+
+            date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+            axes[0].set_title(f"{format_variable_name(var)} — Ground Truth{date_str}")
 
             lon_ml = ds_ml_var.coords.get("longitude", None)
             lat_ml = ds_ml_var.coords.get("latitude", None)
@@ -198,7 +196,6 @@ def run(
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[1].coastlines(linewidth=0.5)
             axes[1].set_title("Model Prediction")
 
@@ -213,19 +210,14 @@ def run(
             # In test mode, colorbar may be a dummy (None); guard the label call
             try:
                 if cb is not None:
-                    cb.set_label(ds_target[var].attrs.get("units", ""))
+                    cb.set_label(get_variable_units(ds_target, str(var)))
             except Exception:
                 # Non-fatal: continue without setting label
                 pass
 
-            title_extra = "" if ens is None else f" (Ensemble {ens})"
-            if time_selected is not None:
-                plt.suptitle(
-                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - "
-                    f"{time_selected.dt.hour.values} UTC"
-                )
-            elif title_extra:
-                plt.suptitle(f"{var}{title_extra}")
+            # title_extra = "" if ens is None else f" (Ensemble {ens})"
+            # date_suffix = extract_date_from_dataset(ds_var)
+            # plt.suptitle(f"{format_variable_name(str(var))}{title_extra}{date_suffix}")
 
             # Determine filename ensemble token
             ens_token = (
@@ -270,6 +262,8 @@ def run(
                         ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
                     ),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=get_variable_units(ds_target, str(var)),
                 )
                 print(f"[maps] saved {npz_path}")
 
@@ -303,6 +297,12 @@ def run(
 
             ds_var = ds_target[var]
             ds_ml_var = ds_prediction[var]
+
+            # Check if original variable has multiple init times (before slicing)
+            is_single_init = True
+            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
+                is_single_init = False
+
             if ens is not None:
                 if "ensemble" in ds_var.dims:
                     ds_var = ds_var.isel(ensemble=ens)
@@ -350,9 +350,13 @@ def run(
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                ax_ds.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds.coastlines(linewidth=0.5)
-                ax_ds.set_title(f"Ground Truth - Level {level_val}")
+
+                date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+                ax_ds.set_title(
+                    f"{format_variable_name(str(var))} — Ground Truth"
+                    f"{format_level_label(level_val)}{date_str}"
+                )
 
                 ax_ds_ml.pcolormesh(
                     ds_ml_var_lev.coords.get("longitude"),
@@ -364,9 +368,8 @@ def run(
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                ax_ds_ml.add_feature(cfeature.BORDERS, linewidth=0.5)
                 ax_ds_ml.coastlines(linewidth=0.5)
-                ax_ds_ml.set_title(f"Model - Level {level_val}")
+                ax_ds_ml.set_title(f"Model{format_level_label(level_val)}")
 
                 fig.colorbar(
                     im_ds,
@@ -374,17 +377,11 @@ def run(
                     orientation="horizontal",
                     fraction=0.05,
                     pad=0.07,
-                    label=f"{ds_target[var].attrs.get('units', '')} (level {level_val})",
+                    label=f"{get_variable_units(ds_target, str(var))} (level {level_val})",
                 )
 
-            title_extra = "" if ens is None else f" (Ensemble {ens})"
-            if time_selected is not None:
-                plt.suptitle(
-                    f"{var}{title_extra} at {str(time_selected.dt.date.values)} - "
-                    f"{time_selected.dt.hour.values} UTC"
-                )
-            elif title_extra:
-                plt.suptitle(f"{var}{title_extra}")
+            # date_suffix = extract_date_from_dataset(ds_var.isel(level=0))
+            # plt.suptitle(f"{format_variable_name(str(var))}{title_extra}{date_suffix}")
             # With constrained_layout=True above, avoid calling tight_layout (incompatible).
             # Adjust padding via constrained layout pads instead.
             # Leave default constrained_layout behavior; avoid calling private methods for safety
@@ -432,6 +429,8 @@ def run(
                     ),
                     level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=get_variable_units(ds_target, str(var)),
                 )
                 print(f"[maps] saved {npz_path}")
             plt.close(fig)
