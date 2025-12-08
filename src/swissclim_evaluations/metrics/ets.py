@@ -117,7 +117,7 @@ def run(
         reduce_ens_mean = True
     aggregate_members_mean = bool(ets_cfg.get("aggregate_members_mean", True))
 
-    latitude_weighting = bool((metrics_cfg or {}).get("latitude_weighting", False))
+    latitude_weighting = bool((metrics_cfg or {}).get("latitude_weighting", True))
 
     # Track whether an ensemble dimension was present prior to any reduction
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
