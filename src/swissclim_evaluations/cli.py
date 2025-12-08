@@ -181,7 +181,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 # e.g. [335, 45] -> [335..end] U [start..45]
                 part1 = ds.sel(longitude=slice(l_first, None))
                 part2 = ds.sel(longitude=slice(None, l_second))
-                ds = xr.concat([part1, part2], dim="longitude")
+                ds = xr.concat([part1, part2], dim="longitude").sortby("longitude")
         else:
             # Fallback for single value or malformed input
             ds = ds.sel(longitude=slice(*longitudes))
