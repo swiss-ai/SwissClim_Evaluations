@@ -41,6 +41,7 @@ modules:
   probabilistic: false
 
 metrics:
+  latitude_weighting: true
   deterministic:
     report_per_level: true
     include: ["MAE", "RMSE"]
