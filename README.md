@@ -90,10 +90,10 @@ See [docs/INTERCOMPARISON.md](docs/INTERCOMPARISON.md) for details.
 
 ## Notebooks
 
-Explore outputs interactively:
-*   `notebooks/deterministic_verification.ipynb`
-*   `notebooks/probabilistic_verification.ipynb`
-*   `notebooks/probabilistic_verification_wbx.ipynb`
+You can explore the outputs interactively using the provided notebooks:
+
+*   `notebooks/deterministic_verification.ipynb` (classic deterministic metrics, maps, histograms, spectra, profiles)
+*   `notebooks/probabilistic_verification.ipynb` (Probabilistic metrics: CRPS/PIT via Xarray, Spread–Skill Ratio and temporal/spatial metrics via WeatherBenchX)
 
 ## Development
 
