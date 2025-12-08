@@ -1,6 +1,6 @@
 # SwissClim Evaluations
 
-Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other references). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
+Fast, reproducible evaluation of weather/climate model outputs against ERA5 (or other targets). Compute deterministic and probabilistic scores, spectral metrics, and helpful diagnostic plots — all driven by a single YAML config.
 
 ## Quickstart
 
@@ -52,7 +52,7 @@ Attributes:
 ```
 
 There are two special cases:
-- The `ensemble` dimension must **always** be present in both the dataset. If your data (e.g., ERA5 ground truth) lacks this dimension, it will be automatically added with a single member (index 0).
+- The `ensemble` dimension must **always** be present in both the dataset. If your data (e.g., ERA5) lacks this dimension, it will be automatically added with a single member (index 0).
 - The `level` dimension **MUST NOT** be present in datasets containing only 2D variables. In mixed datasets, 2D variables must not have the `level` dimension.
 
 ### Chunking policy (xarray/dask)

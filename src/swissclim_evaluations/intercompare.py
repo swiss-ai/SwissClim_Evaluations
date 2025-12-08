@@ -203,7 +203,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
 
     For each variable present in all model folders we create per-lat-band figure
     (mirrors original 9 south + 9 north band layout => 9 rows x 2 cols) with DS
-    (ground truth) not expressly stored. The NPZ files only contain metric curves
+    (target) not expressly stored. The NPZ files only contain metric curves
     already reduced vs. level; DS baseline is implicit (NMAE uses target stats).
 
     We therefore only plot model curves. If legacy rel_error files are used we
@@ -328,22 +328,26 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             for j in range(bands):
                 with np.errstate(all="ignore"):
                     val_pos = np.nanmean(pos_arr[j]) if pos_arr[j].size else np.nan
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "north",
-                    "model": lab,
-                    "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
-                    "metric": "NMAE",
-                })
-                rows.append({
-                    "variable": var,
-                    "band_index": j,
-                    "hemisphere": "south",
-                    "model": lab,
-                    "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
-                    "metric": "NMAE",
-                })
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "north",
+                        "model": lab,
+                        "value": float(val_pos) if np.isfinite(val_pos) else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
+                rows.append(
+                    {
+                        "variable": var,
+                        "band_index": j,
+                        "hemisphere": "south",
+                        "model": lab,
+                        "value": float(np.nanmean(neg_arr[j])) if neg_arr[j].size else np.nan,
+                        "metric": "NMAE",
+                    }
+                )
         # Save summary only if we have at least two distinct models with values
         if rows:
             df = pd.DataFrame(rows)
@@ -423,7 +427,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                         np.asarray(spec_ds)[2:-2],
                         color="k",
                         lw=2.0,
-                        label="Ground Truth",
+                        label="Target",
                     )
                 except Exception:  # pragma: no cover
                     pass
@@ -791,10 +795,10 @@ def intercompare_histograms(
         payloads = [_load_npz(m / src_rel / base) for m in models]
         fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-        # Ground Truth (from first model)
+        # Target (from first model)
         counts_ds = payloads[0]["counts_ds"]
         bins_ds = payloads[0]["bins"]
-        _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+        _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -847,8 +851,8 @@ def intercompare_histograms(
                 # Each element is (counts_ds, counts_ml)
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["neg_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
-                # Plot each model ML
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
+                # Plot each prediction model
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["neg_counts"][j][1]
                     bins_ml = pay["neg_bins"][j]
@@ -873,7 +877,7 @@ def intercompare_histograms(
                 ds_ml_pairs = payloads[0]["pos_counts"][j]
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["pos_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Ground Truth", color="k")
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["pos_counts"][j][1]
                     bins_ml = pay["pos_bins"][j]
@@ -928,10 +932,10 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         units = payloads[0].get("units")
         fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-        # Ground Truth (from first model)
+        # Target (from first model)
         x_ds = payloads[0]["x"]
         kde_ds = payloads[0]["kde_ds"]
-        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -973,7 +977,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 1]
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
@@ -992,7 +996,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 0]
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Ground Truth")
+            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],
@@ -1095,9 +1099,18 @@ def intercompare_maps(
         key = _parse_map_filename(base)
         payloads = [_load_npz(m / src_rel / f"{key}.npz") for m in models]
         # Extract DS from first payload
-        nwp = payloads[0].get("nwp")
-        mls = [p.get("ml") for p in payloads]
-        if any(x is None for x in mls) or nwp is None:
+        target = payloads[0].get("target")
+        if target is None:
+            target = payloads[0].get("nwp")
+
+        predictions = []
+        for p in payloads:
+            val = p.get("prediction")
+            if val is None:
+                val = p.get("ml")
+            predictions.append(val)
+
+        if any(x is None for x in predictions) or target is None:
             continue
         lats = payloads[0].get("latitude")
         lons = payloads[0].get("longitude")
@@ -1121,21 +1134,27 @@ def intercompare_maps(
         def _is_3d(arr: np.ndarray) -> bool:
             return isinstance(arr, np.ndarray) and arr.ndim == 3
 
-        n_levels = nwp.shape[0] if _is_3d(nwp) else 1
+        n_levels = target.shape[0] if _is_3d(target) else 1
         if any(
-            (_is_3d(nwp) and (not isinstance(m, np.ndarray) or m.ndim != 3))
-            or ((not _is_3d(nwp)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
-            for m in mls
+            (_is_3d(target) and (not isinstance(m, np.ndarray) or m.ndim != 3))
+            or ((not _is_3d(target)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
+            for m in predictions
         ):
             c.warn(f"maps: shape mismatch for {key}; skipping")
             continue
         level_vals = payloads[0].get("level")
         for lvl in range(n_levels):
-            nwp_slice = nwp[lvl] if n_levels > 1 else nwp
-            ml_slices = [m[lvl] if n_levels > 1 else m for m in mls if isinstance(m, np.ndarray)]
+            target_slice = target[lvl] if n_levels > 1 else target
+            pred_slices = [
+                m[lvl] if n_levels > 1 else m for m in predictions if isinstance(m, np.ndarray)
+            ]
             try:
-                vmin = float(np.nanmin([np.nanmin(nwp_slice)] + [np.nanmin(x) for x in ml_slices]))
-                vmax = float(np.nanmax([np.nanmax(nwp_slice)] + [np.nanmax(x) for x in ml_slices]))
+                vmin = float(
+                    np.nanmin([np.nanmin(target_slice)] + [np.nanmin(x) for x in pred_slices])
+                )
+                vmax = float(
+                    np.nanmax([np.nanmax(target_slice)] + [np.nanmax(x) for x in pred_slices])
+                )
             except ValueError:
                 c.warn(f"maps: all-NaN data for {key} level {lvl}; skipping")
                 continue
@@ -1153,7 +1172,7 @@ def intercompare_maps(
             im0 = axes[0].pcolormesh(
                 lons,
                 lats,
-                nwp_slice,
+                target_slice,
                 cmap="viridis",
                 vmin=vmin,
                 vmax=vmax,
@@ -1163,7 +1182,7 @@ def intercompare_maps(
             # Extract date info from filename if possible
             date_suffix = extract_date_from_filename(key)
 
-            title_base = "Ground Truth"
+            title_base = "Target"
             if var_name:
                 title_base = f"{format_variable_name(str(var_name))} — {title_base}{date_suffix}"
             if n_levels > 1:
@@ -1174,11 +1193,11 @@ def intercompare_maps(
                     title_token = format_level_token(lvl)
                     title_base += f" (level {title_token})"
             axes[0].set_title(title_base)
-            for ax, lab, ml_slice in zip(axes[1:], labels, ml_slices, strict=False):
+            for ax, lab, pred_slice in zip(axes[1:], labels, pred_slices, strict=False):
                 ax.pcolormesh(
                     lons,
                     lats,
-                    ml_slice,
+                    pred_slice,
                     cmap="viridis",
                     vmin=vmin,
                     vmax=vmax,

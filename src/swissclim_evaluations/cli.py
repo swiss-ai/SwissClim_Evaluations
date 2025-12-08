@@ -304,7 +304,7 @@ def _select_plot_datetime(
     if "init_time" not in ds_prediction.dims:
         raise ValueError("plot_datetime requires datasets with 'init_time' dimension.")
 
-    # Ensure exact label present in predictions (targets are aligned to ML labels)
+    # Ensure exact label present in predictions (targets are aligned to prediction labels)
     available = ds_prediction["init_time"].values
     if plot_dt not in available:
         raise ValueError(
@@ -514,13 +514,23 @@ def prepare_datasets(
     var_list = None
     if variables_2d or variables_3d:
         var_list = list(variables_2d or []) + list(variables_3d or [])
-    ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
-    ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
+
+    # Support legacy keys
+    target_path = paths.get("target") or paths.get("nwp")
+    prediction_path = paths.get("prediction") or paths.get("ml")
+
+    if paths.get("nwp"):
+        c.warn("Config key 'paths.nwp' is deprecated; use 'paths.target'.")
+    if paths.get("ml"):
+        c.warn("Config key 'paths.ml' is deprecated; use 'paths.prediction'.")
+
+    ds_target = data_mod.open_target(target_path, variables=var_list)
+    ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
 
     # Validate requirements
     errors = []
-    errors.extend(validate_requirements(ds_target, cfg, "Target (NWP)"))
-    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction (ML)"))
+    errors.extend(validate_requirements(ds_target, cfg, "Target"))
+    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction"))
 
     if errors:
         raise ValueError("Missing data requirements:\n" + "\n".join(errors))
@@ -561,12 +571,12 @@ def prepare_datasets(
             )
 
         # Build stacked predictions with valid_time
-        ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
-        ml_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
-        ml_valid_2d = ml_init + ml_lead
+        pred_init = ds_prediction["init_time"].astype("datetime64[ns]")
+        pred_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
+        pred_valid_2d = pred_init + pred_lead
         ds_pred_stacked = ds_prediction.stack(pair=("init_time", "lead_time"))
-        ml_valid_1d = ml_valid_2d.stack(pair=("init_time", "lead_time"))
-        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=ml_valid_1d)
+        pred_valid_1d = pred_valid_2d.stack(pair=("init_time", "lead_time"))
+        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=pred_valid_1d)
 
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
@@ -578,11 +588,11 @@ def prepare_datasets(
                         ).astype("timedelta64[ns]")
                     }
                 )
-            nwp_init = ds_target["init_time"].astype("datetime64[ns]")
-            nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
+            target_init = ds_target["init_time"].astype("datetime64[ns]")
+            target_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
-            nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
+            target_valid_1d = (target_init + target_lead).stack(pair=("init_time", "lead_time"))
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=target_valid_1d)
         elif "time" in ds_target.dims:
             # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
             tvals = ds_target["time"].values.astype("datetime64[ns]")
@@ -622,7 +632,8 @@ def prepare_datasets(
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
         except KeyError as err:
             raise ValueError(
-                "Internal alignment error: ML valid_time not found in targets after intersection."
+                "Internal alignment error: Prediction valid_time not found in targets "
+                "after intersection."
             ) from err
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
         # Replace pair labels on targets to match predictions exactly for clean unstack
@@ -638,8 +649,8 @@ def prepare_datasets(
         ds_target = ds_tgt_stacked.unstack("pair")
 
     # Enforce repository-wide chunking policy to ensure predictable performance
-    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="ground_truth")
-    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="ml")
+    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target")
+    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="prediction")
 
     # Optional: strict check for missing values in inputs
     try:

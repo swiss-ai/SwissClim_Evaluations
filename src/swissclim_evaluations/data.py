@@ -25,8 +25,7 @@ def ensure_ensemble_dim(ds: xr.Dataset) -> xr.Dataset:
     """Ensure 'ensemble' dimension exists.
 
     If missing, inject a dummy ensemble dimension of size 1 with coordinate value 0.
-    This allows deterministic datasets (like ERA5 ground truth) to pass validation
-    and be processed uniformly.
+    This allows deterministic datasets to pass validation and be processed uniformly.
     """
     if "ensemble" not in ds.dims:
         # Expand dims injects the dimension and coordinate
@@ -285,8 +284,8 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     return combined
 
 
-def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open model dataset(s) from Zarr and optionally subset variables.
+def open_prediction(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open prediction/model dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
@@ -306,8 +305,8 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
     return ds
 
 
-def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open ERA5 dataset(s) from Zarr and optionally subset variables.
+def open_target(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open target dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.

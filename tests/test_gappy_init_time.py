@@ -88,18 +88,18 @@ def test_prepare_handles_gappy_inittime(tmp_path: Path, monkeypatch):
 
     from swissclim_evaluations import data as data_mod
 
-    monkeypatch.setattr(data_mod, "era5", lambda path, variables=None: ds_tgt)
-    monkeypatch.setattr(data_mod, "open_ml", lambda path, variables=None: ds_pred)
+    monkeypatch.setattr(data_mod, "open_target", lambda path, variables=None: ds_tgt)
+    monkeypatch.setattr(data_mod, "open_prediction", lambda path, variables=None: ds_pred)
 
     cfg = {
         "paths": {
-            "nwp": "unused",
-            "ml": "unused",
+            "target": "unused",
+            "prediction": "unused",
             "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},
         "selection": {
-            # Intentionally no continuous range; rely on gappy ML
+            # Intentionally no continuous range; rely on gappy inits in predictions
             "check_missing": True,
         },
     }
@@ -165,14 +165,14 @@ def test_multiple_datetime_ranges_selection(tmp_path: Path, monkeypatch):
 
     from swissclim_evaluations import data as data_mod
 
-    monkeypatch.setattr(data_mod, "era5", lambda path, variables=None: ds_tgt)
-    monkeypatch.setattr(data_mod, "open_ml", lambda path, variables=None: ds_pred)
+    monkeypatch.setattr(data_mod, "open_target", lambda path, variables=None: ds_tgt)
+    monkeypatch.setattr(data_mod, "open_prediction", lambda path, variables=None: ds_pred)
 
     # Select two disjoint ranges: 00..02 and 05..06
     cfg = {
         "paths": {
-            "nwp": "unused",
-            "ml": "unused",
+            "target": "unused",
+            "prediction": "unused",
             "output_root": str(tmp_path / "output"),
         },
         "modules": {"probabilistic": True},

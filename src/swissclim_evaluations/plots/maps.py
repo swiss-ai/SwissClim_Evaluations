@@ -180,7 +180,7 @@ def run(
             axes[0].coastlines(linewidth=0.5)
 
             date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
-            axes[0].set_title(f"{format_variable_name(var)} — Ground Truth{date_str}")
+            axes[0].set_title(f"{format_variable_name(var)} — Target{date_str}")
 
             lon_ml = ds_ml_var.coords.get("longitude", None)
             lat_ml = ds_ml_var.coords.get("latitude", None)
@@ -195,7 +195,7 @@ def run(
                 shading="auto",
             )
             axes[1].coastlines(linewidth=0.5)
-            axes[1].set_title("Model Prediction")
+            axes[1].set_title("Prediction")
 
             # Use a colorbar compatible with constrained_layout, spanning both axes
             cb = fig.colorbar(
@@ -251,8 +251,8 @@ def run(
                 )
                 np.savez(
                     npz_path,
-                    nwp=ds_var.values,
-                    ml=ds_ml_var.values,
+                    target=ds_var.values,
+                    prediction=ds_ml_var.values,
                     latitude=(
                         ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
                     ),
@@ -352,7 +352,7 @@ def run(
 
                 date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
                 ax_ds.set_title(
-                    f"{format_variable_name(str(var))} — Ground Truth"
+                    f"{format_variable_name(str(var))} — Target"
                     f"{format_level_label(level_val)}{date_str}"
                 )
 
@@ -417,8 +417,8 @@ def run(
                 )
                 np.savez(
                     npz_path,
-                    nwp=ds_var.values,
-                    ml=ds_ml_var.values,
+                    target=ds_var.values,
+                    prediction=ds_ml_var.values,
                     latitude=(
                         ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
                     ),

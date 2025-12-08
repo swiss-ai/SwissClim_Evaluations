@@ -7,12 +7,12 @@ paths:
   # Accepts a single string or a list of strings. When a list is provided, the
   # archives are combined lazily by coordinates (no data is materialized; Dask
   # graphs remain intact). All stores must follow the same variable/dimension schema.
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
 
-  # Path(s) to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Path(s) to the reference dataset (e.g. ERA5 in WeatherBench2 layout).
   # Accepts a single string or a list of strings. When multiple stores are provided,
   # they are combined lazily by coordinates.
-  nwp: [
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
@@ -40,7 +40,8 @@ selection:
   #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
   #   3) Explicit non-contiguous timestamps:
   #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
-  # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
+  # For target ERA5 (time) and prediction: (init_time+lead_time), the CLI aligns by
+  # valid_time = init_time + lead_time.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     "2023-04-02T00:2023-04-08T23",

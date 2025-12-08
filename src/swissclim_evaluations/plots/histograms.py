@@ -195,7 +195,7 @@ def run(
                 align="edge",
                 alpha=0.5,
                 color="skyblue",
-                label="Ground Truth",
+                label="Target",
             )
             ax_g.bar(
                 edges_g[:-1],
@@ -204,7 +204,7 @@ def run(
                 align="edge",
                 alpha=0.5,
                 color="salmon",
-                label="Model Prediction",
+                label="Prediction",
             )
             ax_g.legend(loc="upper right")
 
@@ -330,7 +330,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color="skyblue",
-                    label="Ground Truth",
+                    label="Target",
                 )
                 axs[j, 1].bar(
                     edges[:-1],
@@ -339,7 +339,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color="salmon",
-                    label="Model Prediction",
+                    label="Prediction",
                 )
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
                 axs[j, 1].legend(loc="upper right")
@@ -391,7 +391,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color="skyblue",
-                    label="Ground Truth",
+                    label="Target",
                 )
                 axs[j, 0].bar(
                     edges[:-1],
@@ -400,7 +400,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color="salmon",
-                    label="Model Prediction",
+                    label="Prediction",
                 )
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
                 axs[j, 0].legend(loc="upper right")
