@@ -130,14 +130,12 @@ pit_hist_2m_temperature_ensprob.npz
 pit_field_2m_temperature_ensprob.nc
 crps_field_2m_temperature_ensprob.nc
 crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
-crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map
 ```
 
 WBX summary tables / fields:
 
 ```text
 spread_skill_ratio_ensprob.csv
-crps_ensemble_ensprob.csv
 prob_metrics_temporal_ensprob.nc
 prob_metrics_spatial_ensprob.nc
 ```
