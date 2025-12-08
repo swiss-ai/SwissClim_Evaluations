@@ -785,7 +785,7 @@ def intercompare_histograms(
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
 
-    colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
+    colors = sns.color_palette("tab10", n_colors=len(models))
 
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
