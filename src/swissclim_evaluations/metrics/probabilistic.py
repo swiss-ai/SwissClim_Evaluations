@@ -342,7 +342,7 @@ def run_probabilistic(
         if weights is not None:
             crps_mean = float(
                 crps_da.weighted(weights)
-                .mean(dim=_reduce_mean_all(crps_da), skipna=True)
+                .mean(dim=_common_dims_for_reduce(crps_da), skipna=True)
                 .compute()
                 .item()
             )
