@@ -105,7 +105,7 @@ def run(
 
     # Always export CSV
     if out_root is not None:
-        from ..helpers import build_output_filename
+        from ..helpers import build_output_filename, format_init_time_range
 
         def _extract_init_range(ds: xr.Dataset):
             if "init_time" not in ds:
@@ -114,18 +114,7 @@ def run(
                 vals = ds["init_time"].values
                 if vals.size == 0:
                     return None
-                start = np.datetime64(vals.min()).astype("datetime64[h]")
-                end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-                def _fmt(x):
-                    return (
-                        np.datetime_as_string(x, unit="h")
-                        .replace("-", "")
-                        .replace(":", "")
-                        .replace("T", "")
-                    )
-
-                return (_fmt(start), _fmt(end))
+                return format_init_time_range(vals)
             except Exception:
                 return None
 
