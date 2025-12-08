@@ -826,7 +826,7 @@ def run_probabilistic_wbx(
     regions_cfg = (plotting_cfg or {}).get("regions") if isinstance(plotting_cfg, dict) else None
     regions = regions_cfg or _default_regions()
 
-    latitude_weighting = bool(all_cfg.get("metrics", {}).get("latitude_weighting", False))
+    latitude_weighting = bool(all_cfg.get("metrics", {}).get("latitude_weighting", True))
     weigh_by = [weighting.GridAreaWeighting()] if latitude_weighting else None
 
     spatial_aggregator = aggregation.Aggregator(
