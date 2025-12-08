@@ -13,12 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from weatherbenchX.metrics.probabilistic import UnbiasedSpreadSkillRatio
 
 # Use official WeatherBenchX metrics instead of local copies
-from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble as WBXCRPSEnsemble,
-    SpreadSkillRatio as WBXSpreadSkillRatio,
-)
 
 from ..helpers import (
     COLOR_DIAGNOSTIC,
@@ -285,18 +282,7 @@ def run_probabilistic(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -320,8 +306,6 @@ def run_probabilistic(
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
-
-    from ..helpers import ensemble_mode_to_token
 
     ens_token = ensemble_mode_to_token("prob")
     prob_cfg = (cfg_all or {}).get("probabilistic", {})
@@ -510,8 +494,12 @@ def plot_probabilistic(
         transform=ccrs.PlateCarree(),
     )
     cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    cbar.set_label(f"CRPS — {base_var}")
-    ax.set_title(f"CRPS map (mean over time): {base_var}")
+    cbar.set_label("CRPS")
+
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"CRPS Map — {format_variable_name(base_var)}{date_str}")
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -521,18 +509,7 @@ def plot_probabilistic(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -616,7 +593,10 @@ def plot_probabilistic(
         color=COLOR_DIAGNOSTIC,
         edgecolor="white",
     )
-    ax.set_title(f"PIT histogram — {base_var}")
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}{date_str}")
     ax.set_xlabel("PIT value")
     ax.set_ylabel("Density")
     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
@@ -646,14 +626,6 @@ def plot_probabilistic(
         np.savez(out_npz, counts=counts, edges=edges, variable=base_var)
         print(f"[probabilistic-plots] saved {out_npz}")
     plt.close(fig)
-
-
-"""
-Expose WeatherBenchX metric classes under this module for convenient imports.
-Public API: CRPSEnsemble, SpreadSkillRatio.
-"""
-CRPSEnsemble = WBXCRPSEnsemble
-SpreadSkillRatio = WBXSpreadSkillRatio
 
 
 def _wbx_metric_to_df(
@@ -711,14 +683,12 @@ def run_probabilistic_wbx(
     plotting_cfg: dict[str, Any],
     all_cfg: dict[str, Any],
 ) -> None:
-    """Compute WBX temporal/spatial metrics, CSV summaries, and optional CRPS map.
+    """Compute WBX temporal/spatial metrics and CSV summaries.
 
     Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
-    - crps_ensemble.csv
     - probabilistic_metrics_temporal.nc
     - probabilistic_metrics_spatial.nc
-    - Optional: crps_map_<var>.png if output_mode enables plotting
     """
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
@@ -741,15 +711,15 @@ def run_probabilistic_wbx(
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
-    # CSV summaries using WBX metrics (SpreadSkillRatio, CRPSEnsemble)
+    # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
     if m_ens < 2:
         raise RuntimeError(
-            "WBX probabilistic metrics require ensemble size >=2 (SpreadSkillRatio/CRPS ensemble). "
+            "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-    ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
+    ssr_metric = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
     try:
         ssr_df = _wbx_metric_to_df(
             ssr_metric,
@@ -759,7 +729,7 @@ def run_probabilistic_wbx(
         )
     except Exception as e:  # pragma: no cover - defensive clarity wrapper
         raise RuntimeError(
-            "Failed computing SpreadSkillRatio via WeatherBenchX. "
+            "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
             "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
         ) from e
 
@@ -771,18 +741,7 @@ def run_probabilistic_wbx(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -807,8 +766,6 @@ def run_probabilistic_wbx(
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
 
-    from ..helpers import ensemble_mode_to_token
-
     ens_token_prob = ensemble_mode_to_token("prob")
 
     ssr_csv = section / build_output_filename(
@@ -823,29 +780,6 @@ def run_probabilistic_wbx(
     )
     ssr_df.to_csv(ssr_csv)
     print(f"[probabilistic] saved {ssr_csv}")
-
-    crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
-    try:
-        crps_df = _wbx_metric_to_df(
-            crps_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="CRPS"
-        )
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(
-            "Failed computing CRPSEnsemble via WeatherBenchX. "
-            "Check ensemble size (>=2) and data alignment. Original error: " + str(e)
-        ) from e
-    crps_csv = section / build_output_filename(
-        metric="crps_ensemble",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="csv",
-    )
-    crps_df.to_csv(crps_csv)
-    print(f"[probabilistic] saved {crps_csv}")
 
     def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
         return {
@@ -884,8 +818,7 @@ def run_probabilistic_wbx(
     )
 
     metrics = {}
-    metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
-    metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
+    metrics["SSR"] = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
 
     variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
@@ -944,69 +877,6 @@ def run_probabilistic_wbx(
     spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
     print("Wrote:", temporal_fn)
     print("Wrote:", spatial_fn)
-
-    # Optional CRPS map similar to notebook for a selected variable
-    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
-    if mode in ("plot", "both"):
-        # Choose base variable
-        cfg_var = (
-            (plotting_cfg or {}).get("map_variable") if isinstance(plotting_cfg, dict) else None
-        )
-        base_var = cfg_var or variables[0]
-        reduce_dims = [d for d in ["init_time", "lead_time", "time"] if d in ds_pred[base_var].dims]
-        # Compute CRPS map using a single-chunk aggregator for simplicity
-        pred_map = {base_var: ds_pred[base_var]}
-        targ_map = {base_var: ds_targ[base_var]}
-        from weatherbenchX import aggregation as agg2
-
-        metrics_map = {"CRPS": CRPSEnsemble(ensemble_dim="ensemble")}
-        map_ds = agg2.compute_metric_values_for_single_chunk(
-            metrics_map,
-            agg2.Aggregator(reduce_dims=reduce_dims),
-            pred_map,
-            targ_map,
-        )
-        crps_name = f"CRPS.{base_var}"
-        if crps_name in map_ds:
-            mean_map = map_ds[crps_name]
-            lat_name = next(
-                (n for n in mean_map.dims if n in ("latitude", "lat", "y")),
-                None,
-            )
-            lon_name = next(
-                (n for n in mean_map.dims if n in ("longitude", "lon", "x")),
-                None,
-            )
-            if lat_name and lon_name:
-                lat_vals = mean_map[lat_name].values
-                if lat_vals[0] > lat_vals[-1]:
-                    mean_map = mean_map.sortby(lat_name)
-                fig = plt.figure(figsize=(10, 6))
-                ax = plt.axes(projection=ccrs.PlateCarree())
-                ax.coastlines()
-                mesh = ax.pcolormesh(
-                    mean_map[lon_name],
-                    mean_map[lat_name],
-                    mean_map.values,
-                    cmap="viridis",
-                    shading="auto",
-                )
-                plt.colorbar(mesh, ax=ax, orientation="vertical", label=crps_name)
-                ax.set_title(f"CRPS map: {base_var}")
-                # Avoid clashing with non-WBX CRPS map by using a distinct filename
-                out_png = section / build_output_filename(
-                    metric="crps_map_wbx",
-                    variable=base_var,
-                    level=None,
-                    qualifier=None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token_prob,
-                    ext="png",
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[probabilistic] saved {out_png}")
-                plt.close(fig)
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:
