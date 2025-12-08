@@ -52,7 +52,7 @@ Attributes:
 ```
 
 There are two special cases:
-- The `ensemble` dimension must **always** be present in both the dataset. If your data (e.g., ERA5) lacks this dimension, it will be automatically added with a single member (index 0).
+- The `ensemble` dimension must **always** be present in both datasets. If your data (e.g., ERA5) lacks this dimension, it will be automatically added with a single member (index 0).
 - The `level` dimension **MUST NOT** be present in datasets containing only 2D variables. In mixed datasets, 2D variables must not have the `level` dimension.
 
 ### Chunking policy (xarray/dask)
