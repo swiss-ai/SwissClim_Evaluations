@@ -318,7 +318,7 @@ def run_probabilistic(
     prob_cfg = metrics_cfg.get("probabilistic") or (cfg_all or {}).get("probabilistic", {})
     report_per_level = bool(prob_cfg.get("report_per_level", True))
 
-    latitude_weighting = bool(metrics_cfg.get("latitude_weighting", False))
+    latitude_weighting = bool(metrics_cfg.get("latitude_weighting", True))
     weights = None
     if latitude_weighting and "latitude" in ds_target.dims:
         weights = latitude_weights(ds_target.latitude)
