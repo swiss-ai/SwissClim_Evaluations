@@ -480,7 +480,7 @@ def run(
     es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
     report_per_level = bool(es_cfg.get("report_per_level", True))
 
-    latitude_weighting = bool((cfg or {}).get("metrics", {}).get("latitude_weighting", False))
+    latitude_weighting = bool((cfg or {}).get("metrics", {}).get("latitude_weighting", True))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
