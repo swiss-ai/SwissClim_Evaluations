@@ -115,7 +115,11 @@ def calculate_energy_spectra(
     in_units = get_variable_units(da_var, da_var.name)
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
-    da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
+    da_power.attrs["long_name"] = (
+        "Latitude-weighted zonal power spectrum"
+        if latitude_weighting
+        else "Zonal power spectrum"
+    )
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
     if latitude_weighting:
