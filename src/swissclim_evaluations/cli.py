@@ -163,10 +163,28 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if present:
             ds = ds.sel(level=present)
 
-    if latitudes is not None:
-        ds = ds.sel(latitude=slice(*latitudes))
-    if longitudes is not None:
-        ds = ds.sel(longitude=slice(*longitudes))
+    if latitudes is not None and "latitude" in ds.dims:
+        # Normalize to [min, max] as per requirement
+        req_lat_min = min(latitudes)
+        req_lat_max = max(latitudes)
+
+        # Data is ensured to be monotonic descending (90 -> -90) by data._ensure_monotonic
+        ds = ds.sel(latitude=slice(req_lat_max, req_lat_min))
+
+    if longitudes is not None and "longitude" in ds.dims:
+        if len(longitudes) >= 2:
+            l_first, l_second = longitudes[0], longitudes[1]
+            if l_first <= l_second:
+                ds = ds.sel(longitude=slice(l_first, l_second))
+            else:
+                # Wrap-around case: first > second
+                # e.g. [335, 45] -> [335..end] U [start..45]
+                part1 = ds.sel(longitude=slice(l_first, None))
+                part2 = ds.sel(longitude=slice(None, l_second))
+                ds = xr.concat([part1, part2], dim="longitude")
+        else:
+            # Fallback for single value or malformed input
+            ds = ds.sel(longitude=slice(*longitudes))
     # Non-contiguous explicit timestamps take precedence if provided
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:

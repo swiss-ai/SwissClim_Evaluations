@@ -49,12 +49,14 @@ selection:
     "2024-10-02T00:2024-10-08T23"
   ]
 
-  # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
-  # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
+  # Latitude selection behavior (not cyclic):
+  # - Provide as [min_lat, max_lat]. If given in descending order, it will be
+  #   normalized to ascending and treated as a single contiguous band (no polar union).
   latitudes: [90.0, -89.75]
 
-  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360.
-  # Aurora/ESFM has a polar cutoff, so [0, 359.75] is typical.
+  # Longitude selection behavior:
+  # - If first < second → standard band [first, second]
+  # - If first > second → wrap-around union [first..max_lon] ∪ [min_lon..second]
   longitudes: [0.0, 359.75]
 
   # Variables without a level dimension present in BOTH datasets.
