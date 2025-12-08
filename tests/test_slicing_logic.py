@@ -57,8 +57,8 @@ class TestSlicingLogic:
         expected = np.array([340, 350, 0, 10, 20])
         np.testing.assert_array_equal(res.longitude.values, expected)
 
-    def test_longitude_wrap_around_full(self):
-        """Test wrap-around that covers almost everything."""
+    def test_longitude_wrap_around_minimal(self):
+        """Test minimal wrap-around longitude selection [350, 10] -> 350, 0, 10."""
         ds = create_dataset()
         # Select [10, 350] -> 10..350 (Standard)
         # Select [350, 10] -> 350, 0, 10 (Wrap)
