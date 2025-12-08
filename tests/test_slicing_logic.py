@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import xarray as xr
 
 from swissclim_evaluations.cli import _slice_common
@@ -54,7 +55,8 @@ class TestSlicingLogic:
         cfg = {"selection": {"longitudes": [340.0, 20.0]}}
         res = _slice_common(ds, cfg)
 
-        expected = np.array([340, 350, 0, 10, 20])
+        # Result is sorted by longitude
+        expected = np.array([0, 10, 20, 340, 350])
         np.testing.assert_array_equal(res.longitude.values, expected)
 
     def test_longitude_wrap_around_minimal(self):
@@ -65,11 +67,8 @@ class TestSlicingLogic:
 
         cfg = {"selection": {"longitudes": [350.0, 10.0]}}
         res = _slice_common(ds, cfg)
-        expected = np.array([350, 0, 10])  # Assuming 0, 10, ..., 350 in source
-        # Source is 0, 10, ..., 350
-        # 350..end -> 350
-        # start..10 -> 0, 10
-        # Concat -> 350, 0, 10
+        # Result is sorted by longitude
+        expected = np.array([0, 10, 350])
         np.testing.assert_array_equal(res.longitude.values, expected)
 
     def test_no_selection(self):
@@ -94,3 +93,39 @@ class TestSlicingLogic:
         cfg = {"selection": {"latitudes": [20.0]}}
         res = _slice_common(ds, cfg)
         np.testing.assert_array_equal(res.latitude.values, [20])
+
+    def test_combined_lat_lon_selection(self):
+        """Test combined latitude and longitude selection."""
+        ds = create_dataset(lat_descending=True)
+        # Lat: [10, 30] -> 30, 20, 10
+        # Lon: [340, 20] -> 340, 350, 0, 10, 20 -> Sorted: 0, 10, 20, 340, 350
+        cfg = {"selection": {"latitudes": [10.0, 30.0], "longitudes": [340.0, 20.0]}}
+        res = _slice_common(ds, cfg)
+
+        expected_lat = np.array([30, 20, 10])
+        expected_lon = np.array([0, 10, 20, 340, 350])
+
+        np.testing.assert_array_equal(res.latitude.values, expected_lat)
+        np.testing.assert_array_equal(res.longitude.values, expected_lon)
+
+    def test_empty_longitude_list(self):
+        """Test that empty longitude list raises ValueError."""
+        ds = create_dataset()
+        cfg = {"selection": {"longitudes": []}}
+        with pytest.raises(ValueError, match="Empty list provided for longitudes"):
+            _slice_common(ds, cfg)
+
+    def test_single_value_lon(self):
+        """Test single value longitude list."""
+        ds = create_dataset()
+        # [20] -> slice(20, 20) -> point selection
+        cfg = {"selection": {"longitudes": [20.0]}}
+        res = _slice_common(ds, cfg)
+        np.testing.assert_array_equal(res.longitude.values, [20])
+
+    def test_empty_latitude_list(self):
+        """Test that empty latitude list raises ValueError."""
+        ds = create_dataset()
+        cfg = {"selection": {"latitudes": []}}
+        with pytest.raises(ValueError, match="Empty list provided for latitudes"):
+            _slice_common(ds, cfg)

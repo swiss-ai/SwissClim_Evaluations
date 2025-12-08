@@ -164,6 +164,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             ds = ds.sel(level=present)
 
     if latitudes is not None and "latitude" in ds.dims:
+        if len(latitudes) == 0:
+            raise ValueError("Empty list provided for latitudes; at least one value is required.")
         # Normalize to [min, max] as per requirement
         req_lat_min = min(latitudes)
         req_lat_max = max(latitudes)
@@ -187,7 +189,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             if len(longitudes) == 1:
                 ds = ds.sel(longitude=slice(longitudes[0], longitudes[0]))
             elif len(longitudes) == 0:
-                raise ValueError("Empty list provided for longitudes; at least one value is required.")
+                raise ValueError(
+                    "Empty list provided for longitudes; at least one value is required."
+                )
             else:
                 ds = ds.sel(longitude=slice(*longitudes))
     # Non-contiguous explicit timestamps take precedence if provided
