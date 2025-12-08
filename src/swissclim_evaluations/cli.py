@@ -184,7 +184,12 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 ds = xr.concat([part1, part2], dim="longitude").sortby("longitude")
         else:
             # Fallback for single value or malformed input
-            ds = ds.sel(longitude=slice(*longitudes))
+            if len(longitudes) == 1:
+                ds = ds.sel(longitude=slice(longitudes[0], longitudes[0]))
+            elif len(longitudes) == 0:
+                raise ValueError("Empty list provided for longitudes; at least one value is required.")
+            else:
+                ds = ds.sel(longitude=slice(*longitudes))
     # Non-contiguous explicit timestamps take precedence if provided
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
