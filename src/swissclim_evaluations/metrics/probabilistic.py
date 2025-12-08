@@ -20,6 +20,7 @@ from weatherbenchX.metrics.probabilistic import (
     SpreadSkillRatio as WBXSpreadSkillRatio,
 )
 
+from ..aggregations import latitude_weights
 from ..helpers import build_output_filename, time_chunks
 
 
@@ -320,8 +321,15 @@ def run_probabilistic(
     from ..helpers import ensemble_mode_to_token
 
     ens_token = ensemble_mode_to_token("prob")
-    prob_cfg = (cfg_all or {}).get("probabilistic", {})
+    metrics_cfg = (cfg_all or {}).get("metrics", {})
+    prob_cfg = metrics_cfg.get("probabilistic") or (cfg_all or {}).get("probabilistic", {})
     report_per_level = bool(prob_cfg.get("report_per_level", True))
+
+    latitude_weighting = bool(metrics_cfg.get("latitude_weighting", False))
+    weights = None
+    if latitude_weighting and "latitude" in ds_target.dims:
+        weights = latitude_weights(ds_target.latitude)
+
     crps_rows_per_level: list[dict[str, Any]] = []
 
     for var in variables:
@@ -338,12 +346,25 @@ def run_probabilistic(
             else:
                 raise
         crps_da = crps_ensemble(da_target, da_prediction, ensemble_dim="ensemble")
-        crps_mean = float(_reduce_mean_all(crps_da).compute().item())
+        if weights is not None:
+            crps_mean = float(
+                crps_da.weighted(weights)
+                .mean(dim=_reduce_mean_all(crps_da), skipna=True)
+                .compute()
+                .item()
+            )
+        else:
+            crps_mean = float(_reduce_mean_all(crps_da).compute().item())
         crps_rows.append({"variable": var, "CRPS": crps_mean})
 
         if report_per_level and "level" in crps_da.dims:
             dims_to_reduce = [d for d in crps_da.dims if d != "level"]
-            crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
+            if weights is not None:
+                crps_per_level = (
+                    crps_da.weighted(weights).mean(dim=dims_to_reduce, skipna=True).compute()
+                )
+            else:
+                crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
 
             for lvl in crps_per_level.level.values:
                 crps_rows_per_level.append(
@@ -862,10 +883,13 @@ def run_probabilistic_wbx(
     regions_cfg = (plotting_cfg or {}).get("regions") if isinstance(plotting_cfg, dict) else None
     regions = regions_cfg or _default_regions()
 
+    latitude_weighting = bool(all_cfg.get("metrics", {}).get("latitude_weighting", False))
+    weigh_by = [weighting.GridAreaWeighting()] if latitude_weighting else None
+
     spatial_aggregator = aggregation.Aggregator(
         reduce_dims=["latitude", "longitude"],
         bin_by=[binning.Regions(regions=regions)],
-        weigh_by=[weighting.GridAreaWeighting()],
+        weigh_by=weigh_by,
     )
 
     seasonal = (

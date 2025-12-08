@@ -1095,6 +1095,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 plotting,
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("vertical_profiles"),
+                metrics_cfg=cfg.get("metrics", {}),
             )
             dt = time.time() - _t
             module_timings.append(("vertical_profiles", dt))

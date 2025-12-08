@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..aggregations import latitude_weights
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -24,6 +26,7 @@ WAVE_BANDS: list[dict[str, float | str]] = [
 def calculate_energy_spectra(
     da_var: xr.DataArray,
     average_dims: Sequence[str] | None = None,
+    latitude_weighting: bool = True,
 ) -> xr.DataArray:
     """Compute zonal energy spectra retaining time structure.
 
@@ -107,12 +110,11 @@ def calculate_energy_spectra(
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
-    if "latitude" in da_power.coords:
-        lat_vals = da_power["latitude"]
-        cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
-        da_power = da_power.weighted(cosw).mean(dim="latitude")
+    if latitude_weighting:
+        weights = latitude_weights(da_power["latitude"])
+        da_power = da_power.weighted(weights).mean(dim="latitude")
     else:
-        raise ValueError("latitude coordinate required for weighting")
+        da_power = da_power.mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
     if average_dims:
@@ -195,6 +197,7 @@ def _compute_spectra_pair(
     ds_prediction: xr.Dataset,
     var: str,
     level: int | None = None,
+    latitude_weighting: bool = True,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Compute and align spectra for target and prediction once.
 
@@ -210,10 +213,12 @@ def _compute_spectra_pair(
     spec_t = calculate_energy_spectra(
         da_target,
         average_dims=["ensemble"] if "ensemble" in da_target.dims else None,
+        latitude_weighting=latitude_weighting,
     )
     spec_p = calculate_energy_spectra(
         da_prediction,
         average_dims=["ensemble"] if "ensemble" in da_prediction.dims else None,
+        latitude_weighting=latitude_weighting,
     )
     spec_t, spec_p = xr.align(spec_t, spec_p, join="inner")
     return spec_t, spec_p
@@ -463,6 +468,8 @@ def run(
     es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
     report_per_level = bool(es_cfg.get("report_per_level", True))
 
+    latitude_weighting = bool((cfg or {}).get("metrics", {}).get("latitude_weighting", False))
+
     # Preserve full datasets for metrics
     ds_target_full = ds_target
     ds_prediction_full = ds_prediction
@@ -556,7 +563,11 @@ def run(
             token_ctx = ctx["token"]
             # Compute spectra once and reuse
             spec_t, spec_p = _compute_spectra_pair(
-                ctx["ds_target"], ctx["ds_prediction"], str(var), None
+                ctx["ds_target"],
+                ctx["ds_prediction"],
+                str(var),
+                None,
+                latitude_weighting=latitude_weighting,
             )
             lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
             df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
