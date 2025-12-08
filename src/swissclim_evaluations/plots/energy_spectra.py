@@ -10,7 +10,7 @@ import pandas as pd
 import xarray as xr
 
 from ..helpers import (
-    COLOR_GROUND_TRUTH, 
+    COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
@@ -19,7 +19,6 @@ from ..helpers import (
     get_variable_units,
     resolve_ensemble_mode,
 )
-
 
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM

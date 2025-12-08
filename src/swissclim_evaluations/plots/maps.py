@@ -15,8 +15,8 @@ from ..helpers import (
     format_init_time_range,
     format_level_label,
     format_level_token,
-    get_colormap_for_variable,
     format_variable_name,
+    get_colormap_for_variable,
     get_variable_units,
     resolve_ensemble_mode,
 )
