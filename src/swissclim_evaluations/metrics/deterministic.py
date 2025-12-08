@@ -376,7 +376,12 @@ def run(
     # Track whether an ensemble dimension was present originally
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
 
-    from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+    from ..helpers import (
+        build_output_filename,
+        ensemble_mode_to_token,
+        format_init_time_range,
+        resolve_ensemble_mode,
+    )
 
     resolved_mode = resolve_ensemble_mode("deterministic", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
@@ -410,18 +415,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt_init(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt_init(start), _fmt_init(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
