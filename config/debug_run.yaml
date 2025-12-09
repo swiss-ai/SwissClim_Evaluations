@@ -1,7 +1,7 @@
 # Debug configuration for SwissClim Evaluations
 paths:
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
-  nwp: [
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
@@ -11,7 +11,13 @@ selection:
   levels: [500, 850]
   temporal_resolution_hours: null
   datetimes: ["2023-01-02T00:2023-01-02T12"]
+  # Latitude selection behavior (not cyclic):
+  # - Provide as [min_lat, max_lat] or [max_lat, min_lat]. Any order is acceptable
+  #   and data will be selected inside the defined latitude band.
   latitudes: [90.0, -89.75]
+  # Longitude selection behavior:
+  # - If first < second → standard band [first, second]
+  # - If first > second → wrap-around union [first..max_lon] ∪ [min_lon..second]
   longitudes: [0.0, 359.75]
   variables_2d: ["10m_u_component_of_wind"]
   variables_3d: ["u_component_of_wind"]

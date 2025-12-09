@@ -41,73 +41,49 @@ def _load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -> str:
-    sel = cfg.get("selection", {})
-    modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
-    # Prefer new plural key; fall back to legacy singular.
-    if "ensemble_members" in sel:
-        ensemble_members = sel.get("ensemble_members")
-    else:
-        ensemble_members = sel.get("ensemble_member")
-        if ensemble_members is not None:
-            c.warn(
-                "Config key 'selection.ensemble_member' is deprecated; "
-                "use 'selection.ensemble_members'."
-            )
-    # Normalize ensemble_members to int | list[int] | None for apply_ensemble_policy
-    if isinstance(ensemble_members, list):
-        try:
-            ensemble_members = [int(i) for i in ensemble_members]
-        except Exception:
-            c.warn("Invalid values in ensemble_members list; ignoring selection.")
-            ensemble_members = None
-        if isinstance(ensemble_members, list) and len(ensemble_members) == 1:
-            ensemble_members = ensemble_members[0]
-    # Normalize possible list/int forms for messaging only
-    if isinstance(ensemble_members, list):
-        if len(ensemble_members) == 1:
-            ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
-        else:
-            ensemble_member_norm = [int(i) for i in ensemble_members]
-    else:
-        ensemble_member_norm = ensemble_members
-
+def _ensemble_handling_message(
+    ds_prediction: xr.Dataset, cfg: dict[str, Any], resolved_modes: dict[str, str] | None = None
+) -> str:
     if "ensemble" not in ds_prediction.dims:
-        if ensemble_member_norm is not None and not probabilistic_enabled:
-            return (
-                "Ensemble: deterministic mode with "
-                f"ensemble_members={ensemble_member_norm} → selected single member; "
-                "'ensemble' removed."
-            )
-        return (
-            "Ensemble: no 'ensemble' dimension present (either source is single-member "
-            "or reduced deterministically)."
-        )
-    # ensemble present
+        return "Ensemble: No 'ensemble' dimension present."
+
+    # Ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
-    if probabilistic_enabled:
-        return (
-            "Ensemble: probabilistic mode active "
-            f"(size={ens_size}) → token=ensprob for probabilistic outputs."
-        )
-    # Deterministic paths
-    if ensemble_member_norm is None:
-        return (
-            "Ensemble: deterministic mode without explicit member → reduced to mean (ensmean)."
-            if "ensemble" not in ds_prediction.dims or ens_size == 0
-            else "Ensemble: deterministic mode without explicit member; original size="
-            f"{ens_size} (reduced internally where applicable)."
-        )
-    if isinstance(ensemble_member_norm, list):
-        return (
-            "Ensemble: deterministic mode with subset members="
-            f"{ensemble_member_norm} (size={len(ensemble_member_norm)} retained)."
-        )
-    return (
-        "Ensemble: deterministic mode with ensemble_members="
-        f"{ensemble_member_norm} → single member path."
-    )
+    base_msg = f"Ensemble Size: {ens_size}."
+
+    if ens_size == 1:
+        return f"{base_msg} Ensemble settings disregarded; probabilistic module disabled."
+
+    if resolved_modes:
+        modules_cfg = cfg.get("modules", {})
+        # Filter modes by enabled modules
+        active_modes = set()
+        for module, mode in resolved_modes.items():
+            if modules_cfg.get(module):
+                active_modes.add(mode)
+
+        details = []
+        if "prob" in active_modes:
+            details.append("Probabilistic")
+        if "members" in active_modes:
+            details.append("Members")
+        if "pooled" in active_modes:
+            details.append("Pooled")
+
+        if details:
+            return f"{base_msg} Active evaluation modes: {', '.join(details)}."
+
+        if "mean" in active_modes:
+            return f"{base_msg} All modules use mean reduction."
+
+        return f"{base_msg} No ensemble operations active."
+
+    # Fallback if resolved_modes not provided
+    modules_cfg = cfg.get("modules", {})
+    if bool(modules_cfg.get("probabilistic")):
+        return f"{base_msg} Probabilistic evaluation enabled."
+
+    return f"{base_msg} Deterministic/Mean evaluation."
 
 
 def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
@@ -164,10 +140,37 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if present:
             ds = ds.sel(level=present)
 
-    if latitudes is not None:
-        ds = ds.sel(latitude=slice(*latitudes))
-    if longitudes is not None:
-        ds = ds.sel(longitude=slice(*longitudes))
+    if latitudes is not None and "latitude" in ds.dims:
+        if len(latitudes) == 0:
+            raise ValueError("Empty list provided for latitudes; at least one value is required.")
+        # Normalize to [min, max] as per requirement
+        req_lat_min = min(latitudes)
+        req_lat_max = max(latitudes)
+
+        # Data is ensured to be monotonic descending (90 -> -90) by data._ensure_monotonic
+        ds = ds.sel(latitude=slice(req_lat_max, req_lat_min))
+
+    if longitudes is not None and "longitude" in ds.dims:
+        if len(longitudes) >= 2:
+            l_first, l_second = longitudes[0], longitudes[1]
+            if l_first <= l_second:
+                ds = ds.sel(longitude=slice(l_first, l_second))
+            else:
+                # Wrap-around case: first > second
+                # e.g. [335, 45] -> [335..end] U [start..45]
+                lon_sel = ds.longitude.values
+                lon_sel = lon_sel[(lon_sel >= l_first) | (lon_sel <= l_second)]
+                ds = ds.sel(longitude=lon_sel).sortby("longitude")
+        else:
+            # Fallback for single value or malformed input
+            if len(longitudes) == 1:
+                ds = ds.sel(longitude=slice(longitudes[0], longitudes[0]))
+            elif len(longitudes) == 0:
+                raise ValueError(
+                    "Empty list provided for longitudes; at least one value is required."
+                )
+            else:
+                ds = ds.sel(longitude=slice(*longitudes))
     # Non-contiguous explicit timestamps take precedence if provided
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
@@ -329,7 +332,7 @@ def _select_plot_datetime(
     if "init_time" not in ds_prediction.dims:
         raise ValueError("plot_datetime requires datasets with 'init_time' dimension.")
 
-    # Ensure exact label present in predictions (targets are aligned to ML labels)
+    # Ensure exact label present in predictions (targets are aligned to prediction labels)
     available = ds_prediction["init_time"].values
     if plot_dt not in available:
         raise ValueError(
@@ -539,13 +542,23 @@ def prepare_datasets(
     var_list = None
     if variables_2d or variables_3d:
         var_list = list(variables_2d or []) + list(variables_3d or [])
-    ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
-    ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
+
+    # Support legacy keys
+    target_path = paths.get("target") or paths.get("nwp")
+    prediction_path = paths.get("prediction") or paths.get("ml")
+
+    if paths.get("nwp"):
+        c.warn("Config key 'paths.nwp' is deprecated; use 'paths.target'.")
+    if paths.get("ml"):
+        c.warn("Config key 'paths.ml' is deprecated; use 'paths.prediction'.")
+
+    ds_target = data_mod.open_target(target_path, variables=var_list)
+    ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
 
     # Validate requirements
     errors = []
-    errors.extend(validate_requirements(ds_target, cfg, "Target (NWP)"))
-    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction (ML)"))
+    errors.extend(validate_requirements(ds_target, cfg, "Target"))
+    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction"))
 
     if errors:
         raise ValueError("Missing data requirements:\n" + "\n".join(errors))
@@ -553,14 +566,6 @@ def prepare_datasets(
     # Align dims to match config expectations
     ds_target = _slice_common(ds_target, cfg)
     ds_prediction = _slice_common(ds_prediction, cfg)
-
-    # Standardize temporal dims and enforce required schema
-    ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth", first_lead_only=True
-    )
-    ds_prediction = data_mod.standardize_dims(
-        ds_prediction, dataset_name="ml", first_lead_only=True
-    )
 
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
@@ -594,12 +599,12 @@ def prepare_datasets(
             )
 
         # Build stacked predictions with valid_time
-        ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
-        ml_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
-        ml_valid_2d = ml_init + ml_lead
+        pred_init = ds_prediction["init_time"].astype("datetime64[ns]")
+        pred_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
+        pred_valid_2d = pred_init + pred_lead
         ds_pred_stacked = ds_prediction.stack(pair=("init_time", "lead_time"))
-        ml_valid_1d = ml_valid_2d.stack(pair=("init_time", "lead_time"))
-        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=ml_valid_1d)
+        pred_valid_1d = pred_valid_2d.stack(pair=("init_time", "lead_time"))
+        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=pred_valid_1d)
 
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
@@ -611,11 +616,11 @@ def prepare_datasets(
                         ).astype("timedelta64[ns]")
                     }
                 )
-            nwp_init = ds_target["init_time"].astype("datetime64[ns]")
-            nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
+            target_init = ds_target["init_time"].astype("datetime64[ns]")
+            target_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
-            nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
+            target_valid_1d = (target_init + target_lead).stack(pair=("init_time", "lead_time"))
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=target_valid_1d)
         elif "time" in ds_target.dims:
             # Convert time to a stacked structure with a dummy lead_time=0 to keep unstack symmetry
             tvals = ds_target["time"].values.astype("datetime64[ns]")
@@ -655,7 +660,8 @@ def prepare_datasets(
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
         except KeyError as err:
             raise ValueError(
-                "Internal alignment error: ML valid_time not found in targets after intersection."
+                "Internal alignment error: Prediction valid_time not found in targets "
+                "after intersection."
             ) from err
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
         # Replace pair labels on targets to match predictions exactly for clean unstack
@@ -671,8 +677,8 @@ def prepare_datasets(
         ds_target = ds_tgt_stacked.unstack("pair")
 
     # Enforce repository-wide chunking policy to ensure predictable performance
-    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="ground_truth")
-    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="ml")
+    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target")
+    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="prediction")
 
     # Optional: strict check for missing values in inputs
     try:
@@ -831,7 +837,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
             resolved_modes[_m] = resolve_ensemble_mode(_m, req, ds_target, ds_prediction)
         except Exception:
             # Fallback; shouldn't happen
-            resolved_modes[_m] = req or "none"
+            resolved_modes[_m] = req or "mean"
     # We'll show resolved modes later with fallbacks & summary
 
     # Basic overview
@@ -872,7 +878,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         print(ds_prediction)
     # Consolidated ensemble information (fallbacks + resolved modes + high-level message)
     try:
-        ens_msg = _ensemble_handling_message(ds_prediction, cfg)
+        ens_msg = _ensemble_handling_message(ds_prediction, cfg, resolved_modes)
         blocks: list[str] = []
         if fallback_notes:
             blocks.append("Fallbacks:\n" + "\n".join(fallback_notes))
@@ -1265,7 +1271,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status(
             "probabilistic",
             "run",
-            "CRPS/PIT (xarray) + WBX SSR/CRPS",
+            "CRPS/PIT (xarray) + WBX SSR",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))

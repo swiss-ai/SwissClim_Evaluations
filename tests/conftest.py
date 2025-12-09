@@ -5,6 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+
+# Force non-interactive backend for tests
+matplotlib.use("Agg")
+
 import numpy as _np
 import pytest
 
