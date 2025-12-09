@@ -2119,8 +2119,8 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
 
         # Plot SSIM comparison
         if "SSIM" in combined.columns:
-            # Filter for MULTIVARIATE_AVERAGE
-            df_avg = combined[combined["variable"] == "MULTIVARIATE_AVERAGE"]
+            # Filter for AVERAGE_SSIM
+            df_avg = combined[combined["variable"] == "AVERAGE_SSIM"]
             if not df_avg.empty:
                 fig, ax = plt.subplots(figsize=(8, 6))
                 sns.barplot(data=df_avg, x="model", y="SSIM", ax=ax)
