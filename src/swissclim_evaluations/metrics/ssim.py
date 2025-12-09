@@ -83,7 +83,7 @@ def calculate_ssim(
             output_dtypes=[float],
         )
 
-        # Average SSIM over init_time/level/ensemble/
+        # Average SSIM over all non-spatial dimensions (e.g., init_time, lead_time, level, ensemble)
         mean_ssim = float(ssim_da.mean(skipna=True).compute())
         metrics_dict[var] = {"SSIM": mean_ssim}
 
