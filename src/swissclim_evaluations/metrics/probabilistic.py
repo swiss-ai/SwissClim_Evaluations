@@ -21,6 +21,7 @@ from weatherbenchX.metrics.probabilistic import (
 
 from ..aggregations import latitude_weights
 from ..helpers import (
+    COLOR_DIAGNOSTIC,
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
@@ -616,7 +617,7 @@ def plot_probabilistic(
         counts,
         width=widths,
         align="edge",
-        color="#4C78A8",
+        color=COLOR_DIAGNOSTIC,
         edgecolor="white",
     )
     # Check for single date
