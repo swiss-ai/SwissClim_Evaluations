@@ -160,7 +160,12 @@ def run(
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
         # Stack ensemble into the sample dimension (e.g., "time")
-        sample_dim = "time" if "time" in ds_prediction.dims else list(ds_prediction.dims)[0]
+        sample_dim = (
+            "init_time" if "init_time" in ds_prediction.dims
+            else ("lead_time" if "lead_time" in ds_prediction.dims
+                  else ("time" if "time" in ds_prediction.dims
+                        else list(ds_prediction.dims)[0]))
+        )
         ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
         ds_target_stacked = ds_target
         if "ensemble" in ds_target.dims:
