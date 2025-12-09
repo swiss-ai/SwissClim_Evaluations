@@ -2066,31 +2066,31 @@ def intercompare_probabilistic(
                         plt.close()
 
 
-def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
-    """Combine multivariate SSIM metrics from multiple models."""
+def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine SSIM metrics from multiple models."""
     # Availability report
-    per_model, _, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
-    _report_missing("multivariate_ssim", models, labels, per_model, uni)
+    per_model, _, uni = _scan_model_sets(models, "ssim/ssim_ssim_*.csv")
+    _report_missing("ssim_ssim", models, labels, per_model, uni)
 
     results = {}
-    all_multi = _common_files(models, "multivariate/multivariate_ssim_*.csv")
+    all_multi = _common_files(models, "ssim/ssim_ssim_*.csv")
 
     # Check for any files
-    results["Multivariate Summary"] = 1 if all_multi else 0
+    results["SSIM Summary"] = 1 if all_multi else 0
 
-    _report_checklist("multivariate_ssim", results)
+    _report_checklist("ssim_ssim", results)
 
     # Report common files found
-    multi_csv = _common_files(models, "multivariate/multivariate_ssim_*.csv")
+    multi_csv = _common_files(models, "ssim/ssim_ssim_*.csv")
     if multi_csv:
-        _print_file_list(f"Found {len(multi_csv)} common multivariate metric files", multi_csv)
+        _print_file_list(f"Found {len(multi_csv)} common SSIM metric files", multi_csv)
 
-    # Multivariate metrics
-    dst_multi = _ensure_dir(out_root / "multivariate")
+    # SSIM metrics
+    dst_multi = _ensure_dir(out_root / "ssim")
     frames: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        candidates = sorted((m / "multivariate").glob("multivariate_ssim_*.csv"))
+        candidates = sorted((m / "ssim").glob("ssim_ssim_*.csv"))
         # Prefer ensmean or det
         f = next(
             (c for c in candidates if "ensmean" in c.name or "det" in c.name),
@@ -2186,9 +2186,10 @@ def run_from_config(cfg: dict) -> None:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
+    if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
-    if "multivariate" in mods:
-        intercompare_multivariate(models, labels, out_root)
+    if "ssim" in mods or "multivariate" in mods:
+        intercompare_ssim(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels

@@ -98,40 +98,37 @@ def run(
     ensemble_mode: str | None = None,
 ) -> None:
     """
-    Compute and write multivariate metrics (SSIM) CSVs.
+    Compute and write SSIM metrics CSVs.
     """
-    cfg = (metrics_cfg or {}).get("multivariate", {})
-
-    # SSIM configuration
-    ssim_cfg = cfg.get("ssim", {})
+    cfg = (metrics_cfg or {}).get("ssim", {})
 
     # Extract SSIM parameters
-    sigma = float(ssim_cfg.get("sigma", 1.5))
-    k1 = float(ssim_cfg.get("k1", 0.01))
-    k2 = float(ssim_cfg.get("k2", 0.03))
-    gaussian_weights = bool(ssim_cfg.get("gaussian_weights", True))
-    use_sample_covariance = bool(ssim_cfg.get("use_sample_covariance", True))
+    sigma = float(cfg.get("sigma", 1.5))
+    k1 = float(cfg.get("k1", 0.01))
+    k2 = float(cfg.get("k2", 0.03))
+    gaussian_weights = bool(cfg.get("gaussian_weights", True))
+    use_sample_covariance = bool(cfg.get("use_sample_covariance", True))
 
     # Resolve ensemble mode
-    mode = resolve_ensemble_mode("multivariate", ensemble_mode, ds_target, ds_prediction)
+    mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
 
     # Helper to save output
     def _save_output(df: pd.DataFrame, ens_token: str):
         if df.empty:
             return
 
-        # Calculate multivariate average
-        multivariate_score = df["SSIM"].mean()
-        summary_row = pd.DataFrame({"SSIM": [multivariate_score]}, index=["MULTIVARIATE_AVERAGE"])
+        # Calculate average SSIM across variables
+        avg_score = df["SSIM"].mean()
+        summary_row = pd.DataFrame({"SSIM": [avg_score]}, index=["AVERAGE_SSIM"])
         df_final = pd.concat([df, summary_row])
 
         filename = build_output_filename(
-            metric="multivariate", qualifier="ssim", ensemble=ens_token, ext="csv"
+            metric="ssim", qualifier="ssim", ensemble=ens_token, ext="csv"
         )
-        out_path = out_root / "multivariate" / filename
+        out_path = out_root / "ssim" / filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df_final.to_csv(out_path, index_label="variable")
-        print(f"[multivariate] saved {out_path}")
+        print(f"[ssim] saved {out_path}")
 
     # Handle ensemble dimension
     if "ensemble" in ds_prediction.dims and mode == "mean":

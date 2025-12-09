@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from swissclim_evaluations.metrics.multivariate import calculate_ssim, run
+from swissclim_evaluations.metrics.ssim import calculate_ssim, run
 
 
 def test_calculate_ssim_basic():
@@ -76,7 +76,7 @@ def test_calculate_ssim_params():
     assert df1.loc["var1", "SSIM"] != df2.loc["var1", "SSIM"]
 
 
-def test_run_multivariate(tmp_path: Path):
+def test_run_ssim(tmp_path: Path):
     # Create dummy datasets
     # Use size > 11 for default win_size
     data = np.random.rand(2, 2, 20, 20)  # init, lead, lat, lon
@@ -96,9 +96,10 @@ def test_run_multivariate(tmp_path: Path):
     run(ds, ds, out_root, metrics_cfg=None)
 
     # Check if output file exists
-    out_dir = out_root / "multivariate"
+    out_dir = out_root / "ssim"
     assert out_dir.exists()
-    files = list(out_dir.glob("multivariate_ssim*.csv"))
+
+    files = list(out_dir.glob("ssim_ssim*.csv"))
     assert len(files) > 0
 
     df = pd.read_csv(files[0])
@@ -112,12 +113,12 @@ def test_run_multivariate(tmp_path: Path):
     assert row_var1["SSIM"].values[0] == pytest.approx(1.0)
 
     # Check average
-    row_avg = df[df["variable"] == "MULTIVARIATE_AVERAGE"]
+    row_avg = df[df["variable"] == "AVERAGE_SSIM"]
     assert not row_avg.empty
     assert row_avg["SSIM"].values[0] == pytest.approx(1.0)
 
 
-def test_run_multivariate_ensemble(tmp_path: Path):
+def test_run_ssim_ensemble(tmp_path: Path):
     # Create dummy datasets with ensemble
     # Use size > 11 for default win_size
     data = np.random.rand(2, 2, 3, 20, 20)  # init, lead, ens, lat, lon
@@ -142,11 +143,11 @@ def test_run_multivariate_ensemble(tmp_path: Path):
 
     # Test mean mode (default)
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="mean")
-    out_dir = out_root / "multivariate"
-    files = list(out_dir.glob("multivariate_ssim*ensmean.csv"))
+    out_dir = out_root / "ssim"
+    files = list(out_dir.glob("ssim_ssim*ensmean.csv"))
     assert len(files) == 1
 
     # Test members mode
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="members")
-    files = list(out_dir.glob("multivariate_ssim*ens0.csv"))
+    files = list(out_dir.glob("ssim_ssim*ens0.csv"))
     assert len(files) == 1

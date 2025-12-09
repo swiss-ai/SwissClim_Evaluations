@@ -328,7 +328,7 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     # metrics
     "deterministic": "mean",
     "ets": "mean",
-    "multivariate": "mean",
+    "ssim": "mean",
     "probabilistic": "prob",
     # plots / diagnostics
     "energy_spectra": "mean",
