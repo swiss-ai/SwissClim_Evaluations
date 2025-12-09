@@ -5,6 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+
+# Force non-interactive backend for tests
+matplotlib.use("Agg")
+
 import numpy as _np
 import pytest
 
@@ -196,6 +201,18 @@ class _DummyAxis:
 
     def invert_yaxis(self):
         return None
+
+    def axhline(self, *a, **k):
+        return None
+
+    def axvline(self, *a, **k):
+        return None
+
+    def semilogx(self, *a, **k):
+        return None
+
+    def get_lines(self):
+        return []
 
     def contourf(self, *a, **k):
         return _DummyImage()

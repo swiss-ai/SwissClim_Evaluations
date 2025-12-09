@@ -94,13 +94,17 @@ def test_bivariate_workflow(monkeypatch, tmp_path: Path):
     # 6. Verify CLI output (.npz files AND .png plots)
     npz_dir_a = model_dir_a / "multivariate"
     assert (
-        npz_dir_a / "bivariate_hist_10m_u_component_of_wind_10m_v_component_of_wind.npz"
+        npz_dir_a / "bivariate_hist_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.npz"
     ).exists()
-    assert (npz_dir_a / "bivariate_hist_2m_temperature_10m_u_component_of_wind.npz").exists()
+    assert (
+        npz_dir_a / "bivariate_hist_2m_temperature_10m_u_component_of_wind_ensmean.npz"
+    ).exists()
 
     # Verify that plots are generated directly by the CLI
-    assert (npz_dir_a / "bivariate_10m_u_component_of_wind_10m_v_component_of_wind.png").exists()
-    assert (npz_dir_a / "bivariate_2m_temperature_10m_u_component_of_wind.png").exists()
+    assert (
+        npz_dir_a / "bivariate_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.png"
+    ).exists()
+    assert (npz_dir_a / "bivariate_2m_temperature_10m_u_component_of_wind_ensmean.png").exists()
 
     # Intercomparison step for bivariate plots is no longer needed/supported
     # as plots are generated per-model.

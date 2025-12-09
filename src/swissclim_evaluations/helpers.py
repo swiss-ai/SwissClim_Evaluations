@@ -1,9 +1,148 @@
 import contextlib
 import itertools
+import re
 from typing import Any
 
 import numpy as np
 import xarray as xr
+from matplotlib.colors import Colormap
+
+# Consistent colors for single-model evaluation plots
+COLOR_GROUND_TRUTH = "black"
+COLOR_MODEL_PREDICTION = "#D55E00"  # Vermilion (colorblind-friendly)
+COLOR_DIAGNOSTIC = "#4C78A8"  # Neutral blue for diagnostic metrics (e.g. PIT histogram)
+
+
+def get_colormap_for_variable(variable_name: str) -> str | Colormap:
+    """
+    Returns an appropriate colormap for a given physical variable.
+
+    Args:
+        variable_name (str): Name of the variable (case-insensitive).
+            Can contain underscores or spaces.
+            Matching is performed using substring search after converting to lowercase.
+
+    Returns:
+        str or Colormap: A matplotlib-compatible colormap name (string) or Colormap object.
+            Returns "viridis" as default if no match is found.
+
+    Matching logic:
+        - Substring matching via `in` is used to determine the appropriate colormap.
+        - For example, if "temperature" is in the variable name, "magma" is returned.
+
+    Examples:
+        >>> get_colormap_for_variable("temperature")
+        'magma'
+        >>> get_colormap_for_variable("U_Component_Of_Wind")
+        'RdBu_r'
+        >>> get_colormap_for_variable("precipitation")
+        'Blues'
+        >>> get_colormap_for_variable("unknown_variable")
+        'viridis'
+    """
+    variable_name = variable_name.lower()
+
+    # Note: The order of checks matters!
+    # Some variables might match multiple categories (e.g. "integrated_vapor_transport"
+    # contains "vapor" which is also in the precipitation list).
+    # We check for diverging variables first to catch things like fluxes/transport
+    # before checking for general water/moisture terms.
+
+    # Diverging variables (wind components, vertical velocity, anomalies, fluxes)
+    diverging_vars = [
+        "u_component_of_wind",
+        "v_component_of_wind",
+        "vertical_velocity",
+        "divergence",
+        "vorticity",
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind",
+        "mean_surface_latent_heat_flux",
+        "mean_surface_sensible_heat_flux",
+        "mean_vertically_integrated_moisture_divergence",
+        "integrated_vapor_transport",  # Often vector magnitude but sometimes treated as flux
+    ]
+
+    if any(v in variable_name for v in diverging_vars):
+        return "RdBu_r"
+
+    # Precipitation / Water / Moisture (sequential - Blues)
+    if any(
+        x in variable_name
+        for x in [
+            "precipitation",
+            "total_column_water",
+            "total_column_water_vapour",
+            "total_column_vapor",
+            "volumetric_soil_water",
+            "snow_depth",
+            "sea_ice_cover",
+            "lake_cover",
+        ]
+    ):
+        return "Blues"
+
+    # Temperature / Heat / Radiation (sequential - Magma/Inferno/Hot)
+    if any(
+        x in variable_name
+        for x in [
+            "temperature",
+            "2m_temperature",
+            "2m_dewpoint_temperature",
+            "sea_surface_temperature",
+            "radiation_flux",  # short/long wave fluxes
+        ]
+    ):
+        return "magma"
+
+    # Humidity / Vegetation (sequential - Greens)
+    if any(
+        x in variable_name
+        for x in [
+            "humidity",
+            "specific_humidity",
+            "relative_humidity",
+            "leaf_area_index",
+            "vegetation_cover",
+        ]
+    ):
+        return "Greens"
+
+    # Pressure / Geopotential / Orography (sequential - Viridis)
+    if any(
+        x in variable_name
+        for x in [
+            "geopotential",
+            "pressure",
+            "mean_sea_level_pressure",
+            "surface_pressure",
+            "orography",
+            "land_sea_mask",
+            "soil_type",
+            "boundary_layer_height",
+            "lapse_rate",
+        ]
+    ):
+        return "viridis"
+
+    # Cloud cover (sequential - Greys)
+    if "cloud_cover" in variable_name:
+        return "Greys_r"
+
+    # Wind speed / Energy (sequential - YlOrRd)
+    if any(
+        x in variable_name
+        for x in [
+            "wind_speed",
+            "10m_wind_speed",
+            "eddy_kinetic_energy",
+            "potential_vorticity",
+        ]
+    ):
+        return "YlOrRd"
+
+    # Default
+    return "viridis"
 
 
 def aggregate_member_dfs(dfs):
@@ -43,15 +182,15 @@ def aggregate_member_dfs(dfs):
     return out[sorted(numeric_cols)]
 
 
-def _fmt_init(ts: np.ndarray) -> tuple[str, str]:
-    """Format init_time array (datetime64) to YYYYMMDDHH strings (hour precision)."""
+def format_init_time_range(ts: np.ndarray) -> tuple[str, str]:
+    """Format init_time array (datetime64) to YYYY-MM-DDTHH strings (hour precision)."""
     if ts.size == 0:
         return ("", "")
     start = np.datetime64(ts.min()).astype("datetime64[h]")
     end = np.datetime64(ts.max()).astype("datetime64[h]")
 
     def _fmt(x):
-        return np.datetime_as_string(x, unit="h").replace("-", "").replace(":", "").replace("T", "")
+        return np.datetime_as_string(x, unit="h").replace(":", "")
 
     return _fmt(start), _fmt(end)
 
@@ -68,14 +207,14 @@ def time_range_suffix(ds: xr.Dataset) -> str:
     Patterns required by tests:
       - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
       - Only one dim present → single segment without separator.
-    Datetime formatted as YYYYMMDDHH (no separators). Lead times in hours (ints).
+    Datetime formatted as YYYY-MM-DDTHH. Lead times in hours (ints).
     """
     segments: list[str] = []
     if "init_time" in ds.coords:
         try:
             init_vals = np.asarray(ds["init_time"].values)
             if init_vals.size:
-                s, e = _fmt_init(init_vals)
+                s, e = format_init_time_range(init_vals)
                 if s and e:
                     segments.append(f"init_time_{s}_to_{e}")
         except Exception:
@@ -109,7 +248,7 @@ def build_output_filename(
         variable: Variable name; list/None omitted.
         level: Pressure level value.
         qualifier: Extra discriminator (averaged, combined, plot, spectrum, etc.).
-        init_time_range: (start,end) timestamps YYYYMMDDHH → init<start>-<end>.
+        init_time_range: (start,end) timestamps YYYY-MM-DDTHH → init<start>-<end>.
         lead_time_range: (start,end) lead hours → lead<start>-<end>.
         ensemble: Index, 'mean', or None.
         ext: File extension without dot.
@@ -199,12 +338,12 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "maps": "members",
 }
 
-_VALID_MODES = {"none", "mean", "pooled", "prob", "members"}
+_VALID_MODES = {"mean", "pooled", "prob", "members"}
 
 # Explicit per-module allowed modes (logical + implemented semantics).
 _ALLOWED_PER_MODULE: dict[str, set[str]] = {
-    "maps": {"none", "mean", "members"},
-    "vertical_profiles": {"none", "mean", "pooled", "members"},
+    "maps": {"mean", "members"},
+    "vertical_profiles": {"mean", "pooled", "members"},
     "probabilistic": {"prob"},
     "histograms": {"none", "mean", "pooled", "members"},
     "wd_kde": {"none", "mean", "pooled", "members"},
@@ -224,19 +363,14 @@ def resolve_ensemble_mode(
     """Determine effective ensemble handling mode for a module.
 
     Modes:
-      - none: no ensemble behaviour (or ensemble dim absent)
       - mean: reduce ensemble → single field (ensmean)
       - pooled: treat all members' samples jointly (enspooled)
       - prob: keep ensemble dimension intrinsically (ensprob)
       - members: iterate per member producing separate per-member artifacts (ens<idx>)
     """
-    has_ens = "ensemble" in getattr(ds_prediction, "dims", {})
-    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "none")).lower()
+    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "mean")).lower()
     if base not in _VALID_MODES:
-        base = _DEFAULT_ENSEMBLE_MODES.get(module, "none")
-    if not has_ens:
-        # If no ensemble dim, collapse to none (probabilistic handled upstream).
-        return "none"
+        base = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
     if module == "probabilistic":
         # Force prob; other modes invalid here.
         return "prob"
@@ -249,8 +383,6 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     Returns token WITHOUT leading underscore; build_output_filename will append as part list.
     For members mode we expect caller to invoke once per member with member_index.
     """
-    if mode == "none":
-        return None  # builder will inject default 'ensmean'
     if mode == "mean":
         return "mean"  # builder normalises to ensmean
     if mode == "pooled":
@@ -348,3 +480,163 @@ def validate_and_normalize_ensemble_config(
                 val = "none"
         normalized[module] = val
     return normalized, warnings
+
+
+def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=None):
+    """Display all images and tables in the given directory matching the patterns.
+
+    Args:
+        output_dir: Path to the directory containing outputs.
+        pattern_img: Glob pattern for images (default: "*.png"). Set to None or "" to skip.
+        pattern_csv: Glob pattern for CSV tables (default: "*.csv"). Set to None or "" to skip.
+        limit: Maximum number of images to display (default: None, show all).
+    """
+    from itertools import islice
+    from pathlib import Path
+
+    import pandas as pd
+    from IPython.display import HTML, Image, display
+
+    def natural_key(file_path):
+        """Key for natural sorting (numbers sorted numerically)."""
+        parts = file_path.stem.split("_")
+        key = []
+        for part in parts:
+            try:
+                val = int(part)
+                key.append((0, val))
+            except ValueError:
+                key.append((1, part))
+        return key
+
+    path = Path(output_dir)
+    if not path.exists():
+        print(f"Directory not found: {path}")
+        return
+
+    # Images
+    if pattern_img:
+        images = sorted(path.glob(pattern_img), key=natural_key)
+        if images:
+            to_show = images if limit is None else list(islice(images, 0, limit))
+            count_str = f"({len(to_show)}/{len(images)})" if limit is not None else ""
+            print(f"--- Images in {path.name} {count_str} ---")
+            for img in to_show:
+                print(f"Displaying: {img.name}")
+                display(Image(filename=str(img)))
+        else:
+            print(f"No images found for pattern '{pattern_img}' in {path.name}")
+
+    # Tables
+    if pattern_csv:
+        tables = sorted(path.glob(pattern_csv), key=natural_key)
+        if tables:
+            print(f"--- Tables in {path.name} ---")
+            for tbl in tables:
+                print(f"Table: {tbl.name}")
+                try:
+                    df = pd.read_csv(tbl)
+                    with pd.option_context("display.max_rows", None):
+                        display(
+                            HTML(
+                                f"<div style='max-height: 350px; overflow: "
+                                f"auto;'>{df.to_html()}</div>"
+                            )
+                        )
+                except Exception as e:
+                    print(f"Could not read {tbl.name}: {e}")
+        else:
+            print(f"No tables found for pattern '{pattern_csv}' in {path.name}")
+
+
+def extract_date_from_filename(filename: str) -> str:
+    """Extract date suffix from filename if it contains a single init time.
+
+    Looks for pattern 'init<YYYY-MM-DDTHHstart>-<YYYY-MM-DDTHHend>'. If start == end, returns
+    ' (<start>)'. Otherwise returns empty string.
+    """
+    match = re.search(r"init(\d{4}-?\d{2}-?\d{2}T\d{2})-(\d{4}-?\d{2}-?\d{2}T\d{2})", filename)
+    if match:
+        start, end = match.groups()
+        if start == end:
+            # Normalize to YYYY-MM-DDTHH
+            if len(start) == 10 and "T" not in start:
+                start = start[:8] + "T" + start[8:]
+            if len(start) == 11 and "T" in start and "-" not in start:
+                start = f"{start[:4]}-{start[4:6]}-{start[6:8]}{start[8:]}"
+            return f" ({start})"
+    return ""
+
+
+def extract_date_from_dataset(ds: Any) -> str:
+    """Extract date suffix from dataset if it contains a single init time.
+
+    Checks 'init_time' coordinate. If size is 1, formats as ' (YYYY-MM-DDTHH)'.
+    Otherwise returns empty string.
+    """
+    if not hasattr(ds, "coords") or "init_time" not in ds.coords:
+        return ""
+
+    try:
+        its = ds.coords["init_time"]
+        if its.size == 1:
+            # Use values directly to avoid .item() converting datetime64 to int (ns)
+            # Handle both scalar (0-d) and 1-d arrays
+            ts_val = its.values if its.ndim == 0 else its.values.flatten()[0]
+            ts = np.datetime64(ts_val).astype("datetime64[h]")
+            return f" ({np.datetime_as_string(ts, unit='h').replace(':', '')})"
+    except Exception:
+        # If extraction or formatting fails, return empty string as fallback.
+        pass
+    return ""
+
+
+def format_variable_name(var_name: str) -> str:
+    """Format variable name for plot titles (e.g. '2m_temperature' -> '2m Temperature')."""
+    formatted = " ".join(word.capitalize() for word in var_name.replace("_", " ").split())
+    # Remove trailing 2d/3d indicators
+    lower = formatted.lower()
+    if lower.endswith(" 2d") or lower.endswith(" 3d"):
+        formatted = formatted[:-3]
+    return formatted
+
+
+def format_level_label(level: str | int | float | None) -> str:
+    """Format level label for plot titles.
+
+    Returns empty string for surface levels ('sfc', 'surface', 0),
+    otherwise returns ' (Level {level})'.
+    """
+    if level is None:
+        return ""
+
+    lvl_str = str(level).lower().strip()
+    if lvl_str in ("sfc", "surface", "0", "0.0", "-1", "-1.0"):
+        return ""
+
+    return f" (Level {level})"
+
+
+# Common variable units fallback mapping
+VARIABLE_UNITS = {
+    "2m_temperature": "K",
+    "temperature": "K",
+    "10m_u_component_of_wind": "m s**-1",
+    "10m_v_component_of_wind": "m s**-1",
+    "u_component_of_wind": "m s**-1",
+    "v_component_of_wind": "m s**-1",
+    "geopotential": "m**2 s**-2",
+    "specific_humidity": "kg kg**-1",
+    "mean_sea_level_pressure": "Pa",
+    "total_precipitation": "m",
+}
+
+
+def get_variable_units(ds: xr.Dataset | xr.DataArray, var_name: str) -> str:
+    """Get units for a variable, falling back to a default mapping if missing."""
+    if isinstance(ds, xr.DataArray):
+        if "units" in ds.attrs:
+            return str(ds.attrs["units"])
+    elif var_name in ds and "units" in ds[var_name].attrs:
+        return str(ds[var_name].attrs["units"])
+    return VARIABLE_UNITS.get(var_name, "")

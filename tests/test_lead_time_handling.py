@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from swissclim_evaluations import data as data_mod
 from swissclim_evaluations.metrics.probabilistic import run_probabilistic
 
 
@@ -20,14 +19,14 @@ def _make_multi_lead_datasets():
     lon = np.linspace(7.0, 8.0, 2)
     ens = np.arange(4)
 
-    shape_tgt = (init.size, lead.size, lat.size, lon.size)
+    shape_tgt = (init.size, lead.size, lat.size, lon.size, 1)
     shape_pred = (init.size, lead.size, lat.size, lon.size, ens.size)
 
     rng = np.random.default_rng(0)
     targets = xr.Dataset(
         {
             "2m_temperature": (
-                ["init_time", "lead_time", "latitude", "longitude"],
+                ["init_time", "lead_time", "latitude", "longitude", "ensemble"],
                 rng.standard_normal(shape_tgt),
             )
         },
@@ -36,6 +35,7 @@ def _make_multi_lead_datasets():
             "lead_time": lead,
             "latitude": lat,
             "longitude": lon,
+            "ensemble": [0],
         },
     )
 
@@ -63,16 +63,12 @@ def _make_multi_lead_datasets():
     return targets, predictions
 
 
-def test_probabilistic_uses_first_lead_time(tmp_path: Path):
+def test_probabilistic_preserves_lead_times(tmp_path: Path):
     ds_target, ds_prediction = _make_multi_lead_datasets()
 
-    # Apply standardization and enforce first lead_time (no forecasting), mimicking CLI behavior
-    ds_target = data_mod.standardize_dims(
-        ds_target, dataset_name="ground_truth", first_lead_only=True
-    )
-    ds_prediction = data_mod.standardize_dims(
-        ds_prediction, dataset_name="ml", first_lead_only=True
-    )
+    # Mimic CLI behavior (no standardization needed with strict data)
+    # If we want to test single lead time, we should slice it manually here,
+    # but let's test that it works with whatever data is passed.
 
     out_root = tmp_path / "out"
     run_probabilistic(
@@ -106,11 +102,6 @@ def test_probabilistic_uses_first_lead_time(tmp_path: Path):
     pit = xr.load_dataarray(pit_nc)
     crps = xr.load_dataarray(crps_nc)
 
-    # Expect exactly one lead_time retained
-    assert "lead_time" in pit.dims and int(pit.lead_time.size) == 1
-    assert "lead_time" in crps.dims and int(crps.lead_time.size) == 1
-
-    # Check that the single lead_time equals zero timedelta
-    lt0 = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")[0]
-    assert np.all(pit["lead_time"].values == lt0)
-    assert np.all(crps["lead_time"].values == lt0)
+    # Expect all lead_times retained (no longer forced to 1)
+    assert "lead_time" in pit.dims and int(pit.lead_time.size) == 3
+    assert "lead_time" in crps.dims and int(crps.lead_time.size) == 3

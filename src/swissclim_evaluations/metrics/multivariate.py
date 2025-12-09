@@ -228,6 +228,10 @@ def run(
             # If mode is mean, ds_p_run is already reduced to mean above
             # If mode is pooled, we pass the full dataset and the plotter flattens it (pooling)
             ens_token = ensemble_mode_to_token(mode) if mode != "none" else None
+            # Normalize 'mean' to 'ensmean' for consistency with build_output_filename
+            if ens_token == "mean":
+                ens_token = "ensmean"
+
             calculate_and_plot_bivariate_histograms(
                 ds_p_run,
                 ds_t_run,

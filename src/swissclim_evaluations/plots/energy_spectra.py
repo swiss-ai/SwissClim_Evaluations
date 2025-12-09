@@ -9,6 +9,17 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    ensemble_mode_to_token,
+    format_level_label,
+    format_variable_name,
+    get_variable_units,
+    resolve_ensemble_mode,
+)
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -101,7 +112,7 @@ def calculate_energy_spectra(
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
     # Add units for power spectrum if input had units
-    in_units = da_var.attrs.get("units")
+    in_units = get_variable_units(da_var, da_var.name)
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
@@ -235,8 +246,9 @@ def _plot_single_spectrum(
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-    ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
-    ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
+    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
+    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
+
     props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
@@ -260,61 +272,19 @@ def _plot_single_spectrum(
         return
     ax.set_xlim(k_min, k_max)
 
-    wavelength_candidates = [
-        40000,
-        20000,
-        10000,
-        5000,
-        2000,
-        1000,
-        500,
-        200,
-        100,
-        50,
-        20,
-        10,
-        5,
-        2,
-        1,
-        0.5,
-        0.2,
-        0.1,
-    ]
-    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
-    wl_min_possible = 1.0 / k_max
-    wl_max_possible = 1.0 / k_min
-    valid_wl = [
-        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
-    ]
-    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
-    k_ticks = np.array([1.0 / wl for wl in valid_wl])
-    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-    if k_ticks.size == 0:  # fallback to previous geometric spacing
-        k_ticks = np.geomspace(k_min, k_max, num=6)
+    # Add golden dotted line at 4*dx cutoff (k_max / 2)
+    k_cutoff = k_max / 2.0
+    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
 
-    ax_top = ax.twiny()
-    ax_top.set_xscale("log")
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(k_ticks)
+    add_wavelength_axis(ax, k_min, k_max)
 
-    def _fmt_wl_from_k(k: float) -> str:
-        wl = 1.0 / k
-        if wl >= 1000:
-            return f"{wl / 1000:.0f}k"  # show whole thousands
-        if wl >= 100:
-            return f"{wl:.0f}"
-        if wl >= 10:
-            return f"{wl:.0f}"
-        if wl >= 1:
-            return f"{wl:.1f}"
-        return f"{wl:.2f}"
-
-    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-    ax_top.set_xlabel("Wavelength (km)")
-    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
-
-    lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
+    lev_part = format_level_label(level)
+    # Simplify title to just show init date if available, matching other plots
+    date_suffix = f" ({init_label})" if init_label and init_label != "noInit" else ""
+    ax.set_title(
+        f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
+        pad=24,
+    )
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -368,7 +338,6 @@ def _plot_energy_spectra(
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
-    from ..helpers import build_output_filename
 
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
@@ -380,7 +349,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else "surface",
+            level=f"{level}hPa" if level is not None else "surface",
             qualifier="single_spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -441,7 +410,7 @@ def _plot_energy_spectra(
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
-            init_label = init_label.replace(":", "").replace("-", "")
+            init_label = init_label.replace(":", "")
         else:
             init_label = "noinit"
 
@@ -465,7 +434,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=f"{level}hPa" if level is not None else None,
             qualifier="spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -513,7 +482,6 @@ def run(
     # Preserve full datasets for metrics
     ds_target_full = ds_target
     ds_prediction_full = ds_prediction
-    from ..helpers import ensemble_mode_to_token, resolve_ensemble_mode
 
     resolved_mode = resolve_ensemble_mode(
         "energy_spectra", ensemble_mode, ds_target_full, ds_prediction_full
@@ -531,8 +499,6 @@ def run(
                 )
             )
         )
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # historical behaviour (mean reduction)
     # Track members mode for metrics naming (per-member metrics aggregated without token)
     metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
@@ -547,7 +513,6 @@ def run(
         ens_token = None
 
     # Unified suffix based on init_time/lead_time only
-    from ..helpers import build_output_filename
 
     # --- Determine variables & levels ---------------------------------------------
     if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:
@@ -1031,9 +996,10 @@ def run(
                 and first_dt in ds_target_full["init_time"].values
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
+            dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
             print(
                 "[energy_spectra] Plotting only first init_time: "
-                f"{np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+                f"{dt_str} (metrics cover full range)"
             )
         except Exception:
             pass
@@ -1081,7 +1047,7 @@ def run(
                         / build_output_filename(
                             metric="lsd",
                             variable=str(var),
-                            level=level,
+                            level=f"{level}hPa",
                             qualifier="spectrum",
                             init_time_range=None,
                             lead_time_range=None,
@@ -1096,3 +1062,60 @@ def run(
         print("[energy_spectra] Figures/NPZ saved (subset dataset)")
 
     print("[energy_spectra] Completed energy spectra metrics & plots.")
+
+
+def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:
+    """Add a top axis with wavelength labels (km) corresponding to wavenumber (cycles/km)."""
+    wavelength_candidates = [
+        40000,
+        20000,
+        10000,
+        5000,
+        2000,
+        1000,
+        500,
+        200,
+        100,
+        50,
+        20,
+        10,
+        5,
+        2,
+        1,
+        0.5,
+        0.2,
+        0.1,
+    ]
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
+    wl_min_possible = 1.0 / k_max if k_max > 0 else 0
+    wl_max_possible = 1.0 / k_min if k_min > 0 else float("inf")
+    valid_wl = [
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
+    ]
+    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
+    k_ticks = np.array([1.0 / wl for wl in valid_wl])
+    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+    if k_ticks.size == 0 and k_min > 0 and k_max > k_min:
+        k_ticks = np.geomspace(k_min, k_max, num=6)
+
+    if k_ticks.size > 0:
+        ax_top = ax.twiny()
+        ax_top.set_xscale("log")
+        ax_top.set_xlim(k_min, k_max)
+        ax_top.set_xticks(k_ticks)
+
+        def _fmt_wl_from_k(k: float) -> str:
+            wl = 1.0 / k
+            if wl >= 1000:
+                return f"{wl / 1000:.0f}k"  # show whole thousands
+            if wl >= 100:
+                return f"{wl:.0f}"
+            if wl >= 10:
+                return f"{wl:.0f}"
+            if wl >= 1:
+                return f"{wl:.1f}"
+            return f"{wl:.2f}"
+
+        ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+        ax_top.set_xlabel("Wavelength (km)")
+        ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
