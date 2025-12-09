@@ -32,29 +32,6 @@ def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
     return prob_dry, seeps_threshold
 
 
-def _weighted_pearson_r(x: xr.DataArray, y: xr.DataArray, weights: xr.DataArray) -> float:
-    """Compute Pearson R with weights using xarray weighted operations."""
-    # Ensure alignment
-    x, y, weights = xr.align(x, y, weights)
-
-    # Weighted means
-    mean_x = x.weighted(weights).mean()
-    mean_y = y.weighted(weights).mean()
-
-    # Anomalies
-    xm = x - mean_x
-    ym = y - mean_y
-
-    # Weighted covariance term (numerator)
-    cov_num = (xm * ym).weighted(weights).sum()
-
-    # Weighted variance terms (denominator parts)
-    var_x_num = (xm**2).weighted(weights).sum()
-    var_y_num = (ym**2).weighted(weights).sum()
-
-    return float(cov_num / np.sqrt(var_x_num * var_y_num))
-
-
 def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     """Heuristic FSS window size based on grid shape.
 
@@ -73,7 +50,6 @@ def _calculate_all_metrics(
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
     seeps_climatology_path: str | None = None,
-    latitude_weighting: bool = False,
 ) -> pd.DataFrame:
     """Compute scalar deterministic metrics per variable.
 
@@ -149,8 +125,7 @@ def _calculate_all_metrics(
     metrics_to_compute = all_metric_names if include is None else set(include)
 
     weights = None
-    if latitude_weighting and "latitude" in ds_target.dims:
-        weights = latitude_weights(ds_target.latitude)
+    weights = latitude_weights(ds_target.latitude)
 
     for var in variables:
         y_true = ds_target[var]
@@ -194,10 +169,7 @@ def _calculate_all_metrics(
 
         # Correlation
         if (include is None) or ("Pearson R" in metrics_to_compute):
-            if weights is not None:
-                row["Pearson R"] = _weighted_pearson_r(y_pred, y_true, weights)
-            else:
-                row["Pearson R"] = float(pearsonr(y_pred, y_true))
+            row["Pearson R"] = float(pearsonr(y_pred, y_true))
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):
@@ -270,7 +242,10 @@ def _calculate_all_metrics(
             # Denominator norms on the target
             l1_norm = float(np.abs(y_true).sum(skipna=True).compute())
             l2_norm = float(((y_true**2).sum(skipna=True).compute()) ** 0.5)
-            mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
+            if weights is not None:
+                mean_abs = float(np.abs(y_true).weighted(weights).mean(skipna=True).compute())
+            else:
+                mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
 
             # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
@@ -301,7 +276,6 @@ def _calculate_per_level_metrics(
     n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None,
-    latitude_weighting: bool = False,
 ) -> pd.DataFrame | None:
     """Compute metrics per pressure level for 3D variables."""
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
@@ -325,7 +299,6 @@ def _calculate_per_level_metrics(
             n_points,
             include,
             fss_cfg,
-            latitude_weighting=latitude_weighting,
         )
         df["level"] = int(level)
         df["variable"] = df.index
@@ -370,8 +343,6 @@ def run(
     except Exception:
         reduce_ens_mean = True
     aggregate_members_mean = bool(cfg.get("aggregate_members_mean", True))
-
-    latitude_weighting = bool((metrics_cfg or {}).get("latitude_weighting", True))
 
     # Track whether an ensemble dimension was present originally
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
@@ -459,7 +430,6 @@ def run(
             include=include,
             fss_cfg=fss_cfg,
             seeps_climatology_path=seeps_climatology_path,
-            latitude_weighting=latitude_weighting,
         )
         standardized_metrics = _calculate_all_metrics(
             ds_target_std,
@@ -469,7 +439,6 @@ def run(
             include=std_include,
             fss_cfg=fss_cfg,
             seeps_climatology_path=seeps_climatology_path,
-            latitude_weighting=latitude_weighting,
         )
 
         out_csv = section_output / build_output_filename(
@@ -505,7 +474,6 @@ def run(
                 n_points=n_points,
                 include=include,
                 fss_cfg=fss_cfg,
-                latitude_weighting=latitude_weighting,
             )
             if per_level_metrics is not None:
                 out_csv_lvl = section_output / build_output_filename(
@@ -528,7 +496,6 @@ def run(
                 n_points=n_points,
                 include=std_include,
                 fss_cfg=fss_cfg,
-                latitude_weighting=latitude_weighting,
             )
             if per_level_std is not None:
                 out_csv_lvl_std = section_output / build_output_filename(
@@ -586,7 +553,6 @@ def run(
                 include=include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                latitude_weighting=latitude_weighting,
             )
             std_m = _calculate_all_metrics(
                 ds_tgt_m_std,
@@ -596,7 +562,6 @@ def run(
                 include=std_include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                latitude_weighting=latitude_weighting,
             )
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
@@ -637,7 +602,6 @@ def run(
                     n_points=n_points,
                     include=include,
                     fss_cfg=fss_cfg,
-                    latitude_weighting=latitude_weighting,
                 )
                 if per_level_m is not None:
                     out_csv_m_lvl = section_output / build_output_filename(
@@ -660,7 +624,6 @@ def run(
                     n_points=n_points,
                     include=std_include,
                     fss_cfg=fss_cfg,
-                    latitude_weighting=latitude_weighting,
                 )
                 if per_level_m_std is not None:
                     out_csv_m_lvl_std = section_output / build_output_filename(

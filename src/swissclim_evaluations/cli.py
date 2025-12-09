@@ -1228,7 +1228,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status(
             "probabilistic",
             "run",
-            "CRPS/PIT (xarray) + WBX SSR/CRPS",
+            "PIT (xarray) + WBX SSR/CRPS",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))

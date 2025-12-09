@@ -99,9 +99,8 @@ def run(
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
 
-    latitude_weighting = bool((metrics_cfg or {}).get("latitude_weighting", True))
     weights = None
-    if latitude_weighting and "latitude" in ds_target.dims:
+    if "latitude" in ds_target.dims:
         weights = latitude_weights(ds_target.latitude)
 
     # Extract time ranges for naming

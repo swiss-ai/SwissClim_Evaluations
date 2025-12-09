@@ -170,9 +170,6 @@ modules:
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
-  # If true, apply cosine latitude weighting to all spatial reductions (MAE, RMSE, etc.).
-  latitude_weighting: true
-
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Bias", "Pearson R",

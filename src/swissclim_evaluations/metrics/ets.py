@@ -6,23 +6,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scores.categorical import BasicContingencyManager, BinaryContingencyManager
-
-from ..aggregations import latitude_weights
+from scores.categorical import BinaryContingencyManager
 
 
 def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    latitude_weighting: bool = False,
 ) -> pd.DataFrame:
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
-
-    weights = None
-    if latitude_weighting and "latitude" in ds_target.dims:
-        weights = latitude_weights(ds_target.latitude)
 
     for var in variables:
         da_target = ds_target[var]
@@ -34,30 +27,8 @@ def _calculate_ets_for_thresholds(
             obs_events = da_target >= quantile  # targets events
             fcst_events = da_prediction >= quantile  # predictions events
 
-            if weights is not None:
-                # Manual weighted contingency table
-                # We assume data is aligned.
-
-                # Helper to compute weighted sum of boolean condition
-                def _wsum(cond):
-                    return float(cond.astype(float).weighted(weights).sum().compute())
-
-                tp = _wsum(obs_events & fcst_events)
-                fp = _wsum(~obs_events & fcst_events)
-                fn = _wsum(obs_events & ~fcst_events)
-                tn = _wsum(~obs_events & ~fcst_events)
-
-                counts = {
-                    "tp_count": xr.DataArray(tp),
-                    "fp_count": xr.DataArray(fp),
-                    "fn_count": xr.DataArray(fn),
-                    "tn_count": xr.DataArray(tn),
-                    "total_count": xr.DataArray(tp + fp + fn + tn),
-                }
-                bcm = BasicContingencyManager(counts=counts)
-            else:
-                bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
-                bcm = bcm.transform(reduce_dims="all")
+            bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
+            bcm = bcm.transform(reduce_dims="all")
 
             ets_score = bcm.equitable_threat_score()
             metrics_dict[var][f"ETS {threshold}%"] = float(ets_score.values)
@@ -69,7 +40,6 @@ def _calculate_ets_per_level(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    latitude_weighting: bool = False,
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:
@@ -83,9 +53,7 @@ def _calculate_ets_per_level(
         ds_t_lvl = ds_target[variables_3d].sel(level=level)
         ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
 
-        df = _calculate_ets_for_thresholds(
-            ds_t_lvl, ds_p_lvl, thresholds, latitude_weighting=latitude_weighting
-        )
+        df = _calculate_ets_for_thresholds(ds_t_lvl, ds_p_lvl, thresholds)
         df["level"] = int(level)
         df["variable"] = df.index
         dfs.append(df)
@@ -115,8 +83,6 @@ def run(
         reduce_ens_mean = True
     aggregate_members_mean = bool(ets_cfg.get("aggregate_members_mean", True))
 
-    latitude_weighting = bool((metrics_cfg or {}).get("latitude_weighting", True))
-
     # Track whether an ensemble dimension was present prior to any reduction
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
 
@@ -135,9 +101,7 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
     # pooled => leave as-is
-    df = _calculate_ets_for_thresholds(
-        ds_target, ds_prediction, thresholds, latitude_weighting=latitude_weighting
-    )
+    df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
 
     # Quick console feedback
     print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
@@ -205,9 +169,7 @@ def run(
             print(f"[ets] saved {out_csv}")
 
             if report_per_level:
-                per_level_df = _calculate_ets_per_level(
-                    ds_target, ds_prediction, thresholds, latitude_weighting=latitude_weighting
-                )
+                per_level_df = _calculate_ets_per_level(ds_target, ds_prediction, thresholds)
                 if per_level_df is not None:
                     out_csv_lvl = section_output / build_output_filename(
                         metric="ets_metrics",
@@ -229,9 +191,7 @@ def run(
                 ds_tgt_m = (
                     ds_target.isel(ensemble=mi) if "ensemble" in ds_target.dims else ds_target
                 )
-                df_m = _calculate_ets_for_thresholds(
-                    ds_tgt_m, ds_pred_m, thresholds, latitude_weighting=latitude_weighting
-                )
+                df_m = _calculate_ets_for_thresholds(ds_tgt_m, ds_pred_m, thresholds)
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(
                     metric="ets_metrics",
@@ -248,9 +208,7 @@ def run(
                 per_member_dfs.append(df_m)
 
                 if report_per_level:
-                    per_level_m = _calculate_ets_per_level(
-                        ds_tgt_m, ds_pred_m, thresholds, latitude_weighting=latitude_weighting
-                    )
+                    per_level_m = _calculate_ets_per_level(ds_tgt_m, ds_pred_m, thresholds)
                     if per_level_m is not None:
                         out_csv_m_lvl = section_output / build_output_filename(
                             metric="ets_metrics",
