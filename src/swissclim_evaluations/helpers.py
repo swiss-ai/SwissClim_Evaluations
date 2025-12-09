@@ -351,6 +351,7 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "deterministic": {"none", "mean", "pooled", "members"},
     "ets": {"none", "mean", "pooled", "members"},
     "multivariate": {"none", "mean", "pooled", "members"},
+    "ssim": {"none", "mean", "pooled", "members"},
 }
 
 
