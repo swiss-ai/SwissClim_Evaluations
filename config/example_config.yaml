@@ -218,8 +218,8 @@ metrics:
   ssim:
     # Parameters for SSIM (defaults from Wang et al. 2004)
     sigma: 1.5
-    k1: 0.01
-    k2: 0.03
+    K1: 0.01
+    K2: 0.03
     gaussian_weights: true
     use_sample_covariance: true
 
