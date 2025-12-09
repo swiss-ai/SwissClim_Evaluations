@@ -151,3 +151,8 @@ def test_run_ssim_ensemble(tmp_path: Path):
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="members")
     files = list(out_dir.glob("ssim_ssim*ens0.csv"))
     assert len(files) == 1
+
+    # Test pooled mode
+    run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="pooled")
+    files = list(out_dir.glob("ssim_ssim*enspooled.csv"))
+    assert len(files) == 1
