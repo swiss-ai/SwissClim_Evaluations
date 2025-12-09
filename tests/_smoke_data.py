@@ -24,12 +24,12 @@ def make_synthetic_datasets(
     targets = xr.Dataset(
         {
             v: (
-                ["time", "latitude", "longitude"],
-                rng.standard_normal((time, lat, lon)),
+                ["time", "latitude", "longitude", "ensemble"],
+                rng.standard_normal((time, lat, lon, 1)),
             )
             for v in VARS_2D
         },
-        coords=coords,
+        coords=coords | {"ensemble": [0]},
     )
 
     if with_ensemble:
@@ -39,22 +39,26 @@ def make_synthetic_datasets(
                 v: (
                     ["time", "latitude", "longitude", "ensemble"],
                     rng.standard_normal((time, lat, lon, ensemble))
-                    + targets[v].values[..., None],
+                    + targets[v].isel(ensemble=0).values[..., None],
                 )
                 for v in VARS_2D
             },
             coords=coords_ml,
         )
     else:
+        # Even if with_ensemble=False, we must provide an ensemble dimension for strict compliance
+        # This branch effectively creates a single-member prediction (deterministic)
+        coords_ml = coords | {"ensemble": [0]}
         predictions = xr.Dataset(
             {
                 v: (
-                    ["time", "latitude", "longitude"],
-                    rng.standard_normal((time, lat, lon)) + targets[v].values,
+                    ["time", "latitude", "longitude", "ensemble"],
+                    rng.standard_normal((time, lat, lon, 1))
+                    + targets[v].isel(ensemble=0).values[..., None],
                 )
                 for v in VARS_2D
             },
-            coords=coords,
+            coords=coords_ml,
         )
 
     return targets, predictions

@@ -319,8 +319,16 @@ def run_probabilistic(
         # Extract and align targets and predictions along shared coordinates
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
+
+        # Drop ensemble from target if present (it's a dummy for strict compliance)
+        # to allow broadcasting against the full prediction ensemble.
+        if "ensemble" in da_target.dims:
+            da_target = da_target.isel(ensemble=0, drop=True)
+
         try:
-            da_target, da_prediction = xr.align(da_target, da_prediction, join="exact")
+            da_target, da_prediction = xr.align(
+                da_target, da_prediction, join="exact", exclude=["ensemble"]
+            )
         except Exception:
             # Fallback to by-position if shapes match exactly
             if da_target.shape == da_prediction.shape:

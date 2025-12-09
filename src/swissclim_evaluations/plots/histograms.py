@@ -78,11 +78,6 @@ def run(
     # Resolve ensemble handling
     resolved_mode = resolve_ensemble_mode("histograms", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
-    if resolved_mode == "none" and has_ens:
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for histograms")
 
@@ -202,7 +197,7 @@ def run(
                 align="edge",
                 alpha=0.5,
                 color=COLOR_GROUND_TRUTH,
-                label="Ground Truth",
+                label="Target",
             )
             ax_g.bar(
                 edges_g[:-1],
@@ -211,7 +206,7 @@ def run(
                 align="edge",
                 alpha=0.5,
                 color=COLOR_MODEL_PREDICTION,
-                label="Model Prediction",
+                label="Prediction",
             )
             ax_g.legend(loc="upper right")
 
@@ -337,7 +332,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color=COLOR_GROUND_TRUTH,
-                    label="Ground Truth",
+                    label="Target",
                 )
                 axs[j, 1].bar(
                     edges[:-1],
@@ -346,7 +341,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color=COLOR_MODEL_PREDICTION,
-                    label="Model Prediction",
+                    label="Prediction",
                 )
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
                 axs[j, 1].legend(loc="upper right")
@@ -398,7 +393,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color=COLOR_GROUND_TRUTH,
-                    label="Ground Truth",
+                    label="Target",
                 )
                 axs[j, 0].bar(
                     edges[:-1],
@@ -407,7 +402,7 @@ def run(
                     align="edge",
                     alpha=0.5,
                     color=COLOR_MODEL_PREDICTION,
-                    label="Model Prediction",
+                    label="Prediction",
                 )
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
                 axs[j, 0].legend(loc="upper right")
@@ -481,7 +476,7 @@ def run(
                 yield i, tgt_m, pred_m
 
     if resolved_mode == "members" and not has_ens:
-        resolved_mode = "none"  # degrade silently
+        resolved_mode = "pooled"  # degrade silently
 
     if resolved_mode == "mean" and has_ens:
         ds_prediction_mean = ds_prediction.mean(dim="ensemble")
@@ -509,10 +504,8 @@ def run(
                     qualifier="latbands",
                     ens_token=token,
                 )
-    else:  # pooled or none
-        token = (
-            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
-        )
+    else:  # pooled
+        token = ensemble_mode_to_token("pooled") if has_ens else None
         for variable_name in variables_2d:
             _plot_variable(
                 ds_target[variable_name],

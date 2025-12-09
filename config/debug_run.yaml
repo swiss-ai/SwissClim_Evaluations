@@ -1,7 +1,7 @@
 # Debug configuration for SwissClim Evaluations
 paths:
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
-  nwp: [
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr"
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
