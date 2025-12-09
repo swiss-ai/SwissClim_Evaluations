@@ -8,7 +8,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_level_label,
+    format_variable_name,
+    get_variable_units,
+    resolve_ensemble_mode,
+)
 
 
 def _lat_bands() -> tuple[np.ndarray, int, int]:
@@ -83,6 +93,7 @@ def run(
         level_token: str,
         qualifier: str,
         ens_token: str | None,
+        level_val: Any = None,
     ):
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] variable: {variable_name}")
@@ -190,7 +201,7 @@ def run(
                 width=width,
                 align="edge",
                 alpha=0.5,
-                color="skyblue",
+                color=COLOR_GROUND_TRUTH,
                 label="Ground Truth",
             )
             ax_g.bar(
@@ -199,16 +210,28 @@ def run(
                 width=width,
                 align="edge",
                 alpha=0.5,
-                color="salmon",
+                color=COLOR_MODEL_PREDICTION,
                 label="Model Prediction",
             )
             ax_g.legend(loc="upper right")
 
-        units = da_target_var.attrs.get("units", "")
+        units = get_variable_units(ds_target, variable_name)
+
+        # Check for single date
+        date_str = extract_date_from_dataset(da_target_var)
+        lev_part = format_level_label(level_val if level_val is not None else level_token)
+
         if len(counts_ds_g) > 0:
-            ax_g.set_title(f"Global Distribution of {variable_name} ({units})")
+            ax_g.set_title(
+                f"Global Histogram — {format_variable_name(variable_name)}{lev_part}{date_str}"
+            )
+            if units:
+                ax_g.set_xlabel(units)
         else:
-            ax_g.set_title(f"Global Distribution of {variable_name} ({units}) (No data)")
+            ax_g.set_title(
+                f"Global Histogram — {format_variable_name(variable_name)}{lev_part} "
+                f"(No data){date_str}"
+            )
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
@@ -242,6 +265,7 @@ def run(
                 counts_ds=counts_ds_g,
                 counts_ml=counts_ml_g,
                 bins=edges_g,
+                units=units,
                 allow_pickle=True,
             )
             print(f"[histograms] saved {out_npz_g}")
@@ -312,7 +336,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="skyblue",
+                    color=COLOR_GROUND_TRUTH,
                     label="Ground Truth",
                 )
                 axs[j, 1].bar(
@@ -321,7 +345,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="salmon",
+                    color=COLOR_MODEL_PREDICTION,
                     label="Model Prediction",
                 )
                 axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
@@ -373,7 +397,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="skyblue",
+                    color=COLOR_GROUND_TRUTH,
                     label="Ground Truth",
                 )
                 axs[j, 0].bar(
@@ -382,7 +406,7 @@ def run(
                     width=width,
                     align="edge",
                     alpha=0.5,
-                    color="salmon",
+                    color=COLOR_MODEL_PREDICTION,
                     label="Model Prediction",
                 )
                 axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
@@ -393,9 +417,14 @@ def run(
                     combined["pos_lat_min"].append(float(lat_min))
                     combined["pos_lat_max"].append(float(lat_max))
 
-            units = da_target_var.attrs.get("units", "")
+            units = get_variable_units(ds_target, variable_name)
+
+            # Check for single date
+            date_str = extract_date_from_dataset(da_target_var)
+
             plt.suptitle(
-                f"Distribution of {variable_name} ({units}) by latitude bands",
+                f"Distributions by Latitude Bands — "
+                f"{format_variable_name(variable_name)}{date_str}",
                 y=1.02,
             )
 
@@ -435,6 +464,7 @@ def run(
                     neg_lat_max=np.array(combined["neg_lat_max"]),
                     pos_lat_min=np.array(combined["pos_lat_min"]),
                     pos_lat_max=np.array(combined["pos_lat_max"]),
+                    units=units,
                     allow_pickle=True,
                 )
                 print(f"[histograms] saved {out_npz}")
@@ -518,6 +548,7 @@ def run(
                         level_token=str(lvl_clean),
                         qualifier="latbands",
                         ens_token=ensemble_mode_to_token("mean"),
+                        level_val=lvl,
                     )
                 elif resolved_mode == "members" and has_ens:
                     for member_index, tgt_m, pred_m in _iter_members():
@@ -533,6 +564,7 @@ def run(
                             level_token=str(lvl_clean),
                             qualifier="latbands",
                             ens_token=token,
+                            level_val=lvl,
                         )
                 else:  # pooled/none
                     token = (
@@ -547,4 +579,5 @@ def run(
                         level_token=str(lvl_clean),
                         qualifier="latbands",
                         ens_token=token,
+                        level_val=lvl,
                     )

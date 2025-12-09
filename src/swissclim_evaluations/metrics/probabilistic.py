@@ -13,14 +13,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-
-# Use official WeatherBenchX metrics instead of local copies
 from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble as WBXCRPS,
-    UnbiasedSpreadSkillRatio as WBXSpreadSkillRatio,
+    CRPSEnsemble,
+    UnbiasedSpreadSkillRatio,
 )
 
-from ..helpers import build_output_filename, time_chunks
+# Use official WeatherBenchX metrics instead of local copies
+from ..helpers import (
+    COLOR_DIAGNOSTIC,
+    build_output_filename,
+    ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_variable_name,
+    time_chunks,
+)
 
 
 def compute_wbx_crps(
@@ -30,7 +37,7 @@ def compute_wbx_crps(
 
     Replicates logic of CRPSEnsemble: CRPS = CRPSSkill - 0.5 * CRPSSpread.
     """
-    metric = WBXCRPS(ensemble_dim=ensemble_dim)
+    metric = CRPSEnsemble(ensemble_dim=ensemble_dim)
     # WBX expects dicts of DataArrays
     # We use a dummy variable name 'v'
     preds = {"v": da_prediction}
@@ -183,18 +190,7 @@ def run_probabilistic(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -218,8 +214,6 @@ def run_probabilistic(
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
-
-    from ..helpers import ensemble_mode_to_token
 
     ens_token = ensemble_mode_to_token("prob")
     prob_cfg = (cfg_all or {}).get("probabilistic", {})
@@ -408,8 +402,12 @@ def plot_probabilistic(
         transform=ccrs.PlateCarree(),
     )
     cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    cbar.set_label(f"CRPS — {base_var}")
-    ax.set_title(f"CRPS map (mean over time): {base_var}")
+    cbar.set_label("CRPS")
+
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"CRPS Map — {format_variable_name(base_var)}{date_str}")
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -419,18 +417,7 @@ def plot_probabilistic(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -510,10 +497,13 @@ def plot_probabilistic(
         counts,
         width=widths,
         align="edge",
-        color="#4C78A8",
+        color=COLOR_DIAGNOSTIC,
         edgecolor="white",
     )
-    ax.set_title(f"PIT histogram — {base_var}")
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}{date_str}")
     ax.set_xlabel("PIT value")
     ax.set_ylabel("Density")
     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
@@ -526,13 +516,6 @@ def plot_probabilistic(
         plt.savefig(out_png, bbox_inches="tight", dpi=200)
         print(f"[probabilistic-plots] saved {out_png}")
     plt.close(fig)
-
-
-"""
-Expose WeatherBenchX metric classes under this module for convenient imports.
-Public API: SpreadSkillRatio.
-"""
-SpreadSkillRatio = WBXSpreadSkillRatio
 
 
 def _wbx_metric_to_df(
@@ -618,15 +601,15 @@ def run_probabilistic_wbx(
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
-    # CSV summaries using WBX metrics (SpreadSkillRatio)
+    # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
     if m_ens < 2:
         raise RuntimeError(
-            "WBX probabilistic metrics require ensemble size >=2 (SpreadSkillRatio). "
+            "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-    ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
+    ssr_metric = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
     try:
         ssr_df = _wbx_metric_to_df(
             ssr_metric,
@@ -636,7 +619,7 @@ def run_probabilistic_wbx(
         )
     except Exception as e:  # pragma: no cover - defensive clarity wrapper
         raise RuntimeError(
-            "Failed computing SpreadSkillRatio via WeatherBenchX. "
+            "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
             "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
         ) from e
 
@@ -648,18 +631,7 @@ def run_probabilistic_wbx(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -683,8 +655,6 @@ def run_probabilistic_wbx(
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
-
-    from ..helpers import ensemble_mode_to_token
 
     ens_token_prob = ensemble_mode_to_token("prob")
 
@@ -737,8 +707,8 @@ def run_probabilistic_wbx(
     )
 
     metrics = {}
-    metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
-    metrics["CRPS"] = WBXCRPS(ensemble_dim="ensemble")
+    metrics["SSR"] = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
+    metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
 
     variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
