@@ -2067,81 +2067,70 @@ def intercompare_probabilistic(
                         plt.close()
 
 
-def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
-    """Combine multivariate SSIM metrics from multiple models."""
-    per_model, _, uni = _scan_model_sets(models, "multivariate/multivariate_ssim_*.csv")
-    _report_missing("multivariate", models, labels, per_model, uni)
+def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine SSIM metrics from multiple models."""
+    # Availability report
+    per_model, _, uni = _scan_model_sets(models, "ssim/ssim_ssim_*.csv")
+    _report_missing("ssim_ssim", models, labels, per_model, uni)
 
-    checklist = {"SSIM Metrics": 0}
-    dst_multi = _ensure_dir(out_root / "multivariate")
+    results = {}
+    all_multi = _common_files(models, "ssim/ssim_ssim_*.csv")
 
+    # Check for any files
+    results["SSIM Summary"] = 1 if all_multi else 0
+
+    _report_checklist("ssim_ssim", results)
+
+    # Report common files found
+    multi_csv = _common_files(models, "ssim/ssim_ssim_*.csv")
+    if multi_csv:
+        _print_file_list(f"Found {len(multi_csv)} common SSIM metric files", multi_csv)
+
+    # SSIM metrics
+    dst_multi = _ensure_dir(out_root / "ssim")
     frames: list[pd.DataFrame] = []
+
     for lab, m in zip(labels, models, strict=False):
-        candidates = sorted((m / "multivariate").glob("multivariate_ssim_*.csv"))
-        # Prefer ensmean, then others
+        candidates = sorted((m / "ssim").glob("ssim_ssim_*.csv"))
+        # Prefer ensmean or det
         f = next(
-            (c for c in candidates if c.name.endswith("ensmean.csv")),
+            (c for c in candidates if "ensmean" in c.name or "det" in c.name),
             next(iter(candidates), None),
         )
-        if f and f.is_file():
+
+        if f is not None and f.is_file():
             df = pd.read_csv(f)
-            # Ensure 'variable' column exists or rename unnamed index
+            # Normalize variable column
             if "variable" not in df.columns:
                 if "Unnamed: 0" in df.columns:
                     df = df.rename(columns={"Unnamed: 0": "variable"})
                 else:
-                    # If the first column is string-like, assume it's variable
+                    # assume first column is variable name
                     first = df.columns[0]
                     df = df.rename(columns={first: "variable"})
 
-            # Add model column
             df.insert(0, "model", lab)
             frames.append(df)
 
     if frames:
-        comb = pd.concat(frames, ignore_index=True)
-        if comb["model"].nunique() >= 2:
-            out_csv = dst_multi / "ssim_metrics_combined.csv"
-            comb.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
-            checklist["SSIM Metrics"] += 1
+        combined = pd.concat(frames, ignore_index=True)
+        out_csv = dst_multi / "ssim_combined.csv"
+        combined.to_csv(out_csv, index=False)
+        c.success(f"[SSIM] Saved combined metrics to {out_csv}")
 
-            # Filter for SSIM row if multiple metrics exist (currently only SSIM)
-            ssim_df = comb[comb["variable"] == "SSIM"].copy()
-
-            # Drop the 'variable' column as it's just "SSIM"
-            ssim_df = ssim_df.drop(columns=["variable"])
-
-            # Melt: id_vars="model", var_name="physical_variable", value_name="ssim"
-            melted = ssim_df.melt(id_vars="model", var_name="physical_variable", value_name="ssim")
-
-            # Convert ssim to numeric
-            melted["ssim"] = pd.to_numeric(melted["ssim"], errors="coerce")
-
-            # Define order: all variables sorted, with 'average' last
-            unique_vars = [
-                v for v in sorted(melted["physical_variable"].unique()) if v != "average"
-            ]
-            if "average" in melted["physical_variable"].unique():
-                unique_vars.append("average")
-
-            if not melted.empty:
-                plt.figure(figsize=(10, 6))
-                sns.barplot(
-                    data=melted, x="physical_variable", y="ssim", hue="model", order=unique_vars
-                )
-                plt.title("SSIM Comparison")
-                plt.ylabel("SSIM")
-                plt.xlabel("Variable")
-                plt.xticks(rotation=45, ha="right")
+        # Plot SSIM comparison
+        if "SSIM" in combined.columns:
+            # Filter for AVERAGE_SSIM
+            df_avg = combined[combined["variable"] == "AVERAGE_SSIM"]
+            if not df_avg.empty:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                sns.barplot(data=df_avg, x="model", y="SSIM", ax=ax)
+                ax.set_title("SSIM Comparison")
                 plt.tight_layout()
-                out_plot = dst_multi / "ssim_comparison.png"
-                plt.savefig(out_plot)
-                plt.close()
-                c.success(f"Saved {out_plot.relative_to(out_root)}")
-                checklist["SSIM Metrics"] += 1
-
-    _report_checklist("multivariate", checklist)
+                out_png = dst_multi / "ssim_comparison.png"
+                fig.savefig(out_png, dpi=150)
+                plt.close(fig)
+                c.success(f"[SSIM] Saved comparison plot to {out_png}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2198,9 +2187,10 @@ def run_from_config(cfg: dict) -> None:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
+    if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
-    if "multivariate" in mods:
-        intercompare_multivariate(models, labels, out_root)
+    if "ssim" in mods:
+        intercompare_ssim(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels

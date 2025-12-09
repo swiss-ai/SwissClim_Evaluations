@@ -32,8 +32,9 @@ What gets combined:
 *   **ETS**
     *   Merged CSVs: `ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`.
 
-*   **Multivariate**
-    *   Merged CSVs: `multivariate_ssim_combined.csv`.
+*   **SSIM**
+    *   Merged CSVs: `ssim_combined.csv`.
+    *   Comparison bar plot of the average SSIM (`ssim_comparison.png`).
 
 *   **Probabilistic**
     *   Merged CSVs: `crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`.

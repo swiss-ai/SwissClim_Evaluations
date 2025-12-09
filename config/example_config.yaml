@@ -167,8 +167,8 @@ modules:
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ssim: true                 # Structural Similarity Index (SSIM) for spatial patterns
   ets: true                  # Equitable Threat Score across quantile thresholds
-  multivariate: true         # Multivariate metrics (SSIM)
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
@@ -214,6 +214,15 @@ metrics:
 
     thresholds: [50, 70, 90]
 
+  # SSIM configuration
+  ssim:
+    # Parameters for SSIM (defaults from Wang et al. 2004)
+    sigma: 1.5
+    k1: 0.01
+    k2: 0.03
+    gaussian_weights: true
+    use_sample_covariance: true
+
   # Energy Spectra configuration.
   energy_spectra:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
@@ -221,14 +230,6 @@ metrics:
 
   # Multivariate metrics configuration.
   multivariate:
-    # SSIM configuration
-    ssim:
-      # Parameters for SSIM (defaults from Wang et al. 2004)
-      sigma: 1.5
-      K1: 0.01
-      K2: 0.03
-      gaussian_weights: true
-      use_sample_covariance: false
     # Bivariate histograms configuration
     # List of variable pairs to generate 2D histograms and density plots for.
     bivariate_pairs:

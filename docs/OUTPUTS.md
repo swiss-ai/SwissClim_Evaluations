@@ -27,6 +27,7 @@ If the dataset contains multiple ensembles, metrics can be computed on the mean 
 - **energy_spectra**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
+- **ssim**: mean, pooled, members
 - **probabilistic**: prob only
 
 The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
@@ -66,14 +67,7 @@ ets_metrics_init_time_ens0.csv   # members mode per-member file
 
 ### Multivariate Metrics
 
-Multivariate metrics (SSIM) filenames follow the standard pattern:
-
-```text
-multivariate_ssim_ensmean.csv
-multivariate_ssim_ens0.csv
-```
-
-Additionally, bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
 
 **Recommended Bivariate Pairs:**
 
@@ -101,6 +95,15 @@ To evaluate physical consistency, we recommend plotting pairs that capture funda
 Outputs:
 - `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
 - `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.
+
+### SSIM
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+
+```text
+ssim_ssim_ensmean.csv
+ssim_ssim_ens0.csv   # members mode per-member file
+```
 
 ### Energy Spectra Analysis
 
