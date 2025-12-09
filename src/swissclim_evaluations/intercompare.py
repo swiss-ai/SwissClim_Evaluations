@@ -2113,9 +2113,9 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
 
     if frames:
         combined = pd.concat(frames, ignore_index=True)
-        out_csv = dst_multi / "multivariate_ssim_combined.csv"
+        out_csv = dst_multi / "ssim_combined.csv"
         combined.to_csv(out_csv, index=False)
-        c.success(f"[multivariate] Saved combined metrics to {out_csv}")
+        c.success(f"[SSIM] Saved combined metrics to {out_csv}")
 
         # Plot SSIM comparison
         if "SSIM" in combined.columns:
@@ -2124,12 +2124,12 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
             if not df_avg.empty:
                 fig, ax = plt.subplots(figsize=(8, 6))
                 sns.barplot(data=df_avg, x="model", y="SSIM", ax=ax)
-                ax.set_title("Multivariate SSIM Comparison")
+                ax.set_title("SSIM Comparison")
                 plt.tight_layout()
-                out_png = dst_multi / "multivariate_ssim_comparison.png"
+                out_png = dst_multi / "ssim_comparison.png"
                 fig.savefig(out_png, dpi=150)
                 plt.close(fig)
-                c.success(f"[multivariate] Saved comparison plot to {out_png}")
+                c.success(f"[SSIM] Saved comparison plot to {out_png}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2188,7 +2188,7 @@ def run_from_config(cfg: dict) -> None:
         intercompare_deterministic_metrics(models, labels, out_root)
     if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
-    if "ssim" in mods or "multivariate" in mods:
+    if "ssim" in mods:
         intercompare_ssim(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
