@@ -102,14 +102,14 @@ selection:
   #   prob     → probabilistic semantics (ensprob; probabilistic module only)
   #   members  → per-member outputs (ens0..ensN)
   ensemble:
-    maps: members            # members | mean | none*
-    histograms: pooled       # pooled | members | mean | none*
-    wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | pooled | members | none*
-    vertical_profiles: mean  # mean | pooled | members | none*
-    deterministic: mean      # mean | pooled | members | none*
-    ets: mean                # mean | pooled | members | none*
-    multivariate: mean       # mean | pooled | members | none*
+    maps: members            # members | mean
+    histograms: pooled       # pooled | members | mean
+    wd_kde: pooled           # pooled | members | mean
+    energy_spectra: mean     # mean | pooled | members
+    vertical_profiles: mean  # mean | pooled | members
+    deterministic: mean      # mean | pooled | members
+    ets: mean                # mean | pooled | members
+    multivariate: mean       # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 

@@ -85,7 +85,7 @@ To evaluate physical consistency, we recommend plotting pairs that capture funda
 4.  **Hydrostatics:** `geopotential` vs `temperature`.
     *   *Suggested Level:* 500 hPa (Mid-troposphere).
     *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
-5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapor`.
+5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapour`.
     *   *Suggested Level:* Surface / Column-integrated.
     *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
 6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
