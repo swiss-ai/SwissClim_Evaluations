@@ -1982,7 +1982,7 @@ def intercompare_probabilistic(
                         plt.close()
 
     # Temporal aggregates
-    temporal_rows: list[pd.DataFrame] = []
+    temporal_rows: list[dict] = []
     for lab, m in zip(labels, models, strict=False):
         # New naming: {crps,ssr}_temporal_wbx_<variable>_*.npz
         npz_files = list((m / src_rel).glob("*_temporal_wbx_*.npz"))
