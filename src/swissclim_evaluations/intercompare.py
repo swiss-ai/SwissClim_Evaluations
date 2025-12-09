@@ -1877,7 +1877,7 @@ def intercompare_probabilistic(
 
     # 5) Combine spatial/temporal WBX NPZ aggregates into tidy CSVs and simple plots
     # Spatial aggregates
-    spatial_rows: list[pd.DataFrame] = []
+    spatial_rows: list[dict] = []
     for lab, m in zip(labels, models, strict=False):
         # New naming: {crps,ssr}_spatial_wbx_<variable>_*.npz
         npz_files = list((m / src_rel).glob("*_spatial_wbx_*.npz"))
