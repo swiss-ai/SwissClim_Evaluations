@@ -9,6 +9,8 @@ import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
@@ -166,8 +168,9 @@ def run(
                 max(ds_flat_g.max(), ml_flat_g.max()),
                 100,
             )
-            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color="skyblue", label="Target")
-            ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color="salmon", label="Prediction")
+            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
+            ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color=COLOR_MODEL_PREDICTION, label="Prediction")
+            
             # Check for single date
             date_str = extract_date_from_dataset(da_t_std)
             lev_part = format_level_label(level_val if level_val is not None else level_token)
@@ -278,8 +281,8 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 1].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Target")
-            axs[j, 1].plot(x_eval, kde_ml(x_eval), color="salmon", label="Prediction")
+            axs[j, 1].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+            axs[j, 1].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
             axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 1].legend()
             if save_npz:
@@ -322,8 +325,8 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 0].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Target")
-            axs[j, 0].plot(x_eval, kde_ml(x_eval), color="salmon", label="Prediction")
+            axs[j, 0].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+            axs[j, 0].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
             axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 0].legend()
             if save_npz:

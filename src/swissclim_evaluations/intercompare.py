@@ -17,6 +17,7 @@ import yaml
 from swissclim_evaluations.plots.energy_spectra import add_wavelength_axis
 
 from .helpers import (
+    COLOR_GROUND_TRUTH,
     extract_date_from_filename,
     format_level_label,
     format_level_token,
@@ -151,7 +152,7 @@ def _ensure_dir(p: Path) -> Path:
 def _common_files(models: list[Path], rel_glob: str) -> list[str]:
     """Find filenames (basenames) that exist in ALL model folders for a given relative glob.
 
-    Returns a sorted list of basenames present in each folder's pattern.
+    Returns a sorted list of basenames present in all model folders that match the pattern.
     """
     sets: list[set[str]] = []
     for m in models:
@@ -425,7 +426,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     ax.loglog(
                         wn[2:-2],
                         np.asarray(spec_ds)[2:-2],
-                        color="k",
+                        color=COLOR_GROUND_TRUTH,
                         lw=2.0,
                         label="Target",
                     )
@@ -784,7 +785,7 @@ def intercompare_histograms(
         return
     _print_file_list(f"Found {len(common)} common histogram files", common)
 
-    colors = sns.color_palette("tab20", n_colors=max(12, len(models)))
+    colors = sns.color_palette("tab10", n_colors=len(models))
 
     # --- Global Histograms ---
     per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global.npz")
@@ -798,7 +799,7 @@ def intercompare_histograms(
         # Target (from first model)
         counts_ds = payloads[0]["counts_ds"]
         bins_ds = payloads[0]["bins"]
-        _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
+        _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -851,7 +852,9 @@ def intercompare_histograms(
                 # Each element is (counts_ds, counts_ml)
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["neg_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
+
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
+                
                 # Plot each prediction model
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["neg_counts"][j][1]
@@ -877,7 +880,9 @@ def intercompare_histograms(
                 ds_ml_pairs = payloads[0]["pos_counts"][j]
                 counts_ds = ds_ml_pairs[0]
                 bins_ds = payloads[0]["pos_bins"][j]
-                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color="k")
+                
+                _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
+
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     counts_ml = pay["pos_counts"][j][1]
                     bins_ml = pay["pos_bins"][j]
@@ -935,7 +940,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         # Target (from first model)
         x_ds = payloads[0]["x"]
         kde_ds = payloads[0]["kde_ds"]
-        ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
+        ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
 
         # Models
         for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -977,7 +982,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 1]
             x_ds = payloads[0]["neg_x"][j]
             kde_ds = payloads[0]["neg_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
+            ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
+
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["neg_x"][j],
@@ -996,7 +1002,8 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             ax = axs[j, 0]
             x_ds = payloads[0]["pos_x"][j]
             kde_ds = payloads[0]["pos_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color="k", lw=2.0, label="Target")
+            ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
+
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 ax.plot(
                     pay["pos_x"][j],
