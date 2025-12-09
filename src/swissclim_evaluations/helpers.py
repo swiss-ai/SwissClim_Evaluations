@@ -5,6 +5,143 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
+from matplotlib.colors import Colormap
+
+# Consistent colors for single-model evaluation plots
+COLOR_GROUND_TRUTH = "black"
+COLOR_MODEL_PREDICTION = "#D55E00"  # Vermilion (colorblind-friendly)
+COLOR_DIAGNOSTIC = "#4C78A8"  # Neutral blue for diagnostic metrics (e.g. PIT histogram)
+
+
+def get_colormap_for_variable(variable_name: str) -> str | Colormap:
+    """
+    Returns an appropriate colormap for a given physical variable.
+
+    Args:
+        variable_name (str): Name of the variable (case-insensitive). Can contain underscores or spaces.
+            Matching is performed using substring search after converting to lowercase.
+
+    Returns:
+        str or Colormap: A matplotlib-compatible colormap name (string) or Colormap object.
+            Returns "viridis" as default if no match is found.
+
+    Matching logic:
+        - Substring matching via `in` is used to determine the appropriate colormap.
+        - For example, if "temperature" is in the variable name, "magma" is returned.
+
+    Examples:
+        >>> get_colormap_for_variable("temperature")
+        'magma'
+        >>> get_colormap_for_variable("U_Component_Of_Wind")
+        'RdBu_r'
+        >>> get_colormap_for_variable("precipitation")
+        'Blues'
+        >>> get_colormap_for_variable("unknown_variable")
+        'viridis'
+    """
+    variable_name = variable_name.lower()
+
+    # Note: The order of checks matters!
+    # Some variables might match multiple categories (e.g. "integrated_vapor_transport"
+    # contains "vapor" which is also in the precipitation list).
+    # We check for diverging variables first to catch things like fluxes/transport
+    # before checking for general water/moisture terms.
+
+    # Diverging variables (wind components, vertical velocity, anomalies, fluxes)
+    diverging_vars = [
+        "u_component_of_wind",
+        "v_component_of_wind",
+        "vertical_velocity",
+        "divergence",
+        "vorticity",
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind",
+        "mean_surface_latent_heat_flux",
+        "mean_surface_sensible_heat_flux",
+        "mean_vertically_integrated_moisture_divergence",
+        "integrated_vapor_transport",  # Often vector magnitude but sometimes treated as flux
+    ]
+
+    if any(v in variable_name for v in diverging_vars):
+        return "RdBu_r"
+
+    # Precipitation / Water / Moisture (sequential - Blues)
+    if any(
+        x in variable_name
+        for x in [
+            "precipitation",
+            "total_column_water",
+            "total_column_water_vapour",
+            "total_column_vapor",
+            "volumetric_soil_water",
+            "snow_depth",
+            "sea_ice_cover",
+            "lake_cover",
+        ]
+    ):
+        return "Blues"
+
+    # Temperature / Heat / Radiation (sequential - Magma/Inferno/Hot)
+    if any(
+        x in variable_name
+        for x in [
+            "temperature",
+            "2m_temperature",
+            "2m_dewpoint_temperature",
+            "sea_surface_temperature",
+            "radiation_flux",  # short/long wave fluxes
+        ]
+    ):
+        return "magma"
+
+    # Humidity / Vegetation (sequential - Greens)
+    if any(
+        x in variable_name
+        for x in [
+            "humidity",
+            "specific_humidity",
+            "relative_humidity",
+            "leaf_area_index",
+            "vegetation_cover",
+        ]
+    ):
+        return "Greens"
+
+    # Pressure / Geopotential / Orography (sequential - Viridis)
+    if any(
+        x in variable_name
+        for x in [
+            "geopotential",
+            "pressure",
+            "mean_sea_level_pressure",
+            "surface_pressure",
+            "orography",
+            "land_sea_mask",
+            "soil_type",
+            "boundary_layer_height",
+            "lapse_rate",
+        ]
+    ):
+        return "viridis"
+
+    # Cloud cover (sequential - Greys)
+    if "cloud_cover" in variable_name:
+        return "Greys_r"
+
+    # Wind speed / Energy (sequential - YlOrRd)
+    if any(
+        x in variable_name
+        for x in [
+            "wind_speed",
+            "10m_wind_speed",
+            "eddy_kinetic_energy",
+            "potential_vorticity",
+        ]
+    ):
+        return "YlOrRd"
+
+    # Default
+    return "viridis"
 
 
 def aggregate_member_dfs(dfs):
