@@ -169,8 +169,10 @@ def run(
                 100,
             )
             ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
-            ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color=COLOR_MODEL_PREDICTION, label="Prediction")
-            
+            ax_g.plot(
+                x_eval_g, kde_ml_g(x_eval_g), color=COLOR_MODEL_PREDICTION, label="Prediction"
+            )
+
             # Check for single date
             date_str = extract_date_from_dataset(da_t_std)
             lev_part = format_level_label(level_val if level_val is not None else level_token)

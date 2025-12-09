@@ -92,8 +92,38 @@ See [docs/INTERCOMPARISON.md](docs/INTERCOMPARISON.md) for details.
 
 You can explore the outputs interactively using the provided notebooks:
 
-*   `notebooks/deterministic_verification.ipynb` (classic deterministic metrics, maps, histograms, spectra, profiles)
-*   `notebooks/probabilistic_verification.ipynb` (Probabilistic metrics: CRPS/PIT via Xarray, Spread–Skill Ratio and temporal/spatial metrics via WeatherBenchX)
+- notebooks/deterministic_verification.ipynb (classic deterministic metrics, maps, histograms, spectra, profiles)
+- notebooks/probabilistic_verification.ipynb (Probabilistic metrics: CRPS/PIT via Xarray, Spread–Skill Ratio and temporal/spatial metrics via WeatherBenchX)
+- notebooks/model_intercomparison.ipynb (Compare multiple model runs, generating comparative plots)
+
+Notebook tips
+
+- Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
+
+## Intercomparison of Saved Artifacts
+
+This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons. A separate config is available for intercomparison.
+
+Run the intercomparison:
+
+```bash
+python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
+```
+
+Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
+
+What gets combined:
+
+- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_metrics_averaged_combined.csv`, `lsd_metrics_per_level_combined.csv`, and banded variants when available.
+- histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
+- wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
+- maps: panel maps with DS in the first column and each model as subsequent columns.
+- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
+- ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
+- probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
+  - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
+  - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
+- vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/vprof_nmae_<variable>_multi_combined_compare.png` — plus per-variable summary tables (`vprof_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model. Legacy `*_pl_nmae_combined*` files are still supported as input.
 
 ## Development
 
