@@ -9,8 +9,14 @@ import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_level_label,
+    format_variable_name,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -72,17 +78,11 @@ def run(
         print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    # Resolve ensemble handling (pooled/mean/members/none). Prob not allowed here.
+    # Resolve ensemble handling (pooled/mean/members). Prob not allowed here.
     resolved_mode = resolve_ensemble_mode("wd_kde", ensemble_mode, ds_target_std, ds_prediction_std)
     has_ens = "ensemble" in ds_prediction_std.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for wd_kde")
-    if resolved_mode == "none" and has_ens:
-        # Force user to choose pooling semantics instead of implicitly ignoring ensemble
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
 
     def _iter_members():
         if not has_ens:
@@ -106,12 +106,10 @@ def run(
         )
         ds_prediction_std_eff = ds_prediction_std.mean(dim="ensemble")
         ens_token_base = ensemble_mode_to_token("mean")
-    elif resolved_mode in ("pooled", "none"):
+    elif resolved_mode == "pooled":
         ds_target_std_eff = ds_target_std
         ds_prediction_std_eff = ds_prediction_std
-        ens_token_base = (
-            ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None
-        )
+        ens_token_base = ensemble_mode_to_token("pooled") if has_ens else None
     else:  # members
         ds_target_std_eff = ds_target_std  # used only for 2D variable discovery
         ds_prediction_std_eff = ds_prediction_std
@@ -123,6 +121,7 @@ def run(
         da_p_std: xr.DataArray,
         level_token: str,
         ens_token: str | None,
+        level_val: Any = None,
     ):
         # local copy of loop body (with minor modifications to accept arrays directly)
         def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
@@ -155,6 +154,7 @@ def run(
         seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
         ds_flat_g = _subsample_values(da_t_std, max_samples, seed=seed_g)
         ml_flat_g = _subsample_values(da_p_std, max_samples, seed=seed_g)
+        units = get_variable_units(ds_target, var_name)
 
         if ds_flat_g.size > 0 and ml_flat_g.size > 0:
             w_g = wasserstein_distance(ds_flat_g, ml_flat_g)
@@ -168,10 +168,18 @@ def run(
                 max(ds_flat_g.max(), ml_flat_g.max()),
                 100,
             )
-            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color="skyblue", label="Ground Truth")
-            ax_g.plot(x_eval_g, kde_ml_g(x_eval_g), color="salmon", label="Model Prediction")
+            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
+            ax_g.plot(
+                x_eval_g, kde_ml_g(x_eval_g), color=COLOR_MODEL_PREDICTION, label="Prediction"
+            )
+
+            # Check for single date
+            date_str = extract_date_from_dataset(da_t_std)
+            lev_part = format_level_label(level_val if level_val is not None else level_token)
+
             ax_g.set_title(
-                f"Global Normalized Distribution of {var_name} ({level_token})\nW-dist: {w_g:.3f}"
+                f"Global Normalized KDE — {format_variable_name(var_name)}"
+                f"{lev_part}{date_str}\nW-dist: {w_g:.3f}"
             )
             ax_g.legend()
 
@@ -208,6 +216,7 @@ def run(
                     x=x_eval_g,
                     kde_ds=kde_ds_g(x_eval_g),
                     kde_ml=kde_ml_g(x_eval_g),
+                    units=units,
                     allow_pickle=True,
                 )
                 print(f"[wd_kde] saved {out_npz_g}")
@@ -274,8 +283,8 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 1].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
-            axs[j, 1].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 1].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+            axs[j, 1].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
             axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 1].legend()
             if save_npz:
@@ -318,8 +327,8 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 0].plot(x_eval, kde_ds(x_eval), color="skyblue", label="Ground Truth")
-            axs[j, 0].plot(x_eval, kde_ml(x_eval), color="salmon", label="Model Prediction")
+            axs[j, 0].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+            axs[j, 0].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
             axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             axs[j, 0].legend()
             if save_npz:
@@ -329,9 +338,13 @@ def run(
                 combined["pos_lat_min"].append(float(lat_min))
                 combined["pos_lat_max"].append(float(lat_max))
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
+
+        # Check for single date
+        date_str = extract_date_from_dataset(da_t_std)
+
         plt.suptitle(
             "Normalized Distribution of "
-            f"{var_name} ({level_token}) by latitude bands\nMean Wasserstein distance: "
+            f"{var_name} ({level_token}) by latitude bands{date_str}\nMean Wasserstein distance: "
             f"{mean_w:.3f}",
             y=1.02,
         )
@@ -375,6 +388,7 @@ def run(
                 pos_kde_ml=np.array(combined["pos_kde_ml"], dtype=object),
                 pos_lat_min=np.array(combined["pos_lat_min"]),
                 pos_lat_max=np.array(combined["pos_lat_max"]),
+                units=units,
                 allow_pickle=True,
             )
             print(f"[wd_kde] saved {out_npz}")
@@ -425,6 +439,7 @@ def run(
                             pred_m[variable_name].sel(level=lvl),
                             level_token=str(lvl_clean),
                             ens_token=token_m,
+                            level_val=lvl,
                         )
                 else:
                     da_t_lvl = da_t_std.sel(level=lvl)
@@ -435,6 +450,7 @@ def run(
                         da_p_lvl,
                         level_token=str(lvl_clean),
                         ens_token=ens_token_base,
+                        level_val=lvl,
                     )
 
     # After processing all variables, write Wasserstein distances CSV summary

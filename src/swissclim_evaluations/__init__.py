@@ -1,3 +1,8 @@
+import matplotlib
+
+# Force non-interactive backend to avoid QSocketNotifier/threading issues
+matplotlib.use("Agg")
+
 from . import data, helpers  # re-exported for convenience
 
 __all__ = ["data", "helpers"]

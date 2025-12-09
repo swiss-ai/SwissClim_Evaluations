@@ -11,6 +11,9 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_variable_name,
     resolve_ensemble_mode,
 )
 
@@ -98,18 +101,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -141,11 +133,6 @@ def run(
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for vertical_profiles")
-    if resolved_mode == "none" and has_ens:
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
 
     def _iter_members():
         if not has_ens:
@@ -310,7 +297,14 @@ def run(
                 ax_n.set_xlim(_gmin, _gmax)
             plt.gca().invert_yaxis()
             title_extra = f" member={member_index}" if member_index is not None else ""
-            plt.suptitle(f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}")
+
+            # Check for single date
+            date_str = extract_date_from_dataset(ds_target)
+
+            plt.suptitle(
+                f"Vertical Profiles of NMAE for {format_variable_name(_var_name)} "
+                f"(band-wise){title_extra}{date_str}"
+            )
             plt.tight_layout()
             if save_fig:
                 section_output.mkdir(parents=True, exist_ok=True)

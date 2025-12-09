@@ -9,6 +9,17 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    ensemble_mode_to_token,
+    format_level_label,
+    format_variable_name,
+    get_variable_units,
+    resolve_ensemble_mode,
+)
+
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 
@@ -101,7 +112,7 @@ def calculate_energy_spectra(
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
     # Add units for power spectrum if input had units
-    in_units = da_var.attrs.get("units")
+    in_units = get_variable_units(da_var, da_var.name)
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
@@ -235,8 +246,9 @@ def _plot_single_spectrum(
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-    ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
-    ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
+    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
+    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
+
     props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
@@ -266,8 +278,13 @@ def _plot_single_spectrum(
 
     add_wavelength_axis(ax, k_min, k_max)
 
-    lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
+    lev_part = format_level_label(level)
+    # Simplify title to just show init date if available, matching other plots
+    date_suffix = f" ({init_label})" if init_label and init_label != "noInit" else ""
+    ax.set_title(
+        f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
+        pad=24,
+    )
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -321,7 +338,6 @@ def _plot_energy_spectra(
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
-    from ..helpers import build_output_filename
 
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
@@ -333,7 +349,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else "surface",
+            level=f"{level}hPa" if level is not None else "surface",
             qualifier="single_spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -394,7 +410,7 @@ def _plot_energy_spectra(
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
-            init_label = init_label.replace(":", "").replace("-", "")
+            init_label = init_label.replace(":", "")
         else:
             init_label = "noinit"
 
@@ -418,7 +434,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=f"{level}hPa" if level is not None else None,
             qualifier="spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -466,7 +482,6 @@ def run(
     # Preserve full datasets for metrics
     ds_target_full = ds_target
     ds_prediction_full = ds_prediction
-    from ..helpers import ensemble_mode_to_token, resolve_ensemble_mode
 
     resolved_mode = resolve_ensemble_mode(
         "energy_spectra", ensemble_mode, ds_target_full, ds_prediction_full
@@ -484,8 +499,6 @@ def run(
                 )
             )
         )
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # historical behaviour (mean reduction)
     # Track members mode for metrics naming (per-member metrics aggregated without token)
     metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
@@ -500,7 +513,6 @@ def run(
         ens_token = None
 
     # Unified suffix based on init_time/lead_time only
-    from ..helpers import build_output_filename
 
     # --- Determine variables & levels ---------------------------------------------
     if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:
@@ -984,9 +996,10 @@ def run(
                 and first_dt in ds_target_full["init_time"].values
             ):
                 ds_target_plot = ds_target_full.sel(init_time=[first_dt])
+            dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
             print(
                 "[energy_spectra] Plotting only first init_time: "
-                f"{np.datetime_as_string(first_dt, unit='h')} (metrics cover full range)"
+                f"{dt_str} (metrics cover full range)"
             )
         except Exception:
             pass
@@ -1034,7 +1047,7 @@ def run(
                         / build_output_filename(
                             metric="lsd",
                             variable=str(var),
-                            level=level,
+                            level=f"{level}hPa",
                             qualifier="spectrum",
                             init_time_range=None,
                             lead_time_range=None,
