@@ -4,24 +4,112 @@ import warnings
 from collections.abc import Sequence
 from typing import cast
 
-import numpy as np
 import xarray as xr
 
-from . import customizations as custom
+from . import console as c, customizations as custom
 
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
-# be injected artificially. Earlier versions added a singleton level which led
-# to downstream misclassification of surface variables. We now treat absence of
-# 'level' as a true 2D field. Likewise 'ensemble' is optional.
+# be injected artificially. 'ensemble' is mandatory (will be auto-created if missing).
 ALLOWED_DIMS: tuple[str, ...] = (
     "latitude",
     "longitude",
     "level",  # optional
     "init_time",
     "lead_time",
-    "ensemble",  # optional
+    "ensemble",  # mandatory
 )
+
+
+def ensure_ensemble_dim(ds: xr.Dataset) -> xr.Dataset:
+    """Ensure 'ensemble' dimension exists.
+
+    If missing, inject a dummy ensemble dimension of size 1 with coordinate value 0.
+    This allows deterministic datasets to pass validation and be processed uniformly.
+    """
+    if "ensemble" not in ds.dims:
+        # Expand dims injects the dimension and coordinate
+        ds = ds.expand_dims(ensemble=[0])
+    return ds
+
+
+def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
+    """Strictly validate dataset structure against requirements.
+
+    Requirements:
+    1. 'ensemble' must be a dimension and a coordinate.
+    2. All data variables must have 'ensemble' as a dimension.
+    3. 'level' dimension must NOT be present if the dataset contains only 2D variables.
+       If mixed, 2D variables must NOT have 'level' dimension.
+    """
+    errors = []
+
+    # 1. Ensemble Check
+    if "ensemble" not in ds.dims:
+        errors.append(f"Dataset '{name}' is missing required dimension 'ensemble'.")
+    if "ensemble" not in ds.coords:
+        errors.append(f"Dataset '{name}' is missing required coordinate 'ensemble'.")
+
+    # 2. Data Variables Check
+    for var_name in ds.data_vars:
+        var = ds[var_name]
+        if "ensemble" not in var.dims:
+            errors.append(f"Variable '{var_name}' in '{name}' is missing 'ensemble' dimension.")
+
+    # 3. Level Check
+    # Identify 2D vs 3D variables.
+    has_level_dim = "level" in ds.dims
+
+    # Check if any variable actually uses level
+    vars_with_level = [v for v in ds.data_vars if "level" in ds[v].dims]
+
+    if not vars_with_level and has_level_dim:
+        errors.append(
+            f"Dataset '{name}' has 'level' dimension but no variables use it (purely 2D dataset). "
+            "'level' must not be present."
+        )
+
+    # 4. Core Dimensions Check
+    # We allow either (init_time, lead_time) OR (time) to support raw WeatherBench format
+    has_time = "time" in ds.dims
+
+    has_init_lead = "init_time" in ds.dims and "lead_time" in ds.dims
+
+    if not has_time and not has_init_lead:
+        errors.append(
+            f"Dataset '{name}' is missing required dimensions: "
+            "either ('init_time', 'lead_time') or ('time')."
+        )
+
+    required_dims = ["latitude", "longitude"]
+    if has_init_lead:
+        required_dims.extend(["init_time", "lead_time"])
+    elif has_time:
+        required_dims.append("time")
+
+    for dim in required_dims:
+        if dim not in ds.dims:
+            errors.append(f"Dataset '{name}' is missing required dimension '{dim}'.")
+        if dim not in ds.coords:
+            errors.append(f"Dataset '{name}' is missing required coordinate '{dim}'.")
+
+    # 5. Allowed Dimensions Check
+    allowed = set(ALLOWED_DIMS)
+    if has_time:
+        allowed.add("time")
+
+    for dim in ds.dims:
+        if dim not in allowed:
+            errors.append(
+                f"Dataset '{name}' has forbidden dimension '{dim}'. Allowed: {sorted(allowed)}"
+            )
+
+    if errors:
+        c.console.print(f"[bold red]Data Validation Failed for {name}[/bold red]")
+        for error in errors:
+            c.console.print(f"[red] - {error}[/red]")
+        raise ValueError(f"Dataset '{name}' does not meet strict format requirements.")
+
 
 # Default chunking policy used across the repository. Values:
 #  - 1: chunk size of 1 for that dimension
@@ -115,110 +203,6 @@ def enforce_chunking(
     return ds
 
 
-def standardize_dims(
-    ds: xr.Dataset, dataset_name: str, *, first_lead_only: bool | None = None
-) -> xr.Dataset:
-    """Standardize dataset dims and coords for this pipeline.
-
-        - Normalize alias names (initial_time->init_time, number/member->ensemble,
-            prediction_timedelta->lead_time, etc.).
-        - Convert legacy 'time' -> 'init_time' and add singleton zero 'lead_time' if absent.
-    - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
-    - Ensure spatial dims latitude/longitude exist.
-    - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
-    - Accept schemas with or without optional 'level' / 'ensemble' dims.
-    """
-    # Normalize alias dimension/coordinate names first
-    dim_aliases = {
-        "initial_time": "init_time",
-        "init": "init_time",
-        "prediction_timedelta": "lead_time",
-        "lead": "lead_time",
-        "number": "ensemble",
-        "member": "ensemble",
-        "lat": "latitude",
-        "lon": "longitude",
-    }
-    rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
-    if rename_dims_map:
-        ds = ds.rename_dims(rename_dims_map)
-    rename_coords_map = {k: v for k, v in dim_aliases.items() if k in ds.coords}
-    if rename_coords_map:
-        ds = ds.rename(rename_coords_map)
-
-    # Forbid any use of valid_time
-    if "valid_time" in ds.dims or "valid_time" in ds.coords:
-        raise ValueError(
-            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); "
-            "'valid_time' is not allowed."
-        )
-
-    # Convert legacy time -> init_time while keeping an index for label-based selection
-    if "time" in ds.dims:
-        if "time" in ds.coords:
-            # Rename both the dimension and its coordinate in one go
-            ds = ds.rename({"time": "init_time"})
-            # On newer xarray, rename drops the xindex; restore it if possible
-            with contextlib.suppress(Exception):  # xarray>=2024.10
-                ds = ds.set_xindex("init_time")
-        else:
-            # Fallback: only dimension exists (no coord var)
-            ds = ds.rename_dims({"time": "init_time"})
-
-    # Ensure latitude/longitude present
-    for d in ("latitude", "longitude"):
-        if d not in ds.dims:
-            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
-
-    # Ensure lead_time exists; add singleton zero if absent when init_time exists
-    if "init_time" in ds.dims and "lead_time" not in ds.dims:
-        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
-        ds = ds.expand_dims({"lead_time": zero_lead})
-    # Coerce lead_time dtype to timedelta64[ns]
-    if "lead_time" in ds.dims:
-        lt = ds["lead_time"].values
-        if not np.issubdtype(lt.dtype, np.timedelta64):
-            ds = ds.assign_coords(
-                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
-            )
-        # Optional policy: restrict to first lead_time (no forecasting). Default True when None.
-        if (first_lead_only is None or bool(first_lead_only)) and int(
-            ds.lead_time.size
-        ) > 1:  # SIM102
-            lead0 = ds["lead_time"].values[0]
-            with contextlib.suppress(Exception):
-                ds = ds.sel(lead_time=[lead0])
-            if isinstance(ds.lead_time.values, np.ndarray) and ds.lead_time.size > 1:  # fallback
-                ds = ds.isel(lead_time=0, drop=False)
-
-    # If the dataset already has 'level' keep it; absence means purely 2D vars.
-
-    # Enforce allowed dims only
-    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
-    if bad_dims:
-        raise ValueError(
-            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. "
-            f"Only {ALLOWED_DIMS} are allowed. Please preprocess your data accordingly."
-        )
-
-    # Relax schema: Required core dims
-    core_required = {"latitude", "longitude", "init_time", "lead_time"}
-    missing_core = [d for d in core_required if d not in ds.dims]
-    if missing_core:
-        raise ValueError(
-            f"Dataset '{dataset_name}' missing required dims {missing_core}. "
-            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
-            "level/ensemble."
-        )
-    # Validate that no unsupported dims remain
-    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
-    if bad_dims:
-        raise ValueError(
-            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. Allowed: {ALLOWED_DIMS}."
-        )
-    return ds
-
-
 def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
     """Sort common coordinate dims to a consistent monotonic order.
 
@@ -260,6 +244,8 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         ds_i = _ensure_monotonic(ds_i)
         # Custom interaction based on the zarr file
         ds_i = custom.modify_ds(ds_i, p)
+        ds_i = ensure_ensemble_dim(ds_i)
+        validate_dataset_structure(ds_i, p)
         dsets.append(ds_i)
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
@@ -298,8 +284,8 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     return combined
 
 
-def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open model dataset(s) from Zarr and optionally subset variables.
+def open_prediction(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open prediction/model dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
@@ -314,11 +300,13 @@ def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
+    validate_dataset_structure(ds, cast(str, path))
     return ds
 
 
-def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open ERA5 dataset(s) from Zarr and optionally subset variables.
+def open_target(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open target dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
@@ -333,6 +321,8 @@ def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Da
 
     # Custom interaction based on the zarr file
     ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
+    validate_dataset_structure(ds, cast(str, path))
     return ds
 
 
@@ -349,7 +339,6 @@ def apply_ensemble_policy(
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
-    Extended semantics (backward compatible):
     - ensemble_members can be:
           * None: keep all members.
           * int: select that single member (keeping 'ensemble' dimension).

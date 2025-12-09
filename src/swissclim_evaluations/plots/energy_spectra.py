@@ -118,9 +118,7 @@ def calculate_energy_spectra(
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = (
-        "Latitude-weighted zonal power spectrum"
-        if latitude_weighting
-        else "Zonal power spectrum"
+        "Latitude-weighted zonal power spectrum" if latitude_weighting else "Zonal power spectrum"
     )
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
@@ -254,8 +252,9 @@ def _plot_single_spectrum(
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Ground Truth")
-    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Model Prediction")
+    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
+    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
+
     props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
@@ -508,8 +507,6 @@ def run(
                 )
             )
         )
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # historical behaviour (mean reduction)
     # Track members mode for metrics naming (per-member metrics aggregated without token)
     metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:

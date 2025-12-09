@@ -18,7 +18,8 @@ def get_colormap_for_variable(variable_name: str) -> str | Colormap:
     Returns an appropriate colormap for a given physical variable.
 
     Args:
-        variable_name (str): Name of the variable (case-insensitive). Can contain underscores or spaces.
+        variable_name (str): Name of the variable (case-insensitive).
+            Can contain underscores or spaces.
             Matching is performed using substring search after converting to lowercase.
 
     Returns:
@@ -336,18 +337,18 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "maps": "members",
 }
 
-_VALID_MODES = {"none", "mean", "pooled", "prob", "members"}
+_VALID_MODES = {"mean", "pooled", "prob", "members"}
 
 # Explicit per-module allowed modes (logical + implemented semantics).
 _ALLOWED_PER_MODULE: dict[str, set[str]] = {
-    "maps": {"none", "mean", "members"},
-    "vertical_profiles": {"none", "mean", "pooled", "members"},
+    "maps": {"mean", "members"},
+    "vertical_profiles": {"mean", "pooled", "members"},
     "probabilistic": {"prob"},
-    "histograms": {"none", "mean", "pooled", "members"},
-    "wd_kde": {"none", "mean", "pooled", "members"},
-    "energy_spectra": {"none", "mean", "pooled", "members"},
-    "deterministic": {"none", "mean", "pooled", "members"},
-    "ets": {"none", "mean", "pooled", "members"},
+    "histograms": {"mean", "pooled", "members"},
+    "wd_kde": {"mean", "pooled", "members"},
+    "energy_spectra": {"mean", "pooled", "members"},
+    "deterministic": {"mean", "pooled", "members"},
+    "ets": {"mean", "pooled", "members"},
 }
 
 
@@ -360,19 +361,14 @@ def resolve_ensemble_mode(
     """Determine effective ensemble handling mode for a module.
 
     Modes:
-      - none: no ensemble behaviour (or ensemble dim absent)
       - mean: reduce ensemble → single field (ensmean)
       - pooled: treat all members' samples jointly (enspooled)
       - prob: keep ensemble dimension intrinsically (ensprob)
       - members: iterate per member producing separate per-member artifacts (ens<idx>)
     """
-    has_ens = "ensemble" in getattr(ds_prediction, "dims", {})
-    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "none")).lower()
+    base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "mean")).lower()
     if base not in _VALID_MODES:
-        base = _DEFAULT_ENSEMBLE_MODES.get(module, "none")
-    if not has_ens:
-        # If no ensemble dim, collapse to none (probabilistic handled upstream).
-        return "none"
+        base = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
     if module == "probabilistic":
         # Force prob; other modes invalid here.
         return "prob"
@@ -385,8 +381,6 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     Returns token WITHOUT leading underscore; build_output_filename will append as part list.
     For members mode we expect caller to invoke once per member with member_index.
     """
-    if mode == "none":
-        return None  # builder will inject default 'ensmean'
     if mode == "mean":
         return "mean"  # builder normalises to ensmean
     if mode == "pooled":
@@ -484,6 +478,73 @@ def validate_and_normalize_ensemble_config(
                 val = "none"
         normalized[module] = val
     return normalized, warnings
+
+
+def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=None):
+    """Display all images and tables in the given directory matching the patterns.
+
+    Args:
+        output_dir: Path to the directory containing outputs.
+        pattern_img: Glob pattern for images (default: "*.png"). Set to None or "" to skip.
+        pattern_csv: Glob pattern for CSV tables (default: "*.csv"). Set to None or "" to skip.
+        limit: Maximum number of images to display (default: None, show all).
+    """
+    from itertools import islice
+    from pathlib import Path
+
+    import pandas as pd
+    from IPython.display import HTML, Image, display
+
+    def natural_key(file_path):
+        """Key for natural sorting (numbers sorted numerically)."""
+        parts = file_path.stem.split("_")
+        key = []
+        for part in parts:
+            try:
+                val = int(part)
+                key.append((0, val))
+            except ValueError:
+                key.append((1, part))
+        return key
+
+    path = Path(output_dir)
+    if not path.exists():
+        print(f"Directory not found: {path}")
+        return
+
+    # Images
+    if pattern_img:
+        images = sorted(path.glob(pattern_img), key=natural_key)
+        if images:
+            to_show = images if limit is None else list(islice(images, 0, limit))
+            count_str = f"({len(to_show)}/{len(images)})" if limit is not None else ""
+            print(f"--- Images in {path.name} {count_str} ---")
+            for img in to_show:
+                print(f"Displaying: {img.name}")
+                display(Image(filename=str(img)))
+        else:
+            print(f"No images found for pattern '{pattern_img}' in {path.name}")
+
+    # Tables
+    if pattern_csv:
+        tables = sorted(path.glob(pattern_csv), key=natural_key)
+        if tables:
+            print(f"--- Tables in {path.name} ---")
+            for tbl in tables:
+                print(f"Table: {tbl.name}")
+                try:
+                    df = pd.read_csv(tbl)
+                    with pd.option_context("display.max_rows", None):
+                        display(
+                            HTML(
+                                f"<div style='max-height: 350px; overflow: "
+                                f"auto;'>{df.to_html()}</div>"
+                            )
+                        )
+                except Exception as e:
+                    print(f"Could not read {tbl.name}: {e}")
+        else:
+            print(f"No tables found for pattern '{pattern_csv}' in {path.name}")
 
 
 def extract_date_from_filename(filename: str) -> str:
