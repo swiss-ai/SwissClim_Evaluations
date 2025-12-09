@@ -133,11 +133,6 @@ def run(
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for vertical_profiles")
-    if resolved_mode == "none" and has_ens:
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
 
     def _iter_members():
         if not has_ens:

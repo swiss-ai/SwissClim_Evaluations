@@ -37,8 +37,8 @@ def test_cli_main_smoke(monkeypatch, tmp_path: Path):
     # Create minimal config enabling only maps (which is stubbed by tests/conftest.py)
     cfg_text = (
         "paths:\n"  # paths are ignored due to monkeypatch
-        "  nwp: dummy.zarr\n"
-        "  ml: dummy.zarr\n"
+        "  target: dummy.zarr\n"
+        "  prediction: dummy.zarr\n"
         f"  output_root: {tmp_path / 'output'}\n"
         "modules:\n"
         "  maps: true\n"
