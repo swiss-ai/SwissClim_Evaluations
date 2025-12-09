@@ -104,14 +104,14 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
     with np.load(pit_npz) as pit_data:
         assert "lead_time" in pit_data
         pit_lead = pit_data["lead_time"]
-        assert len(pit_lead) == 1
-        # Check that the single lead_time equals zero timedelta
-        lt0 = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")[0]
+        assert len(pit_lead) == 3
+        # Check that the lead_times equal the input lead times
+        expected_leads = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
         # ...existing code...
 
     with np.load(crps_npz) as crps_data:
         assert "lead_time" in crps_data
         crps_lead = crps_data["lead_time"]
-        assert len(crps_lead) == 1
-    assert np.all(pit_lead == lt0)
-    assert np.all(crps_lead == lt0)
+        assert len(crps_lead) == 3
+    assert np.all(pit_lead == expected_leads)
+    assert np.all(crps_lead == expected_leads)
