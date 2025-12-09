@@ -50,8 +50,8 @@ selection:
   ]
 
   # Latitude selection behavior (not cyclic):
-  # - Provide as [min_lat, max_lat]. If given in descending order, it will be
-  #   normalized to [min, max] range and sliced to produce a contiguous band (no polar union).
+  # - Provide as [min_lat, max_lat] or [max_lat, min_lat]. Any order is acceptable
+  #   and data will be selected inside the defined latitude band.
   latitudes: [90.0, -89.75]
 
   # Longitude selection behavior:
