@@ -181,9 +181,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             else:
                 # Wrap-around case: first > second
                 # e.g. [335, 45] -> [335..end] U [start..45]
-                part1 = ds.sel(longitude=slice(l_first, None))
-                part2 = ds.sel(longitude=slice(None, l_second))
-                ds = xr.concat([part1, part2], dim="longitude").sortby("longitude")
+                lon_sel = ds.longitude.values
+                lon_sel = lon_sel[(lon_sel >= l_first) | (lon_sel <= l_second)]
+                ds = ds.sel(longitude=lon_sel).sortby("longitude")
         else:
             # Fallback for single value or malformed input
             if len(longitudes) == 1:
