@@ -107,7 +107,6 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
         assert len(pit_lead) == 3
         # Check that the lead_times equal the input lead times
         expected_leads = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
-        # ...existing code...
 
     with np.load(crps_npz) as crps_data:
         assert "lead_time" in crps_data
