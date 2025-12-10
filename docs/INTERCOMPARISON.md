@@ -32,6 +32,10 @@ What gets combined:
 *   **ETS**
     *   Merged CSVs: `ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`.
 
+*   **SSIM**
+    *   Merged CSVs: `ssim_ssim_combined.csv`.
+    *   Comparison bar plot of the average SSIM (`ssim_ssim_comparison.png`).
+
 *   **Probabilistic**
     *   Merged CSVs: `crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`.
     *   PIT histogram overlays and CRPS map panels (when NPZ map exports exist).

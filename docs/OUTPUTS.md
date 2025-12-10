@@ -27,6 +27,7 @@ If the dataset contains multiple ensembles, metrics can be computed on the mean 
 - **energy_spectra**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
+- **ssim**: mean, pooled, members
 - **probabilistic**: prob only
 
 The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
@@ -63,6 +64,15 @@ ets_metrics_ensmean.csv
 ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
 ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
+```
+
+### SSIM
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+
+```text
+ssim_ssim_ensmean.csv
+ssim_ssim_ens0.csv   # members mode per-member file
 ```
 
 ### Energy Spectra Analysis

@@ -4,7 +4,7 @@
 # - models: list of per-model output directories to compare
 # - labels: optional human-friendly labels (must match models length); if omitted, folder names are used
 # - output_root: where to write combined artifacts (PNG/CSV)
-# - modules: subset of modules to run: spectra, hist, kde, maps, metrics, prob, vprof
+# - modules: subset of modules to run: spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim
 # - max_map_panels: limit number of map panels rendered
 # - max_crps_map_panels: limit CRPS map panels in probabilistic section
 
@@ -18,7 +18,7 @@ labels:
 
 output_root: output/intercomparison
 
-modules: [spectra, hist, kde, maps, metrics, prob, vprof]
+modules: [spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim]
 
 max_map_panels: 4
 max_crps_map_panels: 4

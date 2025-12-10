@@ -37,6 +37,7 @@ EXPECTED_SUBDIRS: set[str] = {
     "maps",
     "vertical_profiles",
     "wd_kde",
+    "ssim",
 }
 
 
@@ -247,7 +248,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                         end_ext = end_dt + np.timedelta64(int(max_h), "h")
                         end = str(end_ext)
                 except Exception:
-                    # If any error occurs while extending the end bound, fall back to the original end value.
+                    # If any error occurs while extending the end bound, fall back to the original
+                    # end value.
                     pass
                 ds = ds.sel({dim_name: slice(datetimes[0], end)})
             return ds
@@ -1106,6 +1108,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "vertical_profiles",
         "deterministic",
         "ets",
+        "ssim",
         "probabilistic",
     ]
     resolved_modes: dict[str, str] = {}
@@ -1585,6 +1588,48 @@ def run_selected(cfg: dict[str, Any]) -> None:
             module_results.append(
                 {
                     "name": "ets",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
+    # ssim
+    if chapter_flags.get("ssim"):
+        from .metrics import ssim as multi_mod
+
+        c.module_status("ssim", "run", f"variables={len(all_vars)}")
+        if "ensemble" in ds_prediction.dims:
+            ens_size_multi = int(ds_prediction.sizes.get("ensemble", 0))
+            use_mode = resolved_modes.get("ssim", "mean")
+            c.info(format_ensemble_log("ssim", use_mode, ens_size_multi))
+        else:
+            c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
+        try:
+            multi_mod.run(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("ssim"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("ssim", dt))
+            module_results.append(
+                {
+                    "name": "ssim",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:  # pragma: no cover
+            dt = time.time() - _t
+            c.error(f"ssim failed: {ex}")
+            module_results.append(
+                {
+                    "name": "ssim",
                     "status": "failed",
                     "seconds": dt,
                     "error": str(ex),
