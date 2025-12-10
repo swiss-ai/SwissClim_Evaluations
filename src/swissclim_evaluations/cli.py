@@ -1046,6 +1046,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     except Exception:
         # Ignore errors when removing legacy config keys; not critical for pipeline execution.
         # Ignore errors when removing legacy config keys; not critical for pipeline execution.
+        # Ignore errors when removing legacy config keys; not critical for pipeline execution.
         pass
 
     # Derive per-plot datasets if a specific plot datetime is requested
