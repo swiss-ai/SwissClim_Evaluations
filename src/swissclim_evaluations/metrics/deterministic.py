@@ -12,6 +12,7 @@ from scores.categorical import seeps
 from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.spatial import fss_2d
+from skimage.metrics import structural_similarity as ssim
 
 
 def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
@@ -38,6 +39,31 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     max_spatial_dim = max(int(ds.longitude.size), int(ds.latitude.size))
     ws = max(1, max_spatial_dim // 10)
     return (ws, ws)
+
+
+def _calculate_ssim(da_target: xr.DataArray, da_pred: xr.DataArray) -> float:
+    if "latitude" not in da_target.dims or "longitude" not in da_target.dims:
+        return np.nan
+
+    def _ssim_2d(p, t):
+        dr = t.max() - t.min()
+        if dr == 0:
+            return 1.0 if np.allclose(p, t) else 0.0
+        return ssim(t, p, data_range=dr)
+
+    try:
+        res = xr.apply_ufunc(
+            _ssim_2d,
+            da_pred,
+            da_target,
+            input_core_dims=[["latitude", "longitude"], ["latitude", "longitude"]],
+            vectorize=True,
+            dask="parallelized",
+            output_dtypes=[float],
+        )
+        return float(res.mean().compute().item())
+    except Exception:
+        return np.nan
 
 
 def _calculate_all_metrics(
@@ -119,6 +145,7 @@ def _calculate_all_metrics(
         "Relative L1",
         "Relative L2",
         "SEEPS",
+        "SSIM",
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
@@ -153,6 +180,10 @@ def _calculate_all_metrics(
         # Correlation
         if (include is None) or ("Pearson R" in metrics_to_compute):
             row["Pearson R"] = float(pearsonr(y_pred, y_true))
+
+        # SSIM
+        if (include is None) or ("SSIM" in metrics_to_compute):
+            row["SSIM"] = _calculate_ssim(y_true, y_pred)
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):

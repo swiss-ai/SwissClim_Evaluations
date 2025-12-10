@@ -38,7 +38,7 @@ Notes: Members mode may include mean aggregates in some summaries (e.g., energy 
 Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
-- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
+- Optional qualifier (`averaged`, `init_time`, `standardized`, `per_lead_time`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
 - Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
 - Ensemble token (always; see "Ensemble Tokens" below)
 
@@ -49,6 +49,7 @@ deterministic_metrics_ensmean.csv
 deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensmean.csv
 deterministic_metrics_standardized_ensmean.csv
 deterministic_metrics_per_level_ensmean.csv
+deterministic_metrics_per_lead_time_ensmean.csv
 deterministic_metrics_standardized_per_level_ensmean.csv
 deterministic_metrics_ens0.csv            # members mode example (member 0)
 ```
