@@ -761,8 +761,8 @@ def run(
                 )
                 wide_df.to_csv(out_wide, index=False)
                 print(f"[deterministic] saved {out_wide}")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[deterministic] Failed to save {out_wide}: {e}")
 
         # Optional quick line plots over lead_time
         # Always generate one plot per (variable, metric): x=lead_time, y=value
