@@ -770,8 +770,8 @@ def run(
                 )
                 long_df.to_csv(out_long, index=False)
                 print(f"[deterministic] saved {out_long}")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[deterministic] Failed to save {out_long}: {e}")
         if wide_rows:
             wide_df = pd.DataFrame(wide_rows)
             # Write standardized filename variant
