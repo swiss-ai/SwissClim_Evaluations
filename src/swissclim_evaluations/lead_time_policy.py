@@ -62,10 +62,10 @@ class LeadTimePolicy:
 
 
 def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
-    # Default changed to 'full' so multi-lead datasets are preserved unless
-    # the user explicitly requests single-lead evaluation (mode='first').
+    # Default to 'first' (single-lead) if configuration is omitted, preserving
+    # classic behavior.
     if cfg is None:
-        return LeadTimePolicy(mode="full")
+        return LeadTimePolicy(mode="first")
     mode = str(cfg.get("mode", "first")).lower()
     # Accept both flat 'subset_hours' and nested 'subset: { hours: [...] }'
     subset_cfg = cfg.get("subset") or {}
