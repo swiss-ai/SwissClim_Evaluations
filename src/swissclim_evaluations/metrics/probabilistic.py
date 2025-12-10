@@ -192,7 +192,7 @@ def run_probabilistic(
                 return None
             return format_init_time_range(vals)
         except Exception:
-            return None
+            pass
         start = np.datetime64(np.min(vals)).astype("datetime64[h]")
         end = np.datetime64(np.max(vals)).astype("datetime64[h]")
 
