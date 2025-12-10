@@ -770,8 +770,8 @@ def prepare_datasets(
                     "Skipping lead_time filtering and keeping original leads."
                 )
                 ds_prediction = ds_prediction_before_policy
-        except Exception:
-            pass
+        except (KeyError, AttributeError, TypeError) as e:
+            c.warn(f"Exception occurred during lead_time policy check: {e}")
         # Targets: apply only in 'full' mode (respects max_hour) where safe/meaningful
         if lead_policy.mode == "full":
             ds_target = apply_lead_time_selection(ds_target, lead_policy)
