@@ -1068,6 +1068,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 json.dump(audit, f, indent=2, default=str)
             c.info(f"Lead-time audit written to {p}")
     except Exception:
+        # Ignore errors when writing lead-time audit; not critical for pipeline execution.
         pass
     # Persist the exact configuration used for this run into the output directory
     _maybe_copy_config_to_output(cfg, out_root)
