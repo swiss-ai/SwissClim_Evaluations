@@ -1044,6 +1044,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "lead_panel_hours" in plotting_block:
             del plotting_block["lead_panel_hours"]
     except Exception:
+        # Ignore errors when removing legacy config keys; not critical for pipeline execution.
         pass
 
     # Derive per-plot datasets if a specific plot datetime is requested
