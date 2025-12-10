@@ -207,7 +207,11 @@ def enforce_chunking(
                     all_unchunked = False
                     break
             except Exception as e:
-                logger.debug("Exception while checking 'chunks' attribute for variable %r: %s", getattr(v_da, "name", None), e)
+                logger.debug(
+                    "Exception while checking 'chunks' attribute for variable %r: %s",
+                    getattr(v_da, "name", None),
+                    e,
+                )
         if all_unchunked and total_size <= SMALL_THRESHOLD:
             return ds  # no warning, no rechunk
         name = dataset_name or "dataset"
