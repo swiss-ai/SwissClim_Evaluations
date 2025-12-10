@@ -6,7 +6,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # needed for 3D projection
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from ..helpers import (

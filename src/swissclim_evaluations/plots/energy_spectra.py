@@ -519,18 +519,6 @@ def run(
     has_ens = "ensemble" in ds_target_full.dims or "ensemble" in ds_prediction_full.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for energy_spectra")
-    # members_indices: list[int] | None = None
-    # if resolved_mode == "members" and has_ens:
-    #     members_indices = list(
-    #         range(
-    #             int(
-    #                 ds_prediction_full.sizes.get("ensemble")
-    #                 or ds_prediction_full.sizes.get("ensemble", 0)
-    #             )
-    #         )
-    #     )
-    # Track members mode for metrics naming (per-member metrics aggregated without token)
-    # metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target_full.dims:
             ds_target_full = ds_target_full.mean(dim="ensemble")

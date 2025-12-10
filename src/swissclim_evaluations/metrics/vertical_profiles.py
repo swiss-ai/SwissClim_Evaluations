@@ -12,7 +12,6 @@ from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
-    format_init_time_range,
     format_variable_name,
     resolve_ensemble_mode,
 )
@@ -97,13 +96,10 @@ def run(
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        try:
-            vals = ds["init_time"].values
-            if vals.size == 0:
-                return None
-            return format_init_time_range(vals)
-        except Exception:
+        vals = ds["init_time"].values
+        if vals.size == 0:
             return None
+
         start = np.datetime64(vals.min()).astype("datetime64[h]")
         end = np.datetime64(vals.max()).astype("datetime64[h]")
 

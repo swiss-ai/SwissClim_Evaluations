@@ -14,7 +14,6 @@ from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
-    format_level_label,
     format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
@@ -108,7 +107,7 @@ def run(
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for histograms")
 
-    def _plot_variable(
+    def _plot_lat_bands(
         da_target_var: xr.DataArray,
         da_pred_var: xr.DataArray,
         variable_name: str,
@@ -118,8 +117,11 @@ def run(
         lead_time_range: tuple[str, str] | None = None,
         level_val: Any = None,
     ):
+        if not per_lat_band:
+            return
+
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
-        print(f"[histograms] variable: {variable_name}")
+        print(f"[histograms] lat_bands: {variable_name}")
 
         # Helper to choose common bin edges without loading full arrays
         def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
@@ -170,20 +172,40 @@ def run(
             arr = np.asarray(sub.compute().values).ravel()
             return arr[np.isfinite(arr)]
 
-        # --- Global Histogram ---
-        fig_g, ax_g = plt.subplots(figsize=(10, 6), dpi=dpi)
+        fig, axs = plt.subplots(
+            n_rows,
+            2,
+            figsize=(16, 3 * n_rows),
+            dpi=dpi,
+            constrained_layout=True,
+        )
+        # Collect combined NPZ data across all bands
+        combined: dict[str, list[np.ndarray | tuple[np.ndarray, np.ndarray] | float]] = {
+            "neg_counts": [],
+            "neg_bins": [],
+            "pos_counts": [],
+            "pos_bins": [],
+            "neg_lat_min": [],
+            "neg_lat_max": [],
+            "pos_lat_min": [],
+            "pos_lat_max": [],
+        }
 
-        # Global data
-        da_true_g = da_target_var
-        da_pred_g = da_pred_var
-
-        # Compute global histogram
-        if max_samples is not None:
-            seed = base_seed + (i + 1) * 1000
-            ds_sample = _subsample_values(da_true_g, max_samples, seed)
-            ml_sample = _subsample_values(da_pred_g, max_samples, seed)
-
-            if ds_sample.size > 0 and ml_sample.size > 0:
+        # Negative latitudes (right column)
+        for j in range(n_bands // 2):
+            lat_max = lat_bins[j]
+            lat_min = lat_bins[j + 1]
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
+            # If subsampling enabled, compute edges on subsampled arrays
+            if max_samples is not None:
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
+                if ds_sample.size == 0 or ml_sample.size == 0:
+                    axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                    continue
+                # Determine edges from combined sample quantiles
                 try:
                     both = np.concatenate([ds_sample, ml_sample])
                     qlow, qhigh = np.quantile(both, [0.001, 0.999])
@@ -191,305 +213,162 @@ def run(
                         qlow, qhigh = -1.0, 1.0
                 except Exception:
                     qlow, qhigh = -1.0, 1.0
-                edges_g = np.linspace(qlow, qhigh, 1001)
+                edges = np.linspace(qlow, qhigh, 1001)
+                # Histogram on subsamples using dask.histogram for consistency
                 dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
                 dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                counts_ds_g = dsa.histogram(dsa_ds, bins=edges_g)[0].compute()
-                counts_ml_g = dsa.histogram(dsa_ml, bins=edges_g)[0].compute()
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
             else:
-                counts_ds_g = np.array([])
-                counts_ml_g = np.array([])
-                edges_g = np.array([])
-        else:
-            edges_g = _choose_edges(da_true_g, da_pred_g, bins=1000)
-            counts_ds_g = _dask_hist(da_true_g, edges_g).compute().astype(float)
-            counts_ml_g = _dask_hist(da_pred_g, edges_g).compute().astype(float)
-
-        if len(counts_ds_g) > 0:
-            width = np.diff(edges_g)
-            bin_area = counts_ds_g.sum() * width.mean() if counts_ds_g.sum() > 0 else 1.0
-            counts_ds_g = counts_ds_g / bin_area
-            bin_area_ml = counts_ml_g.sum() * width.mean() if counts_ml_g.sum() > 0 else 1.0
-            counts_ml_g = counts_ml_g / bin_area_ml
-
-            ax_g.bar(
-                edges_g[:-1],
-                counts_ds_g,
+                # Use dask-based histogram over explicit edges (full arrays)
+                edges = _choose_edges(da_true, da_pred, bins=1000)
+                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+            # Convert to density
+            width = np.diff(edges)
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            counts_ml = counts_ml / bin_area_ml
+            axs[j, 1].bar(
+                edges[:-1],
+                counts_ds,
                 width=width,
                 align="edge",
                 alpha=0.5,
                 color=COLOR_GROUND_TRUTH,
                 label="Target",
             )
-            ax_g.bar(
-                edges_g[:-1],
-                counts_ml_g,
+            axs[j, 1].bar(
+                edges[:-1],
+                counts_ml,
                 width=width,
                 align="edge",
                 alpha=0.5,
                 color=COLOR_MODEL_PREDICTION,
                 label="Prediction",
             )
-            ax_g.legend(loc="upper right")
+            axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
+            axs[j, 1].legend(loc="upper right")
+            if save_npz:
+                combined["neg_counts"].append((counts_ds, counts_ml))
+                combined["neg_bins"].append(edges)
+                combined["neg_lat_min"].append(float(lat_min))
+                combined["neg_lat_max"].append(float(lat_max))
+
+        # Positive latitudes (left column)
+        for j in range(n_bands // 2):
+            idx = -(j + 1)
+            lat_max = lat_bins[idx - 1]
+            lat_min = lat_bins[idx]
+            da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
+            da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
+            if max_samples is not None:
+                seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
+                ds_sample = _subsample_values(da_true, max_samples, seed)
+                ml_sample = _subsample_values(da_pred, max_samples, seed)
+                if ds_sample.size == 0 or ml_sample.size == 0:
+                    axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                    continue
+                try:
+                    both = np.concatenate([ds_sample, ml_sample])
+                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
+                        qlow, qhigh = -1.0, 1.0
+                except Exception:
+                    qlow, qhigh = -1.0, 1.0
+                edges = np.linspace(qlow, qhigh, 1001)
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+            else:
+                edges = _choose_edges(da_true, da_pred, bins=1000)
+                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+            width = np.diff(edges)
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            counts_ml = counts_ml / bin_area_ml
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ds,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color=COLOR_GROUND_TRUTH,
+                label="Target",
+            )
+            axs[j, 0].bar(
+                edges[:-1],
+                counts_ml,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color=COLOR_MODEL_PREDICTION,
+                label="Prediction",
+            )
+            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
+            axs[j, 0].legend(loc="upper right")
+            if save_npz:
+                combined["pos_counts"].append((counts_ds, counts_ml))
+                combined["pos_bins"].append(edges)
+                combined["pos_lat_min"].append(float(lat_min))
+                combined["pos_lat_max"].append(float(lat_max))
 
         units = get_variable_units(ds_target, variable_name)
 
         # Check for single date
         date_str = extract_date_from_dataset(da_target_var)
-        lev_part = format_level_label(level_val if level_val is not None else level_token)
 
-        lead_time_suffix = f" — lead {lead_time_range[0]}" if lead_time_range else ""
-
-        if len(counts_ds_g) > 0:
-            title = (
-                f"Global Histogram — {format_variable_name(variable_name)}"
-                f"{lev_part}{date_str}{lead_time_suffix}"
-            )
-            ax_g.set_title(title)
-            if units:
-                ax_g.set_xlabel(units)
-        else:
-            ax_g.set_title(
-                f"Global Histogram — {format_variable_name(variable_name)}{lev_part} "
-                f"(No data){date_str}{lead_time_suffix}"
-            )
+        plt.suptitle(
+            f"Distributions by Latitude Bands — "
+            f"{format_variable_name(variable_name)}{date_str}",
+            y=1.02,
+        )
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_png_g = section_output / build_output_filename(
+            out_png = section_output / build_output_filename(
                 metric="hist",
                 variable=variable_name,
                 level=level_token,
-                qualifier="global",
+                qualifier=qualifier,
                 init_time_range=None,
-                lead_time_range=lead_time_range,
+                lead_time_range=None,
                 ensemble=ens_token,
                 ext="png",
             )
-            fig_g.savefig(out_png_g, bbox_inches="tight", dpi=200)
-            print(f"[histograms] saved {out_png_g}")
-
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[histograms] saved {out_png}")
         if save_npz:
             section_output.mkdir(parents=True, exist_ok=True)
-            out_npz_g = section_output / build_output_filename(
+            out_npz = section_output / build_output_filename(
                 metric="hist",
                 variable=variable_name,
                 level=level_token,
-                qualifier="global",
+                qualifier=qualifier,
                 init_time_range=None,
-                lead_time_range=lead_time_range,
+                lead_time_range=None,
                 ensemble=ens_token,
                 ext="npz",
             )
             np.savez(
-                out_npz_g,
-                counts_ds=counts_ds_g,
-                counts_ml=counts_ml_g,
-                bins=edges_g,
+                out_npz,
+                neg_counts=np.array(combined["neg_counts"], dtype=object),
+                neg_bins=np.array(combined["neg_bins"], dtype=object),
+                pos_counts=np.array(combined["pos_counts"], dtype=object),
+                pos_bins=np.array(combined["pos_bins"], dtype=object),
+                neg_lat_min=np.array(combined["neg_lat_min"]),
+                neg_lat_max=np.array(combined["neg_lat_max"]),
+                pos_lat_min=np.array(combined["pos_lat_min"]),
+                pos_lat_max=np.array(combined["pos_lat_max"]),
                 units=units,
                 allow_pickle=True,
             )
-            print(f"[histograms] saved {out_npz_g}")
-        plt.close(fig_g)
-
-        if per_lat_band:
-            fig, axs = plt.subplots(
-                n_rows,
-                2,
-                figsize=(16, 3 * n_rows),
-                dpi=dpi,
-                constrained_layout=True,
-            )
-            # Collect combined NPZ data across all bands
-            combined: dict[str, list[np.ndarray | tuple[np.ndarray, np.ndarray] | float]] = {
-                "neg_counts": [],
-                "neg_bins": [],
-                "pos_counts": [],
-                "pos_bins": [],
-                "neg_lat_min": [],
-                "neg_lat_max": [],
-                "pos_lat_min": [],
-                "pos_lat_max": [],
-            }
-
-            # Negative latitudes (right column)
-            for j in range(n_bands // 2):
-                lat_max = lat_bins[j]
-                lat_min = lat_bins[j + 1]
-                da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
-                da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
-                # If subsampling enabled, compute edges on subsampled arrays
-                if max_samples is not None:
-                    seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-                    ds_sample = _subsample_values(da_true, max_samples, seed)
-                    ml_sample = _subsample_values(da_pred, max_samples, seed)
-                    if ds_sample.size == 0 or ml_sample.size == 0:
-                        axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                        continue
-                    # Determine edges from combined sample quantiles
-                    try:
-                        both = np.concatenate([ds_sample, ml_sample])
-                        qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                        if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                            qlow, qhigh = -1.0, 1.0
-                    except Exception:
-                        qlow, qhigh = -1.0, 1.0
-                    edges = np.linspace(qlow, qhigh, 1001)
-                    # Histogram on subsamples using dask.histogram for consistency
-                    dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
-                    dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                    counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                    counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
-                else:
-                    # Use dask-based histogram over explicit edges (full arrays)
-                    edges = _choose_edges(da_true, da_pred, bins=1000)
-                    counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-                    counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
-                # Convert to density
-                width = np.diff(edges)
-                bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-                counts_ds = counts_ds / bin_area
-                bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-                counts_ml = counts_ml / bin_area_ml
-                axs[j, 1].bar(
-                    edges[:-1],
-                    counts_ds,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color=COLOR_GROUND_TRUTH,
-                    label="Target",
-                )
-                axs[j, 1].bar(
-                    edges[:-1],
-                    counts_ml,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color=COLOR_MODEL_PREDICTION,
-                    label="Prediction",
-                )
-                axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
-                axs[j, 1].legend(loc="upper right")
-                if save_npz:
-                    combined["neg_counts"].append((counts_ds, counts_ml))
-                    combined["neg_bins"].append(edges)
-                    combined["neg_lat_min"].append(float(lat_min))
-                    combined["neg_lat_max"].append(float(lat_max))
-
-            # Positive latitudes (left column)
-            for j in range(n_bands // 2):
-                idx = -(j + 1)
-                lat_max = lat_bins[idx - 1]
-                lat_min = lat_bins[idx]
-                da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
-                da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
-                if max_samples is not None:
-                    seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                    ds_sample = _subsample_values(da_true, max_samples, seed)
-                    ml_sample = _subsample_values(da_pred, max_samples, seed)
-                    if ds_sample.size == 0 or ml_sample.size == 0:
-                        axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                        continue
-                    try:
-                        both = np.concatenate([ds_sample, ml_sample])
-                        qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                        if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                            qlow, qhigh = -1.0, 1.0
-                    except Exception:
-                        qlow, qhigh = -1.0, 1.0
-                    edges = np.linspace(qlow, qhigh, 1001)
-                    dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
-                    dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                    counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                    counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
-                else:
-                    edges = _choose_edges(da_true, da_pred, bins=1000)
-                    counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-                    counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
-                width = np.diff(edges)
-                bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-                counts_ds = counts_ds / bin_area
-                bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-                counts_ml = counts_ml / bin_area_ml
-                axs[j, 0].bar(
-                    edges[:-1],
-                    counts_ds,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color=COLOR_GROUND_TRUTH,
-                    label="Target",
-                )
-                axs[j, 0].bar(
-                    edges[:-1],
-                    counts_ml,
-                    width=width,
-                    align="edge",
-                    alpha=0.5,
-                    color=COLOR_MODEL_PREDICTION,
-                    label="Prediction",
-                )
-                axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
-                axs[j, 0].legend(loc="upper right")
-                if save_npz:
-                    combined["pos_counts"].append((counts_ds, counts_ml))
-                    combined["pos_bins"].append(edges)
-                    combined["pos_lat_min"].append(float(lat_min))
-                    combined["pos_lat_max"].append(float(lat_max))
-
-            units = get_variable_units(ds_target, variable_name)
-
-            # Check for single date
-            date_str = extract_date_from_dataset(da_target_var)
-
-            plt.suptitle(
-                f"Distributions by Latitude Bands — "
-                f"{format_variable_name(variable_name)}{date_str}",
-                y=1.02,
-            )
-
-            if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_png = section_output / build_output_filename(
-                    metric="hist",
-                    variable=variable_name,
-                    level=level_token,
-                    qualifier=qualifier,
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="png",
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[histograms] saved {out_png}")
-            if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_npz = section_output / build_output_filename(
-                    metric="hist",
-                    variable=variable_name,
-                    level=level_token,
-                    qualifier=qualifier,
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="npz",
-                )
-                np.savez(
-                    out_npz,
-                    neg_counts=np.array(combined["neg_counts"], dtype=object),
-                    neg_bins=np.array(combined["neg_bins"], dtype=object),
-                    pos_counts=np.array(combined["pos_counts"], dtype=object),
-                    pos_bins=np.array(combined["pos_bins"], dtype=object),
-                    neg_lat_min=np.array(combined["neg_lat_min"]),
-                    neg_lat_max=np.array(combined["neg_lat_max"]),
-                    pos_lat_min=np.array(combined["pos_lat_min"]),
-                    pos_lat_max=np.array(combined["pos_lat_max"]),
-                    units=units,
-                    allow_pickle=True,
-                )
-                print(f"[histograms] saved {out_npz}")
-            plt.close(fig)
+            print(f"[histograms] saved {out_npz}")
+        plt.close(fig)
 
     def _plot_global_hist(
         da_target_var: xr.DataArray,
@@ -647,12 +526,20 @@ def run(
         # (retain potential single-lead case by emitting one global if only one lead)
         if not per_lead:
             for variable_name in variables_2d:
-                _plot_variable(
+                _plot_global_hist(
                     ds_target_mean[variable_name],
                     ds_prediction_mean[variable_name],
                     str(variable_name),
                     level_token="",
-                    qualifier="global",
+                    ens_token=ensemble_mode_to_token("mean"),
+                    lead_time_range=None,
+                )
+                _plot_lat_bands(
+                    ds_target_mean[variable_name],
+                    ds_prediction_mean[variable_name],
+                    str(variable_name),
+                    level_token="",
+                    qualifier="latbands",
                     ens_token=ensemble_mode_to_token("mean"),
                     lead_time_range=None,
                 )
@@ -831,12 +718,20 @@ def run(
             # Suppress member per-lead globals; only grid
             if not per_lead:
                 for variable_name in variables_2d:
-                    _plot_variable(
+                    _plot_global_hist(
                         tgt_m[variable_name],
                         pred_m[variable_name],
                         str(variable_name),
                         level_token="",
-                        qualifier="global",
+                        ens_token=token,
+                        lead_time_range=None,
+                    )
+                    _plot_lat_bands(
+                        tgt_m[variable_name],
+                        pred_m[variable_name],
+                        str(variable_name),
+                        level_token="",
+                        qualifier="latbands",
                         ens_token=token,
                         lead_time_range=None,
                     )
@@ -1004,12 +899,20 @@ def run(
         # removed unused variable lead_indices (ruff F841)
         if not per_lead:
             for variable_name in variables_2d:
-                _plot_variable(
+                _plot_global_hist(
                     ds_target[variable_name],
                     ds_prediction[variable_name],
                     str(variable_name),
                     level_token="",
-                    qualifier="global",
+                    ens_token=token,
+                    lead_time_range=None,
+                )
+                _plot_lat_bands(
+                    ds_target[variable_name],
+                    ds_prediction[variable_name],
+                    str(variable_name),
+                    level_token="",
+                    qualifier="latbands",
                     ens_token=token,
                     lead_time_range=None,
                 )
@@ -1184,7 +1087,15 @@ def run(
                     da_t_lvl_mean = (
                         da_t_lvl.mean(dim="ensemble") if "ensemble" in da_t_lvl.dims else da_t_lvl
                     )
-                    _plot_variable(
+                    _plot_global_hist(
+                        da_t_lvl_mean,
+                        da_p_lvl_mean,
+                        str(variable_name),
+                        level_token=str(lvl_clean),
+                        ens_token=ensemble_mode_to_token("mean"),
+                        lead_time_range=None,
+                    )
+                    _plot_lat_bands(
                         da_t_lvl_mean,
                         da_p_lvl_mean,
                         str(variable_name),
@@ -1197,7 +1108,19 @@ def run(
                 elif resolved_mode == "members" and has_ens:
                     for member_index, tgt_m, pred_m in _iter_members():
                         token = ensemble_mode_to_token("members", member_index)
-                        _plot_variable(
+                        _plot_global_hist(
+                            (
+                                tgt_m[variable_name].sel(level=lvl)
+                                if "ensemble" in tgt_m[variable_name].dims
+                                else tgt_m.sel(level=lvl)
+                            ),
+                            pred_m[variable_name].sel(level=lvl),
+                            str(variable_name),
+                            level_token=str(lvl_clean),
+                            ens_token=token,
+                            lead_time_range=None,
+                        )
+                        _plot_lat_bands(
                             (
                                 tgt_m[variable_name].sel(level=lvl)
                                 if "ensemble" in tgt_m[variable_name].dims
@@ -1217,7 +1140,15 @@ def run(
                         if (resolved_mode == "pooled" and has_ens)
                         else None
                     )
-                    _plot_variable(
+                    _plot_global_hist(
+                        da_t_lvl,
+                        da_p_lvl,
+                        str(variable_name),
+                        level_token=str(lvl_clean),
+                        ens_token=token,
+                        lead_time_range=None,
+                    )
+                    _plot_lat_bands(
                         da_t_lvl,
                         da_p_lvl,
                         str(variable_name),

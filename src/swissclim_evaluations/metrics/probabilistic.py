@@ -186,13 +186,10 @@ def run_probabilistic(
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        try:
-            vals = ds["init_time"].values
-            if vals.size == 0:
-                return None
-            return format_init_time_range(vals)
-        except Exception:
-            pass
+        vals = ds["init_time"].values
+        if vals.size == 0:
+            return None
+
         start = np.datetime64(np.min(vals)).astype("datetime64[h]")
         end = np.datetime64(np.max(vals)).astype("datetime64[h]")
 
@@ -474,13 +471,10 @@ def plot_probabilistic(
     def _extract_init_range_plot(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        try:
-            vals = ds["init_time"].values
-            if vals.size == 0:
-                return None
-            return format_init_time_range(vals)
-        except Exception:
+        vals = ds["init_time"].values
+        if vals.size == 0:
             return None
+
         start = np.datetime64(np.min(vals)).astype("datetime64[h]")
         end = np.datetime64(np.max(vals)).astype("datetime64[h]")
 
