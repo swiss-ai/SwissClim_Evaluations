@@ -1256,8 +1256,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         "'selection.datetimes', setting lead_time.mode=full temporarily, or "
                         "inspecting the ML Zarr with tools/inspect_zarr.py."
                     )
-        except Exception:
-            pass
+        except Exception as ex:
+            c.warn(f"Exception occurred during lead time policy handling: {ex}")
 
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):
