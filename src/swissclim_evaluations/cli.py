@@ -1237,8 +1237,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         lines.append(s5)
                     for ln in lines:
                         c.info(ln)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    c.warn(f"Exception occurred while formatting lead time audit: {exc}")
                 # Extra visibility: warn if multi-lead requested but only a single lead remains
                 try:
                     if isinstance(lead_policy, LeadTimePolicy):
