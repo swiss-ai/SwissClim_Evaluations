@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
 
+from ..aggregations import latitude_weights
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -29,6 +30,7 @@ def _compute_nmae(
     pred_da: xr.DataArray,
     lat_slice: slice,
     level_values: Sequence[int | float],
+    weights: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """Compute NMAE per level (percentage) for a latitude slice lazily with xarray.
 
@@ -61,7 +63,10 @@ def _compute_nmae(
     diff = (sub_pred - sub_true).astype("float32")
     abs_err = xr.ufuncs.abs(diff)
 
-    mae = abs_err.mean(dim=reduce_dims, skipna=True)
+    if weights is not None:
+        mae = abs_err.weighted(weights).mean(dim=reduce_dims, skipna=True)
+    else:
+        mae = abs_err.mean(dim=reduce_dims, skipna=True)
     # Range is computed from the truth across its own dims only
     t_max = sub_true.max(dim=reduce_dims_true, skipna=True)
     t_min = sub_true.min(dim=reduce_dims_true, skipna=True)
@@ -82,6 +87,7 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    metrics_cfg: dict[str, Any] | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -91,6 +97,10 @@ def run(
 
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
+
+    weights = None
+    if "latitude" in ds_target.dims:
+        weights = latitude_weights(ds_target.latitude)
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):
@@ -212,6 +222,7 @@ def run(
                     ds_prediction[var],
                     lat_slice_neg,
                     level_values,
+                    weights=weights,
                 )
             )
             south_meta.append((lat_min_neg, lat_max_neg))
@@ -229,6 +240,7 @@ def run(
                     ds_prediction[var],
                     lat_slice_pos,
                     level_values,
+                    weights=weights,
                 )
             )
             north_meta.append((lat_min_pos, lat_max_pos))

@@ -227,6 +227,6 @@ metrics:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
 
-probabilistic:
-  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
-  report_per_level: true
+  probabilistic:
+    # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+    report_per_level: true

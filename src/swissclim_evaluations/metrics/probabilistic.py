@@ -13,12 +13,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from weatherbenchX import aggregation, binning
 from weatherbenchX.metrics.probabilistic import (
     CRPSEnsemble,
     UnbiasedSpreadSkillRatio,
 )
 
-# Use official WeatherBenchX metrics instead of local copies
 from ..helpers import (
     COLOR_DIAGNOSTIC,
     build_output_filename,
@@ -241,8 +241,10 @@ def run_probabilistic(
     lead_range = _extract_lead_range(ds_prediction)
 
     ens_token = ensemble_mode_to_token("prob")
-    prob_cfg = (cfg_all or {}).get("probabilistic", {})
+    metrics_cfg = (cfg_all or {}).get("metrics", {})
+    prob_cfg = metrics_cfg.get("probabilistic") or (cfg_all or {}).get("probabilistic", {})
     report_per_level = bool(prob_cfg.get("report_per_level", True))
+
     crps_rows_per_level: list[dict[str, Any]] = []
 
     for var in variables:
@@ -1050,9 +1052,6 @@ def run_probabilistic_wbx(
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
-
-    # Imports only when needed to avoid hard dependency during other runs
-    from weatherbenchX import aggregation, binning
 
     if "ensemble" not in ds_prediction.dims:
         print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")

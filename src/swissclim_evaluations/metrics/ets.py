@@ -14,7 +14,9 @@ from scores.categorical import BinaryContingencyManager
 
 
 def _calculate_ets_for_thresholds(
-    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
 ) -> pd.DataFrame:
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
@@ -28,16 +30,20 @@ def _calculate_ets_for_thresholds(
             quantile = float(da_target.quantile(threshold / 100.0, skipna=True).compute().item())
             obs_events = da_target >= quantile  # targets events
             fcst_events = da_prediction >= quantile  # predictions events
+
             bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
-            basic_cm = bcm.transform(reduce_dims="all")
-            ets_score = basic_cm.equitable_threat_score()
+            bcm = bcm.transform(reduce_dims="all")
+
+            ets_score = bcm.equitable_threat_score()
             metrics_dict[var][f"ETS {threshold}%"] = float(ets_score.values)
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
 def _calculate_ets_per_level(
-    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:

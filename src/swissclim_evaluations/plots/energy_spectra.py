@@ -10,6 +10,7 @@ import pandas as pd
 import xarray as xr
 from matplotlib.lines import Line2D
 
+from ..aggregations import latitude_weights
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -119,12 +120,11 @@ def calculate_energy_spectra(
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
-    if "latitude" in da_power.coords:
-        lat_vals = da_power["latitude"]
-        cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
-        da_power = da_power.weighted(cosw).mean(dim="latitude")
+    if "latitude" in da_power.dims:
+        weights = latitude_weights(da_power["latitude"])
+        da_power = da_power.weighted(weights).mean(dim="latitude")
     else:
-        raise ValueError("latitude coordinate required for weighting")
+        da_power = da_power.mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
     if average_dims:
