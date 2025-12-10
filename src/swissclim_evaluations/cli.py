@@ -247,6 +247,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                         end_ext = end_dt + np.timedelta64(int(max_h), "h")
                         end = str(end_ext)
                 except Exception:
+                    # If any error occurs while extending the end bound, fall back to the original end value.
                     pass
                 ds = ds.sel({dim_name: slice(datetimes[0], end)})
             return ds
