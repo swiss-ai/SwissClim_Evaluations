@@ -926,8 +926,8 @@ def prepare_datasets(
                             "(init_time + lead_time) or provide a longer ground-truth window."
                         )
                         c.warn(msg)
-        except Exception:
-            pass
+        except Exception as e:
+            c.warn(f"Failed to check for dropped forecast leads: {e}")
 
     # Enforce repository-wide chunking policy to ensure predictable performance
     ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target")
