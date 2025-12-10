@@ -534,7 +534,6 @@ def run(
     else:
         ens_token = None
 
-    # Aliases for compatibility with HEAD code
     resolved = resolved_mode
     tgt = ds_target_full
     pred = ds_prediction_full
