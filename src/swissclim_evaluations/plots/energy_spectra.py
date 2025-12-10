@@ -10,7 +10,16 @@ import pandas as pd
 import xarray as xr
 from matplotlib.lines import Line2D
 
-from ..helpers import build_output_filename, ensemble_mode_to_token, resolve_ensemble_mode
+from ..helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
+    build_output_filename,
+    ensemble_mode_to_token,
+    format_level_label,
+    format_variable_name,
+    get_variable_units,
+    resolve_ensemble_mode,
+)
 
 EARTH_RADIUS_KM = 6371.0
 EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
@@ -19,7 +28,8 @@ EARTH_CIRCUMFERENCE_KM = 2 * np.pi * EARTH_RADIUS_KM
 WAVE_BANDS: list[dict[str, float | str]] = [
     {"name": "planetary", "min_km": 5000.0, "max_km": 20000.0},
     {"name": "synoptic", "min_km": 1000.0, "max_km": 5000.0},
-    {"name": "mesoscale", "min_km": 10.0, "max_km": 1000.0},
+    {"name": "upper_mesoscale", "min_km": 250.0, "max_km": 1000.0},
+    {"name": "lower_mesoscale", "min_km": 10.0, "max_km": 250.0},
 ]
 
 
@@ -103,7 +113,7 @@ def calculate_energy_spectra(
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
     # Add units for power spectrum if input had units
-    in_units = da_var.attrs.get("units")
+    in_units = get_variable_units(da_var, str(da_var.name))
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
@@ -243,8 +253,9 @@ def _plot_single_spectrum(
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-    ax.loglog(wavenumber, arr_target, color="skyblue", label="Ground Truth")
-    ax.loglog(wavenumber, arr_pred, color="salmon", label="Model Prediction")
+    ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
+    ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
+
     props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
     ax.text(
         0.5,
@@ -268,61 +279,19 @@ def _plot_single_spectrum(
         return
     ax.set_xlim(k_min, k_max)
 
-    wavelength_candidates = [
-        40000,
-        20000,
-        10000,
-        5000,
-        2000,
-        1000,
-        500,
-        200,
-        100,
-        50,
-        20,
-        10,
-        5,
-        2,
-        1,
-        0.5,
-        0.2,
-        0.1,
-    ]
-    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
-    wl_min_possible = 1.0 / k_max
-    wl_max_possible = 1.0 / k_min
-    valid_wl = [
-        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
-    ]
-    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
-    k_ticks = np.array([1.0 / wl for wl in valid_wl])
-    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
-    if k_ticks.size == 0:  # fallback to previous geometric spacing
-        k_ticks = np.geomspace(k_min, k_max, num=6)
+    # Add golden dotted line at 4*dx cutoff (k_max / 2)
+    k_cutoff = k_max / 2.0
+    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
 
-    ax_top = ax.twiny()
-    ax_top.set_xscale("log")
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(k_ticks)
+    add_wavelength_axis(ax, k_min, k_max)
 
-    def _fmt_wl_from_k(k: float) -> str:
-        wl = 1.0 / k
-        if wl >= 1000:
-            return f"{wl / 1000:.0f}k"  # show whole thousands
-        if wl >= 100:
-            return f"{wl:.0f}"
-        if wl >= 10:
-            return f"{wl:.0f}"
-        if wl >= 1:
-            return f"{wl:.1f}"
-        return f"{wl:.2f}"
-
-    ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
-    ax_top.set_xlabel("Wavelength (km)")
-    ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)
-
-    lev_part = f" Level {level}" if level is not None else " (sfc)"
-    ax.set_title(f"{var}{lev_part} — init={init_label} lead={lead_label}", pad=24)
+    lev_part = format_level_label(level)
+    # Simplify title to just show init date if available, matching other plots
+    date_suffix = f" ({init_label})" if init_label and init_label != "noInit" else ""
+    ax.set_title(
+        f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
+        pad=24,
+    )
     ax.legend()
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
@@ -378,7 +347,6 @@ def _plot_energy_spectra(
     # Determine time-like dims (exclude wavenumber)
     time_dims = [d for d in spectrum_target.dims if d != "wavenumber"]
     # Create per-time outputs
-    from ..helpers import build_output_filename
 
     if not time_dims:  # no time dims → single spectrum
         wn = spectrum_target["wavenumber"].values
@@ -390,7 +358,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=f"{level}hPa" if level is not None else "surface",
             qualifier="single_spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -451,7 +419,7 @@ def _plot_energy_spectra(
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
-            init_label = init_label.replace(":", "").replace("-", "")
+            init_label = init_label.replace(":", "")
         else:
             init_label = "noinit"
 
@@ -475,7 +443,7 @@ def _plot_energy_spectra(
         fname = build_output_filename(
             metric="lsd",
             variable=var,
-            level=level if level is not None else None,
+            level=f"{level}hPa" if level is not None else None,
             qualifier="spectrum",
             init_time_range=None,
             lead_time_range=None,
@@ -509,6 +477,7 @@ def run(
     plotting_cfg: dict[str, Any],
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute basic 2D energy spectra metrics and write an averaged LSD CSV.
 
@@ -536,28 +505,51 @@ def run(
         ax.set_xticks(ticks)
         ax.set_xticklabels([str(int(t)) for t in ticks])
 
-    # Resolve ensemble handling (default to mean reduction when present)
-    resolved = resolve_ensemble_mode("energy_spectra", ensemble_mode, ds_target, ds_prediction)
-    has_ens = "ensemble" in ds_prediction.dims or "ensemble" in ds_target.dims
-    ens_token: str | None = None
-    tgt = ds_target
-    pred = ds_prediction
-    if resolved == "prob":
-        # Probabilistic semantics are not applicable here; fall back to mean
-        resolved = "mean"
-    if resolved == "mean" and has_ens:
-        if "ensemble" in tgt.dims:
-            tgt = tgt.mean(dim="ensemble", keep_attrs=True)
-        if "ensemble" in pred.dims:
-            pred = pred.mean(dim="ensemble", keep_attrs=True)
+    # Extract config
+    es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
+    report_per_level = bool(es_cfg.get("report_per_level", True))
+
+    # Preserve full datasets for metrics
+    ds_target_full = ds_target
+    ds_prediction_full = ds_prediction
+
+    resolved_mode = resolve_ensemble_mode(
+        "energy_spectra", ensemble_mode, ds_target_full, ds_prediction_full
+    )
+    has_ens = "ensemble" in ds_target_full.dims or "ensemble" in ds_prediction_full.dims
+    if resolved_mode == "prob":
+        raise ValueError("ensemble_mode=prob invalid for energy_spectra")
+    # members_indices: list[int] | None = None
+    # if resolved_mode == "members" and has_ens:
+    #     members_indices = list(
+    #         range(
+    #             int(
+    #                 ds_prediction_full.sizes.get("ensemble")
+    #                 or ds_prediction_full.sizes.get("ensemble", 0)
+    #             )
+    #         )
+    #     )
+    # Track members mode for metrics naming (per-member metrics aggregated without token)
+    # metrics_members_mode = resolved_mode == "members" and has_ens
+    if resolved_mode == "mean" and has_ens:
+        if "ensemble" in ds_target_full.dims:
+            ds_target_full = ds_target_full.mean(dim="ensemble")
+        if "ensemble" in ds_prediction_full.dims:
+            ds_prediction_full = ds_prediction_full.mean(dim="ensemble")
+
         ens_token = ensemble_mode_to_token("mean")
-    elif resolved == "pooled" and has_ens:
+    elif resolved_mode == "pooled" and has_ens:
         ens_token = ensemble_mode_to_token("pooled")
-    elif resolved == "members" and has_ens:
+    elif resolved_mode == "members" and has_ens:
         # Preserve ensemble members; token will indicate members mode
         ens_token = ensemble_mode_to_token("members")
     else:
         ens_token = None
+
+    # Aliases for compatibility with HEAD code
+    resolved = resolved_mode
+    tgt = ds_target_full
+    pred = ds_prediction_full
 
     # Helpers to extract time range tokens
     def _extract_init_range(ds: xr.Dataset) -> tuple[str, str] | None:
@@ -646,6 +638,140 @@ def run(
             df_summary.to_csv(out_csv)
             print(f"[energy_spectra] saved {out_csv}")
 
+            # Compute and save banded LSD metrics (2D)
+            lsd_banded_rows: list[dict[str, Any]] = []
+            for var in variables_2d:
+                spec_t, spec_p = _compute_spectra_pair(
+                    tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
+                )
+                lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+                # Average over time dims
+                red_dims = [d for d in lsd_bands_da.dims if d != "band"]
+                lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
+
+                for bname in lsd_bands_mean["band"].values:
+                    val = float(lsd_bands_mean.sel(band=bname).values)
+                    lsd_banded_rows.append(
+                        {
+                            "variable": str(var),
+                            "band": str(bname),
+                            "lsd_mean": val,
+                        }
+                    )
+
+            if lsd_banded_rows:
+                df_banded = pd.DataFrame(lsd_banded_rows)
+                out_csv_banded = section_output / build_output_filename(
+                    metric="lsd_bands_2d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="averaged",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                df_banded.to_csv(out_csv_banded, index=False)
+                print(f"[energy_spectra] saved {out_csv_banded}")
+    # 3D variables (per-level)
+    variables_3d = []
+    if "level" in tgt.dims:
+        variables_3d = [v for v in tgt.data_vars if "level" in tgt[v].dims]
+
+    if variables_3d:
+        lsd_3d_rows: list[dict[str, Any]] = []
+        lsd_banded_3d_rows: list[dict[str, Any]] = []
+        lsd_3d_averaged_rows: list[dict[str, Any]] = []  # New for averaged
+
+        levels = tgt["level"].values
+        for var in variables_3d:
+            var_lsd_values = []
+            for lvl in levels:
+                # Compute spectra for this level
+                spec_t, spec_p = _compute_spectra_pair(
+                    tgt, pred, str(var), int(lvl), reduce_ensemble=(resolved == "mean")
+                )
+                lsd_da = _compute_lsd_da(spec_t, spec_p)
+                lsd_mean = float(lsd_da.mean().values)
+                lsd_3d_rows.append({"variable": str(var), "level": int(lvl), "lsd_mean": lsd_mean})
+                var_lsd_values.append(lsd_mean)
+
+                # Compute banded LSD
+                lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+                red_dims = [d for d in lsd_bands_da.dims if d != "band"]
+                lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
+                for bname in lsd_bands_mean["band"].values:
+                    val = float(lsd_bands_mean.sel(band=bname).values)
+                    lsd_banded_3d_rows.append(
+                        {
+                            "variable": str(var),
+                            "level": int(lvl),
+                            "band": str(bname),
+                            "lsd_mean": val,
+                        }
+                    )
+
+            # Compute average over levels
+            if var_lsd_values:
+                lsd_3d_averaged_rows.append(
+                    {
+                        "variable": str(var),
+                        "lsd_mean": float(np.mean(var_lsd_values)),
+                    }
+                )
+
+        if report_per_level and lsd_3d_rows:
+            import pandas as _pd
+
+            df_3d = _pd.DataFrame(lsd_3d_rows)
+            out_csv_3d = section_output / build_output_filename(
+                metric="lsd_3d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_3d.to_csv(out_csv_3d, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d}")
+
+        if report_per_level and lsd_banded_3d_rows:
+            import pandas as _pd
+
+            df_banded_3d = _pd.DataFrame(lsd_banded_3d_rows)
+            out_csv_banded_3d = section_output / build_output_filename(
+                metric="lsd_bands_3d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_banded_3d.to_csv(out_csv_banded_3d, index=False)
+            print(f"[energy_spectra] saved {out_csv_banded_3d}")
+
+        # Always save averaged 3D metrics
+        if lsd_3d_averaged_rows:
+            import pandas as _pd
+
+            df_3d_avg = _pd.DataFrame(lsd_3d_averaged_rows)
+            out_csv_3d_avg = section_output / build_output_filename(
+                metric="lsd_3d_metrics",
+                variable=None,
+                level=None,
+                qualifier="averaged",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_3d_avg.to_csv(out_csv_3d_avg, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d_avg}")
+
     # Optional: per-member NPZ spectrum exports when requested
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_npz = mode in ("npz", "both")
@@ -661,19 +787,17 @@ def run(
             token = ensemble_mode_to_token("members", mi)
             ds_t_m = tgt.isel(ensemble=mi) if "ensemble" in tgt.dims else tgt
             ds_p_m = pred.isel(ensemble=mi) if "ensemble" in pred.dims else pred
-            for var in variables_2d:
-                # Use out_path only to convey the parent directory; filenames are built internally
-                _ = _plot_energy_spectra(
-                    ds_t_m,
-                    ds_p_m,
-                    str(var),
-                    None,
-                    section_output / "_anchor.png",
-                    dpi=dpi,
-                    save_plot_data=True,
-                    save_figure=False,
-                    override_ensemble_token=token,
-                )
+            _plot_energy_spectra(
+                ds_t_m,
+                ds_p_m,
+                str(var),
+                None,
+                section_output / "_anchor.png",
+                dpi=dpi,
+                save_plot_data=True,
+                save_figure=False,
+                override_ensemble_token=token,
+            )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
     do_spec = bool((plotting_cfg or {}).get("energy_spectra_spectrogram", False))
@@ -1000,3 +1124,60 @@ def run(
         print("[energy_spectra] Completed multi-lead spectrograms only.")
     else:
         print("[energy_spectra] Completed energy spectra metrics & plots.")
+
+
+def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:
+    """Add a top axis with wavelength labels (km) corresponding to wavenumber (cycles/km)."""
+    wavelength_candidates = [
+        40000,
+        20000,
+        10000,
+        5000,
+        2000,
+        1000,
+        500,
+        200,
+        100,
+        50,
+        20,
+        10,
+        5,
+        2,
+        1,
+        0.5,
+        0.2,
+        0.1,
+    ]
+    # Keep wavelengths within physical bounds (>= fundamental and <= resolvable small scale)
+    wl_min_possible = 1.0 / k_max if k_max > 0 else 0
+    wl_max_possible = 1.0 / k_min if k_min > 0 else float("inf")
+    valid_wl = [
+        wl for wl in wavelength_candidates if wl_min_possible <= wl <= wl_max_possible * 1.01
+    ]
+    # Convert to wavenumber (cycles/km) and sort ascending (log axis expects ascending positions)
+    k_ticks = np.array([1.0 / wl for wl in valid_wl])
+    k_ticks = k_ticks[(k_ticks >= k_min) & (k_ticks <= k_max)]
+    if k_ticks.size == 0 and k_min > 0 and k_max > k_min:
+        k_ticks = np.geomspace(k_min, k_max, num=6)
+
+    if k_ticks.size > 0:
+        ax_top = ax.twiny()
+        ax_top.set_xscale("log")
+        ax_top.set_xlim(k_min, k_max)
+        ax_top.set_xticks(k_ticks)
+
+        def _fmt_wl_from_k(k: float) -> str:
+            wl = 1.0 / k
+            if wl >= 1000:
+                return f"{wl / 1000:.0f}k"  # show whole thousands
+            if wl >= 100:
+                return f"{wl:.0f}"
+            if wl >= 10:
+                return f"{wl:.0f}"
+            if wl >= 1:
+                return f"{wl:.1f}"
+            return f"{wl:.2f}"
+
+        ax_top.set_xticklabels([_fmt_wl_from_k(k) for k in k_ticks])
+        ax_top.set_xlabel("Wavelength (km)")
+        ax_top.tick_params(axis="x", which="both", labeltop=True, top=True)

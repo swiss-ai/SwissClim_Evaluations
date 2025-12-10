@@ -12,6 +12,13 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_level_label,
+    format_level_token,
+    format_variable_name,
+    get_colormap_for_variable,
+    get_variable_units,
     resolve_ensemble_mode,
 )
 
@@ -34,14 +41,16 @@ def run(
     rng = np.random.default_rng(seed)
     time_index = 0
     lead_index = 0
-    time_selected = None
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
         time_index = int(rng.integers(0, ds_target.init_time.size))
-        time_selected = ds_target.init_time[time_index]
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
     if "time" in ds_target.dims and ds_target.time.size > 0:
         time_index = 0
+
+    time_selected = None
+    if "init_time" in ds_target.dims and ds_target.init_time.size > time_index:
+        time_selected = ds_target.init_time.isel(init_time=time_index)
 
     # Extract time/lead ranges for naming helper
     def _extract_init_range(ds: xr.Dataset):
@@ -51,18 +60,7 @@ def run(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -97,13 +95,11 @@ def run(
 
     # Assume no missing data per project requirement; use direct min/max.
 
-    # Resolve ensemble handling (maps: mean/pooled/members/none). Prob invalid.
+    # Resolve ensemble handling (maps: mean/pooled/members). Prob invalid.
     resolved_mode = resolve_ensemble_mode("maps", ensemble_mode, ds_target, ds_prediction)
     has_ens = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for maps")
-    if resolved_mode == "none" and has_ens:
-        resolved_mode = "mean"  # degrade to historical behaviour
 
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target.dims:
@@ -157,6 +153,12 @@ def run(
 
             ds_var = ds_target[var]
             ds_ml_var = ds_prediction[var]
+
+            # Check if original variable has multiple init times (before slicing)
+            is_single_init = True
+            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
+                is_single_init = False
+
             if ens is not None:
                 if "ensemble" in ds_var.dims:
                     ds_var = ds_var.isel(ensemble=ens)
@@ -166,14 +168,16 @@ def run(
                 ds_var = ds_var.isel(init_time=time_index)
             if "lead_time" in ds_var.dims:
                 ds_var = ds_var.isel(lead_time=lead_index)
-            if "time" in ds_var.dims:
-                ds_var = ds_var.isel(time=time_index)
             if "init_time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(init_time=time_index)
             if "lead_time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
+            # Ensure we also select a single time slice if a free 'time' dimension exists
+            if "time" in ds_var.dims:
+                ds_var = ds_var.isel(time=time_index)
             if "time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(time=time_index)
+
             # Drop any remaining singleton temporal dims
             for dim_drop in ("time", "init_time", "lead_time"):
                 if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
@@ -193,13 +197,12 @@ def run(
                 lon if lon is not None else ds_var.longitude,
                 lat if lat is not None else ds_var.latitude,
                 ds_var.values,
-                cmap="viridis",
+                cmap=get_colormap_for_variable(str(var)),
                 vmin=vmin,
                 vmax=vmax,
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[0].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[0].coastlines(linewidth=0.5)
             # Zoom to data extent to avoid extreme aspect distortion when lat range is narrow
             _lon = lon.values if lon is not None else ds_var.longitude.values
@@ -214,7 +217,9 @@ def run(
                     ],
                     crs=ccrs.PlateCarree(),
                 )
-            axes[0].set_title("Ground Truth")
+
+            date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+            axes[0].set_title(f"{format_variable_name(str(var))} — Target{date_str}")
 
             lon_ml = ds_ml_var.coords.get("longitude", None)
             lat_ml = ds_ml_var.coords.get("latitude", None)
@@ -222,13 +227,12 @@ def run(
                 lon_ml if lon_ml is not None else ds_ml_var.longitude,
                 lat_ml if lat_ml is not None else ds_ml_var.latitude,
                 ds_ml_var.values,
-                cmap="viridis",
+                cmap=get_colormap_for_variable(str(var)),
                 vmin=vmin,
                 vmax=vmax,
                 transform=ccrs.PlateCarree(),
                 shading="auto",
             )
-            axes[1].add_feature(cfeature.BORDERS, linewidth=0.5)
             axes[1].coastlines(linewidth=0.5)
             _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
             _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
@@ -242,7 +246,7 @@ def run(
                     ],
                     crs=ccrs.PlateCarree(),
                 )
-            axes[1].set_title("Model Prediction")
+            axes[1].set_title("Prediction")
 
             # Colorbar spanning both axes — vertical to save vertical space
             cb = fig.colorbar(
@@ -252,14 +256,19 @@ def run(
                 fraction=0.025,
                 pad=0.02,
             )
-            if cb is not None:
-                cb.set_label(ds_target[var].attrs.get("units", ""))
+            # In test mode, colorbar may be a dummy (None); guard the label call
+            try:
+                if cb is not None:
+                    cb.set_label(get_variable_units(ds_target, str(var)))
+            except Exception:
+                # Non-fatal: continue without setting label
+                pass
 
             title_extra = "" if ens is None else f" (Ensemble {ens})"
             if time_selected is not None:
                 # Robust formatting without relying on .dt accessor
                 ts_val = np.asarray(time_selected.values, dtype="datetime64[h]")
-                init_label = np.datetime_as_string(ts_val).replace("T", " ") + "Z"
+                init_label = str(np.datetime_as_string(ts_val)).replace("T", " ") + "Z"
                 ensemble_label = ens_token_global or (
                     "member " + str(ens) if ens is not None else "none"
                 )
@@ -279,7 +288,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -293,7 +302,7 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level="surface",
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -302,8 +311,8 @@ def run(
                 )
                 np.savez(
                     npz_path,
-                    nwp=ds_var.values,
-                    ml=ds_ml_var.values,
+                    target=ds_var.values,
+                    prediction=ds_ml_var.values,
                     latitude=(
                         ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
                     ),
@@ -311,6 +320,8 @@ def run(
                         ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
                     ),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=get_variable_units(ds_target, str(var)),
                 )
                 print(f"[maps] saved {npz_path}")
             plt.close(fig)
@@ -445,8 +456,12 @@ def run(
                     # save combined grid with descriptive header
                     # For grid, show first init_time only (time_selected) without range semantics
                     init_label = (
-                        np.datetime_as_string(
-                            np.asarray(ds_prediction["init_time"].values[0], dtype="datetime64[h]")
+                        str(
+                            np.datetime_as_string(
+                                np.asarray(
+                                    ds_prediction["init_time"].values[0], dtype="datetime64[h]"
+                                )
+                            )
                         ).replace("T", " ")
                         if "init_time" in ds_prediction.dims
                         else "n/a"
@@ -522,6 +537,14 @@ def run(
         levels = list(ds_target[var].coords.get("level", []))
         if not levels:
             continue
+
+        level_tokens = [format_level_token(lvl) for lvl in levels]
+        if not level_tokens:
+            level_label = "levels"
+        elif len(level_tokens) == 1:
+            level_label = level_tokens[0]
+        else:
+            level_label = f"{level_tokens[0]}_to_{level_tokens[-1]}"
         num_rows = len(levels)
         for ens in ensemble_members:
             fig, axes = plt.subplots(
@@ -534,56 +557,65 @@ def run(
                 constrained_layout=True,
             )
 
-            for r, lvl in enumerate(levels):
-                ds_var = ds_target[var].sel(level=lvl)
-                ds_ml_var = ds_prediction[var].sel(level=lvl)
-                if ens is not None:
-                    if "ensemble" in ds_var.dims:
-                        ds_var = ds_var.isel(ensemble=ens)
-                    if "ensemble" in ds_ml_var.dims:
-                        ds_ml_var = ds_ml_var.isel(ensemble=ens)
-                if "init_time" in ds_var.dims:
-                    ds_var = ds_var.isel(init_time=time_index)
-                if "lead_time" in ds_var.dims:
-                    ds_var = ds_var.isel(lead_time=lead_index)
-                if "time" in ds_var.dims:
-                    ds_var = ds_var.isel(time=time_index)
-                if "init_time" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(init_time=time_index)
-                if "lead_time" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-                if "time" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(time=time_index)
-                for dim_drop in ("time", "init_time", "lead_time"):
-                    if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
-                        ds_var = ds_var.isel({dim_drop: 0})
-                    if dim_drop in ds_ml_var.dims and ds_ml_var.sizes[dim_drop] == 1:
-                        ds_ml_var = ds_ml_var.isel({dim_drop: 0})
-                ds_var = ds_var.squeeze()
-                ds_ml_var = ds_ml_var.squeeze()
-                ds_var = _unwrap_lon_for_plot(ds_var)
-                ds_ml_var = _unwrap_lon_for_plot(ds_ml_var)
-                vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-                vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
+            ds_var = ds_target[var]
+            ds_ml_var = ds_prediction[var]
 
-                lon = ds_var.coords.get("longitude", None)
-                lat = ds_var.coords.get("latitude", None)
-                im0 = axes[r, 0].pcolormesh(
-                    lon if lon is not None else ds_var.longitude,
-                    lat if lat is not None else ds_var.latitude,
-                    ds_var.values,
-                    cmap="viridis",
+            # Check if original variable has multiple init times (before slicing)
+            is_single_init = True
+            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
+                is_single_init = False
+
+            if ens is not None:
+                if "ensemble" in ds_var.dims:
+                    ds_var = ds_var.isel(ensemble=ens)
+                if "ensemble" in ds_ml_var.dims:
+                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
+            if "init_time" in ds_var.dims:
+                ds_var = ds_var.isel(init_time=time_index)
+            if "lead_time" in ds_var.dims:
+                ds_var = ds_var.isel(lead_time=lead_index)
+            if "init_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(init_time=time_index)
+            if "lead_time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
+            # Ensure we also select a single time slice if a free 'time' dimension exists
+            if "time" in ds_var.dims:
+                ds_var = ds_var.isel(time=time_index)
+            if "time" in ds_ml_var.dims:
+                ds_ml_var = ds_ml_var.isel(time=time_index)
+
+            for idx, level in enumerate(levels):
+                level_val = int(level.values) if hasattr(level, "values") else int(level)
+                ax_ds, ax_ds_ml = axes[idx]
+                ds_var_lev = ds_var.sel(level=level)
+                ds_ml_var_lev = ds_ml_var.sel(level=level)
+                # After selecting level we expect dims (latitude, longitude). If an extra
+                # singleton dimension remains (e.g., time/init_time/lead_time), squeeze it.
+                ds_var_lev = ds_var_lev.squeeze()
+                ds_ml_var_lev = ds_ml_var_lev.squeeze()
+
+                vmin = min(float(ds_var_lev.min()), float(ds_ml_var_lev.min()))
+                vmax = max(float(ds_var_lev.max()), float(ds_ml_var_lev.max()))
+
+                im_ds = ax_ds.pcolormesh(
+                    ds_var_lev.coords.get("longitude"),
+                    ds_var_lev.coords.get("latitude"),
+                    ds_var_lev.values,
+                    cmap=get_colormap_for_variable(str(var)),
                     vmin=vmin,
                     vmax=vmax,
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                axes[r, 0].add_feature(cfeature.BORDERS, linewidth=0.5)
-                axes[r, 0].coastlines(linewidth=0.5)
-                _lon = lon.values if lon is not None else ds_var.longitude.values
-                _lat = lat.values if lat is not None else ds_var.latitude.values
-                if hasattr(axes[r, 0], "set_extent"):
-                    axes[r, 0].set_extent(
+                ax_ds.coastlines(linewidth=0.5)
+
+                # HEAD's set_extent logic for target
+                lon = ds_var_lev.coords.get("longitude", None)
+                lat = ds_var_lev.coords.get("latitude", None)
+                _lon = lon.values if lon is not None else ds_var_lev.longitude.values
+                _lat = lat.values if lat is not None else ds_var_lev.latitude.values
+                if hasattr(ax_ds, "set_extent"):
+                    ax_ds.set_extent(
                         [
                             float(np.min(_lon)),
                             float(np.max(_lon)),
@@ -592,26 +624,32 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                axes[r, 0].set_title(f"Ground Truth — level {lvl}")
 
-                lon_ml = ds_ml_var.coords.get("longitude", None)
-                lat_ml = ds_ml_var.coords.get("latitude", None)
-                axes[r, 1].pcolormesh(
-                    lon_ml if lon_ml is not None else ds_ml_var.longitude,
-                    lat_ml if lat_ml is not None else ds_ml_var.latitude,
-                    ds_ml_var.values,
-                    cmap="viridis",
+                date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+                ax_ds.set_title(
+                    f"{format_variable_name(str(var))} — Target"
+                    f"{format_level_label(level_val)}{date_str}"
+                )
+
+                ax_ds_ml.pcolormesh(
+                    ds_ml_var_lev.coords.get("longitude"),
+                    ds_ml_var_lev.coords.get("latitude"),
+                    ds_ml_var_lev.values,
+                    cmap=get_colormap_for_variable(str(var)),
                     vmin=vmin,
                     vmax=vmax,
                     transform=ccrs.PlateCarree(),
                     shading="auto",
                 )
-                axes[r, 1].add_feature(cfeature.BORDERS, linewidth=0.5)
-                axes[r, 1].coastlines(linewidth=0.5)
-                _lon = lon_ml.values if lon_ml is not None else ds_ml_var.longitude.values
-                _lat = lat_ml.values if lat_ml is not None else ds_ml_var.latitude.values
-                if hasattr(axes[r, 1], "set_extent"):
-                    axes[r, 1].set_extent(
+                ax_ds_ml.coastlines(linewidth=0.5)
+
+                # HEAD's set_extent logic for prediction
+                lon_ml = ds_ml_var_lev.coords.get("longitude", None)
+                lat_ml = ds_ml_var_lev.coords.get("latitude", None)
+                _lon = lon_ml.values if lon_ml is not None else ds_ml_var_lev.longitude.values
+                _lat = lat_ml.values if lat_ml is not None else ds_ml_var_lev.latitude.values
+                if hasattr(ax_ds_ml, "set_extent"):
+                    ax_ds_ml.set_extent(
                         [
                             float(np.min(_lon)),
                             float(np.max(_lon)),
@@ -620,7 +658,32 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                axes[r, 1].set_title(f"Model Prediction — level {lvl}")
+
+                ax_ds_ml.set_title(f"Model{format_level_label(level_val)}")
+
+                fig.colorbar(
+                    im_ds,
+                    ax=[ax_ds, ax_ds_ml],
+                    orientation="horizontal",
+                    fraction=0.05,
+                    pad=0.07,
+                    label=f"{get_variable_units(ds_target, str(var))} (level {level_val})",
+                )
+
+            # HEAD's suptitle logic
+            title_extra = "" if ens is None else f" (Ensemble {ens})"
+            if time_selected is not None:
+                # Robust formatting without relying on .dt accessor
+                ts_val = np.asarray(time_selected.values, dtype="datetime64[h]")
+                init_label = str(np.datetime_as_string(ts_val)).replace("T", " ") + "Z"
+                ensemble_label = ens_token_global or (
+                    "member " + str(ens) if ens is not None else "none"
+                )
+                title_text = (
+                    f"Maps — {var}{title_extra} | ensemble={ensemble_label} | "
+                    f"init_time={init_label} | lead_range={lead_range}"
+                )
+                plt.suptitle(title_text, fontsize=14)
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)
@@ -632,7 +695,7 @@ def run(
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=level_label,
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
@@ -646,36 +709,27 @@ def run(
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
-                    level=None,
+                    level=level_label,
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
                     ensemble=ens_token,
                     ext="npz",
                 )
-                # For 3D, store concatenated arrays along a new first axis per level
-                nwp_stack = []
-                ml_stack = []
-                lat_arr = None
-                lon_arr = None
-                for lvl in levels:
-                    dv = ds_target[var].sel(level=lvl).squeeze()
-                    dm = ds_prediction[var].sel(level=lvl).squeeze()
-                    nwp_stack.append(dv.values)
-                    ml_stack.append(dm.values)
-                    if lat_arr is None and "latitude" in dv.coords:
-                        lat_arr = dv.latitude.values
-                    if lon_arr is None and "longitude" in dv.coords:
-                        lon_arr = dv.longitude.values
                 np.savez(
                     npz_path,
-                    nwp=np.array(nwp_stack, dtype=object),
-                    ml=np.array(ml_stack, dtype=object),
-                    latitude=(lat_arr if lat_arr is not None else np.array([])),
-                    longitude=(lon_arr if lon_arr is not None else np.array([])),
-                    level=np.array(levels),
+                    target=ds_var.values,
+                    prediction=ds_ml_var.values,
+                    latitude=(
+                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
+                    ),
+                    longitude=(
+                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
+                    ),
+                    level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
                     ensemble=int(ens) if ens is not None else -1,
+                    variable=str(var),
+                    units=get_variable_units(ds_target, str(var)),
                     allow_pickle=True,
                 )
                 print(f"[maps] saved {npz_path}")
-            plt.close(fig)

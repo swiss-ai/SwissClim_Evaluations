@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from . import console as c, data as data_mod
 from .helpers import (
@@ -40,62 +40,78 @@ EXPECTED_SUBDIRS: set[str] = {
 }
 
 
-def _ensemble_handling_message(ds_prediction: xr.Dataset, cfg: dict[str, Any]) -> str:
-    """Return a human-readable summary of how the ensemble dimension is being handled.
-
-    This mirrors the earlier inline logic that was accidentally inlined into the
-    EXPECTED_SUBDIRS constant during a bad merge. It intentionally does NOT mutate
-    datasets; it only inspects configuration and dimensions.
-    """
-    sel = cfg.get("selection", {}) or {}
-    # Support legacy singular key
-    ensemble_members = sel.get("ensemble_members", sel.get("ensemble_member"))
-    probabilistic_enabled = bool(cfg.get("modules", {}).get("probabilistic"))
-
-    # Normalize for messaging only
-    if isinstance(ensemble_members, list):
-        if len(ensemble_members) == 1:
-            ensemble_member_norm: int | list[int] | None = int(ensemble_members[0])
-        else:
-            ensemble_member_norm = [int(i) for i in ensemble_members]
-    else:
-        ensemble_member_norm = ensemble_members
-
+def _ensemble_handling_message(
+    ds_prediction: xr.Dataset, cfg: dict[str, Any], resolved_modes: dict[str, str] | None = None
+) -> str:
     if "ensemble" not in ds_prediction.dims:
-        if ensemble_member_norm is not None and not probabilistic_enabled:
-            return (
-                "Ensemble: deterministic mode with "
-                f"ensemble_members={ensemble_member_norm} → selected single member; "
-                "'ensemble' removed."
-            )
-        return (
-            "Ensemble: no 'ensemble' dimension present (either source is single-member "
-            "or reduced deterministically)."
-        )
+        return "Ensemble: No 'ensemble' dimension present."
 
-    # ensemble present
+    # Ensemble present
     ens_size = ds_prediction.sizes.get("ensemble", -1)
-    if probabilistic_enabled:
-        return (
-            "Ensemble: probabilistic mode active "
-            f"(size={ens_size}) → token=ensprob for probabilistic outputs."
-        )
+    base_msg = f"Ensemble Size: {ens_size}."
 
-    # Deterministic paths
-    if ensemble_member_norm is None:
-        return (
-            "Ensemble: deterministic mode without explicit member; keeping full ensemble "
-            f"(size={ens_size}). Modules may reduce internally depending on their own settings."
-        )
-    if isinstance(ensemble_member_norm, list):
-        return (
-            "Ensemble: deterministic mode with subset members="
-            f"{ensemble_member_norm} (size={len(ensemble_member_norm)} retained)."
-        )
-    return (
-        "Ensemble: deterministic mode with ensemble_members="
-        f"{ensemble_member_norm} → single member path."
-    )
+    if ens_size == 1:
+        return f"{base_msg} Ensemble settings disregarded; probabilistic module disabled."
+
+    if resolved_modes:
+        modules_cfg = cfg.get("modules", {})
+        # Filter modes by enabled modules
+        active_modes = set()
+        for module, mode in resolved_modes.items():
+            if modules_cfg.get(module):
+                active_modes.add(mode)
+
+        details = []
+        if "prob" in active_modes:
+            details.append("Probabilistic")
+        if "members" in active_modes:
+            details.append("Members")
+        if "pooled" in active_modes:
+            details.append("Pooled")
+
+        if details:
+            return f"{base_msg} Active evaluation modes: {', '.join(details)}."
+
+        if "mean" in active_modes:
+            return f"{base_msg} All modules use mean reduction."
+
+        return f"{base_msg} No ensemble operations active."
+
+    # Fallback if resolved_modes not provided
+    modules_cfg = cfg.get("modules", {})
+    if bool(modules_cfg.get("probabilistic")):
+        return f"{base_msg} Probabilistic evaluation enabled."
+
+    return f"{base_msg} Deterministic/Mean evaluation."
+
+
+def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
+    if not isinstance(values, list | tuple):  # ruff UP038
+        return []
+    # Case: exactly two entries without ':' → treat as single [start, end]
+    if (
+        len(values) == 2
+        and all(isinstance(v, str) for v in values)
+        and all(":" not in v for v in values)  # plain bounds
+    ):
+        return [(values[0], values[1])]
+    ranges: list[tuple[str | None, str | None]] = []
+    for it in values:
+        if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
+            s, e = it[0], it[1]
+            ranges.append(
+                (
+                    str(s) if s else None,
+                    str(e) if e else None,
+                )
+            )
+        elif isinstance(it, str) and ":" in it:
+            s, e = it.split(":", 1)
+            ranges.append((s or None, e or None))
+        elif isinstance(it, str):
+            # A single timestamp → treat as [t, t]
+            ranges.append((it, it))
+    return ranges
 
 
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
@@ -105,7 +121,6 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
     datetimes_list: list[str] | None = sel.get("datetimes_list")
-    check_missing: bool = bool(sel.get("check_missing", False))
 
     if levels is not None and "level" in ds.dims:
         try:
@@ -115,12 +130,13 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         requested = list(levels)
         present = [lv for lv in requested if lv in available]
         missing = [lv for lv in requested if lv not in available]
-        if missing and check_missing:
+        if missing:
             raise KeyError(
                 f"Requested pressure levels not found: {missing}. Available: {sorted(available)}"
             )
         if present:
             ds = ds.sel(level=present)
+
         else:
             if requested:
                 c.warn(
@@ -129,7 +145,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                     "Skipping level selection."
                 )
 
-    if latitudes is not None:
+    if latitudes is not None and "latitude" in ds.dims:
+        if len(latitudes) == 0:
+            raise ValueError("Empty list provided for latitudes; at least one value is required.")
         # Latitude is NOT cyclic. Support a single contiguous band and adapt slice order to
         # the coordinate orientation (ascending or descending) to avoid empty selections.
         if isinstance(latitudes, (list | tuple)) and len(latitudes) == 2:  # ruff UP038
@@ -142,6 +160,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             # For descending coordinates, slice should be (hi -> lo)
             slc = slice(lo, hi) if asc else slice(hi, lo)
             ds = ds.sel(latitude=slc)
+        elif len(latitudes) == 1:
+            ds = ds.sel(latitude=slice(latitudes[0], latitudes[0]))
         else:
             ds = ds.sel(latitude=slice(*latitudes))
         # Guard against empty spatial selection early
@@ -150,7 +170,9 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 "Latitude selection resulted in an empty dataset. "
                 f"Requested latitudes={latitudes}. Check bounds and coordinate convention."
             )
-    if longitudes is not None:
+    if longitudes is not None and "longitude" in ds.dims:
+        if len(longitudes) == 0:
+            raise ValueError("Empty list provided for longitudes; at least one value is required.")
         # For longitude: if first <= second, apply a normal slice.
         # If first > second, select union of [first..max_lon] ∪ [min_lon..second].
         # Works regardless of coordinate convention (0..360 or -180..180). We sort ascending
@@ -164,6 +186,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 ds = ds.sel(longitude=lon_vals[mask])
             else:
                 ds = ds.sel(longitude=slice(lon0, lon1))
+        elif len(longitudes) == 1:
+            ds = ds.sel(longitude=slice(longitudes[0], longitudes[0]))
         else:
             ds = ds.sel(longitude=slice(*longitudes))
         # Guard against empty spatial selection early
@@ -174,6 +198,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 "convention (0–360 vs -180..180)."
             )
 
+    # Non-contiguous explicit timestamps take precedence if provided
     if datetimes_list is not None and len(datetimes_list) > 0:
         try:
             req = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
@@ -189,17 +214,11 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 available = set()
             present = [x for x in req if x in available]
             missing = [x for x in req if x not in available]
-            if missing and check_missing:
+            if missing:
                 raise KeyError(
                     "Requested timestamps not found in "
                     f"{dim_name}: {missing[:6]}"
                     f"{' ...' if len(missing) > 6 else ''}"
-                )
-            if missing and not check_missing and len(missing) > 0:
-                c.warn(
-                    "Some requested timestamps are missing in "
-                    f"{dim_name}: {len(missing)} missing; proceeding with "
-                    f"{len(present)} present."
                 )
             if present:
                 ds = ds.sel({dim_name: present})
@@ -212,28 +231,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
         if dim_name is None:
             return ds
 
-        def _parse_ranges(values) -> list[tuple[str | None, str | None]]:
-            if not isinstance(values, (list | tuple)):
-                return []
-            if (
-                len(values) == 2
-                and all(isinstance(v, str) for v in values)
-                and all(":" not in v for v in values)
-            ):
-                return [(values[0], values[1])]
-            ranges: list[tuple[str | None, str | None]] = []
-            for it in values:
-                if isinstance(it, (list | tuple)) and len(it) == 2:
-                    s, e = it[0], it[1]
-                    ranges.append((str(s) if s else None, str(e) if e else None))
-                elif isinstance(it, str) and ":" in it:
-                    s, e = it.split(":", 1)
-                    ranges.append((s or None, e or None))
-                elif isinstance(it, str):
-                    ranges.append((it, it))
-            return ranges
-
-        ranges = _parse_ranges(datetimes)
+        ranges = _parse_time_ranges(datetimes)
         if not ranges:
             if len(datetimes) >= 2:
                 # If selecting on 'time' (typical for ERA5 targets) and multi-lead with a
@@ -254,7 +252,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
             return ds
 
         vals = ds[dim_name].values.astype("datetime64[ns]")
-        mask = np.zeros(vals.shape, dtype=bool)
+        mask_arr = np.zeros(vals.shape, dtype=bool)
         for start_s, end_s in ranges:
             try:
                 start = np.datetime64(start_s).astype("datetime64[ns]") if start_s else vals.min()
@@ -273,16 +271,14 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                     end = end + np.timedelta64(int(max_h), "h")
             except Exception:
                 pass
-            mask |= (vals >= start) & (vals <= end)
+            mask_arr |= (vals >= start) & (vals <= end)
 
-        count = int(mask.sum())
+        count = int(mask_arr.sum())
         if count == 0:
             msg = f"No timestamps within requested ranges on {dim_name}."
-            if check_missing:
-                raise KeyError(msg)
-            c.warn(msg + " Keeping dataset unchanged.")
-            return ds
-        idx = np.nonzero(mask)[0]
+            raise KeyError(msg)
+        # isel by positions retains labels and avoids building a long explicit label list
+        idx = np.nonzero(mask_arr)[0]
         ds = ds.isel({dim_name: idx})
         return ds
 
@@ -389,7 +385,7 @@ def _select_plot_datetime(
     if "init_time" not in ds_prediction.dims:
         raise ValueError("plot_datetime requires datasets with 'init_time' dimension.")
 
-    # Ensure exact label present in predictions (targets are aligned to ML labels)
+    # Ensure exact label present in predictions (targets are aligned to prediction labels)
     available = ds_prediction["init_time"].values
     if plot_dt not in available:
         raise ValueError(
@@ -448,6 +444,125 @@ def _standardize_pair(
     return (targets - mean) / std, (predictions - mean) / std
 
 
+def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str) -> list[str]:
+    errors = []
+    sel = cfg.get("selection", {})
+
+    # 1. Variables
+    variables_2d = sel.get("variables_2d") or []
+    variables_3d = sel.get("variables_3d") or []
+    requested_vars = set(variables_2d) | set(variables_3d)
+
+    missing_vars = [v for v in requested_vars if v not in ds.data_vars]
+    if missing_vars:
+        errors.append(f"{dataset_name}: Missing variables: {sorted(missing_vars)}")
+
+    # 2. Levels
+    levels = sel.get("levels")
+    if levels:
+        if "level" in ds.dims:
+            available_levels = set(ds["level"].values.tolist())
+            missing_levels = [l_val for l_val in levels if l_val not in available_levels]
+            if missing_levels:
+                errors.append(f"{dataset_name}: Missing pressure levels: {sorted(missing_levels)}")
+        elif variables_3d:
+            # If we have 3D variables but no level dimension, and levels are requested
+            errors.append(
+                f"{dataset_name}: Missing 'level' dimension "
+                f"but levels {levels} requested for 3D variables."
+            )
+
+    # 3. Time
+    datetimes = sel.get("datetimes")
+    datetimes_list = sel.get("datetimes_list")
+
+    dim_name = "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
+
+    if dim_name:
+        try:
+            available_times = ds[dim_name].values.astype("datetime64[ns]")
+        except Exception:
+            available_times = ds[dim_name].values
+
+        if datetimes_list:
+            try:
+                req_times = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
+            except Exception:
+                req_times = []
+
+            available_set = set(available_times)
+            missing_times = [str(t) for t in req_times if t not in available_set]
+            if missing_times:
+                errors.append(
+                    f"{dataset_name}: Missing timestamps (from datetimes_list): "
+                    f"{len(missing_times)} missing, e.g. {missing_times[:3]}"
+                )
+
+        elif datetimes:
+            ranges = _parse_time_ranges(datetimes)
+            if ranges and len(available_times) > 0:
+                min_time = available_times.min()
+                max_time = available_times.max()
+
+                for start_s, end_s in ranges:
+                    try:
+                        start = (
+                            np.datetime64(start_s).astype("datetime64[ns]") if start_s else min_time
+                        )
+                    except Exception:
+                        start = min_time
+                    try:
+                        end = np.datetime64(end_s).astype("datetime64[ns]") if end_s else max_time
+                    except Exception:
+                        end = max_time
+
+                    if start < min_time or end > max_time:
+                        errors.append(
+                            f"{dataset_name}: Requested time range [{start}, {end}] is not fully"
+                            f" covered by available range [{min_time}, {max_time}]"
+                        )
+            elif ranges and len(available_times) == 0:
+                errors.append(f"{dataset_name}: No timestamps available.")
+
+    else:
+        if datetimes or datetimes_list:
+            errors.append(
+                f"{dataset_name}: Missing time dimension ('init_time' or 'time') but time "
+                f"selection requested."
+            )
+
+    # 4. Lat/Lon
+    latitudes = sel.get("latitudes")
+    if latitudes and "latitude" in ds.dims:
+        req_lat_min = min(latitudes)
+        req_lat_max = max(latitudes)
+        avail_lat_min = ds.latitude.min().item()
+        avail_lat_max = ds.latitude.max().item()
+
+        tol = 0.01
+        if req_lat_min < avail_lat_min - tol or req_lat_max > avail_lat_max + tol:
+            errors.append(
+                f"{dataset_name}: Requested latitude range [{req_lat_min}, {req_lat_max}] is not "
+                f"fully covered by available range [{avail_lat_min:.2f}, {avail_lat_max:.2f}]"
+            )
+
+    longitudes = sel.get("longitudes")
+    if longitudes and "longitude" in ds.dims:
+        req_lon_min = min(longitudes)
+        req_lon_max = max(longitudes)
+        avail_lon_min = ds.longitude.min().item()
+        avail_lon_max = ds.longitude.max().item()
+
+        tol = 0.01
+        if req_lon_min < avail_lon_min - tol or req_lon_max > avail_lon_max + tol:
+            errors.append(
+                f"{dataset_name}: Requested longitude range [{req_lon_min}, {req_lon_max}] is not "
+                f"fully covered by available range [{avail_lon_min:.2f}, {avail_lon_max:.2f}]"
+            )
+
+    return errors
+
+
 def prepare_datasets(
     cfg: dict[str, Any],
 ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
@@ -480,8 +595,26 @@ def prepare_datasets(
     var_list = None
     if variables_2d or variables_3d:
         var_list = list(variables_2d or []) + list(variables_3d or [])
-    ds_target = data_mod.era5(paths.get("nwp"), variables=var_list)
-    ds_prediction = data_mod.open_ml(paths.get("ml"), variables=var_list)
+
+    # Support legacy keys
+    target_path = paths.get("target") or paths.get("nwp")
+    prediction_path = paths.get("prediction") or paths.get("ml")
+
+    if paths.get("nwp"):
+        c.warn("Config key 'paths.nwp' is deprecated; use 'paths.target'.")
+    if paths.get("ml"):
+        c.warn("Config key 'paths.ml' is deprecated; use 'paths.prediction'.")
+
+    ds_target = data_mod.open_target(target_path, variables=var_list)
+    ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
+
+    # Validate requirements
+    errors = []
+    errors.extend(validate_requirements(ds_target, cfg, "Target"))
+    errors.extend(validate_requirements(ds_prediction, cfg, "Prediction"))
+
+    if errors:
+        raise ValueError("Missing data requirements:\n" + "\n".join(errors))
 
     # Debug visibility: show raw lead_time counts in ML/targets before any selection
     def _lead_hours(ds: xr.Dataset) -> list[int]:
@@ -582,17 +715,15 @@ def prepare_datasets(
     _audit("after standardize_dims", ds_prediction, ds_target)
 
     # Handle optional ensemble dimension according to config and selected modules
-    modules_cfg = cfg.get("modules", {})
-    probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
+    # modules_cfg = cfg.get("modules", {})
+    # probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_members=ensemble_members,
-        probabilistic_enabled=probabilistic_enabled,
     )
     ds_target = data_mod.apply_ensemble_policy(
         ds_target,
         ensemble_members=None,
-        probabilistic_enabled=probabilistic_enabled,
     )
 
     ds_target = _apply_temporal_resolution(ds_target, hours)
@@ -676,12 +807,12 @@ def prepare_datasets(
                 pre_align_hours = []
 
         # Build stacked predictions with valid_time
-        ml_init = ds_prediction["init_time"].astype("datetime64[ns]")
-        ml_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
-        ml_valid_2d = ml_init + ml_lead
+        pred_init = ds_prediction["init_time"].astype("datetime64[ns]")
+        pred_lead = ds_prediction["lead_time"].astype("timedelta64[ns]")
+        pred_valid_2d = pred_init + pred_lead
         ds_pred_stacked = ds_prediction.stack(pair=("init_time", "lead_time"))
-        ml_valid_1d = ml_valid_2d.stack(pair=("init_time", "lead_time"))
-        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=ml_valid_1d)
+        pred_valid_1d = pred_valid_2d.stack(pair=("init_time", "lead_time"))
+        ds_pred_stacked = ds_pred_stacked.assign_coords(valid_time=pred_valid_1d)
 
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
@@ -693,11 +824,11 @@ def prepare_datasets(
                         ).astype("timedelta64[ns]")
                     }
                 )
-            nwp_init = ds_target["init_time"].astype("datetime64[ns]")
-            nwp_lead = ds_target["lead_time"].astype("timedelta64[ns]")
+            target_init = ds_target["init_time"].astype("datetime64[ns]")
+            target_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
-            nwp_valid_1d = (nwp_init + nwp_lead).stack(pair=("init_time", "lead_time"))
-            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=nwp_valid_1d)
+            target_valid_1d = (target_init + target_lead).stack(pair=("init_time", "lead_time"))
+            ds_tgt_stacked = ds_tgt_stacked.assign_coords(valid_time=target_valid_1d)
         elif "time" in ds_target.dims:
             # Target has only 'time' dim. Reindex target onto the prediction valid_time grid to
             # preserve all available lead_time offsets instead of collapsing to a single dummy lead.
@@ -732,8 +863,11 @@ def prepare_datasets(
             )
         ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
         nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
-        ds_pred_stacked = ds_pred_stacked.isel(pair=ml_mask)
-        ds_tgt_stacked = ds_tgt_stacked.isel(pair=nwp_mask)
+        # Cast masks to boolean arrays to satisfy mypy (avoiding Hashable/Any ambiguity)
+        ml_mask_bool = np.asarray(ml_mask, dtype=bool)
+        nwp_mask_bool = np.asarray(nwp_mask, dtype=bool)
+        ds_pred_stacked = ds_pred_stacked.isel(pair=ml_mask_bool)
+        ds_tgt_stacked = ds_tgt_stacked.isel(pair=nwp_mask_bool)
 
         # Order targets to match predictions
         nwp_vt = ds_tgt_stacked["valid_time"].values
@@ -745,7 +879,8 @@ def prepare_datasets(
             take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
         except KeyError as err:
             raise ValueError(
-                "Internal alignment error: ML valid_time not found in targets after intersection."
+                "Internal alignment error: Prediction valid_time not found in targets "
+                "after intersection."
             ) from err
         ds_tgt_stacked = ds_tgt_stacked.isel(pair=take_idx)
         # Replace pair labels on targets to match predictions exactly for clean unstack
@@ -795,8 +930,8 @@ def prepare_datasets(
             pass
 
     # Enforce repository-wide chunking policy to ensure predictable performance
-    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="ground_truth")
-    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="ml")
+    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target")
+    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="prediction")
 
     # Optional: strict check for missing values in inputs
     try:
@@ -974,13 +1109,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
             resolved_modes[_m] = resolve_ensemble_mode(_m, req, ds_target, ds_prediction)
         except Exception:
             # Fallback; shouldn't happen
-            resolved_modes[_m] = req or "none"
+            resolved_modes[_m] = req or "mean"
     # We'll show resolved modes later with fallbacks & summary
 
     # Basic overview
     all_vars = list(ds_target.data_vars)
-    # Classify variables: treat singleton level dimension (size==1) as non-3D
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
+    # Classify variables: check if 'level' is in dims, regardless of size
+    if "level" in ds_target.dims:
         vars_3d = [v for v in all_vars if "level" in ds_target[v].dims]
         vars_2d = [v for v in all_vars if v not in vars_3d]
     else:
@@ -1015,7 +1150,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         print(ds_prediction)
     # Consolidated ensemble information (fallbacks + resolved modes + high-level message)
     try:
-        ens_msg = _ensemble_handling_message(ds_prediction, cfg)
+        ens_msg = _ensemble_handling_message(ds_prediction, cfg, resolved_modes)
         blocks: list[str] = []
         if fallback_notes:
             blocks.append("Fallbacks:\n" + "\n".join(fallback_notes))
@@ -1285,6 +1420,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 plotting,
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("energy_spectra"),
+                cfg=cfg,
             )
             dt = time.time() - _t
             module_timings.append(("energy_spectra", dt))
@@ -1460,7 +1596,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status(
             "probabilistic",
             "run",
-            "CRPS/PIT (xarray) + WBX SSR/CRPS",
+            "CRPS/PIT (xarray) + WBX SSR",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))

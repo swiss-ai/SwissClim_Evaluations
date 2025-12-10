@@ -32,7 +32,7 @@ def _make_dataset(init_count=2, lead_hours=(0, 36)):
 def test_time_range_suffix_both_dims():
     ds = _make_dataset()
     suffix = time_range_suffix(ds)
-    pattern = r"init_time_\d{10}_to_\d{10}__lead_time_0_to_36"
+    pattern = r"init_time_\d{4}-\d{2}-\d{2}T\d{2}_to_\d{4}-\d{2}-\d{2}T\d{2}__lead_time_0_to_36"
     assert re.fullmatch(pattern, suffix), suffix
 
 
@@ -49,7 +49,7 @@ def test_probabilistic_first_lead_integration(tmp_path: Path):
     ds = _make_dataset()
     trimmed = ds.isel(lead_time=0)
     # Build a filename using build_output_filename to ensure lead-only+init logic integrates
-    init_range = ("2025010100", "2025010206")
+    init_range = ("2025-01-01T00", "2025-01-02T06")
     lead_range = ("000h", "000h")
     fn = build_output_filename(
         metric="crps_summary",
@@ -58,24 +58,27 @@ def test_probabilistic_first_lead_integration(tmp_path: Path):
         lead_time_range=lead_range,
         ensemble=None,
     )
-    assert fn == "crps_summary_init2025010100-2025010206_lead000h-000h_ensnone.csv"
+    assert fn == "crps_summary_init2025-01-01T00-2025-01-02T06_lead000h-000h_ensmean.csv"
     assert trimmed.lead_time.size == 1
 
 
 def test_build_output_filename_matrix():
     # Parametric quick sweep over combinations
     cases = [
-        {"metric": "metrics", "ensemble": None, "exp": "metrics_ensnone.csv"},
+        {"metric": "metrics", "ensemble": None, "exp": "metrics_ensmean.csv"},
         {
             "metric": "map",
             "variable": "temperature",
             "level": 500,
             "qualifier": "averaged",
-            "init_time_range": ("2023010100", "2023010200"),
+            "init_time_range": ("2023-01-01T00", "2023-01-02T00"),
             "lead_time_range": ("000h", "024h"),
             "ensemble": 0,
             "ext": "png",
-            "exp": "map_temperature_500_averaged_init2023010100-2023010200_lead000h-024h_ens0.png",
+            "exp": (
+                "map_temperature_500_averaged_init2023-01-01T00-2023-01-02T00_"
+                "lead000h-024h_ens0.png"
+            ),
         },
         {
             "metric": "crps_summary",
@@ -94,7 +97,7 @@ def test_build_output_filename_matrix():
             "metric": "ets_metrics",
             "lead_time_range": ("000h", "048h"),
             "ensemble": None,
-            "exp": "ets_metrics_lead000h-048h_ensnone.csv",
+            "exp": "ets_metrics_lead000h-048h_ensmean.csv",
         },
         {
             "metric": "wd_kde_evolve",
@@ -102,7 +105,7 @@ def test_build_output_filename_matrix():
             "init_time_range": ("2023010100", "2023010300"),
             "ensemble": None,
             "ext": "png",
-            "exp": "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensnone.png",
+            "exp": "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensmean.png",
         },
     ]
     for c in cases:

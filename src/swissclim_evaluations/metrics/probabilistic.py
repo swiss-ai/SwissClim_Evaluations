@@ -13,97 +13,45 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-
-# Use official WeatherBenchX metrics instead of local copies
 from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble as WBXCRPSEnsemble,
-    SpreadSkillRatio as WBXSpreadSkillRatio,
+    CRPSEnsemble,
+    UnbiasedSpreadSkillRatio,
 )
 
-from ..helpers import build_output_filename, time_chunks
+# Use official WeatherBenchX metrics instead of local copies
+from ..helpers import (
+    COLOR_DIAGNOSTIC,
+    build_output_filename,
+    ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_variable_name,
+    time_chunks,
+)
 
 
-def _crps_e1(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
-    M: int = da_prediction.shape[-1]
-    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / M
-    return e_1
+def compute_wbx_crps(
+    da_target: xr.DataArray, da_prediction: xr.DataArray, ensemble_dim: str = "ensemble"
+) -> xr.DataArray:
+    """Compute Fair CRPS using WeatherBenchX implementation.
 
+    Replicates logic of CRPSEnsemble: CRPS = CRPSSkill - 0.5 * CRPSSpread.
+    """
+    metric = CRPSEnsemble(ensemble_dim=ensemble_dim)
+    # WBX expects dicts of DataArrays
+    # We use a dummy variable name 'v'
+    preds = {"v": da_prediction}
+    targs = {"v": da_target}
 
-def crps_e1(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the CRPS (e1 component) for ensemble predictions vs targets."""
-    return xr.apply_ufunc(
-        _crps_e1,
-        da_target,
-        da_prediction,
-        input_core_dims=[[], [ensemble_dim]],
-        output_core_dims=[[]],
-        dask="parallelized",
-    )
+    stats = {}
+    for name, stat in metric.statistics.items():
+        # compute returns dict {var: da}
+        res = stat.compute(preds, targs)
+        stats[name] = res["v"]
 
-
-def _crps_e2(da_prediction: np.ndarray) -> np.ndarray:
-    M: int = da_prediction.shape[-1]
-    # Require at least 2 members; upstream runner enforces this. Keep explicit check for clarity.
-    if M < 2:
-        raise ValueError("CRPS e2 component requires ensemble size >=2")
-    e_2 = np.sum(
-        np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
-        axis=(-1, -2),
-    ) / (M * (M - 1))
-    return e_2
-
-
-def crps_e2(da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the CRPS (e2 component) for ensemble predictions."""
-    return xr.apply_ufunc(
-        _crps_e2,
-        da_prediction,
-        input_core_dims=[[ensemble_dim]],
-        output_core_dims=[[]],
-        dask="parallelized",
-    )
-
-
-def _crps_ensemble_fair(da_target: np.ndarray, da_prediction: np.ndarray) -> np.ndarray:
-    M: int = da_prediction.shape[-1]
-    e_1 = np.sum(np.abs(da_target[..., None] - da_prediction), axis=-1) / max(M, 1)
-    if M < 2:
-        raise ValueError("Fair CRPS requires ensemble size >=2 (got 1)")
-    e_2 = np.sum(
-        np.abs(da_prediction[..., None] - da_prediction[..., None, :]),
-        axis=(-1, -2),
-    ) / (M * (M - 1))
-    return e_1 - 0.5 * e_2
-
-
-def crps_ensemble(da_target, da_prediction, name_prefix: str = "CRPS", ensemble_dim="ensemble"):
-    """Compute the fair CRPS for ensemble predictions vs targets."""
-    # Ensure ensemble dimension lives in a single chunk to avoid Dask giving
-    # singleton blocks to the gufunc core (which would make M appear as 1).
-    if hasattr(getattr(da_prediction, "data", None), "chunks") and (
-        ensemble_dim in da_prediction.dims
-    ):
-        axis = da_prediction.dims.index(ensemble_dim)
-        chunks = da_prediction.data.chunks[axis]
-        if len(chunks) > 1:  # multiple chunks along ensemble dim -> consolidate
-            da_prediction = da_prediction.chunk({ensemble_dim: -1})
-    if hasattr(getattr(da_target, "data", None), "chunks") and (
-        ensemble_dim in getattr(da_target, "dims", [])
-    ):
-        axis_t = da_target.dims.index(ensemble_dim)
-        t_chunks = da_target.data.chunks[axis_t]
-        if len(t_chunks) > 1:
-            da_target = da_target.chunk({ensemble_dim: -1})
-    res = xr.apply_ufunc(
-        _crps_ensemble_fair,
-        da_target,
-        da_prediction,
-        input_core_dims=[[], [ensemble_dim]],
-        output_core_dims=[[]],
-        dask="parallelized",
-        output_dtypes=[float],
-    )
-    return _add_metric_prefix(res, name_prefix)
+    # CRPS = CRPSSkill - 0.5 * CRPSSpread
+    crps = stats["CRPSSkill"] - 0.5 * stats["CRPSSpread"]
+    return _add_metric_prefix(crps, "CRPS")
 
 
 def _pit(da_target, da_prediction):
@@ -119,41 +67,6 @@ def probability_integral_transform(
         da_target,
         da_prediction,
         input_core_dims=[[], [ensemble_dim]],
-        output_core_dims=[[]],
-        dask="parallelized",
-        output_dtypes=[float],
-    )
-    return _add_metric_prefix(res, name_prefix) if name_prefix else res
-
-
-def _ens_mean_se(da_target, da_prediction):
-    return (da_prediction.mean(axis=-1) - da_target) ** 2
-
-
-def ensemble_mean_se(da_target, da_prediction, name_prefix: str = "EnsembleMeanSquaredError"):
-    """Compute the ensemble mean squared error of predictions vs targets."""
-    res = xr.apply_ufunc(
-        _ens_mean_se,
-        da_target,
-        da_prediction,
-        input_core_dims=[[], ["ensemble"]],
-        output_core_dims=[[]],
-        dask="parallelized",
-        output_dtypes=[float],
-    )
-    return _add_metric_prefix(res, name_prefix)
-
-
-def _ens_std(da_prediction):
-    return da_prediction.std(axis=-1)
-
-
-def ensemble_std(da_prediction, name_prefix: str = "EnsembleSTD"):
-    """Compute the ensemble standard deviation of predictions."""
-    res = xr.apply_ufunc(
-        _ens_std,
-        da_prediction,
-        input_core_dims=[["ensemble"]],
         output_core_dims=[[]],
         dask="parallelized",
         output_dtypes=[float],
@@ -273,8 +186,12 @@ def run_probabilistic(
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        vals = ds["init_time"].values
-        if getattr(vals, "size", 0) == 0:
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            return format_init_time_range(vals)
+        except Exception:
             return None
         start = np.datetime64(np.min(vals)).astype("datetime64[h]")
         end = np.datetime64(np.max(vals)).astype("datetime64[h]")
@@ -307,53 +224,48 @@ def run_probabilistic(
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
 
-    from ..helpers import ensemble_mode_to_token
-
     ens_token = ensemble_mode_to_token("prob")
+    prob_cfg = (cfg_all or {}).get("probabilistic", {})
+    report_per_level = bool(prob_cfg.get("report_per_level", True))
+    crps_rows_per_level: list[dict[str, Any]] = []
 
     for var in variables:
         # Extract and align targets and predictions along shared coordinates
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
-        # Align coordinates so both arrays share the same indexing. Use an
-        # outer join so we preserve all prediction lead_time offsets even when
-        # targets are missing some valid_time points. Missing entries become
-        # NaN and are handled by downstream skipna averaging.
-        # Align on common coordinates; if alignment fails and shapes equal use positional fallback.
-        # Alignment logic tolerant to extra 'ensemble' dim on predictions.
-        # We require that all non-ensemble prediction dims exist on target. The target is
-        # intentionally kept without an ensemble dimension for CRPS computations.
-        pred_core_dims = [d for d in da_prediction.dims if d != "ensemble"]
-        _aligned = False
-        if all(dim in da_target.dims for dim in pred_core_dims):
-            try:
-                # Align by outer join preserving all prediction offsets; xarray will broadcast
-                # target over missing 'ensemble' automatically if target lacked that dim.
-                da_target, da_prediction = xr.align(da_target, da_prediction, join="outer")
-                # If broadcast added ensemble dim on target, drop it
-                if "ensemble" in da_target.dims and "ensemble" not in ds_target.dims:
-                    # Reduce / squeeze back (all members identical after broadcast)
-                    da_target = da_target.isel(ensemble=0, drop=True)
-                _aligned = True
-            except Exception:
-                _aligned = False
-        if not _aligned:
-            # Accept shape difference if prediction simply has an extra trailing ensemble dim.
-            if da_prediction.dims == tuple(list(da_target.dims) + ["ensemble"]):
-                # No action needed; proceed with original arrays (target lacks ensemble by design).
-                pass
-            elif da_target.shape == da_prediction.shape:
-                # Positional fallback (dims match order but names differ)
+
+        # Drop ensemble from target if present (it's a dummy for strict compliance)
+        # to allow broadcasting against the full prediction ensemble.
+        if "ensemble" in da_target.dims:
+            da_target = da_target.isel(ensemble=0, drop=True)
+
+        try:
+            da_target, da_prediction = xr.align(
+                da_target, da_prediction, join="exact", exclude=["ensemble"]
+            )
+        except Exception:
+            # Fallback to by-position if shapes match exactly
+            if da_target.shape == da_prediction.shape:
                 da_target = da_target.copy()
                 da_prediction = da_prediction.copy()
             else:
-                raise RuntimeError(
-                    f"Failed to align target/prediction for variable '{var}' and shapes differ: "
-                    f"target={da_target.shape} prediction={da_prediction.shape}"
-                )
-        crps_da = crps_ensemble(da_target, da_prediction, ensemble_dim="ensemble")
+                raise
+        crps_da = compute_wbx_crps(da_target, da_prediction, ensemble_dim="ensemble")
         crps_mean = float(_reduce_mean_all(crps_da).compute().item())
         crps_rows.append({"variable": var, "CRPS": crps_mean})
+
+        if report_per_level and "level" in crps_da.dims:
+            dims_to_reduce = [d for d in crps_da.dims if d != "level"]
+            crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
+
+            for lvl in crps_per_level.level.values:
+                crps_rows_per_level.append(
+                    {
+                        "variable": var,
+                        "level": int(lvl),
+                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
+                    }
+                )
 
         pit_da = probability_integral_transform(
             da_target,
@@ -421,6 +333,21 @@ def run_probabilistic(
         print(f"[probabilistic] saved {out_csv}")
         # Backward-compatible copy for tests expecting ensnone naming
 
+    if crps_rows_per_level:
+        df_lvl = pd.DataFrame(crps_rows_per_level)
+        out_csv_lvl = section_output / build_output_filename(
+            metric="crps_summary",
+            variable=None,
+            level=None,
+            qualifier="per_level",
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="csv",
+        )
+        df_lvl.to_csv(out_csv_lvl, index=False)
+        print(f"[probabilistic] saved {out_csv_lvl}")
+
 
 def _select_base_variable_for_plot(
     ds_target: xr.Dataset,
@@ -483,7 +410,7 @@ def plot_probabilistic(
             f"target={da_t.shape} prediction={da_p.shape}"
         )
     # CRPS values (keep lead_time for per-lead panels)
-    crps = crps_ensemble(da_t, da_p, ensemble_dim="ensemble")
+    crps = compute_wbx_crps(da_t, da_p, ensemble_dim="ensemble")
     # For the single-map preview, we reduce all time-like dims including lead_time
     reduce_dims = _time_reduce_dims_for_plot(crps)
     crps_map = crps.mean(dim=reduce_dims, skipna=True) if reduce_dims else crps
@@ -511,8 +438,9 @@ def plot_probabilistic(
     # Plot CRPS map (simple original style, no percentile scaling / fallback)
     fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
     ax = plt.axes(projection=ccrs.PlateCarree())
-    ax.add_feature(cfeature.COASTLINE, lw=0.5)
-    ax.add_feature(cfeature.BORDERS, lw=0.3)
+    if hasattr(ax, "add_feature"):
+        ax.add_feature(cfeature.COASTLINE, lw=0.5)
+        ax.add_feature(cfeature.BORDERS, lw=0.3)
     Z = crps_map.values
     # Debug info for empty map diagnosis
     finite_count = int(np.isfinite(Z).sum())
@@ -535,18 +463,23 @@ def plot_probabilistic(
         vmax=vmax,
     )
     cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    units = (
-        ds_target.get(base_var).attrs.get("units", "") if base_var in ds_target.data_vars else ""
-    )
-    cbar.set_label(f"CRPS ({units})" if units else "CRPS")
-    ax.set_title(f"CRPS map (mean over time): {base_var}", fontsize=12)
+    cbar.set_label("CRPS")
+
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"CRPS Map — {format_variable_name(base_var)}{date_str}")
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        vals = ds["init_time"].values
-        if getattr(vals, "size", 0) == 0:
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            return format_init_time_range(vals)
+        except Exception:
             return None
         start = np.datetime64(np.min(vals)).astype("datetime64[h]")
         end = np.datetime64(np.max(vals)).astype("datetime64[h]")
@@ -698,8 +631,9 @@ def plot_probabilistic(
                 first_im = None
                 for i, (h, li) in enumerate(hour_index_pairs):
                     ax = axes_flat[i]
-                    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-                    ax.coastlines(linewidth=0.5)
+                    if hasattr(ax, "add_feature"):
+                        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+                        ax.coastlines(linewidth=0.5)
                     Z = np.asarray(crps_by_lead.isel(lead_time=li).values)
                     im = ax.pcolormesh(
                         crps_by_lead[lon_name],
@@ -808,7 +742,6 @@ def plot_probabilistic(
         name_prefix="PIT",
     )
     counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
-
     fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
     widths = np.diff(edges)
     ax.bar(
@@ -816,10 +749,13 @@ def plot_probabilistic(
         counts,
         width=widths,
         align="edge",
-        color="#4C78A8",
+        color=COLOR_DIAGNOSTIC,
         edgecolor="white",
     )
-    ax.set_title(f"PIT histogram — {base_var}")
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}{date_str}")
     ax.set_xlabel("PIT value")
     ax.set_ylabel("Density")
     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
@@ -841,6 +777,13 @@ def plot_probabilistic(
         )
         np.savez(out_npz, counts=counts, edges=edges, variable=base_var)
         print(f"[probabilistic-plots] saved {out_npz}")
+
+    if save_fig:
+        out_png = (
+            section / f"pit_hist_{base_var}.png"
+        )  # legacy non-tokenized image filename retained
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        print(f"[probabilistic-plots] saved {out_png}")
     plt.close(fig)
 
     # PIT per-lead panel plot (multi-row grid) over all retained hours
@@ -964,7 +907,7 @@ def plot_probabilistic(
                     continue
             if hour_index_pairs:
                 for var in variables:
-                    crps = crps_ensemble(
+                    crps = compute_wbx_crps(
                         ds_target[var], ds_prediction[var], ensemble_dim="ensemble"
                     )
                     reduce_dims = [
@@ -1022,14 +965,6 @@ def plot_probabilistic(
                         print(f"[probabilistic-plots] saved {out_npz}")
 
 
-"""
-Expose WeatherBenchX metric classes under this module for convenient imports.
-Public API: CRPSEnsemble, SpreadSkillRatio.
-"""
-CRPSEnsemble = WBXCRPSEnsemble
-SpreadSkillRatio = WBXSpreadSkillRatio
-
-
 def _wbx_metric_to_df(
     metric: Any,
     ds_prediction: xr.Dataset,
@@ -1085,21 +1020,19 @@ def run_probabilistic_wbx(
     plotting_cfg: dict[str, Any],
     all_cfg: dict[str, Any],
 ) -> None:
-    """Compute WBX temporal/spatial metrics, CSV summaries, and optional CRPS map.
+    """Compute WBX temporal/spatial metrics and CSV summaries.
 
     Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
-    - crps_ensemble.csv
     - probabilistic_metrics_temporal.nc
     - probabilistic_metrics_spatial.nc
-    - Optional: crps_map_<var>.png if output_mode enables plotting
     """
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
 
     # Imports only when needed to avoid hard dependency during other runs
-    from weatherbenchX import aggregation, binning, weighting
+    from weatherbenchX import aggregation, binning
 
     if "ensemble" not in ds_prediction.dims:
         print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
@@ -1115,15 +1048,15 @@ def run_probabilistic_wbx(
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
-    # CSV summaries using WBX metrics (SpreadSkillRatio, CRPSEnsemble)
+    # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
     if m_ens < 2:
         raise RuntimeError(
-            "WBX probabilistic metrics require ensemble size >=2 (SpreadSkillRatio/CRPS ensemble). "
+            "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-    ssr_metric = SpreadSkillRatio(ensemble_dim="ensemble")
+    ssr_metric = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
     try:
         ssr_df = _wbx_metric_to_df(
             ssr_metric,
@@ -1133,7 +1066,7 @@ def run_probabilistic_wbx(
         )
     except Exception as e:  # pragma: no cover - defensive clarity wrapper
         raise RuntimeError(
-            "Failed computing SpreadSkillRatio via WeatherBenchX. "
+            "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
             "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
         ) from e
 
@@ -1145,18 +1078,7 @@ def run_probabilistic_wbx(
             vals = ds["init_time"].values
             if vals.size == 0:
                 return None
-            start = np.datetime64(vals.min()).astype("datetime64[h]")
-            end = np.datetime64(vals.max()).astype("datetime64[h]")
-
-            def _fmt(x):
-                return (
-                    np.datetime_as_string(x, unit="h")
-                    .replace("-", "")
-                    .replace(":", "")
-                    .replace("T", "")
-                )
-
-            return (_fmt(start), _fmt(end))
+            return format_init_time_range(vals)
         except Exception:
             return None
 
@@ -1181,8 +1103,6 @@ def run_probabilistic_wbx(
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
 
-    from ..helpers import ensemble_mode_to_token
-
     ens_token_prob = ensemble_mode_to_token("prob")
 
     ssr_csv = section / build_output_filename(
@@ -1197,29 +1117,6 @@ def run_probabilistic_wbx(
     )
     ssr_df.to_csv(ssr_csv)
     print(f"[probabilistic] saved {ssr_csv}")
-
-    crps_metric = CRPSEnsemble(ensemble_dim="ensemble")
-    try:
-        crps_df = _wbx_metric_to_df(
-            crps_metric, ds_prediction=ds_pred, ds_target=ds_targ, value_col="CRPS"
-        )
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(
-            "Failed computing CRPSEnsemble via WeatherBenchX. "
-            "Check ensemble size (>=2) and data alignment. Original error: " + str(e)
-        ) from e
-    crps_csv = section / build_output_filename(
-        metric="crps_ensemble",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="csv",
-    )
-    crps_df.to_csv(crps_csv)
-    print(f"[probabilistic] saved {crps_csv}")
 
     def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
         return {
@@ -1243,7 +1140,6 @@ def run_probabilistic_wbx(
     spatial_aggregator = aggregation.Aggregator(
         reduce_dims=["latitude", "longitude"],
         bin_by=[binning.Regions(regions=regions)],
-        weigh_by=[weighting.GridAreaWeighting()],
     )
 
     seasonal = (
@@ -1258,20 +1154,35 @@ def run_probabilistic_wbx(
     )
 
     metrics = {}
+    metrics["SSR"] = UnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
     metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
-    metrics["SSR"] = SpreadSkillRatio(ensemble_dim="ensemble")
 
     variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
     targ_map = {v: ds_targ[v] for v in variables}
-    # Temporal results: reduce spatial dims, keep time dims
-    temporal_results = aggregation.compute_metric_values_for_single_chunk(
+    # Temporal results: reduce spatial dims, keep time dims (and region)
+    # This contains (Region, Time)
+    region_time_results = aggregation.compute_metric_values_for_single_chunk(
         metrics, spatial_aggregator, pred_map, targ_map
     )
     # Spatial results: reduce init_time (and optionally bin by season)
-    spatial_results = aggregation.compute_metric_values_for_single_chunk(
+    # This contains (Lat, Lon) - Map
+    map_results = aggregation.compute_metric_values_for_single_chunk(
         metrics, temporal_aggregator, pred_map, targ_map
     )
+
+    # Derive "Spatial" (Region, averaged over time) from region_time_results
+    dims_to_reduce_time = [d for d in region_time_results.dims if "time" in d]
+    spatial_results = region_time_results.mean(dim=dims_to_reduce_time, skipna=True)
+
+    # Derive "Temporal" (Time, averaged over region/global) from region_time_results
+    if "region" in region_time_results.dims:
+        if "global" in region_time_results.region.values:
+            temporal_results = region_time_results.sel(region="global")
+        else:
+            temporal_results = region_time_results.mean(dim="region", skipna=True)
+    else:
+        temporal_results = region_time_results
 
     def _build_time_encoding(ds: xr.Dataset) -> dict:
         enc: dict = {}
@@ -1294,6 +1205,8 @@ def run_probabilistic_wbx(
 
     enc_t = _build_time_encoding(temporal_results)
     enc_s = _build_time_encoding(spatial_results)
+    enc_m = _build_time_encoding(map_results)
+
     temporal_fn = section / build_output_filename(
         metric="prob_metrics_temporal",
         variable=None,
@@ -1314,73 +1227,114 @@ def run_probabilistic_wbx(
         ensemble=ens_token_prob,
         ext="nc",
     )
+    map_fn = section / build_output_filename(
+        metric="prob_metrics_map",
+        variable=None,
+        level=None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token_prob,
+        ext="nc",
+    )
+
     temporal_results.to_netcdf(temporal_fn, engine="scipy", encoding=enc_t)
     spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
+    map_results.to_netcdf(map_fn, engine="scipy", encoding=enc_m)
+
     print("Wrote:", temporal_fn)
     print("Wrote:", spatial_fn)
+    print("Wrote:", map_fn)
 
-    # Optional CRPS map similar to notebook for a selected variable
+    # --- Plotting SSR (Temporal and Spatial) ---
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
-    if mode in ("plot", "both"):
-        # Choose base variable
-        cfg_var = (
-            (plotting_cfg or {}).get("map_variable") if isinstance(plotting_cfg, dict) else None
-        )
-        base_var = cfg_var or variables[0]
-        reduce_dims = [d for d in ["init_time", "lead_time", "time"] if d in ds_pred[base_var].dims]
-        # Compute CRPS map using a single-chunk aggregator for simplicity
-        pred_map = {base_var: ds_pred[base_var]}
-        targ_map = {base_var: ds_targ[base_var]}
-        from weatherbenchX import aggregation as agg2
+    save_fig = mode in ("plot", "both")
 
-        metrics_map = {"CRPS": CRPSEnsemble(ensemble_dim="ensemble")}
-        map_ds = agg2.compute_metric_values_for_single_chunk(
-            metrics_map,
-            agg2.Aggregator(reduce_dims=reduce_dims),
-            pred_map,
-            targ_map,
-        )
-        crps_name = f"CRPS.{base_var}"
-        if crps_name in map_ds:
-            mean_map = map_ds[crps_name]
-            lat_name = next(
-                (n for n in mean_map.dims if n in ("latitude", "lat", "y")),
-                None,
+    if save_fig:
+        # Plot Temporal (Time)
+        for var_name in temporal_results.data_vars:
+            if not str(var_name).startswith("SSR"):
+                continue
+
+            da = temporal_results[var_name]
+            # da is (Time)
+
+            # Average over lead_time if present
+            if "lead_time" in da.dims:
+                da = da.mean(dim="lead_time")
+
+            # Plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+
+            # Convert to dataframe for bar plot
+            df = da.to_dataframe(name="SSR").reset_index()
+
+            # Determine x-axis column
+            x_col = "init_time" if "init_time" in df.columns else df.columns[0]
+
+            # Plot bar
+            ax.bar(df[x_col].astype(str), df["SSR"])
+
+            ax.set_title(f"SSR over Init Time - {var_name}")
+            ax.set_ylabel("SSR")
+            ax.set_xlabel("")  # Remove x-label as requested
+            ax.grid(True, axis="y")
+
+            out_png_temp = section / build_output_filename(
+                metric="ssr_temporal",
+                variable=str(var_name),
+                level=None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token_prob,
+                ext="png",
             )
-            lon_name = next(
-                (n for n in mean_map.dims if n in ("longitude", "lon", "x")),
-                None,
-            )
-            if lat_name and lon_name:
-                lat_vals = mean_map[lat_name].values
-                if lat_vals[0] > lat_vals[-1]:
-                    mean_map = mean_map.sortby(lat_name)
-                fig = plt.figure(figsize=(10, 6))
-                ax = plt.axes(projection=ccrs.PlateCarree())
-                ax.coastlines()
-                mesh = ax.pcolormesh(
-                    mean_map[lon_name],
-                    mean_map[lat_name],
-                    mean_map.values,
-                    cmap="viridis",
-                    shading="auto",
-                )
-                plt.colorbar(mesh, ax=ax, orientation="vertical", label=crps_name)
-                ax.set_title(f"CRPS map: {base_var}")
-                # Avoid clashing with non-WBX CRPS map by using a distinct filename
-                out_png = section / build_output_filename(
-                    metric="crps_map_wbx",
-                    variable=base_var,
-                    level=None,
-                    qualifier=None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token_prob,
-                    ext="png",
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[probabilistic] saved {out_png}")
-                plt.close(fig)
+            plt.savefig(out_png_temp, bbox_inches="tight")
+            plt.close(fig)
+            print(f"[probabilistic] saved {out_png_temp}")
+
+        # Plot Spatial (Region)
+        for var_name in spatial_results.data_vars:
+            if not str(var_name).startswith("SSR"):
+                continue
+
+            da = spatial_results[var_name]
+            # da is (Region)
+
+            if "region" in da.dims:
+                # Convert to series for plotting
+                s_spatial = da.to_series()
+
+                # Filter NaNs (robust plotting)
+                s_spatial = pd.to_numeric(s_spatial, errors="coerce").dropna()
+
+                if not s_spatial.empty:
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    s_spatial.plot(kind="bar", ax=ax)
+                    ax.set_title(f"SSR by Region (Time-Averaged) - {var_name}")
+                    ax.set_ylabel("SSR")
+                    ax.set_xlabel("")  # Remove Region label
+                    ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal (1.0)")
+                    ax.legend()
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+
+                    out_png_spatial = section / build_output_filename(
+                        metric="ssr_spatial",
+                        variable=str(var_name),
+                        level=None,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token_prob,
+                        ext="png",
+                    )
+                    plt.savefig(out_png_spatial, bbox_inches="tight")
+                    plt.close(fig)
+                    print(f"[probabilistic] saved {out_png_spatial}")
+                else:
+                    print(f"[probabilistic] Skipping spatial plot for {var_name}: No numeric data.")
 
 
 def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:

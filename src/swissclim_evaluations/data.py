@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import warnings
 from collections.abc import Sequence
@@ -6,19 +7,110 @@ from typing import cast
 import numpy as np
 import xarray as xr
 
+from . import console as c, customizations as custom
+
 # Allowed dimension names for all datasets used by the pipeline.
 # NOTE: 'level' is optional (only present for genuine 3D variables) and MUST NOT
-# be injected artificially. Earlier versions added a singleton level which led
-# to downstream misclassification of surface variables. We now treat absence of
-# 'level' as a true 2D field. Likewise 'ensemble' is optional.
+# be injected artificially. 'ensemble' is mandatory (will be auto-created if missing).
 ALLOWED_DIMS: tuple[str, ...] = (
     "latitude",
     "longitude",
     "level",  # optional
     "init_time",
     "lead_time",
-    "ensemble",  # optional
+    "ensemble",  # mandatory
 )
+
+
+def ensure_ensemble_dim(ds: xr.Dataset) -> xr.Dataset:
+    """Ensure 'ensemble' dimension exists.
+
+    If missing, inject a dummy ensemble dimension of size 1 with coordinate value 0.
+    This allows deterministic datasets to pass validation and be processed uniformly.
+    """
+    if "ensemble" not in ds.dims:
+        # Expand dims injects the dimension and coordinate
+        ds = ds.expand_dims(ensemble=[0])
+    return ds
+
+
+def validate_dataset_structure(ds: xr.Dataset, name: str) -> None:
+    """Strictly validate dataset structure against requirements.
+
+    Requirements:
+    1. 'ensemble' must be a dimension and a coordinate.
+    2. All data variables must have 'ensemble' as a dimension.
+    3. 'level' dimension must NOT be present if the dataset contains only 2D variables.
+       If mixed, 2D variables must NOT have 'level' dimension.
+    """
+    errors = []
+
+    # 1. Ensemble Check
+    if "ensemble" not in ds.dims:
+        errors.append(f"Dataset '{name}' is missing required dimension 'ensemble'.")
+    if "ensemble" not in ds.coords:
+        errors.append(f"Dataset '{name}' is missing required coordinate 'ensemble'.")
+
+    # 2. Data Variables Check
+    for var_name in ds.data_vars:
+        var = ds[var_name]
+        if "ensemble" not in var.dims:
+            errors.append(f"Variable '{var_name}' in '{name}' is missing 'ensemble' dimension.")
+
+    # 3. Level Check
+    # Identify 2D vs 3D variables.
+    has_level_dim = "level" in ds.dims
+
+    # Check if any variable actually uses level
+    vars_with_level = [v for v in ds.data_vars if "level" in ds[v].dims]
+
+    if not vars_with_level and has_level_dim:
+        errors.append(
+            f"Dataset '{name}' has 'level' dimension but no variables use it (purely 2D dataset). "
+            "'level' must not be present."
+        )
+
+    # 4. Core Dimensions Check
+    # We allow either (init_time, lead_time) OR (time) to support raw WeatherBench format
+    has_time = "time" in ds.dims
+
+    has_init_lead = "init_time" in ds.dims and "lead_time" in ds.dims
+
+    if not has_time and not has_init_lead:
+        errors.append(
+            f"Dataset '{name}' is missing required dimensions: "
+            "either ('init_time', 'lead_time') or ('time')."
+        )
+
+    required_dims = ["latitude", "longitude"]
+    if has_init_lead:
+        required_dims.extend(["init_time", "lead_time"])
+    elif has_time:
+        required_dims.append("time")
+
+    for dim in required_dims:
+        if dim not in ds.dims:
+            errors.append(f"Dataset '{name}' is missing required dimension '{dim}'.")
+        if dim not in ds.coords:
+            errors.append(f"Dataset '{name}' is missing required coordinate '{dim}'.")
+
+    # 5. Allowed Dimensions Check
+    allowed = set(ALLOWED_DIMS)
+    if has_time:
+        allowed.add("time")
+
+    for dim in ds.dims:
+        if dim not in allowed:
+            errors.append(
+                f"Dataset '{name}' has forbidden dimension '{dim}'. Allowed: {sorted(allowed)}"
+            )
+
+    if errors:
+        c.console.print(f"[bold red]Data Validation Failed for {name}[/bold red]")
+        for error in errors:
+            c.console.print(f"[red] - {error}[/red]")
+        raise ValueError(f"Dataset '{name}' does not meet strict format requirements.")
+
 
 # Default chunking policy used across the repository. Values:
 #  - 1: chunk size of 1 for that dimension
@@ -109,9 +201,9 @@ def enforce_chunking(
         SMALL_THRESHOLD = 20000  # configurable if needed
         # If no existing chunking (numpy) AND tiny dataset -> skip rechunk silently.
         all_unchunked = True
-        for v in ds.data_vars.values():
+        for v_da in ds.data_vars.values():
             try:
-                if getattr(v, "chunks", None) is not None:
+                if getattr(v_da, "chunks", None) is not None:
                     all_unchunked = False
                     break
             except Exception:
@@ -242,6 +334,28 @@ def standardize_dims(
     return ds
 
 
+def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
+    """Sort common coordinate dims to a consistent monotonic order.
+
+    This avoids xarray.combine_by_coords errors when shards have different
+    coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
+    lazy with Dask-backed arrays and preserves graph structure.
+    """
+    sort_prefs: dict[str, bool] = {
+        "level": True,  # ascending (e.g., 50, 100, ..., 1000)
+        "latitude": False,  # ERA5 typically descending 90 -> -90
+        "longitude": True,  # 0..360 ascending
+        "init_time": True,  # chronological
+        "time": True,  # chronological
+        "lead_time": True,  # increasing timedelta
+    }
+    for dim, asc in sort_prefs.items():
+        if dim in ds.dims:
+            with contextlib.suppress(Exception):
+                ds = ds.sortby(dim, ascending=asc)
+    return ds
+
+
 def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
     """Open multiple Zarr stores and combine lazily by coordinates.
 
@@ -251,26 +365,6 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     """
     dsets: list[xr.Dataset] = []
 
-    def _ensure_monotonic(ds: xr.Dataset) -> xr.Dataset:
-        """Sort common coordinate dims to a consistent monotonic order.
-
-        This avoids xarray.combine_by_coords errors when shards have different
-        coordinate ordering (e.g., 'level' ascending vs descending). Sorting is
-        lazy with Dask-backed arrays and preserves graph structure.
-        """
-        sort_prefs: dict[str, bool] = {
-            "level": True,  # ascending (e.g., 50, 100, ..., 1000)
-            "latitude": False,  # ERA5 typically descending 90 -> -90
-            "longitude": True,  # 0..360 ascending
-            "init_time": True,  # chronological
-            "time": True,  # chronological
-            "lead_time": True,  # increasing timedelta
-        }
-        for dim, asc in sort_prefs.items():
-            if dim in ds.dims:
-                ds = ds.sortby(dim, ascending=asc)
-        return ds
-
     for p in paths:
         ds_i = xr.open_zarr(p, decode_timedelta=True)
         if variables:
@@ -279,6 +373,10 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
             if keep:
                 ds_i = ds_i[keep]
         ds_i = _ensure_monotonic(ds_i)
+        # Custom interaction based on the zarr file
+        ds_i = custom.modify_ds(ds_i, p)
+        ds_i = ensure_ensemble_dim(ds_i)
+        validate_dataset_structure(ds_i, p)
         dsets.append(ds_i)
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
@@ -313,31 +411,45 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     return combined
 
 
-def open_ml(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open model dataset(s) from Zarr and optionally subset variables.
+def open_prediction(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open prediction/model dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
     """
-    if isinstance(path, (list | tuple)):
+    if isinstance(path, list | tuple):
         return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
+    validate_dataset_structure(ds, cast(str, path))
     return ds
 
 
-def era5(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
-    """Open ERA5 dataset(s) from Zarr and optionally subset variables.
+def open_target(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+    """Open target dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
     """
-    if isinstance(path, (list | tuple)):
+    if isinstance(path, list | tuple):
         return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
+
+    ds = _ensure_monotonic(ds)
+
+    # Custom interaction based on the zarr file
+    ds = custom.modify_ds(ds, cast(str, path))
+    ds = ensure_ensemble_dim(ds)
+    validate_dataset_structure(ds, cast(str, path))
     return ds
 
 
@@ -350,27 +462,14 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    probabilistic_enabled: bool = False,
     **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
-    Extended semantics (backward compatible):
     - ensemble_members can be:
-          * None: keep all members (unless probabilistic disabled → may later be reduced
-                    by per‑module logic; here we do NOT pre-reduce to mean anymore to allow
-                    downstream flexibility). NOTE: previous behaviour reduced to mean here;
-                    to preserve existing expectations, we only change behaviour when
-                    probabilistic_enabled is False and historical callers relied on mean.
-                    For backward compatibility we keep the old reduction to mean when
-                    probabilistic_disabled and no selection requested.
-          * int: select that single member and drop the 'ensemble' dimension.
-          * list[int]: subset to those members. If length==1, drop dim (acts like int). If
-                       length>1 keep 'ensemble' dim with the chosen subset.
-      - If probabilistic modules are enabled we NEVER drop or subset unless multiple
-        explicit members were requested (so probabilistic metrics still see full set
-        unless user intentionally restricts it). This preserves previous rule of ignoring
-        single-member selection in probabilistic mode.
+          * None: keep all members.
+          * int: select that single member (keeping 'ensemble' dimension).
+          * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
     # Backward compatibility: allow legacy 'ensemble_member' kw
     if "ensemble_member" in legacy_kwargs and ensemble_members is None:
@@ -380,6 +479,13 @@ def apply_ensemble_policy(
             DeprecationWarning,
             stacklevel=2,
         )
+    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
+    if "probabilistic_enabled" in legacy_kwargs:
+        legacy_kwargs.pop("probabilistic_enabled")
+    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
+    if "preserve_ensemble_dimension" in legacy_kwargs:
+        legacy_kwargs.pop("preserve_ensemble_dimension")
+
     if legacy_kwargs:
         warnings.warn(
             f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
@@ -399,23 +505,9 @@ def apply_ensemble_policy(
     else:
         indices_list = [int(ensemble_members)]
 
-    if probabilistic_enabled:
-        # In probabilistic mode only respect explicit multi-member subsetting; ignore single
-        # int (previous behaviour) but allow user-specified list to intentionally reduce.
-        if indices_list is None:
-            return ds
-        if len(indices_list) == 1:
-            # Keep full set to avoid accidental collapse; match previous behaviour of ignoring
-            # single selection. (Could alternatively drop; chosen for safety.)
-            return ds
-        return ds.isel(ensemble=indices_list)
-
-    # Deterministic mode
     if indices_list is not None:
-        if len(indices_list) == 1:
-            return ds.isel(ensemble=indices_list[0], drop=True)
         # subset but keep ensemble dimension
-        return ds.isel(ensemble=indices_list)
+        return ds.isel(ensemble=indices_list, drop=False)
 
     # No explicit selection: do NOT pre-reduce. Keep ensemble for modules to decide.
     return ds

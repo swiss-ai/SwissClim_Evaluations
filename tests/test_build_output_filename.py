@@ -3,7 +3,7 @@ from swissclim_evaluations.helpers import build_output_filename
 
 def test_minimal_metric_only():
     fn = build_output_filename(metric="metrics", ensemble=None)
-    assert fn == "metrics_ensnone.csv"
+    assert fn == "metrics_ensmean.csv"
 
 
 def test_with_variable_and_level_and_qualifier():
@@ -36,8 +36,8 @@ def test_lead_only_range():
         lead_time_range=("000h", "048h"),
         ensemble=None,
     )
-    # For explicit None ensemble argument we expect ensnone.
-    assert fn == "ets_metrics_lead000h-048h_ensnone.csv"
+    # For explicit None ensemble argument we expect default ensmean.
+    assert fn == "ets_metrics_lead000h-048h_ensmean.csv"
 
 
 def test_init_only_range():
@@ -48,4 +48,4 @@ def test_init_only_range():
         ensemble=None,
         ext="png",
     )
-    assert fn == "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensnone.png"
+    assert fn == "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensmean.png"

@@ -30,13 +30,12 @@ def test_deterministic_smoke(tmp_path: Path):
     )
 
     det_dir = out_root / "deterministic"
-    # New schema: no 'multi' or 'full' tokens; expect plain
-    # deterministic_metrics_*.csv with ensemble token
-    # When input has no ensemble dimension we still expect 'ensnone'.
-    assert any(
-        n in {"deterministic_metrics_ensnone.csv", "deterministic_metrics_standardized_ensnone.csv"}
-        for n in (f.name for f in det_dir.glob("deterministic_metrics*.csv"))
-    )
+    # New schema: expect deterministic_metrics* with default ensmean token even without ensemble dim
+    names = {f.name for f in det_dir.glob("deterministic_metrics*.csv")}
+    assert (
+        "deterministic_metrics_ensmean.csv" in names
+        and "deterministic_metrics_standardized_ensmean.csv" in names
+    ), names
 
 
 def test_deterministic_smoke_with_ensemble_mean(tmp_path: Path):
@@ -88,7 +87,7 @@ def test_probabilistic_smoke(tmp_path: Path):
     prob_dir = out_root / "probabilistic"
     # at least one pit histogram and crps summary should exist
     # New schema: summary may include init/lead tokens if ranges present else
-    # just crps_summary_ensnone.csv
+    # just crps_summary_ensprob.csv
     assert any(
         f.name == "crps_summary_ensprob.csv"
         or (f.name.startswith("crps_summary_averaged_init") and f.name.endswith("_ensprob.csv"))

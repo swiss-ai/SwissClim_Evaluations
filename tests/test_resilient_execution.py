@@ -10,7 +10,7 @@ from ._smoke_data import make_synthetic_datasets
 def test_module_failure_is_captured(monkeypatch, tmp_path: Path, capsys):
     # Prepare minimal config enabling deterministic and ets (we will force deterministic to raise)
     cfg = {
-        "paths": {},
+        "paths": {"output_root": str(tmp_path / "output")},
         "modules": {
             "deterministic": True,
             "ets": True,
@@ -31,8 +31,8 @@ def test_module_failure_is_captured(monkeypatch, tmp_path: Path, capsys):
 
     t, p = make_synthetic_datasets(with_ensemble=False)
 
-    monkeypatch.setattr(data_mod, "era5", lambda *a, **k: t)
-    monkeypatch.setattr(data_mod, "open_ml", lambda *a, **k: p)
+    monkeypatch.setattr(data_mod, "open_target", lambda *a, **k: t)
+    monkeypatch.setattr(data_mod, "open_prediction", lambda *a, **k: p)
 
     # Run
     cli.run_selected(cfg)

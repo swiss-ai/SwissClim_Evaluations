@@ -11,6 +11,9 @@ import xarray as xr
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
+    format_init_time_range,
+    format_variable_name,
     resolve_ensemble_mode,
 )
 
@@ -44,24 +47,25 @@ def _compute_nmae(
             name="nmae",
         )
 
-    reduce_dims = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "ensemble",
-        ]
-        if d in sub_true.dims
+    # Reduce over all non-level dims present in either target or prediction,
+    # including 'ensemble' when computing pooled semantics.
+    candidate_dims = [
+        "time",
+        "init_time",
+        "lead_time",
+        "latitude",
+        "longitude",
+        "ensemble",
     ]
+    reduce_dims = [d for d in candidate_dims if (d in sub_true.dims) or (d in sub_pred.dims)]
+    reduce_dims_true = [d for d in candidate_dims if d in sub_true.dims]
     diff = (sub_pred - sub_true).astype("float32")
     abs_err = xr.ufuncs.abs(diff)
 
     mae = abs_err.mean(dim=reduce_dims, skipna=True)
-    t_max = sub_true.max(dim=reduce_dims, skipna=True)
-    t_min = sub_true.min(dim=reduce_dims, skipna=True)
+    # Range is computed from the truth across its own dims only
+    t_max = sub_true.max(dim=reduce_dims_true, skipna=True)
+    t_min = sub_true.min(dim=reduce_dims_true, skipna=True)
     delta = (t_max - t_min).astype("float32")
     nmae = (mae / delta.where(delta != 0)).where(delta != 0)
     nmae = (nmae * 100.0).fillna(0.0).astype("float32")
@@ -93,8 +97,12 @@ def run(
     def _extract_init_range(ds: xr.Dataset):
         if "init_time" not in ds:
             return None
-        vals = ds["init_time"].values
-        if getattr(vals, "size", 0) == 0:
+        try:
+            vals = ds["init_time"].values
+            if vals.size == 0:
+                return None
+            return format_init_time_range(vals)
+        except Exception:
             return None
         start = np.datetime64(vals.min()).astype("datetime64[h]")
         end = np.datetime64(vals.max()).astype("datetime64[h]")
@@ -134,11 +142,6 @@ def run(
     has_ens = "ensemble" in ds_prediction.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for vertical_profiles")
-    if resolved_mode == "none" and has_ens:
-        raise ValueError(
-            "ensemble_mode=none requested but 'ensemble' dimension present; "
-            "choose mean|pooled|members"
-        )
 
     def _iter_members():
         if not has_ens:
@@ -302,13 +305,20 @@ def run(
                 ax_n.set_xlim(_gmin, _gmax)
             plt.gca().invert_yaxis()
             title_extra = f" member={member_index}" if member_index is not None else ""
-            plt.suptitle(f"Vertical Profiles of NMAE for {_var_name} (band-wise){title_extra}")
+
+            # Check for single date
+            date_str = extract_date_from_dataset(ds_target)
+
+            plt.suptitle(
+                f"Vertical Profiles of NMAE for {format_variable_name(_var_name)} "
+                f"(band-wise){title_extra}{date_str}"
+            )
             plt.tight_layout()
             if save_fig:
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=_var_name,
+                    variable=str(_var_name),
                     level="multi",
                     qualifier="plot",
                     init_time_range=init_range,
@@ -322,7 +332,7 @@ def run(
                 section_output.mkdir(parents=True, exist_ok=True)
                 out_npz = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=_var_name,
+                    variable=str(_var_name),
                     level="multi",
                     qualifier="combined",
                     init_time_range=init_range,
@@ -406,7 +416,7 @@ def run(
             panel_hours = all_hours
             # Compute global (all-latitudes) profiles per selected lead
             fig, ax = plt.subplots(figsize=(7, 6), dpi=dpi * 2)
-            colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(panel_hours)))
+            colors = plt.get_cmap("viridis")(np.linspace(0.1, 0.9, len(panel_hours)))
             for idx, h in enumerate(panel_hours):
                 li = all_hours.index(int(h)) if int(h) in all_hours else idx
                 # Slice datasets at this lead
@@ -425,7 +435,7 @@ def run(
             ax.legend(title="lead_time", fontsize=8, ncols=min(3, len(panel_hours)))
             out_png = section_output / build_output_filename(
                 metric="vprof_nmae",
-                variable=var,
+                variable=str(var),
                 level="multi",
                 qualifier="evolve",
                 init_time_range=init_range,
@@ -440,7 +450,7 @@ def run(
             if save_npz:
                 out_npz = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=var,
+                    variable=str(var),
                     level="multi",
                     qualifier="evolve_data",
                     init_time_range=init_range,
@@ -515,7 +525,7 @@ def run(
                 cbar.set_label("NMAE (%)")
                 out_png2 = section_output / build_output_filename(
                     metric="vprof_nmae",
-                    variable=var,
+                    variable=str(var),
                     level="multi",
                     qualifier="evolve_heatmap",
                     init_time_range=init_range,
@@ -530,7 +540,7 @@ def run(
                 if save_npz:
                     out_npz2 = section_output / build_output_filename(
                         metric="vprof_nmae",
-                        variable=var,
+                        variable=str(var),
                         level="multi",
                         qualifier="evolve_heatmap_data",
                         init_time_range=init_range,

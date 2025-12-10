@@ -27,7 +27,7 @@ def test_fss_not_nan_default_dims(tmp_path: Path):
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
-    assert not pd.isna(df.loc["var", "FSS"])  # should compute
+    assert not pd.isna(df.loc["var", "FSS_80.0%"])  # should compute
 
 
 def test_fss_not_nan_latlon_dims(tmp_path: Path):
@@ -42,14 +42,14 @@ def test_fss_not_nan_latlon_dims(tmp_path: Path):
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
-    assert not pd.isna(df.loc["var", "FSS"])  # should compute
+    assert not pd.isna(df.loc["var", "FSS_90.0%"])  # should compute
 
 
 def test_fss_no_event_defaults_to_one(tmp_path: Path):
     # Both fields constant zeros -> no events; expect default 1.0
     ds_t = xr.Dataset({"var": (("latitude", "longitude"), np.zeros((3, 3)))})
     ds_p = ds_t.copy(deep=True)
-    cfg = {"deterministic": {"fss": {"thresholds": {"var": 0.5}}}}
+    cfg = {"deterministic": {"fss": {"thresholds": {"var": [0.5]}}}}
     df = det._calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
@@ -58,4 +58,4 @@ def test_fss_no_event_defaults_to_one(tmp_path: Path):
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
-    assert df.loc["var", "FSS"] == 1.0
+    assert df.loc["var", "FSS_0.5"] == 1.0

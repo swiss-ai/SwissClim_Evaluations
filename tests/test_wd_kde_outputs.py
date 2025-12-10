@@ -52,6 +52,7 @@ def test_wd_kde_ridgeline_evolve_output(tmp_path: Path):
             "kde_max_samples": 100,
             "wd_kde_include_3d": False,
             "wd_kde_global_evolution": True,
+            "wd_kde_per_lat_band": True,
         },
     )
 

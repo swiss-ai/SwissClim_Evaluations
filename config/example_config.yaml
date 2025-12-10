@@ -7,17 +7,20 @@ paths:
   # Accepts a single string or a list of strings. When a list is provided, the
   # archives are combined lazily by coordinates (no data is materialized; Dask
   # graphs remain intact). All stores must follow the same variable/dimension schema.
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
 
-  # Path(s) to the reference dataset (ERA5 in WeatherBench2 layout).
+  # Path(s) to the reference dataset (e.g. ERA5 in WeatherBench2 layout).
   # Accepts a single string or a list of strings. When multiple stores are provided,
   # they are combined lazily by coordinates.
-  nwp: [
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
 
-  # Where outputs are written; a subfolder per module will be created here.
+  # Note: If the datasets lacks an 'ensemble' dimension (e.g. deterministic model), it will be
+  # automatically added with a single member (index 0).
+
+  # Where outputs are written; a subfolder per module will be created here (potentially GB in size).
   output_root: "output/verification_esfm"
 
 selection:
@@ -25,10 +28,8 @@ selection:
   # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
   levels: [100, 500, 1000]
 
-  # Optional coarse temporal downsampling in hours. Applied as a stride along lead_time if present,
-  # otherwise along init_time. This is an early reduction step and is independent of the
-  # multi-lead selection policy below. Leave null if you plan to control lead selection
-  # exclusively via the lead_time policy.
+  # Optional time downsampling in hours. Applied as a stride along lead_time if present,
+  # otherwise along init_time. Set to null to disable.
   temporal_resolution_hours: null
 
   # Time selection (one of the following):
@@ -39,7 +40,8 @@ selection:
   #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
   #   3) Explicit non-contiguous timestamps:
   #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
-  # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
+  # For target ERA5 (time) and prediction: (init_time+lead_time), the CLI aligns by
+  # valid_time = init_time + lead_time.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     "2023-04-02T00:2023-04-08T23",
@@ -51,12 +53,14 @@ selection:
     "2024-10-02T00:2024-10-08T23"
   ]
 
-  # Latitude slice [north, south] in degrees. ERA5 uses descending latitudes (90 → -90),
-  # so [90, -89.75] is typical for Aurora. Adjust to match your grid extents.
+  # Latitude selection behavior (not cyclic):
+  # - Provide as [min_lat, max_lat] or [max_lat, min_lat]. Any order is acceptable
+  #   and data will be selected inside the defined latitude band.
   latitudes: [90.0, -89.75]
 
-  # Longitude slice [west, east] in degrees east. ERA5/WeatherBench2 uses 0..360.
-  # Aurora/ESFM has a polar cutoff, so [0, 359.75] is typical.
+  # Longitude selection behavior:
+  # - If first < second → standard band [first, second]
+  # - If first > second → wrap-around union [first..max_lon] ∪ [min_lon..second]
   longitudes: [0.0, 359.75]
 
   # Variables without a level dimension present in BOTH datasets.
@@ -97,19 +101,18 @@ selection:
   #   pooled   → pooled sample (enspooled)
   #   prob     → probabilistic semantics (ensprob; probabilistic module only)
   #   members  → per-member outputs (ens0..ensN)
-  #   none     → no ensemble handling (only if dataset lacks ensemble dim)
   ensemble:
-    maps: members            # members | mean | none*
-    histograms: pooled       # pooled | members | mean | none*
-    wd_kde: pooled           # pooled | members | mean | none*
-    energy_spectra: mean     # mean | members | pooled | none*
-    vertical_profiles: mean  # mean | members | none*
-    deterministic: mean      # mean | members | none*
-    ets: mean                # mean | members | none*
-    probabilistic: prob      # prob (only valid choice; module forces prob)
-    # * 'none' only if dataset truly has no ensemble dimension.
+    maps: members            # members | mean
+    histograms: pooled       # pooled | members | mean
+    wd_kde: pooled           # pooled | members | mean
+    energy_spectra: mean     # mean | pooled | members
+    vertical_profiles: mean  # mean | pooled | members
+    deterministic: mean      # mean | pooled | members
+    ets: mean                # mean | pooled | members
+    probabilistic: prob      # prob (only valid choice)
+    # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
-  # If true, raise an error when requested pressure levels are missing from the data.
+  # If true, enables a scan for NaN values in the data (reported as warnings).
   check_missing: false
 
 plotting:
@@ -139,6 +142,13 @@ plotting:
   # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
   histogram_max_samples: 200000
 
+  # If true, generate histograms for each latitude band in addition to the global histogram.
+  # Global histograms are always produced.
+  histograms_per_lat_band: false
+
+  # If true, generate KDE plots for each latitude band in addition to the global KDE.
+  # Global KDEs are always produced.
+  wd_kde_per_lat_band: false
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only
@@ -147,17 +157,6 @@ plotting:
   # Notes:
   #   - Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
   output_mode: both
-
-  # Multi-lead plotting controls
-  # When multiple lead_time values are present, enable per-lead artifacts/visualizations.
-  histograms_per_lead: true            # one histogram page per selected lead_time
-  maps_per_lead_grid: true             # grid of map panels for selected lead_time values
-  lead_panel_hours: [0, 24, 72, 120]   # which lead_time hours to show in panel/evolution plots (optional)
-  wd_kde_global_evolution: true        # 3D perspective: global KDE evolving along lead_time
-  energy_spectra_spectrogram: true     # 2D spectrogram: x=lead_time, y=wavenumber, color=energy
-  probabilistic_line_plots: true       # CRPS lines vs lead_time per variable
-  ets_line_plot: true                  # ETS thresholds lines vs lead_time per variable
-  vertical_profiles_evolve_lead: true  # Overlay vertical profiles for multiple lead_time values
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
@@ -170,38 +169,23 @@ modules:
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
-# Multi-lead evaluation policy
-# modes:
-#   first  - only first lead time (use to force single-lead evaluation)
-#   full   - use all available lead hours
-#   subset - explicit list of lead hours to keep (provide subset_hours)
-#   stride - keep every Nth hour (provide stride_hours)
-# panel.* controls which lead hours are used for multi-panel plots (maps, histograms, spectra, etc.)
-lead_time:
-  mode: stride            # first | full | subset | stride
-  # Prefer nested style for stride/subset; flat keys still supported for backward compatibility
-  stride:
-    hours: 12
-  max_hour: 120
-  # Subset example (only if mode=subset)
-  # subset:
-  #   hours: [0, 6, 12, 24]
-  # Legacy (still supported): subset_hours: [0, 6, 12, 24]
-  panel:
-    strategy: evenly_spaced  # first | evenly_spaced | specific
-    count: 5                 # number of panel lead hours to show
-    # panel_specific_hours: [0, 24, 72]  # only if strategy=specific
-
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
   # Available metric names:
-  #   "MAE", "RMSE", "MSE", "Relative MAE", "Pearson R",
+  #   "MAE", "RMSE", "MSE", "Relative MAE", "Bias", "Pearson R",
   #   "FSS", "Relative L1", "Relative L2"
+  #   "SEEPS" (only for precipitation)
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
-    include: ["MAE", "RMSE", "MSE", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
+    # If true, compute and report metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+    include: ["MAE", "RMSE", "MSE", "Bias", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
+
+    # Path to the climatology file for SEEPS calculation.
+    seeps_climatology_path: "/capstor/store/cscs/swissai/weatherbench/ERA5-climatology-1990-2019-surface-6h.zarr"
 
     # Fractional Skill Score (FSS) configuration
     # - quantile: threshold is computed as this quantile of the observed sample in [0,1]
@@ -211,16 +195,28 @@ metrics:
     #   - threshold: single float applied to all variables (units must match each variable)
     #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
     fss:
-      quantile: 0.90
+      quantile: 0.95
       window_size: 9            # Example: square window of 9x9
       # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
       # thresholds:              # Example: per-variable thresholds (units must match dataset)
-      #   "total_precipitation": 1.0     # e.g., 1 mm over accumulation period
-      #   "10m_u_component_of_wind": 10.0  # e.g., 10 m/s event
+      #   "total_precipitation": [0.001, 0.005]     # e.g., 1 mm over accumulation period
+      #   "10m_u_component_of_wind": [10.0]  # e.g., 10 m/s event
+      #
 
   # ETS thresholds in percentiles (0–100). Each variable’s threshold is computed from the
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
+    # If true, compute and report ETS per pressure level (for 3D variables).
+    report_per_level: true
+
     thresholds: [50, 70, 90]
-    line_plot: true
+
+  # Energy Spectra configuration.
+  energy_spectra:
+    # If true, compute and report LSD metrics per pressure level (for 3D variables).
+    report_per_level: true
+
+probabilistic:
+  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+  report_per_level: true

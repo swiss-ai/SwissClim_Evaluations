@@ -84,10 +84,10 @@ def test_wd_kde_members_outputs(tmp_path: Path):
         tgt_std,
         pred_std,
         out_root=out,
-        plotting_cfg={"output_mode": "npz"},
+        plotting_cfg={"output_mode": "npz", "wd_kde_per_lat_band": True},
         ensemble_mode="members",
     )
     wd_dir = out / "wd_kde"
-    names = {f.name for f in wd_dir.glob("wd_kde_*_combined_*.npz")}
+    names = {f.name for f in wd_dir.glob("wd_kde_*_latbands_*.npz")}
     assert any("ens0" in n for n in names)
     assert any("ens1" in n for n in names)

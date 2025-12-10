@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.6.8", "pre-commit>=3.8", "mypy>=1.11.2"]
+dev = ["ruff>=0.6.8", "pre-commit>=3.8", "mypy>=1.11.2", "types-PyYAML>=6.0.12.20250915"]
 
 [tool.uv.sources]
 weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
