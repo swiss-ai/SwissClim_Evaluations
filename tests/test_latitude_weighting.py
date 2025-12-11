@@ -10,7 +10,7 @@ from swissclim_evaluations.plots import energy_spectra
 def weighted_data():
     # Create a grid with two latitudes: Equator (0) and High Lat (60)
     # cos(0) = 1.0, cos(60) = 0.5
-    # Weights should be roughly 2:1 ratio.
+    # Weights should be exactly 2:1 ratio.
     lat = np.array([0.0, 60.0])
     lon = np.array([0.0, 90.0, 180.0, 270.0])
 
