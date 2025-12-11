@@ -350,6 +350,8 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "energy_spectra": {"mean", "pooled", "members"},
     "deterministic": {"mean", "pooled", "members"},
     "ets": {"mean", "pooled", "members"},
+    "multivariate": {"mean", "pooled", "members"},
+    "ssim": {"mean", "pooled", "members"},
 }
 
 
@@ -411,7 +413,6 @@ def format_ensemble_log(module: str, mode: str, ens_size: int, selection: str | 
     if selection:
         base += f" {selection}"
     mode_desc = {
-        "none": "no ensemble behaviour",
         "mean": "mode=mean token=ensmean",
         "pooled": "mode=pooled token=enspooled",
         "prob": "mode=prob token=ensprob",
@@ -429,9 +430,7 @@ def validate_and_normalize_ensemble_config(
     Behaviour:
       * Accept typo 'member' → normalize to 'members'.
       * Lower-case values; unknown modes replaced by module default with warning.
-            * If ensemble dimension present and user sets 'none' (except probabilistic), replace
-                with module default (mean/pooled/members/prob) and warn.
-      * If ensemble dim absent, any non-'none' mode downgraded to 'none' with warning.
+      * If ensemble dim absent, any non-'mean' mode downgraded to 'mean' with warning.
 
     Returns (normalized_config, warnings_list).
     """
@@ -449,12 +448,12 @@ def validate_and_normalize_ensemble_config(
             warnings.append(f"ensemble.{module}='member' corrected to 'members' (per-member mode).")
             val = "members"
         if val not in _VALID_MODES:
-            default = _DEFAULT_ENSEMBLE_MODES.get(module, "none")
+            default = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
             warnings.append(
                 f"ensemble.{module}='{val_raw}' is invalid; falling back to default '{default}'."
             )
             val = default
-        # Enforce per-module allowed set (before handling 'none' degradations).
+        # Enforce per-module allowed set.
         allowed = _ALLOWED_PER_MODULE.get(module)
         if allowed is not None and val not in allowed:
             # If user provided 'pooled' for maps or vertical_profiles, provide actionable message.
@@ -462,21 +461,6 @@ def validate_and_normalize_ensemble_config(
                 "Unsupported ensemble mode for module: "
                 f"ensemble.{module}='{val_raw}' not in allowed set {sorted(allowed)}."
             )
-        if has_ensemble:
-            if val == "none" and module != "probabilistic":
-                default = _DEFAULT_ENSEMBLE_MODES.get(module, "mean")
-                warnings.append(
-                    "[ensemble-fallback] ensemble."
-                    f"{module}='none' while ensemble dimension exists → using "
-                    f"'{default}' instead."
-                )
-                val = default
-        else:
-            if val != "none":
-                warnings.append(
-                    f"ensemble.{module}='{val}' ignored (no ensemble dimension) → using 'none'."
-                )
-                val = "none"
         normalized[module] = val
     return normalized, warnings
 
