@@ -94,14 +94,23 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
         for f in prob_dir.glob("crps_summary_*.csv")
     ), "Expected CRPS summary file with init/lead time tokens (ensprob) under new schema"
 
-    # Load suffixed PIT/CRPS (pick first match)
-    pit_nc = next(prob_dir.glob("pit_field_2m_temperature_*.nc"))
-    crps_nc = next(prob_dir.glob("crps_field_2m_temperature_*.nc"))
-    assert pit_nc.exists() and crps_nc.exists()
+    # Load suffixed PIT/CRPS NPZ files (pick first match)
+    # Updated to NPZ format for memory efficiency (no OOM during write)
+    pit_npz = next(prob_dir.glob("pit_field_2m_temperature_*.npz"))
+    crps_npz = next(prob_dir.glob("crps_field_2m_temperature_*.npz"))
+    assert pit_npz.exists() and crps_npz.exists()
 
-    pit = xr.load_dataarray(pit_nc)
-    crps = xr.load_dataarray(crps_nc)
+    # Load NPZ files and reconstruct basic shape info
+    with np.load(pit_npz) as pit_data:
+        assert "lead_time" in pit_data
+        pit_lead = pit_data["lead_time"]
+        assert len(pit_lead) == 3
+        # Check that the lead_times equal the input lead times
+        expected_leads = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
 
-    # Expect all lead_times retained (no longer forced to 1)
-    assert "lead_time" in pit.dims and int(pit.lead_time.size) == 3
-    assert "lead_time" in crps.dims and int(crps.lead_time.size) == 3
+    with np.load(crps_npz) as crps_data:
+        assert "lead_time" in crps_data
+        crps_lead = crps_data["lead_time"]
+        assert len(crps_lead) == 3
+    assert np.all(pit_lead == expected_leads)
+    assert np.all(crps_lead == expected_leads)

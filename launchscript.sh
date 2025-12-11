@@ -35,8 +35,8 @@ fi
 export SWISSCLIM_COLOR=never
 
 # Ensure Python can import the mounted source directly (no rebuild needed)
-# Uncomment if you want to quickly test local changes without rebuilding the container
-# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+# This makes the container run the code from this repo's src/ instead of any preinstalled package.
+export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # Run inside the container defined by EDF_CONFIG
 export PYTHONUNBUFFERED=1

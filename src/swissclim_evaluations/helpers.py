@@ -1,4 +1,3 @@
-import contextlib
 import itertools
 import re
 from typing import Any
@@ -220,13 +219,10 @@ def time_range_suffix(ds: xr.Dataset) -> str:
         except Exception:
             pass
     if "lead_time" in ds.coords:
-        try:
-            lead_vals = np.asarray(ds["lead_time"].values)
-            if lead_vals.size:
-                h0, h1 = _fmt_lead(lead_vals)
-                segments.append(f"lead_time_{h0}_to_{h1}")
-        except Exception:
-            pass
+        lead_vals = np.asarray(ds["lead_time"].values)
+        if lead_vals.size:
+            h0, h1 = _fmt_lead(lead_vals)
+            segments.append(f"lead_time_{h0}_to_{h1}")
     return "__".join(segments) if segments else ""
 
 
@@ -304,8 +300,7 @@ def format_level_token(level: Any) -> str:
 
 def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chunk_size=None):
     # Accept non-contiguous init_times; slice by chunk size without assuming uniform spacing
-    with contextlib.suppress(Exception):
-        init_times = init_times.astype("datetime64[ns]")
+    init_times = init_times.astype("datetime64[ns]")
     total_init = len(init_times)
     step_i = init_time_chunk_size or total_init
     init_time_chunks = [init_times[i : i + step_i] for i in range(0, total_init, step_i)]
@@ -313,8 +308,7 @@ def time_chunks(init_times, lead_times, init_time_chunk_size=None, lead_time_chu
     if isinstance(lead_times, slice):
         lead_time_chunks = [lead_times]
     else:
-        with contextlib.suppress(Exception):
-            lead_times = lead_times.astype("timedelta64[ns]")
+        lead_times = lead_times.astype("timedelta64[ns]")
         total_lead = len(lead_times)
         step_l = lead_time_chunk_size or total_lead
         lead_time_chunks = [lead_times[i : i + step_l] for i in range(0, total_lead, step_l)]

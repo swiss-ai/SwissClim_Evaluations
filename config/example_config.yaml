@@ -116,6 +116,19 @@ selection:
   # If true, enables a scan for NaN values in the data (reported as warnings).
   check_missing: false
 
+  # Lead time selection policy
+  # Controls which forecast lead times are retained for evaluation.
+  # Modes:
+  #   - first:  Keep only the first lead time (t+0). (Default behavior if omitted)
+  #   - full:   Keep all available lead times (up to optional max_hour).
+  #   - subset: Keep specific hours defined in 'subset_hours'.
+  #   - stride: Keep every Nth hour defined in 'stride_hours'.
+  lead_time:
+    mode: "full"           # first | full | subset | stride
+    max_hour: 72           # Optional: Cap maximum lead time (inclusive)
+    # subset_hours: [0, 12, 24, 48]  # Required if mode is 'subset'
+    # stride_hours: 6                # Required if mode is 'stride'
+
 plotting:
   # Random seed used for reproducible time subsampling in plots.
   random_seed: 42
@@ -228,6 +241,9 @@ metrics:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
 
+  probabilistic:
+    # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+    report_per_level: true
   # Multivariate metrics configuration.
   multivariate:
     # Bivariate histograms configuration
@@ -239,7 +255,3 @@ metrics:
       - ["geopotential", "temperature"]
       - ["total_precipitation", "total_column_water_vapour"]
       - ["vertical_velocity", "temperature"]
-
-probabilistic:
-  # If true, compute and report CRPS summaries per pressure level (for 3D variables).
-  report_per_level: true

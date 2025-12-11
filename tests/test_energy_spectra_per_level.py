@@ -38,10 +38,16 @@ def test_energy_spectra_per_level_flag(tmp_path):
         cfg=cfg_true,
     )
 
-    assert (out_root_true / "energy_spectra" / "lsd_3d_metrics_per_level_ensmean.csv").exists()
-    assert (
-        out_root_true / "energy_spectra" / "lsd_bands_3d_metrics_per_level_ensmean.csv"
-    ).exists()
+    # Check for files with flexible naming (handling time suffixes)
+    found_metrics = list(
+        (out_root_true / "energy_spectra").glob("lsd_3d_metrics_per_level*ensmean.csv")
+    )
+    assert found_metrics, "Expected per-level metrics CSV"
+
+    found_bands = list(
+        (out_root_true / "energy_spectra").glob("lsd_bands_3d_metrics_per_level*ensmean.csv")
+    )
+    assert found_bands, "Expected per-level bands CSV"
 
     # Case 2: report_per_level = False
     out_root_false = tmp_path / "output_false"
@@ -60,5 +66,8 @@ def test_energy_spectra_per_level_flag(tmp_path):
     assert not (
         out_root_false / "energy_spectra" / "lsd_bands_3d_metrics_per_level_ensmean.csv"
     ).exists()
-    # Averaged should still exist
-    assert (out_root_false / "energy_spectra" / "lsd_3d_metrics_averaged_ensmean.csv").exists()
+    # Averaged should still exist (check with glob)
+    found_avg = list(
+        (out_root_false / "energy_spectra").glob("lsd_3d_metrics_averaged*ensmean.csv")
+    )
+    assert found_avg, "Expected averaged 3D metrics CSV"

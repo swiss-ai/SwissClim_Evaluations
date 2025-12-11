@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dask
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
@@ -48,10 +49,17 @@ def calculate_ssim(
 
         # Calculate global data range for the variable to ensure consistent SSIM calculation
         # We use the union of target and prediction ranges
-        t_min = float(da_target.min(skipna=True))
-        t_max = float(da_target.max(skipna=True))
-        p_min = float(da_prediction.min(skipna=True))
-        p_max = float(da_prediction.max(skipna=True))
+        t_min_lazy = da_target.min(skipna=True)
+        t_max_lazy = da_target.max(skipna=True)
+        p_min_lazy = da_prediction.min(skipna=True)
+        p_max_lazy = da_prediction.max(skipna=True)
+
+        t_min, t_max, p_min, p_max = dask.compute(t_min_lazy, t_max_lazy, p_min_lazy, p_max_lazy)
+
+        t_min = float(t_min)
+        t_max = float(t_max)
+        p_min = float(p_min)
+        p_max = float(p_max)
 
         data_range = max(t_max, p_max) - min(t_min, p_min)
         if data_range == 0:

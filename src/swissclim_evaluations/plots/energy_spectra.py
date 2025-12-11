@@ -4,11 +4,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from matplotlib.lines import Line2D
 
+from ..aggregations import latitude_weights
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -112,18 +115,17 @@ def calculate_energy_spectra(
     # Power spectrum
     da_power = (da_fft * np.conjugate(da_fft)).real
     # Add units for power spectrum if input had units
-    in_units = get_variable_units(da_var, da_var.name)
+    in_units = get_variable_units(da_var, str(da_var.name))
     if in_units:
         da_power.attrs["units"] = f"{in_units}^2"
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
-    if "latitude" in da_power.coords:
-        lat_vals = da_power["latitude"]
-        cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
-        da_power = da_power.weighted(cosw).mean(dim="latitude")
+    if "latitude" in da_power.dims:
+        weights = latitude_weights(da_power["latitude"])
+        da_power = da_power.weighted(weights).mean(dim="latitude")
     else:
-        raise ValueError("latitude coordinate required for weighting")
+        da_power = da_power.mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
     if average_dims:
@@ -206,6 +208,8 @@ def _compute_spectra_pair(
     ds_prediction: xr.Dataset,
     var: str,
     level: int | None = None,
+    *,
+    reduce_ensemble: bool = True,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Compute and align spectra for target and prediction once.
 
@@ -220,11 +224,15 @@ def _compute_spectra_pair(
 
     spec_t = calculate_energy_spectra(
         da_target,
-        average_dims=["ensemble"] if "ensemble" in da_target.dims else None,
+        average_dims=(
+            ["ensemble"] if (reduce_ensemble and ("ensemble" in da_target.dims)) else None
+        ),
     )
     spec_p = calculate_energy_spectra(
         da_prediction,
-        average_dims=["ensemble"] if "ensemble" in da_prediction.dims else None,
+        average_dims=(
+            ["ensemble"] if (reduce_ensemble and ("ensemble" in da_prediction.dims)) else None
+        ),
     )
     spec_t, spec_p = xr.align(spec_t, spec_p, join="inner")
     return spec_t, spec_p
@@ -324,7 +332,9 @@ def _plot_energy_spectra(
     xr.DataArray
         LSD values with remaining time-like dims (init_time, lead_time, ...).
     """
-    spectrum_target, spectrum_pred = _compute_spectra_pair(ds_target, ds_prediction, var, level)
+    spectrum_target, spectrum_pred = _compute_spectra_pair(
+        ds_target, ds_prediction, var, level, reduce_ensemble=True
+    )
 
     # Compute LSD per time slice (vectorized)
     lsd_da = _compute_lsd_da(spectrum_target, spectrum_pred)
@@ -374,7 +384,7 @@ def _plot_energy_spectra(
 
     # Create stacked iterator
     stacked_target = spectrum_target.stack(__time__=time_dims)
-    # (stacked_pred not needed explicitly; we index spectrum_pred directly below)
+    stacked_pred = spectrum_pred.stack(__time__=time_dims)
     stacked_lsd = lsd_da.stack(__time__=time_dims)
     coords_df = stacked_target.__time__.to_index()  # MultiIndex with labels
 
@@ -382,18 +392,10 @@ def _plot_energy_spectra(
     section_output = out_path.parent if out_path else Path(".")
     section_output.mkdir(parents=True, exist_ok=True)
 
+    # Collect jobs
+    jobs = []
     for idx, key in enumerate(coords_df):
         sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(
-            **{str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
-        )
-        spec_p_1d = spectrum_pred.isel(
-            **{str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
-        )
-        wn = spec_t_1d["wavenumber"].values
-        arr_t = spec_t_1d.values
-        arr_p = spec_p_1d.values
-        lsd_val = float(stacked_lsd.isel(__time__=idx).values)
 
         # Robust init_time formatting (ensure numpy datetime64)
         if "init_time" in sel_kwargs:
@@ -443,16 +445,50 @@ def _plot_energy_spectra(
         )
         # Provide a path if either figure OR plot data requested
         target_path = section_output / fname if (save_figure or save_plot_data) else None
+
+        jobs.append(
+            {
+                "idx": idx,
+                "init_label": init_label,
+                "lead_label": lead_label,
+                "target_path": target_path,
+                "t_lazy": stacked_target.isel(__time__=idx),
+                "p_lazy": stacked_pred.isel(__time__=idx),
+                "lsd_lazy": stacked_lsd.isel(__time__=idx),
+            }
+        )
+
+    # Compute all
+    lazy_all = []
+    for job in jobs:
+        lazy_all.append(job["t_lazy"])
+        lazy_all.append(job["p_lazy"])
+        lazy_all.append(job["lsd_lazy"])
+
+    results = dask.compute(*lazy_all) if lazy_all else []
+
+    # Distribute and plot
+    ptr = 0
+    wn = spectrum_target["wavenumber"].values
+
+    for job in jobs:
+        arr_t = results[ptr]
+        ptr += 1
+        arr_p = results[ptr]
+        ptr += 1
+        lsd_val = float(results[ptr])
+        ptr += 1
+
         _plot_single_spectrum(
             wn,
-            arr_t,
-            arr_p,
+            np.asarray(arr_t),
+            np.asarray(arr_p),
             lsd_val,
             var,
             level,
-            init_label,
-            lead_label,
-            target_path,
+            job["init_label"],
+            job["lead_label"],
+            job["target_path"],
             dpi,
             save_plot_data,
             save_figure,
@@ -470,10 +506,31 @@ def run(
     ensemble_mode: str | None = None,
     cfg: dict[str, Any] | None = None,
 ) -> None:
-    """Compute Log Spectral Distance (LSD) metrics and optional plots."""
+    """Compute basic 2D energy spectra metrics and write an averaged LSD CSV.
 
+    This minimal implementation restores a valid, lint-clean `run()` after a
+    bad merge. It computes per-variable spectra for 2D variables (no 'level'),
+    evaluates the Log Spectral Distance (LSD) across remaining time-like dims,
+    and writes a single summary CSV using standardized filenames.
+    """
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
+
+    # Helper to place x-ticks exactly at selected lead hours (downsample if many)
+    def _apply_lead_ticks(ax: Any, hours: np.ndarray) -> None:
+        hrs = np.asarray(hours).astype(int)
+        n = hrs.size
+        if n == 0:
+            return
+        if n <= 16:
+            ticks = hrs
+        else:
+            stride = max(1, int(np.ceil(n / 12)))
+            ticks = hrs[::stride]
+            if ticks[-1] != hrs[-1]:
+                ticks = np.concatenate([ticks, [hrs[-1]]])
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([str(int(t)) for t in ticks])
 
     # Extract config
     es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
@@ -489,579 +546,624 @@ def run(
     has_ens = "ensemble" in ds_target_full.dims or "ensemble" in ds_prediction_full.dims
     if resolved_mode == "prob":
         raise ValueError("ensemble_mode=prob invalid for energy_spectra")
-    members_indices: list[int] | None = None
-    if resolved_mode == "members" and has_ens:
-        members_indices = list(
-            range(
-                int(
-                    ds_prediction_full.sizes.get("ensemble")
-                    or ds_prediction_full.sizes.get("ensemble", 0)
-                )
-            )
-        )
-    # Track members mode for metrics naming (per-member metrics aggregated without token)
-    metrics_members_mode = resolved_mode == "members" and has_ens
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target_full.dims:
             ds_target_full = ds_target_full.mean(dim="ensemble")
         if "ensemble" in ds_prediction_full.dims:
             ds_prediction_full = ds_prediction_full.mean(dim="ensemble")
+
         ens_token = ensemble_mode_to_token("mean")
     elif resolved_mode == "pooled" and has_ens:
         ens_token = ensemble_mode_to_token("pooled")
+    elif resolved_mode == "members" and has_ens:
+        # Preserve ensemble members; token will indicate members mode
+        ens_token = ensemble_mode_to_token("members")
     else:
         ens_token = None
 
-    # Unified suffix based on init_time/lead_time only
+    resolved = resolved_mode
+    tgt = ds_target_full
+    pred = ds_prediction_full
 
-    # --- Determine variables & levels ---------------------------------------------
-    if "level" in ds_target_full.dims and int(ds_target_full.level.size) > 1:
-        variables_3d = [v for v in ds_target_full.data_vars if "level" in ds_target_full[v].dims]
-        variables_2d = [v for v in ds_target_full.data_vars if v not in variables_3d]
-        levels = select_cfg.get("levels") or list(ds_target_full.level.values)
+    # Helpers to extract time range tokens
+    def _extract_init_range(ds: xr.Dataset) -> tuple[str, str] | None:
+        if "init_time" not in ds.dims:
+            return None
+        vals = ds["init_time"].values
+        if getattr(vals, "size", 0) == 0:
+            return None
+        start = np.datetime64(vals.min()).astype("datetime64[h]")
+        end = np.datetime64(vals.max()).astype("datetime64[h]")
+
+        def _fmt(x: np.datetime64) -> str:
+            return (
+                np.datetime_as_string(x, unit="h")
+                .replace("-", "")
+                .replace(":", "")
+                .replace("T", "")
+            )
+
+        return (_fmt(start), _fmt(end))
+
+    def _extract_lead_range(ds: xr.Dataset) -> tuple[str, str] | None:
+        if "lead_time" not in ds.dims:
+            return None
+        vals = ds["lead_time"].values
+        if getattr(vals, "size", 0) == 0:
+            return None
+        hours = (vals / np.timedelta64(1, "h")).astype(int)
+        sh = int(hours.min())
+        eh = int(hours.max())
+
+        def _fmt(h: int) -> str:
+            return f"{h:03d}h"
+
+        return (_fmt(sh), _fmt(eh))
+
+    init_range = _extract_init_range(pred)
+    lead_range = _extract_lead_range(pred)
+
+    # Detect multi-lead context: when more than one lead_time is present after selection
+    is_multi_lead = ("lead_time" in pred.dims) and int(
+        getattr(pred, "sizes", {}).get("lead_time", 0)
+    ) > 1
+
+    # Select 2D variables (exclude true 3D with 'level' dim)
+    if "level" in tgt.dims and int(getattr(tgt.level, "size", 0)) > 1:
+        variables_2d = [v for v in tgt.data_vars if "level" not in tgt[v].dims]
     else:
-        variables_3d = []
-        variables_2d = list(ds_target_full.data_vars)
-        levels = []
+        variables_2d = list(tgt.data_vars)
 
-    mode = str(plotting_cfg.get("output_mode", "plot")).lower()
-    dpi = int(plotting_cfg.get("dpi", 48))
-    save_figures = mode in ("plot", "both")
-    save_plot_data = mode in ("npz", "both")  # keep npz behaviour consistent
+    # Basic schema validation: require longitude for spectra
+    has_lon_any = ("longitude" in tgt.dims) or any(
+        ("longitude" in tgt[v].dims) for v in variables_2d
+    )
+    if not has_lon_any:
+        raise ValueError("longitude dimension required for energy spectra")
 
-    # --- Helper: build member contexts (metrics + plotting) -----------------------
-    def _member_contexts():
-        if members_indices is None:
-            yield {
-                "member": None,
-                "token": ens_token,
-                "ds_target": ds_target_full,
-                "ds_prediction": ds_prediction_full,
-            }
-        else:
-            for mi in members_indices:
-                yield {
-                    "member": mi,
-                    "token": ensemble_mode_to_token("members", mi),
-                    "ds_target": (
-                        ds_target_full.isel(ensemble=mi)
-                        if "ensemble" in ds_target_full.dims
-                        else ds_target_full
-                    ),
-                    "ds_prediction": ds_prediction_full.isel(ensemble=mi),
-                }
-
-    # --- Metrics (full dataset) ----------------------------------------------------
-    detailed_rows_2d: list[pd.DataFrame] = []
-    summary_rows_2d: list[dict] = []
-    per_init_rows_2d: list[pd.DataFrame] = []
-    # New banded metrics containers
-    banded_detailed_rows_2d: list[pd.DataFrame] = []
-    banded_summary_rows_2d: list[dict] = []
-    banded_per_init_rows_2d: list[pd.DataFrame] = []
-    last_lsd_dims: tuple[str, ...] | None = None
-
-    for var in variables_2d:
-        print(f"[energy_spectra] (metrics) 2D variable: {var}")
-        member_means: list[float] = []
-        for ctx in _member_contexts():
-            token_ctx = ctx["token"]
-            # Compute spectra once and reuse
+    # In multi-lead mode, suppress non-spectrogram artifacts (CSV summaries, 1D exports)
+    # Initialize holders used in both branches
+    lsd_long_rows: list[dict[str, float | str]] = []
+    lsd_banded_long_rows: list[dict[str, float | str]] = []
+    if not is_multi_lead:
+        summary_rows: list[dict[str, Any]] = []
+        # Collect LSD-by-lead for optional line plots/CSVs
+        for var in variables_2d:
+            # Preserve ensemble for pooled/members modes
+            # Only reduce when resolved == 'mean'
             spec_t, spec_p = _compute_spectra_pair(
-                ctx["ds_target"], ctx["ds_prediction"], str(var), None
+                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
             )
-            lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
-            df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-            df_lsd_ctx.insert(0, "variable", str(var))
-            if ctx["member"] is not None:
-                df_lsd_ctx.insert(1, "ensemble_member", ctx["member"])
-                member_means.append(float(lsd_da_ctx.mean().values))
-            detailed_rows_2d.append(df_lsd_ctx)
-            last_lsd_dims = tuple(str(d) for d in lsd_da_ctx.dims)
-            # Only build per-init rows for non-members case (preserve existing behaviour)
-            if (ctx["member"] is None) and ("init_time" in lsd_da_ctx.dims):
-                mean_over = [d for d in lsd_da_ctx.dims if d not in ("init_time",)]
-                lsd_by_init = lsd_da_ctx.mean(dim=mean_over)
-                df_init = lsd_by_init.to_dataframe(name="lsd_mean").reset_index()
-                df_init.insert(0, "variable", var)
-                per_init_rows_2d.append(df_init)
+            lsd_da = _compute_lsd_da(spec_t, spec_p)
+            lsd_mean = float(lsd_da.mean().values)
+            summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
 
-            # Banded LSD using the already computed spectra
-            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)  # dims: band + time-like
-            # Align banded LSD dims ordering and build DF
-            df_bands = lsd_bands_da.to_dataframe(name="lsd").reset_index()
-            df_bands.insert(0, "variable", str(var))
-            if ctx["member"] is not None:
-                df_bands.insert(1, "ensemble_member", ctx["member"])
-            banded_detailed_rows_2d.append(df_bands)
-            # Per-init (mean over other dims) for non-members
-            if (ctx["member"] is None) and ("init_time" in lsd_bands_da.dims):
-                mean_over_b = [d for d in lsd_bands_da.dims if d not in ("init_time", "band")]
-                lsd_bands_by_init = lsd_bands_da.mean(dim=mean_over_b)
-                df_bi = lsd_bands_by_init.to_dataframe(name="lsd_mean").reset_index()
-                df_bi.insert(0, "variable", var)
-                banded_per_init_rows_2d.append(df_bi)
-        # Summary row: non-members -> single lsd_da; members -> mean of member means
-        if members_indices is None:
-            summary_rows_2d.append(
-                {
-                    "variable": str(var),
-                    "lsd_mean": float(
-                        detailed_rows_2d[-1]["lsd"].mean()
-                    ),  # last corresponds to var
-                }
-            )
-        elif member_means:
-            summary_rows_2d.append(
-                {
-                    "variable": str(var),
-                    "lsd_mean": float(sum(member_means) / len(member_means)),
-                }
-            )
-
-    if detailed_rows_2d:
-        # Per-lead_time if lead_time dim present else per-init_time (else drop 'per' file)
-        per_dim_label = None
-        if detailed_rows_2d and last_lsd_dims and "lead_time" in last_lsd_dims:
-            per_dim_label = "lead_time"
-        elif detailed_rows_2d and last_lsd_dims and "init_time" in last_lsd_dims:
-            per_dim_label = "init_time"
-        # If members mode: keep ensemble_member column in concatenated detailed output
-        if per_dim_label:
-            pd.concat(detailed_rows_2d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_2d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier=f"per_{per_dim_label}",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token if not metrics_members_mode else None,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        df_summary2d = pd.DataFrame(summary_rows_2d).set_index("variable")
-        df_summary2d.to_csv(
-            section_output
-            / build_output_filename(
+        if summary_rows:
+            df_summary = pd.DataFrame(summary_rows).set_index("variable")
+            out_csv = section_output / build_output_filename(
                 metric="lsd_2d_metrics",
                 variable=None,
                 level=None,
                 qualifier="averaged",
-                init_time_range=None,
-                lead_time_range=None,
-                ensemble=ens_token if not metrics_members_mode else None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
                 ext="csv",
             )
-        )
-        if per_init_rows_2d:
-            pd.concat(per_init_rows_2d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_2d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="init_time",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        print("[energy_spectra] saved 2D LSD metrics (detailed, summary, per-init_time)")
+            df_summary.to_csv(out_csv)
+            print(f"[energy_spectra] saved {out_csv}")
 
-    # Save banded 2D metrics (additive outputs)
-    if banded_detailed_rows_2d:
-        banded_last_dims = lsd_da_ctx.dims if "lsd_da_ctx" in locals() else last_lsd_dims
-        per_dim_label_b = None
-        if banded_last_dims and "lead_time" in banded_last_dims:
-            per_dim_label_b = "lead_time"
-        elif banded_last_dims and "init_time" in banded_last_dims:
-            per_dim_label_b = "init_time"
-        if per_dim_label_b:
-            pd.concat(banded_detailed_rows_2d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_bands_2d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier=f"per_{per_dim_label_b}",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token if not metrics_members_mode else None,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        # Summary over all dims except variable and band
-        df_banded = pd.concat(banded_detailed_rows_2d, ignore_index=True)
-        group_cols = [c for c in ["variable", "band"] if c in df_banded.columns]
-        df_banded_summary = (
-            df_banded.groupby(group_cols, as_index=False)["lsd"]
-            .mean()
-            .rename(columns={"lsd": "lsd_mean"})
-        )
-        df_banded_summary.to_csv(
-            section_output
-            / build_output_filename(
-                metric="lsd_bands_2d_metrics",
-                variable=None,
-                level=None,
-                qualifier="averaged",
-                init_time_range=None,
-                lead_time_range=None,
-                ensemble=ens_token if not metrics_members_mode else None,
-                ext="csv",
-            ),
-            index=False,
-        )
-        if banded_per_init_rows_2d:
-            pd.concat(banded_per_init_rows_2d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_bands_2d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="init_time",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        print("[energy_spectra] saved 2D LSD banded metrics (detailed, summary, per-init_time)")
-
-    # 3D variables (refactored)
-    detailed_rows_3d: list[pd.DataFrame] = []
-    summary_levels: dict[str, list[float]] = {str(v): [] for v in variables_3d}
-    per_init_rows_3d: list[pd.DataFrame] = []
-    banded_detailed_rows_3d: list[pd.DataFrame] = []
-    banded_summary_rows_3d: list[dict] = []
-    banded_per_init_rows_3d: list[pd.DataFrame] = []
-    for var in variables_3d:
-        print(f"[energy_spectra] (metrics) 3D variable: {var}")
-        for level in levels:
-            member_means_lvl: list[float] = []
-            for ctx in _member_contexts():
-                token_ctx = ctx["token"]
-                # Compute spectra once and reuse
+            # Compute and save banded LSD metrics (2D)
+            lsd_banded_rows: list[dict[str, Any]] = []
+            for var in variables_2d:
                 spec_t, spec_p = _compute_spectra_pair(
-                    ctx["ds_target"], ctx["ds_prediction"], str(var), int(level)
+                    tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
                 )
-                lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
-                df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-                df_lsd_ctx.insert(0, "variable", str(var))
-                if "level" in df_lsd_ctx.columns:
-                    df_lsd_ctx["level"] = int(level)
-                else:
-                    df_lsd_ctx.insert(1, "level", int(level))
-                detailed_rows_3d.append(df_lsd_ctx)
-                last_lsd_dims = tuple(str(d) for d in lsd_da_ctx.dims)
-                if ctx["member"] is None:
-                    # Only per-init collection for non-members
-                    if "init_time" in lsd_da_ctx.dims:
-                        mean_over = [d for d in lsd_da_ctx.dims if d not in ("init_time",)]
-                        _ = lsd_da_ctx.mean(dim=mean_over)  # not used directly but kept for parity
-                        df_init = lsd_da_ctx.to_dataframe(name="lsd").reset_index()
-                        df_init.insert(0, "variable", str(var))
-                        if "level" in df_init.columns:
-                            df_init["level"] = int(level)
-                        else:
-                            df_init.insert(1, "level", int(level))
-                        per_init_rows_3d.append(df_init)
-                else:
-                    member_means_lvl.append(float(lsd_da_ctx.mean().values))
-
-                # Banded LSD for 3D using the same spectra
                 lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
-                df_bands = lsd_bands_da.to_dataframe(name="lsd").reset_index()
-                df_bands.insert(0, "variable", str(var))
-                if "level" in df_bands.columns:
-                    df_bands["level"] = int(level)
-                else:
-                    df_bands.insert(1, "level", int(level))
-                if ctx["member"] is not None:
-                    df_bands.insert(2, "ensemble_member", ctx["member"])
-                banded_detailed_rows_3d.append(df_bands)
-                if (ctx["member"] is None) and ("init_time" in lsd_bands_da.dims):
-                    mean_over_b = [d for d in lsd_bands_da.dims if d not in ("init_time", "band")]
-                    lsd_bi = lsd_bands_da.mean(dim=mean_over_b)
-                    df_bi = lsd_bi.to_dataframe(name="lsd_mean").reset_index()
-                    df_bi.insert(0, "variable", str(var))
-                    if "level" in df_bi.columns:
-                        df_bi["level"] = int(level)
-                    else:
-                        df_bi.insert(1, "level", int(level))
-                    banded_per_init_rows_3d.append(df_bi)
-            if members_indices is None:
-                summary_levels[str(var)].append(float(detailed_rows_3d[-1]["lsd"].mean()))
-            elif member_means_lvl:
-                summary_levels[str(var)].append(
-                    float(sum(member_means_lvl) / len(member_means_lvl))
+                # Average over time dims
+                red_dims = [d for d in lsd_bands_da.dims if d != "band"]
+                lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
+
+                for bname in lsd_bands_mean["band"].values:
+                    val = float(lsd_bands_mean.sel(band=bname).values)
+                    lsd_banded_rows.append(
+                        {
+                            "variable": str(var),
+                            "band": str(bname),
+                            "lsd_mean": val,
+                        }
+                    )
+
+            if lsd_banded_rows:
+                df_banded = pd.DataFrame(lsd_banded_rows)
+                out_csv_banded = section_output / build_output_filename(
+                    metric="lsd_bands_2d_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="averaged",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
                 )
+                df_banded.to_csv(out_csv_banded, index=False)
+                print(f"[energy_spectra] saved {out_csv_banded}")
+    # 3D variables (per-level)
+    variables_3d = []
+    if "level" in tgt.dims:
+        variables_3d = [v for v in tgt.data_vars if "level" in tgt[v].dims]
 
     if variables_3d:
-        if detailed_rows_3d:
-            # Decide per-dimension label once using last computed lsd_da
-            label = None
-            if last_lsd_dims and "lead_time" in last_lsd_dims:
-                label = "lead_time"
-            elif last_lsd_dims and "init_time" in last_lsd_dims:
-                label = "init_time"
-            if label:
-                pd.concat(detailed_rows_3d, ignore_index=True).to_csv(
-                    section_output
-                    / build_output_filename(
-                        metric="lsd_3d_metrics",
-                        variable=None,
-                        level=None,
-                        qualifier=f"per_{label}",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=ens_token,
-                        ext="csv",
-                    ),
-                    index=False,
-                )
-        df_summary = pd.DataFrame(summary_levels, index=levels)
-        df_summary.index.name = "Height Level"
+        lsd_3d_rows: list[dict[str, Any]] = []
+        lsd_banded_3d_rows: list[dict[str, Any]] = []
+        lsd_3d_averaged_rows: list[dict[str, Any]] = []  # New for averaged
 
-        # Always aggregate over levels for the "averaged" file to provide a single scalar metric
-        # per variable (consistent with other modules).
-        df_summary_agg = df_summary.mean(axis=0).to_frame().T
-        df_summary_agg.index = pd.Index(["mean"], name="Height Level")
-        df_summary_agg.to_csv(
-            section_output
-            / build_output_filename(
+        levels = tgt["level"].values
+        for var in variables_3d:
+            # Compute spectra for ALL levels at once (vectorized)
+            spec_t, spec_p = _compute_spectra_pair(
+                tgt, pred, str(var), level=None, reduce_ensemble=(resolved == "mean")
+            )
+
+            # 1. Global LSD per level
+            lsd_da = _compute_lsd_da(spec_t, spec_p)
+            # Average over all dims except level
+            red_dims = [d for d in lsd_da.dims if d != "level"]
+            lsd_means_per_level = lsd_da.mean(dim=red_dims).compute()
+
+            var_lsd_values = []
+            for lvl in levels:
+                val = float(lsd_means_per_level.sel(level=lvl).item())
+                lsd_3d_rows.append({"variable": str(var), "level": int(lvl), "lsd_mean": val})
+                var_lsd_values.append(val)
+
+            # 2. Banded LSD per level
+            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+            # Average over all dims except level and band
+            red_dims = [d for d in lsd_bands_da.dims if d not in ("level", "band")]
+            # This compute results only in a small DataArray – safe to compute here
+            lsd_bands_mean = lsd_bands_da.mean(dim=red_dims).compute()
+
+            for lvl in levels:
+                for bname in lsd_bands_mean["band"].values:
+                    val = float(lsd_bands_mean.sel(level=lvl, band=bname).item())
+                    lsd_banded_3d_rows.append(
+                        {
+                            "variable": str(var),
+                            "level": int(lvl),
+                            "band": str(bname),
+                            "lsd_mean": val,
+                        }
+                    )
+
+            # Compute average over levels
+            if var_lsd_values:
+                lsd_3d_averaged_rows.append(
+                    {
+                        "variable": str(var),
+                        "lsd_mean": float(np.mean(var_lsd_values)),
+                    }
+                )
+
+        if report_per_level and lsd_3d_rows:
+            import pandas as _pd
+
+            df_3d = _pd.DataFrame(lsd_3d_rows)
+            out_csv_3d = section_output / build_output_filename(
+                metric="lsd_3d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_3d.to_csv(out_csv_3d, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d}")
+
+        if report_per_level and lsd_banded_3d_rows:
+            import pandas as _pd
+
+            df_banded_3d = _pd.DataFrame(lsd_banded_3d_rows)
+            out_csv_banded_3d = section_output / build_output_filename(
+                metric="lsd_bands_3d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_banded_3d.to_csv(out_csv_banded_3d, index=False)
+            print(f"[energy_spectra] saved {out_csv_banded_3d}")
+
+        # Always save averaged 3D metrics
+        if lsd_3d_averaged_rows:
+            import pandas as _pd
+
+            df_3d_avg = _pd.DataFrame(lsd_3d_averaged_rows)
+            out_csv_3d_avg = section_output / build_output_filename(
                 metric="lsd_3d_metrics",
                 variable=None,
                 level=None,
                 qualifier="averaged",
-                init_time_range=None,
-                lead_time_range=None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
                 ensemble=ens_token,
                 ext="csv",
             )
-        )
+            df_3d_avg.to_csv(out_csv_3d_avg, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d_avg}")
 
-        # Save per-level metrics if requested
-        if report_per_level:
-            df_long = df_summary.reset_index().melt(
-                id_vars="Height Level", var_name="variable", value_name="LSD"
-            )
-            df_long = df_long.rename(columns={"Height Level": "level"})
-            df_long.to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_3d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="per_level",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        if per_init_rows_3d:
-            pd.concat(per_init_rows_3d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_3d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="init_time",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        print("[energy_spectra] saved 3D LSD metrics (detailed, summary, per-init_time)")
+    # Optional: per-member NPZ spectrum exports when requested
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_npz = mode in ("npz", "both")
+    if (
+        (not is_multi_lead)
+        and save_npz
+        and (resolved == "members")
+        and ("ensemble" in ds_prediction.dims)
+    ):
+        dpi = int((plotting_cfg or {}).get("dpi", 48))
 
-        # Save banded 3D metrics
-        if banded_detailed_rows_3d:
-            label_b = label
-            if label_b:
-                pd.concat(banded_detailed_rows_3d, ignore_index=True).to_csv(
-                    section_output
-                    / build_output_filename(
-                        metric="lsd_bands_3d_metrics",
-                        variable=None,
-                        level=None,
-                        qualifier=f"per_{label_b}",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=ens_token,
-                        ext="csv",
-                    ),
-                    index=False,
+        for mi in range(int(ds_prediction.sizes["ensemble"])):
+            token = ensemble_mode_to_token("members", mi)
+            ds_t_m = tgt.isel(ensemble=mi) if "ensemble" in tgt.dims else tgt
+            ds_p_m = pred.isel(ensemble=mi) if "ensemble" in pred.dims else pred
+            _plot_energy_spectra(
+                ds_t_m,
+                ds_p_m,
+                str(var),
+                None,
+                section_output / "_anchor.png",
+                dpi=dpi,
+                save_plot_data=True,
+                save_figure=False,
+                override_ensemble_token=token,
+            )
+
+    # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
+    do_spec = bool((plotting_cfg or {}).get("energy_spectra_spectrogram", False))
+    # In multi-lead mode, always produce spectrograms regardless of plotting toggle
+    if is_multi_lead:
+        do_spec = True
+    if (
+        do_spec
+        and ("lead_time" in pred.dims)
+        and int(getattr(pred, "sizes", {}).get("lead_time", 0)) > 1
+    ):
+        # Create per-variable spectrograms for target and model
+        def _reduce_time_like(da: xr.DataArray) -> xr.DataArray:
+            # Average over init_time/time dimensions, keep lead_time and wavenumber
+            red_dims = [d for d in ["time", "init_time"] if d in da.dims]
+            return da.mean(dim=red_dims, skipna=True) if red_dims else da
+
+        dpi = int((plotting_cfg or {}).get("dpi", 48))
+        for var in variables_2d:
+            # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
+            spec_t, spec_p = _compute_spectra_pair(
+                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
+            )
+            # Reduce over init_time/time, retaining lead_time and wavenumber
+            spec_t2 = _reduce_time_like(spec_t)
+            spec_p2 = _reduce_time_like(spec_p)
+            # Ensure both share identical coords
+            spec_t2, spec_p2 = xr.align(spec_t2, spec_p2, join="inner")
+            # If any extra dims remain (e.g., ensemble when not reducing),
+            # collapse them by mean so we can plot 2D (lead_time × wavenumber)
+            extra_dims_t = [d for d in spec_t2.dims if d not in ("lead_time", "wavenumber")]
+            if extra_dims_t:
+                spec_t2 = spec_t2.mean(dim=extra_dims_t, skipna=True)
+            extra_dims_p = [d for d in spec_p2.dims if d not in ("lead_time", "wavenumber")]
+            if extra_dims_p:
+                spec_p2 = spec_p2.mean(dim=extra_dims_p, skipna=True)
+            # Extract coordinates
+            if "lead_time" not in spec_t2.dims:
+                continue
+            leads = spec_t2["lead_time"].values
+            # Convert lead times to hours for x-axis
+            try:
+                x_hours = np.array(
+                    [int(np.timedelta64(lt) / np.timedelta64(1, "h")) for lt in leads]
                 )
-        # Averaged across time dims, keep variable, level, band
-        if banded_detailed_rows_3d:
-            df_banded3 = pd.concat(banded_detailed_rows_3d, ignore_index=True)
-            group_cols = [c for c in ["variable", "level", "band"] if c in df_banded3.columns]
-            df_banded3_summary = (
-                df_banded3.groupby(group_cols, as_index=False)["lsd"]
-                .mean()
-                .rename(columns={"lsd": "lsd_mean"})
-            )
+            except Exception:
+                x_hours = np.arange(len(leads))
+            kvals = spec_t2["wavenumber"].values
+            # Prepare arrays with shape (n_leads, n_k)
+            Zt = np.asarray(spec_t2.transpose("lead_time", "wavenumber").values)
+            Zp = np.asarray(spec_p2.transpose("lead_time", "wavenumber").values)
 
-            # Always aggregate over levels for the "averaged" file
-            group_cols_agg = [c for c in ["variable", "band"] if c in df_banded3_summary.columns]
-            df_banded3_summary_agg = df_banded3_summary.groupby(group_cols_agg, as_index=False)[
-                "lsd_mean"
-            ].mean()
-            df_banded3_summary_agg.to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_bands_3d_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="averaged",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-
-            # Save per-level metrics if requested
-            if report_per_level:
-                df_banded3_summary.to_csv(
-                    section_output
-                    / build_output_filename(
-                        metric="lsd_bands_3d_metrics",
-                        variable=None,
-                        level=None,
-                        qualifier="per_level",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=ens_token,
-                        ext="csv",
-                    ),
-                    index=False,
+            def _plot_spec_img(
+                Z: np.ndarray,
+                qualifier: str,
+                *,
+                _x_hours=x_hours,
+                _kvals=kvals,
+                _var=str(var),
+            ) -> None:
+                fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+                # log10 color scale with small epsilon to avoid -inf
+                eps = 1e-10
+                im = ax.pcolormesh(
+                    _x_hours,
+                    _kvals,
+                    np.log10(Z.T + eps),
+                    shading="auto",
+                    cmap="viridis",
                 )
-        if banded_per_init_rows_3d:
-            pd.concat(banded_per_init_rows_3d, ignore_index=True).to_csv(
-                section_output
-                / build_output_filename(
-                    metric="lsd_bands_3d_metrics",
-                    variable=None,
+                ax.set_xlabel("lead_time (h)")
+                ax.set_ylabel("wavenumber (cycles/km)")
+                _apply_lead_ticks(ax, _x_hours)
+                cb = fig.colorbar(im, ax=ax, orientation="vertical")
+                cb.set_label("log10 energy")
+                out_png = section_output / build_output_filename(
+                    metric="energy_spectrogram",
+                    variable=_var,
                     level=None,
-                    qualifier="init_time",
-                    init_time_range=None,
-                    lead_time_range=None,
+                    qualifier=qualifier,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
                     ensemble=ens_token,
-                    ext="csv",
-                ),
-                index=False,
-            )
-        print("[energy_spectra] saved 3D LSD banded metrics (detailed, summary, per-init_time)")
-
-    # --- Plotting subset (figures only) -------------------------------------------
-    ds_target_plot = ds_target_full
-    ds_prediction_plot = ds_prediction_full
-    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
-    if plot_dt_str and "init_time" in ds_prediction_full.dims:
-        try:
-            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
-            if plot_dt in ds_prediction_full["init_time"].values:
-                ds_prediction_plot = ds_prediction_full.sel(init_time=[plot_dt])
-                if (
-                    "init_time" in ds_target_full.dims
-                    and plot_dt in ds_target_full["init_time"].values
-                ):
-                    ds_target_plot = ds_target_full.sel(init_time=[plot_dt])
-                print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
-        except Exception as e:  # pragma: no cover
-            print(
-                "[energy_spectra] Warning: plot_datetime failed ("
-                f"{e}); using full dataset for plots."
-            )
-    elif (not plot_dt_str) and ("init_time" in ds_prediction_full.dims):
-        # Default: plot only first init_time to avoid generating very large number of figures
-        try:
-            first_dt = ds_prediction_full["init_time"].values[0]
-            ds_prediction_plot = ds_prediction_full.sel(init_time=[first_dt])
-            if (
-                "init_time" in ds_target_full.dims
-                and first_dt in ds_target_full["init_time"].values
-            ):
-                ds_target_plot = ds_target_full.sel(init_time=[first_dt])
-            dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
-            print(
-                "[energy_spectra] Plotting only first init_time: "
-                f"{dt_str} (metrics cover full range)"
-            )
-        except Exception:
-            pass
-
-    if save_figures or save_plot_data:
-        for ctx in _member_contexts():
-            token_ctx = ctx["token"]
-            # Select plotting subset dataset (non-member context). For members we already sliced.
-            if ctx["member"] is None:
-                ds_tgt_plot_ctx = ds_target_plot
-                ds_pred_plot_ctx = ds_prediction_plot
-            else:
-                ds_tgt_plot_ctx = ctx["ds_target"]
-                ds_pred_plot_ctx = ctx["ds_prediction"]
-            for var in variables_2d:
-                _plot_energy_spectra(
-                    ds_tgt_plot_ctx,
-                    ds_pred_plot_ctx,
-                    str(var),
-                    None,
-                    section_output
-                    / build_output_filename(
-                        metric="lsd",
-                        variable=str(var),
-                        level="surface",
-                        qualifier="spectrum",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=token_ctx,
-                        ext="png",
-                    ),
-                    dpi,
-                    save_plot_data=save_plot_data,
-                    save_figure=save_figures,
-                    override_ensemble_token=token_ctx,
+                    ext="png",
                 )
-            for var in variables_3d:
-                for level in levels:
-                    _plot_energy_spectra(
-                        ds_tgt_plot_ctx,
-                        ds_pred_plot_ctx,
-                        str(var),
-                        int(level),
-                        section_output
-                        / build_output_filename(
-                            metric="lsd",
-                            variable=str(var),
-                            level=f"{level}hPa",
-                            qualifier="spectrum",
-                            init_time_range=None,
-                            lead_time_range=None,
-                            ensemble=token_ctx,
-                            ext="png",
-                        ),
-                        dpi,
-                        save_plot_data=save_plot_data,
-                        save_figure=save_figures,
-                        override_ensemble_token=token_ctx,
-                    )
-        print("[energy_spectra] Figures/NPZ saved (subset dataset)")
+                plt.tight_layout()
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                print(f"[energy_spectra] saved {out_png}")
+                plt.close(fig)
 
-    print("[energy_spectra] Completed energy spectra metrics & plots.")
+            _plot_spec_img(Zt, "target")
+            _plot_spec_img(Zp, "model")
+
+            # Difference spectrogram (model - target) in log10 energy space
+            eps = 1e-10
+            logZt = np.log10(Zt + eps)
+            logZp = np.log10(Zp + eps)
+            Zdiff = (logZp - logZt).T  # shape (k, leads) for plotting convenience
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+            vmax = np.nanmax(np.abs(Zdiff))
+            im = ax.pcolormesh(
+                x_hours,
+                kvals,
+                Zdiff,
+                shading="auto",
+                cmap="coolwarm",
+                vmin=-vmax,
+                vmax=vmax,
+            )
+            ax.set_xlabel("lead_time (h)")
+            ax.set_ylabel("wavenumber (cycles/km)")
+            _apply_lead_ticks(ax, x_hours)
+            cb = fig.colorbar(im, ax=ax, orientation="vertical")
+            cb.set_label("Δ log10 energy (model - target)")
+            out_png = section_output / build_output_filename(
+                metric="energy_spectrogram",
+                variable=str(var),
+                level=None,
+                qualifier="difference",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[energy_spectra] saved {out_png}")
+            plt.close(fig)
+
+            # Also compute LSD versus lead_time and emit one plot per variable
+            lsd_da = _compute_lsd_da(spec_t2, spec_p2)  # sqrt(mean((log Et - log Em)^2) over k)
+            # Reduce any non-lead dims if present
+            red_dims = [d for d in lsd_da.dims if d != "lead_time"]
+            if red_dims:
+                lsd_da = lsd_da.mean(dim=red_dims, skipna=True)
+            lsd_vals = np.asarray(lsd_da.values).ravel()
+            for h, v in zip(x_hours.tolist(), lsd_vals.tolist(), strict=False):
+                lsd_long_rows.append(
+                    {
+                        "lead_time_hours": float(h),
+                        "variable": str(var),
+                        "LSD": float(v),
+                    }
+                )
+            fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+            ax.plot(x_hours, lsd_vals, marker="o")
+            ax.set_xlabel("lead_time (h)")
+            ax.set_ylabel("LSD")
+            ax.set_title(f"LSD vs lead_time — {var}")
+            out_png = section_output / build_output_filename(
+                metric="lsd_line",
+                variable=str(var),
+                level=None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
+
+            # Save bundle NPZ for programmatic use
+            out_npz = section_output / build_output_filename(
+                metric="energy_spectrogram",
+                variable=str(var),
+                level=None,
+                qualifier="bundle",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="npz",
+            )
+            np.savez(
+                out_npz,
+                lead_hours=x_hours,
+                wavenumber=kvals,
+                energy_target=Zt,
+                energy_model=Zp,
+                log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
+                variable=str(var),
+            )
+            print(f"[energy_spectra] saved {out_npz}")
+
+            # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
+            from matplotlib import gridspec as _gridspec
+
+            fig = plt.figure(figsize=(18, 5), dpi=dpi * 2, constrained_layout=True)
+            gs = _gridspec.GridSpec(
+                1,
+                4,
+                figure=fig,
+                width_ratios=[1.25, 1.25, 0.10, 1.25],
+                wspace=0.08,
+            )
+            axs = [
+                fig.add_subplot(gs[0, 0]),  # target
+                fig.add_subplot(gs[0, 1]),  # model
+                fig.add_subplot(gs[0, 2]),  # divider axis
+                fig.add_subplot(gs[0, 3]),  # diff
+            ]
+            eps = 1e-10
+            logZt = np.log10(Zt.T + eps)
+            logZp = np.log10(Zp.T + eps)
+            vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
+            vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
+            diff = logZp - logZt
+            axs[0].pcolormesh(
+                x_hours,
+                kvals,
+                logZt,
+                shading="auto",
+                cmap="viridis",
+                vmin=vmin_shared,
+                vmax=vmax_shared,
+            )
+            im1 = axs[1].pcolormesh(
+                x_hours,
+                kvals,
+                logZp,
+                shading="auto",
+                cmap="viridis",
+                vmin=vmin_shared,
+                vmax=vmax_shared,
+            )
+            vmax_d = np.nanmax(np.abs(diff))
+            im2 = axs[3].pcolormesh(
+                x_hours,
+                kvals,
+                diff,
+                shading="auto",
+                cmap="coolwarm",
+                vmin=-vmax_d,
+                vmax=vmax_d,
+            )
+            titles = ["Target log10 energy", "Model log10 energy", "Δ log10 energy (M-T)"]
+            for i, ax in enumerate([axs[0], axs[1], axs[3]]):
+                ax.set_xlabel("lead_time (h)")
+                ax.set_title(titles[i if i < 2 else 2], fontsize=11)
+                _apply_lead_ticks(ax, x_hours)
+            ymin = float(np.nanmin(kvals))
+            ymax = float(np.nanmax(kvals))
+            for ax in [axs[0], axs[1], axs[3]]:
+                ax.set_ylim(ymin, ymax)
+            axs[0].set_ylabel("wavenumber (cycles/km)")
+            axs[0].tick_params(axis="y", which="both", labelleft=True)
+            if not axs[0].get_yticklabels():
+                locs = axs[0].get_yticks()
+                axs[0].set_yticks(locs)
+                axs[0].set_yticklabels([f"{v:g}" for v in locs])
+            cbar1 = fig.colorbar(im1, ax=axs[1], orientation="vertical", fraction=0.046, pad=0.02)
+            cbar1.set_label("log10 energy")
+            cbar2 = fig.colorbar(im2, ax=axs[3], orientation="vertical", fraction=0.046, pad=0.05)
+            cbar2.set_label("Δ log10 energy")
+            axs[1].set_ylabel("")
+            axs[1].tick_params(axis="y", labelleft=False)
+            axs[1].set_yticklabels([])
+            axs[3].set_ylabel("wavenumber (cycles/km)")
+            axs[3].tick_params(axis="y", labelleft=True)
+            div_ax = axs[2]
+            div_ax.set_xticks([])
+            div_ax.set_yticks([])
+            for sp in div_ax.spines.values():
+                sp.set_visible(False)
+            div_ax.set_xlim(0, 1)
+            div_ax.set_ylim(0, 1)
+            div_ax.add_line(
+                Line2D(
+                    [0.5, 0.5],
+                    [0.0, 1.0],
+                    transform=div_ax.transAxes,
+                    color="#666",
+                    linewidth=1.6,
+                    alpha=0.8,
+                )
+            )
+            out_tripanel = section_output / build_output_filename(
+                metric="energy_spectrogram",
+                variable=str(var),
+                level=None,
+                qualifier="tripanel",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.savefig(out_tripanel, bbox_inches="tight", dpi=200)
+            plt.close(fig)
+            print(f"[energy_spectra] saved {out_tripanel}")
+
+        # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
+        if lsd_long_rows:
+            import pandas as _pd
+
+            ldf = _pd.DataFrame(lsd_long_rows)
+            out_long = section_output / build_output_filename(
+                metric="lsd_2d_metrics",
+                variable=None,
+                level=None,
+                qualifier="by_lead_long",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            ldf.to_csv(out_long, index=False)
+            wdf = ldf.pivot_table(index="lead_time_hours", columns="variable", values="LSD")
+            wdf = wdf.reset_index()
+            out_wide = section_output / build_output_filename(
+                metric="lsd_2d_metrics",
+                variable=None,
+                level=None,
+                qualifier="by_lead_wide",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            wdf.to_csv(out_wide, index=False)
+
+        if lsd_banded_long_rows:
+            bdf = _pd.DataFrame(lsd_banded_long_rows)
+            out_banded = section_output / build_output_filename(
+                metric="lsd_bands_2d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_lead_time",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            bdf.to_csv(out_banded, index=False)
+            print(f"[energy_spectra] saved {out_banded}")
+
+    # Completion message
+    if is_multi_lead:
+        print("[energy_spectra] Completed multi-lead spectrograms only.")
+    else:
+        print("[energy_spectra] Completed energy spectra metrics & plots.")
 
 
 def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:

@@ -143,6 +143,9 @@ class _DummyAxis:
     def plot(self, *a, **k):
         return None
 
+    def fill_between(self, *a, **k):
+        return None
+
     def loglog(self, *a, **k):
         return None
 
@@ -150,6 +153,12 @@ class _DummyAxis:
         return None
 
     def set_ylabel(self, *a, **k):
+        return None
+
+    def set_yticks(self, *a, **k):
+        return None
+
+    def set_yticklabels(self, *a, **k):
         return None
 
     def legend(self, *a, **k):
