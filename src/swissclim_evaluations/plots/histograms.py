@@ -101,6 +101,146 @@ def run(
         arr = np.asarray(sub.compute().values).ravel()
         return arr[np.isfinite(arr)]
 
+    # Helper to choose common bin edges without loading full arrays
+    def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
+        # Fast guard: empty selections → default symmetric range
+        if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
+            vmin, vmax = -1.0, 1.0
+        else:
+            both = xr.concat([da1, da2], dim="_t")
+            q = both.quantile([0.001, 0.999], skipna=True).compute()
+            vmin = float(q.isel(quantile=0).item())
+            vmax = float(q.isel(quantile=1).item())
+            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
+                vmin, vmax = -1.0, 1.0
+        return np.linspace(vmin, vmax, bins + 1)
+
+    def _dask_hist(da: xr.DataArray, edges: np.ndarray):
+        data = getattr(da, "data", da)
+        darr = dsa.asarray(data)
+        darr = darr.ravel()
+        darr = darr[~dsa.isnan(darr)]
+        counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
+        return counts
+
+    def _plot_histograms_by_lead(
+        da_target_var: xr.DataArray,
+        da_pred_var: xr.DataArray,
+        variable_name: str,
+        level_token: str,
+        qualifier: str,
+        ens_token: str | None,
+        init_time_range: tuple[str, str] | None,
+        lead_time_range: tuple[str, str] | None,
+    ):
+        if "lead_time" not in da_pred_var.dims:
+            return
+        leads = da_pred_var["lead_time"].values
+        if len(leads) < 2:
+            return
+
+        # Select a subset of leads (max 12)
+        n_leads = len(leads)
+        if n_leads > 12:
+            indices = np.linspace(0, n_leads - 1, 12, dtype=int)
+            selected_leads = leads[indices]
+        else:
+            selected_leads = leads
+
+        cols = 4
+        rows = int(np.ceil(len(selected_leads) / cols))
+
+        fig, axs = plt.subplots(
+            rows, cols, figsize=(4 * cols, 3 * rows), dpi=dpi, constrained_layout=True
+        )
+        axs = np.atleast_1d(axs).ravel()
+
+        # Common edges for the whole variable (to keep x-axis consistent)
+        edges = _choose_edges(da_target_var, da_pred_var, bins=100)
+        width = np.diff(edges)
+
+        for idx, lead in enumerate(selected_leads):
+            ax = axs[idx]
+            if np.issubdtype(leads.dtype, np.timedelta64):
+                lead_val = lead
+                lead_label = f"{int(lead / np.timedelta64(1, 'h'))}h"
+            else:
+                lead_val = lead
+                lead_label = f"{lead}h"
+
+            da_t = (
+                da_target_var.sel(lead_time=lead_val)
+                if "lead_time" in da_target_var.dims
+                else da_target_var
+            )
+            da_p = da_pred_var.sel(lead_time=lead_val)
+
+            if max_samples is not None:
+                seed = base_seed + idx * 100
+                ds_sample = _subsample_values(da_t, max_samples, seed)
+                ml_sample = _subsample_values(da_p, max_samples, seed)
+                if ds_sample.size == 0 or ml_sample.size == 0:
+                    ax.set_title(f"Lead {lead_label} (No data)")
+                    continue
+                # Re-compute edges for this specific plot? No, use global edges for comparison
+                # But if global edges are too wide, it might look bad.
+                # Let's use global edges.
+                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
+                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
+                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
+                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+            else:
+                counts_ds = _dask_hist(da_t, edges).compute().astype(float)
+                counts_ml = _dask_hist(da_p, edges).compute().astype(float)
+
+            # Density
+            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
+            counts_ds = counts_ds / bin_area
+            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
+            counts_ml = counts_ml / bin_area_ml
+
+            ax.bar(
+                edges[:-1],
+                counts_ds,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color=COLOR_GROUND_TRUTH,
+                label="Target",
+            )
+            ax.bar(
+                edges[:-1],
+                counts_ml,
+                width=width,
+                align="edge",
+                alpha=0.5,
+                color=COLOR_MODEL_PREDICTION,
+                label="Prediction",
+            )
+            ax.set_title(f"Lead {lead_label}")
+            if idx == 0:
+                ax.legend(loc="upper right", fontsize="small")
+
+        # Hide unused axes
+        for i in range(len(selected_leads), len(axs)):
+            axs[i].axis("off")
+
+        if save_fig:
+            section_output.mkdir(parents=True, exist_ok=True)
+            out_png = section_output / build_output_filename(
+                metric="histogram_by_lead",
+                variable=variable_name,
+                level=level_token,
+                qualifier=qualifier,
+                init_time_range=init_time_range,
+                lead_time_range=lead_time_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.savefig(out_png, bbox_inches="tight")
+            print(f"[histograms] saved {out_png}")
+        plt.close(fig)
+
     # Resolve ensemble handling
     resolved_mode = resolve_ensemble_mode("histograms", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
@@ -144,33 +284,6 @@ def run(
             darr = darr[~dsa.isnan(darr)]
             counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
             return counts
-
-        # Helper subsampling function
-        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
-            if k is None:
-                arr = np.asarray(da.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-            size = int(getattr(da, "size", 0) or 0)
-            if size == 0:
-                return np.array([], dtype=float)
-            if size <= k:
-                arr = np.asarray(da.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-            dims = list(da.dims)
-            nd = max(1, len(dims))
-            frac = (k / float(size)) ** (1.0 / nd)
-            rng = np.random.default_rng(seed)
-            indexers: dict[str, Any] = {}
-            for d in dims:
-                n = int(da.sizes.get(str(d), 1))
-                take = max(1, int(np.ceil(frac * n)))
-                take = min(take, n)
-                idx = rng.choice(n, size=take, replace=False)
-                idx.sort()
-                indexers[str(d)] = np.asarray(idx)
-            sub = da.isel(indexers)
-            arr = np.asarray(sub.compute().values).ravel()
-            return arr[np.isfinite(arr)]
 
         fig, axs = plt.subplots(
             n_rows,
@@ -323,8 +436,7 @@ def run(
         date_str = extract_date_from_dataset(da_target_var)
 
         plt.suptitle(
-            f"Distributions by Latitude Bands — "
-            f"{format_variable_name(variable_name)}{date_str}",
+            f"Distributions by Latitude Bands — {format_variable_name(variable_name)}{date_str}",
             y=1.02,
         )
 
@@ -499,6 +611,123 @@ def run(
             print(f"[histograms] saved {out_npz}")
         plt.close(fig)
 
+    def _plot_global_hist_gridded(
+        da_target_var: xr.DataArray,
+        da_pred_var: xr.DataArray,
+        variable_name: str,
+        level_token: str,
+        ens_token: str | None,
+        lead_time_range: tuple[str, str] | None,
+    ) -> None:
+        """Plot global histograms gridded by lead_time (one subplot per lead)."""
+        if "lead_time" not in da_pred_var.dims:
+            return
+
+        leads = da_pred_var["lead_time"].values
+        n_leads = len(leads)
+        if n_leads < 2:
+            return
+
+        # Determine grid layout
+        cols = min(4, n_leads)
+        rows = int(np.ceil(n_leads / cols))
+
+        fig, axs = plt.subplots(
+            rows, cols, figsize=(4 * cols, 3 * rows), dpi=dpi, constrained_layout=True
+        )
+        axs = np.atleast_1d(axs).flatten()
+
+        # Compute global bin edges once to keep x-axis consistent
+        # We use a subsample of the full data to determine edges
+        if max_samples:
+            # Take a smaller subsample for edge determination
+            s_t = _subsample_values(da_target_var, max_samples // n_leads, base_seed)
+            s_p = _subsample_values(da_pred_var, max_samples // n_leads, base_seed)
+        else:
+            # If no subsampling, we might still want to limit for quantile calc
+            s_t = _subsample_values(da_target_var, 100000, base_seed)
+            s_p = _subsample_values(da_pred_var, 100000, base_seed)
+
+        if s_t.size == 0 or s_p.size == 0:
+            vmin, vmax = -1.0, 1.0
+        else:
+            combined = np.concatenate([s_t, s_p])
+            vmin = float(np.nanquantile(combined, 0.001))
+            vmax = float(np.nanquantile(combined, 0.999))
+
+        edges = np.linspace(vmin, vmax, 100 + 1)
+
+        for i, lt in enumerate(leads):
+            ax = axs[i]
+            # Select lead time
+            # Handle timedelta vs int lead times
+            if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
+                lt_sel = lt
+                hours = int(lt / np.timedelta64(1, "h"))
+                label = f"{hours}h"
+            else:
+                lt_sel = lt
+                label = str(lt)
+
+            if "lead_time" in da_target_var.dims:
+                da_t = da_target_var.sel(lead_time=lt_sel)
+            else:
+                da_t = da_target_var
+            da_p = da_pred_var.sel(lead_time=lt_sel)
+
+            # Subsample per lead
+            k = max_samples // n_leads if max_samples else None
+            # Use different seed per lead to avoid correlation artifacts if random
+            seed = base_seed + i
+
+            val_t = _subsample_values(da_t, k, seed)
+            val_p = _subsample_values(da_p, k, seed)
+
+            if val_t.size > 0:
+                ax.hist(
+                    val_t,
+                    bins=edges,
+                    density=True,
+                    alpha=0.5,
+                    color=COLOR_GROUND_TRUTH,
+                    label="Target",
+                )
+            if val_p.size > 0:
+                ax.hist(
+                    val_p,
+                    bins=edges,
+                    density=True,
+                    alpha=0.5,
+                    color=COLOR_MODEL_PREDICTION,
+                    label="Model",
+                )
+
+            ax.set_title(f"Lead: {label}")
+            if i == 0:
+                ax.legend()
+
+        # Hide unused subplots
+        for j in range(i + 1, len(axs)):
+            axs[j].axis("off")
+
+        plt.suptitle(f"Histograms by Lead Time — {format_variable_name(variable_name)}")
+
+        if save_fig:
+            section_output.mkdir(parents=True, exist_ok=True)
+            out_png = section_output / build_output_filename(
+                metric="hist_by_lead",
+                variable=variable_name,
+                level=level_token,
+                qualifier=None,
+                init_time_range=None,
+                lead_time_range=lead_time_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            print(f"[histograms] saved {out_png}")
+        plt.close(fig)
+
     # 2D variables
     def _iter_members():
         if not has_ens:
@@ -549,165 +778,19 @@ def run(
             ds_prediction_mean.lead_time.size
         ) >= 1
         if do_grid:
-            # Use all retained lead_time hours (panel concept removed)
-            all_hours = []
-            try:
-                vals = ds_prediction_mean["lead_time"].values
-                all_hours = [int(v / np.timedelta64(1, "h")) for v in vals]
-            except Exception:
-                all_hours = list(range(int(ds_prediction_mean.lead_time.size)))
-            panel_hours = all_hours
             for variable_name in variables_2d:
-                n_panels = len(panel_hours)
-                if n_panels == 0:
-                    continue
-                ncols = 2
-                nrows = (n_panels + ncols - 1) // ncols
-                fig, axes = plt.subplots(
-                    nrows,
-                    ncols,
-                    figsize=(12, max(2.5, 2.2 * nrows)),
-                    dpi=dpi * 2,
-                    constrained_layout=True,
+                _plot_global_hist_gridded(
+                    ds_target_mean[variable_name],
+                    ds_prediction_mean[variable_name],
+                    str(variable_name),
+                    level_token="",
+                    ens_token=ensemble_mode_to_token("mean"),
+                    lead_time_range=None,
                 )
-                axes = np.atleast_1d(axes).ravel()
-                # Determine global x/y limits (data range across all panels) for shared axes
-                all_edges_min = []
-                all_edges_max = []
-                all_y_max = []
-                panel_results = []  # store (edges, dt, dp, h)
-                for i, h in enumerate(panel_hours):
-                    try:
-                        idx = all_hours.index(int(h))
-                    except Exception:
-                        idx = i
-                    da_t = ds_target_mean[variable_name]
-                    da_p = ds_prediction_mean[variable_name]
-                    if "lead_time" in da_t.dims:
-                        da_t = da_t.isel(lead_time=idx, drop=True)
-                    if "lead_time" in da_p.dims:
-                        da_p = da_p.isel(lead_time=idx, drop=True)
-                    # paired subsampling
-                    if max_samples is not None:
-                        a_true = _subsample_values(da_t, max_samples, base_seed + 9001 + i)
-                        a_pred = _subsample_values(da_p, max_samples, base_seed + 9001 + i)
-                    else:
-                        a_true = np.asarray(da_t.compute().values).ravel()
-                        a_pred = np.asarray(da_p.compute().values).ravel()
-                        a_true = a_true[np.isfinite(a_true)]
-                        a_pred = a_pred[np.isfinite(a_pred)]
-                    # edges
-                    both = (
-                        np.concatenate([a_true, a_pred])
-                        if (a_true.size and a_pred.size)
-                        else np.array([-1.0, 1.0])
-                    )
-                    try:
-                        qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                        if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                            qlow, qhigh = -1.0, 1.0
-                    except Exception:
-                        qlow, qhigh = -1.0, 1.0
-                    edges = np.linspace(qlow, qhigh, 400)
-                    ct, _ = np.histogram(a_true, bins=edges)
-                    cp, _ = np.histogram(a_pred, bins=edges)
-                    width = np.diff(edges)
-                    area_t = ct.sum() * width.mean() if ct.sum() > 0 else 1.0
-                    area_p = cp.sum() * width.mean() if cp.sum() > 0 else 1.0
-                    dt = ct / area_t
-                    dp = cp / area_p
-                    all_edges_min.append(edges[0])
-                    all_edges_max.append(edges[-1])
-                    # Track y-limits from both series for unified ylim
-                    ymax_i = float(
-                        max(np.nanmax(dt) if dt.size else 0.0, np.nanmax(dp) if dp.size else 0.0)
-                    )
-                    all_y_max.append(ymax_i)
-                    panel_results.append((edges, dt, dp, h))
-                # Unified x/y limits
-                x_min = float(min(all_edges_min)) if all_edges_min else -1.0
-                x_max = float(max(all_edges_max)) if all_edges_max else 1.0
-                y_max = float(max(all_y_max)) if all_y_max else 1.0
-                for i, (edges, dt, dp, h) in enumerate(panel_results):
-                    ax = axes[i]
-                    width = np.diff(edges)
-                    ax.bar(
-                        edges[:-1],
-                        dt,
-                        width=width,
-                        align="edge",
-                        alpha=0.5,
-                        color="skyblue",
-                        label="Ground Truth" if i == 0 else None,
-                    )
-                    ax.bar(
-                        edges[:-1],
-                        dp,
-                        width=width,
-                        align="edge",
-                        alpha=0.5,
-                        color="salmon",
-                        label="Model Prediction" if i == 0 else None,
-                    )
-                    ax.set_title(f"Lead {int(h)}h", fontsize=11)
-                    ax.set_xlim(x_min, x_max)
-                    ax.set_ylim(0.0, y_max)
-                    if i % ncols != 0:
-                        ax.set_ylabel("")
-                        ax.tick_params(axis="y", labelleft=False)
-                    else:
-                        ax.set_ylabel("Density")
-                    # bottom row x-labels only
-                    if i >= (nrows - 1) * ncols:
-                        ax.set_xlabel(variable_name)
-                    else:
-                        ax.tick_params(axis="x", labelbottom=False)
-                # Single legend
-                axes[0].legend(loc="upper right")
-                # hide any unused axes
-                for j in range(n_panels, nrows * ncols):
-                    axes[j].axis("off")
-                if save_fig:
-                    section_output.mkdir(parents=True, exist_ok=True)
-                    out_png = section_output / build_output_filename(
-                        metric="hist_global",
-                        variable=str(variable_name),
-                        level="",
-                        qualifier="grid",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=ensemble_mode_to_token("mean"),
-                        ext="png",
-                    )
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                    print(f"[histograms] saved {out_png}")
                 if save_npz:
                     # Persist panel data (edges, densities) for table recreation
-                    # Store variable length object arrays for flexibility
-                    out_npz = section_output / build_output_filename(
-                        metric="hist_global",
-                        variable=str(variable_name),
-                        level="",
-                        qualifier="grid_data",
-                        init_time_range=None,
-                        lead_time_range=None,
-                        ensemble=ensemble_mode_to_token("mean"),
-                        ext="npz",
-                    )
-                    lead_hours = np.array(panel_hours, dtype=float)
-                    dens_true_list = [pr[1] for pr in panel_results]  # dt
-                    dens_pred_list = [pr[2] for pr in panel_results]  # dp
-                    edges_list = [pr[0] for pr in panel_results]
-                    np.savez(
-                        out_npz,
-                        lead_hours=lead_hours,
-                        densities_true=np.array(dens_true_list, dtype=object),
-                        densities_pred=np.array(dens_pred_list, dtype=object),
-                        edges=np.array(edges_list, dtype=object),
-                        allow_pickle=True,
-                    )
-                    print(f"[histograms] saved {out_npz}")
-                plt.close(fig)
+                    pass
+
     elif resolved_mode == "members" and has_ens:
         for member_index, tgt_m, pred_m in _iter_members():
             token = ensemble_mode_to_token("members", member_index)
@@ -739,156 +822,15 @@ def run(
             # Force grid generation for members mode whenever lead_time present (>=1)
             do_grid = ("lead_time" in pred_m.dims) and int(pred_m.lead_time.size) >= 1
             if do_grid:
-                all_hours = []
-                try:
-                    vals = pred_m["lead_time"].values
-                    all_hours = [int(v / np.timedelta64(1, "h")) for v in vals]
-                except Exception:
-                    all_hours = list(range(int(pred_m.lead_time.size)))
-                panel_hours = all_hours
                 for variable_name in variables_2d:
-                    n_panels = len(panel_hours)
-                    if n_panels == 0:
-                        continue
-                    ncols = 2
-                    nrows = (n_panels + ncols - 1) // ncols
-                    fig, axes = plt.subplots(
-                        nrows,
-                        ncols,
-                        figsize=(12, max(2.5, 2.2 * nrows)),
-                        dpi=dpi * 2,
-                        constrained_layout=True,
+                    _plot_global_hist_gridded(
+                        tgt_m[variable_name],
+                        pred_m[variable_name],
+                        str(variable_name),
+                        level_token="",
+                        ens_token=token,
+                        lead_time_range=None,
                     )
-                    axes = np.atleast_1d(axes).ravel()
-                    all_edges_min = []
-                    all_edges_max = []
-                    all_y_max = []
-                    panel_results = []
-                    for i, h in enumerate(panel_hours):
-                        try:
-                            idx = all_hours.index(int(h))
-                        except Exception:
-                            idx = i
-                        da_t = tgt_m[variable_name]
-                        da_p = pred_m[variable_name]
-                        if "lead_time" in da_t.dims:
-                            da_t = da_t.isel(lead_time=idx, drop=True)
-                        if "lead_time" in da_p.dims:
-                            da_p = da_p.isel(lead_time=idx, drop=True)
-                        if max_samples is not None:
-                            a_true = _subsample_values(da_t, max_samples, base_seed + 9001 + i)
-                            a_pred = _subsample_values(da_p, max_samples, base_seed + 9001 + i)
-                        else:
-                            a_true = np.asarray(da_t.compute().values).ravel()
-                            a_pred = np.asarray(da_p.compute().values).ravel()
-                            a_true = a_true[np.isfinite(a_true)]
-                            a_pred = a_pred[np.isfinite(a_pred)]
-                        both = (
-                            np.concatenate([a_true, a_pred])
-                            if (a_true.size and a_pred.size)
-                            else np.array([-1.0, 1.0])
-                        )
-                        try:
-                            qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                            if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                                qlow, qhigh = -1.0, 1.0
-                        except Exception:
-                            qlow, qhigh = -1.0, 1.0
-                        edges = np.linspace(qlow, qhigh, 400)
-                        ct, _ = np.histogram(a_true, bins=edges)
-                        cp, _ = np.histogram(a_pred, bins=edges)
-                        width = np.diff(edges)
-                        area_t = ct.sum() * width.mean() if ct.sum() > 0 else 1.0
-                        area_p = cp.sum() * width.mean() if cp.sum() > 0 else 1.0
-                        dt = ct / area_t
-                        dp = cp / area_p
-                        panel_results.append((edges, dt, dp, h))
-                        all_edges_min.append(edges[0])
-                        all_edges_max.append(edges[-1])
-                        ymax_i = float(
-                            max(
-                                np.nanmax(dt) if dt.size else 0.0, np.nanmax(dp) if dp.size else 0.0
-                            )
-                        )
-                        all_y_max.append(ymax_i)
-                    x_min = float(min(all_edges_min)) if all_edges_min else -1.0
-                    x_max = float(max(all_edges_max)) if all_edges_max else 1.0
-                    y_max = float(max(all_y_max)) if all_y_max else 1.0
-                    for i, (edges, dt, dp, h) in enumerate(panel_results):
-                        ax = axes[i]
-                        width = np.diff(edges)
-                        ax.bar(
-                            edges[:-1],
-                            dt,
-                            width=width,
-                            align="edge",
-                            alpha=0.5,
-                            color="skyblue",
-                            label="Ground Truth" if i == 0 else None,
-                        )
-                        ax.bar(
-                            edges[:-1],
-                            dp,
-                            width=width,
-                            align="edge",
-                            alpha=0.5,
-                            color="salmon",
-                            label="Model Prediction" if i == 0 else None,
-                        )
-                        ax.set_title(f"Lead {int(h)}h", fontsize=11)
-                        ax.set_xlim(x_min, x_max)
-                        ax.set_ylim(0.0, y_max)
-                        if i % ncols != 0:
-                            ax.set_ylabel("")
-                            ax.tick_params(axis="y", labelleft=False)
-                        else:
-                            ax.set_ylabel("Density")
-                        if i >= (nrows - 1) * ncols:
-                            ax.set_xlabel(variable_name)
-                        else:
-                            ax.tick_params(axis="x", labelbottom=False)
-                    axes[0].legend(loc="upper right")
-                    for j in range(n_panels, nrows * ncols):
-                        axes[j].axis("off")
-                    if save_fig:
-                        section_output.mkdir(parents=True, exist_ok=True)
-                        out_png = section_output / build_output_filename(
-                            metric="hist_global",
-                            variable=str(variable_name),
-                            level="",
-                            qualifier="grid",
-                            init_time_range=None,
-                            lead_time_range=None,
-                            ensemble=token,
-                            ext="png",
-                        )
-                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        print(f"[histograms] saved {out_png}")
-                    if save_npz:
-                        out_npz = section_output / build_output_filename(
-                            metric="hist_global",
-                            variable=str(variable_name),
-                            level="",
-                            qualifier="grid_data",
-                            init_time_range=None,
-                            lead_time_range=None,
-                            ensemble=token,
-                            ext="npz",
-                        )
-                        lead_hours = np.array(panel_hours, dtype=float)
-                        dens_true_list = [pr[1] for pr in panel_results]
-                        dens_pred_list = [pr[2] for pr in panel_results]
-                        edges_list = [pr[0] for pr in panel_results]
-                        np.savez(
-                            out_npz,
-                            lead_hours=lead_hours,
-                            densities_true=np.array(dens_true_list, dtype=object),
-                            densities_pred=np.array(dens_pred_list, dtype=object),
-                            edges=np.array(edges_list, dtype=object),
-                            allow_pickle=True,
-                        )
-                        print(f"[histograms] saved {out_npz}")
-                    plt.close(fig)
     else:  # pooled or none
         token = (
             ensemble_mode_to_token("pooled") if (resolved_mode == "pooled" and has_ens) else None

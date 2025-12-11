@@ -273,7 +273,8 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 if dim_name == "time" and mode != "first" and max_h is not None:
                     end = end + np.timedelta64(int(max_h), "h")
             except Exception:
-                # If any error occurs while extending the end bound, fall back to the original end value.
+                # If any error occurs while extending the end bound,
+                # fall back to the original end value.
                 pass
             mask_arr |= (vals >= start) & (vals <= end)
 

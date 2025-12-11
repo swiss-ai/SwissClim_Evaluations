@@ -80,6 +80,108 @@ def _compute_nmae(
     return nmae
 
 
+def _compute_nmae_per_lead(
+    true_da: xr.DataArray,
+    pred_da: xr.DataArray,
+    level_values: Sequence[int | float],
+    weights: xr.DataArray | None = None,
+) -> xr.DataArray:
+    """Compute NMAE per level and lead_time (percentage)."""
+    # Select levels
+    sub_true = true_da.sel(level=level_values).astype("float32")
+    sub_pred = pred_da.sel(level=level_values).astype("float32")
+
+    if sub_true.size == 0:
+        return xr.DataArray()
+
+    candidate_dims = [
+        "time",
+        "init_time",
+        # "lead_time",  <-- Keep lead_time
+        "latitude",
+        "longitude",
+        "ensemble",
+    ]
+    reduce_dims = [d for d in candidate_dims if (d in sub_true.dims) or (d in sub_pred.dims)]
+    reduce_dims_true = [d for d in candidate_dims if d in sub_true.dims]
+
+    diff = (sub_pred - sub_true).astype("float32")
+    abs_err = np.abs(diff)
+
+    if weights is not None:
+        mae = abs_err.weighted(weights).mean(dim=reduce_dims, skipna=True)
+    else:
+        mae = abs_err.mean(dim=reduce_dims, skipna=True)
+
+    t_max = sub_true.max(dim=reduce_dims_true, skipna=True)
+    t_min = sub_true.min(dim=reduce_dims_true, skipna=True)
+    delta = (t_max - t_min).astype("float32")
+
+    nmae = (mae / delta.where(delta != 0)).where(delta != 0)
+    nmae = (nmae * 100.0).fillna(0.0).astype("float32")
+    nmae.name = "nmae"
+    return nmae
+
+
+def _plot_vertical_profile_evolution(
+    nmae_da: xr.DataArray,
+    variable_name: str,
+    ens_token: str | None,
+    out_root: Path,
+    dpi: int,
+    save_fig: bool,
+) -> None:
+    if "lead_time" not in nmae_da.dims or nmae_da.sizes["lead_time"] < 2:
+        return
+
+    leads = nmae_da["lead_time"].values
+    levels = nmae_da["level"].values
+
+    # Convert leads to hours
+    if np.issubdtype(leads.dtype, np.timedelta64):
+        lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+    else:
+        lead_hours = leads
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi)
+
+    # Contour plot
+    # X: lead_time, Y: level (inverted usually for pressure)
+    X, Y = np.meshgrid(lead_hours, levels)
+    # Transpose to (level, lead_time)
+    if nmae_da.dims != ("level", "lead_time"):
+        nmae_da = nmae_da.transpose("level", "lead_time")
+    Z = nmae_da.values
+
+    im = ax.contourf(X, Y, Z, cmap="viridis", levels=20)
+    fig.colorbar(im, ax=ax, label="NMAE [%]")
+
+    ax.set_xlabel("Lead Time [h]")
+    ax.set_ylabel("Level")
+    # Heuristic for pressure levels: usually descending or large values
+    # Standard convention for vertical profiles (top is low pressure)
+    ax.invert_yaxis()
+
+    ax.set_title(f"Vertical Profile Evolution — {format_variable_name(variable_name)}")
+
+    if save_fig:
+        section_output = out_root / "vertical_profiles"
+        section_output.mkdir(parents=True, exist_ok=True)
+        out_png = section_output / build_output_filename(
+            metric="vertical_profile_evolution",
+            variable=variable_name,
+            level=None,
+            qualifier=None,
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=ens_token,
+            ext="png",
+        )
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        print(f"[vertical_profiles] saved {out_png}")
+    plt.close(fig)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -563,3 +665,46 @@ def run(
                         nmae_grid=grid,
                     )
                     print(f"[vertical_profiles] saved {out_npz2}")
+
+        # Compute and plot per-lead NMAE vertical profiles
+        nmae_lead = _compute_nmae_per_lead(
+            ds_target[var], ds_prediction[var], level_values, weights
+        )
+        if nmae_lead.size > 0:
+            # Emit NPZ with all data
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="vprof_nmae",
+                    variable=str(var),
+                    level="multi",
+                    qualifier="all_leads",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_dict = {
+                    "nmae": nmae_lead.values,
+                    "level": np.asarray(level_values),
+                }
+                if "lead_time" in ds_prediction:
+                    save_dict["lead_time"] = ds_prediction["lead_time"].values
+
+                np.savez(out_npz, **save_dict)
+                print(f"[vertical_profiles] saved {out_npz}")
+
+            # Plot evolution of vertical profile (contour plot)
+            _plot_vertical_profile_evolution(
+                nmae_lead,
+                variable_name=var,
+                ens_token=ens_token,
+                out_root=out_root,
+                dpi=dpi,
+                save_fig=save_fig,
+            )
+
+    # Final debug output: list all generated files
+    if (save_fig or save_npz) and section_output.exists():
+        print("[vertical_profiles] output files:")
+        for p in sorted(section_output.glob("*")):
+            print(f"  {p.name}")

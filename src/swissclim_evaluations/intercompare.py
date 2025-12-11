@@ -588,136 +588,159 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     c.warn("No lines were added to the plot; no output saved.")
                 plt.close(fig_r)
 
-    # Collect NPZ patterns (new first, fallback to legacy)
-    # Adapt to new standardized naming: lsd_metric_variable_* files replaced by
-    # build_output_filename outputs
-    # Fallback to legacy glob if any remain
-    # New simplified assumption: spectra NPZ basenames already uniform.
-    # Retain backward compatibility not required; only support existing saved spectrum npz.
-    surf = _common_files(models, str(src_rel / "*_spectrum*.npz"))
-    if not surf:
-        c.warn("No common energy spectra files found. Skipping plots.")
-    if surf:
-        _print_file_list(f"Found {len(surf)} common energy spectra files", surf)
+    # 4) Plot Energy Spectra per Lead Time (from bundle NPZ)
+    # Look for energy_spectrogram_*_bundle.npz
+    bundles = _common_files(models, str(src_rel / "energy_spectrogram_*_bundle.npz"))
+    if bundles:
+        _print_file_list(f"Found {len(bundles)} common energy spectra bundles", bundles)
 
-    lsd_csv = _common_files(models, str(src_rel / "lsd_*.csv"))
-    if lsd_csv:
-        _print_file_list(f"Found {len(lsd_csv)} common LSD CSV files", lsd_csv)
-    # Plot all energy spectra files (surface/level determined dynamically)
-    if surf:
-        _plot_group(surf)
+        for base in bundles:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
 
-    # Combine LSD summary across models
-    # We separate 2D and 3D metrics to avoid confusing combined outputs
-    lsd_2d_rows: list[pd.DataFrame] = []
-    lsd_3d_rows: list[pd.DataFrame] = []
-    lsd_2d_rows_lvl: list[pd.DataFrame] = []
-    lsd_3d_rows_lvl: list[pd.DataFrame] = []
+            # Check if all have necessary keys
+            if not all(
+                "energy_model" in p and "lead_hours" in p and "wavenumber" in p for p in payloads
+            ):
+                continue
 
-    lsd_banded_2d_rows: list[pd.DataFrame] = []
-    lsd_banded_3d_rows: list[pd.DataFrame] = []
-    lsd_banded_2d_rows_lvl: list[pd.DataFrame] = []
-    lsd_banded_3d_rows_lvl: list[pd.DataFrame] = []
+            # Assume lead_hours and wavenumber are same for all models
+            lead_hours = payloads[0]["lead_hours"]
+            wavenumber = payloads[0]["wavenumber"]
+            variable = payloads[0].get("variable", "var")
 
+            # Iterate over lead times
+            for i, h in enumerate(lead_hours):
+                fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+
+                # Plot Target (from first model, assuming same target)
+                if "energy_target" in payloads[0]:
+                    et = payloads[0]["energy_target"]
+                    if et.ndim == 2 and et.shape[0] > i:
+                        with contextlib.suppress(Exception):
+                            ax.loglog(
+                                wavenumber[2:-2],
+                                et[i, 2:-2],
+                                color=COLOR_GROUND_TRUTH,
+                                lw=2.0,
+                                label="Target",
+                            )
+
+                colors = sns.color_palette("tab10", n_colors=len(models))
+                for j, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    em = pay["energy_model"]
+                    if em.ndim == 2 and em.shape[0] > i:
+                        with contextlib.suppress(Exception):
+                            ax.loglog(
+                                wavenumber[2:-2],
+                                em[i, 2:-2],
+                                label=lab,
+                                color=colors[j],
+                            )
+
+                ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+                ax.set_ylabel("Energy Density (weighted)")
+                ax.set_title(
+                    f"Energy Spectra — {format_variable_name(str(variable))} (Lead {int(h)}h)"
+                )
+                ax.grid(True, which="both", ls="--", alpha=0.4)
+
+                # Add wavelength axis
+                k_min, k_max = ax.get_xlim()
+                add_wavelength_axis(ax, k_min, k_max)
+
+                ax.legend(frameon=False)
+
+                # Save plot
+                out_png = dst / f"energy_spectrum_{variable}_lead{int(h):03d}h_compare.png"
+                plt.tight_layout()
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                plt.close(fig)
+
+        c.success(f"Saved per-lead energy spectra plots to {dst.relative_to(out_root)}")
+
+
+def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine ETS metrics from multiple models and plot vs lead time."""
+    dst_ets = _ensure_dir(out_root / "ets")
+
+    # Availability report
+    per_model, _, uni = _scan_model_sets(models, "ets/ets_metrics_by_lead_wide.csv")
+    _report_missing("ets_metrics", models, labels, per_model, uni)
+
+    results = {}
+    all_ets = _common_files(models, "ets/ets_metrics_by_lead_wide.csv")
+    results["ETS Metrics (Wide)"] = 1 if all_ets else 0
+    _report_checklist("ets_metrics", results)
+
+    if not all_ets:
+        c.warn("No common ETS wide metrics files found. Skipping plots.")
+        return
+
+    # Combine wide CSVs
+    frames: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        # Averaged (2D & 3D)
-        for f in (m / src_rel).glob("lsd_*metrics_*averaged*.csv"):
+        f = m / "ets" / "ets_metrics_by_lead_wide.csv"
+        if f.is_file():
             try:
                 df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                frames.append(df)
             except Exception:
+                pass
+
+    if not frames:
+        return
+
+    combined = pd.concat(frames, ignore_index=True)
+    if combined["model"].nunique() >= 2:
+        out_csv = dst_ets / "ets_metrics_combined.csv"
+        combined.to_csv(out_csv, index=False)
+        c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+        # Plot ETS vs Lead Time per (Variable, Threshold)
+        # Columns are: model, lead_time_hours, <var>_ETS <thresh>%
+        # We need to identify metric columns
+        meta_cols = {"model", "lead_time_hours", "Unnamed: 0"}
+        metric_cols = [c for c in combined.columns if c not in meta_cols]
+
+        # Group by variable and threshold
+        # Expected format: "{var}_ETS {thresh}%"
+        # We can parse this
+        for col in metric_cols:
+            if "_ETS " not in col:
                 continue
 
-            # Normalize 3D wide format (variables as columns) to long format (variable column)
-            # 2D metrics have 'lsd_mean' column; 3D metrics (wide) do not.
-            if "lsd_mean" not in df.columns:
-                # Identify potential ID columns
-                id_vars = [c for c in df.columns if c in ("Height Level", "level", "Unnamed: 0")]
-                # If no ID column found but index might be meaningful (though read_csv usually makes
-                # it a column if named)
-                if not id_vars and df.index.name in ("Height Level", "level"):
-                    df = df.reset_index()
-                    id_vars = [df.columns[0]]
-
-                if id_vars:
-                    # Melt to long format: id_vars, variable, lsd_mean
-                    df = df.melt(id_vars=id_vars, var_name="variable", value_name="lsd_mean")
-                    # Standardize level column name if possible
-                    if "Height Level" in df.columns:
-                        df = df.rename(columns={"Height Level": "level"})
-                else:
-                    # Log a warning if no ID columns are found and melting is skipped
-                    if "c" in globals():
-                        c.warn(
-                            f"[intercompare] No ID columns found for melting in file '{f}'. "
-                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
-                        )
-                    else:
-                        print(
-                            f"WARNING [intercompare] No ID columns found for melting in file '{f}'."
-                            f"Columns: {list(df.columns)}. Dataframe not normalized to long format."
-                        )
-
-            if "variable" not in df.columns and "Unnamed: 0" in df.columns:
-                df = df.rename(columns={"Unnamed: 0": "variable"})
-            df.insert(0, "model", lab)
-            df["source_file"] = f.name
-
-            is_3d = "3d" in f.name
-            if "bands" in f.name:
-                if is_3d:
-                    lsd_banded_3d_rows.append(df)
-                else:
-                    lsd_banded_2d_rows.append(df)
-            else:
-                if is_3d:
-                    lsd_3d_rows.append(df)
-                else:
-                    lsd_2d_rows.append(df)
-
-        # Per-level (2D & 3D)
-        for f in (m / src_rel).glob("lsd_*metrics_*per_level*.csv"):
+            # Extract variable and threshold for title
+            # This is a bit heuristic, assuming var doesn't contain "_ETS "
             try:
-                df = pd.read_csv(f)
-            except Exception:
-                continue
-            if "variable" not in df.columns and "Unnamed: 0" in df.columns:
-                df = df.rename(columns={"Unnamed: 0": "variable"})
-            df.insert(0, "model", lab)
-            df["source_file"] = f.name
+                var_part, thresh_part = col.split("_ETS ", 1)
+            except ValueError:
+                var_part = col
+                thresh_part = ""
 
-            is_3d = "3d" in f.name
-            if "bands" in f.name:
-                if is_3d:
-                    lsd_banded_3d_rows_lvl.append(df)
-                else:
-                    lsd_banded_2d_rows_lvl.append(df)
-            else:
-                if is_3d:
-                    lsd_3d_rows_lvl.append(df)
-                else:
-                    lsd_2d_rows_lvl.append(df)
+            pivot = combined.pivot(
+                index="lead_time_hours", columns="model", values=col
+            ).sort_index()
 
-    # Helper to save combined CSVs
-    def _save_combined(rows: list[pd.DataFrame], name: str) -> None:
-        if not rows:
-            return
-        dfc = pd.concat(rows, ignore_index=True)
-        if dfc["model"].nunique() >= 2:
-            out_csv = dst / name
-            dfc.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv}")
+            if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
 
-    _save_combined(lsd_2d_rows, "lsd_2d_metrics_averaged_combined.csv")
-    _save_combined(lsd_3d_rows, "lsd_3d_metrics_averaged_combined.csv")
+                title = f"ETS vs Lead Time — {format_variable_name(var_part)}"
+                if thresh_part:
+                    title += f" ({thresh_part})"
 
-    _save_combined(lsd_2d_rows_lvl, "lsd_2d_metrics_per_level_combined.csv")
-    _save_combined(lsd_3d_rows_lvl, "lsd_3d_metrics_per_level_combined.csv")
+                ax.set_title(title)
+                ax.set_ylabel("ETS")
+                ax.set_xlabel("Lead Time (h)")
+                ax.grid(True, linestyle="--", alpha=0.6)
+                plt.tight_layout()
 
-    _save_combined(lsd_banded_2d_rows, "lsd_bands_2d_metrics_averaged_combined.csv")
-    _save_combined(lsd_banded_3d_rows, "lsd_bands_3d_metrics_averaged_combined.csv")
-
-    _save_combined(lsd_banded_2d_rows_lvl, "lsd_bands_2d_metrics_per_level_combined.csv")
-    _save_combined(lsd_banded_3d_rows_lvl, "lsd_bands_3d_metrics_per_level_combined.csv")
+                safe_col = col.replace(" ", "_").replace("%", "pct")
+                out_png = dst_ets / f"ets_{safe_col}_compare.png"
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_png.relative_to(out_root)}")
+                plt.close(fig)
 
 
 def _clean_var_from_filename(filename: str, prefix: str = "") -> str:
@@ -1514,602 +1537,352 @@ def intercompare_deterministic_metrics(
                 f"Saved {(dst_det / 'metrics_standardized_combined.csv').relative_to(out_root)}"
             )
 
+    # 2) Combine per-lead-time CSV metrics (e.g. RMSE vs lead_time)
+    temporal_rows: list[dict] = []
+    for lab, m in zip(labels, models, strict=False):
+        # Find all per-lead CSVs
+        csv_files = list((m / "deterministic").glob("deterministic_metrics*per_lead_time*.csv"))
+        csv_files.extend((m / "deterministic").glob("deterministic_metrics*by_lead_long*.csv"))
 
-def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Path) -> None:
+        for f in csv_files:
+            try:
+                df = pd.read_csv(f)
+
+                excluded = {
+                    "variable",
+                    "model",
+                    "level",
+                    "lead_time",
+                    "lead_time_hours",
+                    "init_time",
+                    "valid_time",
+                    "Unnamed: 0",
+                    "source_file",
+                    "member",
+                    "",
+                }
+                metric_cols = [c for c in df.columns if c not in excluded]
+
+                if not metric_cols:
+                    continue
+
+                lt_col = "lead_time_hours" if "lead_time_hours" in df.columns else "lead_time"
+                if lt_col not in df.columns:
+                    continue
+
+                df["model"] = lab
+                df = df.rename(columns={lt_col: "lead_time"})
+
+                melted = df.melt(
+                    id_vars=["model", "variable", "lead_time"],
+                    value_vars=metric_cols,
+                    var_name="metric",
+                    value_name="value",
+                )
+
+                temporal_rows.extend(melted.to_dict("records"))
+            except Exception:
+                pass
+
+    if temporal_rows:
+        temporal_df = pd.DataFrame(temporal_rows)
+        if len(temporal_df) > 0 and temporal_df["model"].nunique() >= 2:
+            out_csv = dst_det / "temporal_metrics_combined.csv"
+            temporal_df.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+            pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
+
+            for metric, variable in pairs:
+                subset = temporal_df[
+                    (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
+                ].copy()
+
+                pivot = subset.pivot(
+                    index="lead_time", columns="model", values="value"
+                ).sort_index()
+
+                if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
+
+                    ax.set_title(f"{metric} vs Lead Time — {format_variable_name(variable)}")
+                    ax.set_ylabel(metric)
+                    ax.set_xlabel("Lead Time (h)")
+                    ax.grid(True, linestyle="--", alpha=0.6)
+                    plt.tight_layout()
+
+                    out_png = dst_det / f"temporal_{metric}_{variable}_compare.png"
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png.relative_to(out_root)}")
+                    plt.close(fig)
+
+
+def intercompare_probabilistic(
+    models: list[Path], labels: list[str], out_root: Path, max_crps_map_panels: int = 4
+) -> None:
+    """Combine Probabilistic metrics (CRPS, Spread/Error) from multiple models."""
+    dst_prob = _ensure_dir(out_root / "probabilistic")
+
     # Availability report
+    per_model, _, uni = _scan_model_sets(models, "probabilistic/crps_summary*.csv")
+    _report_missing("probabilistic_metrics", models, labels, per_model, uni)
+
     results = {}
-    all_ets = _common_files(models, "ets/ets_metrics*.csv")
-
-    avg = [f for f in all_ets if "averaged" in f]
-    lvl = [f for f in all_ets if "per_level" in f]
-
-    results["ETS Averaged"] = 1 if avg else 0
-    results["ETS Per Level"] = 1 if lvl else 0
-
-    if len(avg) > 1:
-        results["ETS Averaged (Ignored)"] = len(avg) - 1
-    if len(lvl) > 1:
-        results["ETS Per Level (Ignored)"] = len(lvl) - 1
+    all_prob = _common_files(models, "probabilistic/crps_summary*.csv")
+    results["Probabilistic Metrics"] = 1 if all_prob else 0
 
     # Ignored
-    init_time = [f for f in all_ets if "init_time" in f]
-    lead_time = [f for f in all_ets if "per_lead_time" in f]
+    init_time = [f for f in all_prob if "init_time" in f]
+    lead_time = [f for f in all_prob if "per_lead_time" in f]
     if init_time:
-        results["ETS Init Time (Ignored)"] = len(init_time)
+        results["Probabilistic Init Time (Ignored)"] = len(init_time)
     if lead_time:
-        results["ETS Lead Time (Ignored)"] = len(lead_time)
+        results["Probabilistic Lead Time (Ignored)"] = len(lead_time)
 
-    _report_checklist("ets_metrics", results)
+    _report_checklist("probabilistic_metrics", results)
 
     # Report common files found
-    ets_csv = _common_files(models, "ets/ets_metrics*.csv")
-    if ets_csv:
-        _print_file_list(f"Found {len(ets_csv)} common ETS metric files", ets_csv)
+    prob_csv = _common_files(models, "probabilistic/crps_summary*.csv")
+    if prob_csv:
+        _print_file_list(f"Found {len(prob_csv)} common probabilistic metric files", prob_csv)
 
-    # Actually process and save ETS metrics (was missing!)
-    dst_ets = _ensure_dir(out_root / "ets")
+    # 1) Combine standard Probabilistic metrics (averaged)
     frames: list[pd.DataFrame] = []
     frames_lvl: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        # Averaged
-        candidates = sorted((m / "ets").glob("ets_metrics*.csv"))
+        # Standard (averaged)
+        candidates = sorted((m / "probabilistic").glob("crps_summary*.csv"))
         f = next(
-            (
-                c
-                for c in candidates
-                if "per_level" not in c.name
-                and "init_time" not in c.name
-                and "per_lead_time" not in c.name
-            ),
+            (c for c in candidates if "per_lead_time" not in c.name and "per_level" not in c.name),
             None,
         )
-        # Fallback: try to find one that is averaged but might have init/lead tokens
-        # if that's the only one
-        if f is None:
-            f = next((cand for cand in candidates if "averaged" in cand.name), None)
 
         if f is not None and f.is_file():
             try:
                 df = pd.read_csv(f)
-                if "variable" not in df.columns and "Unnamed: 0" in df.columns:
-                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                if "variable" not in df.columns:
+                    if "Unnamed: 0" in df.columns:
+                        df = df.rename(columns={"Unnamed: 0": "variable"})
+                    else:
+                        first = df.columns[0]
+                        df = df.rename(columns={first: "variable"})
+
                 df.insert(0, "model", lab)
                 frames.append(df)
             except Exception:
                 pass
 
-        # Per Level
-        f_lvl = next((c for c in candidates if "per_level" in c.name), None)
+        # Per-level
+        f_lvl = next(
+            (c for c in candidates if "per_level" in c.name),
+            None,
+        )
         if f_lvl is not None and f_lvl.is_file():
             try:
                 df = pd.read_csv(f_lvl)
-                if "variable" not in df.columns and "Unnamed: 0" in df.columns:
-                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                if "variable" not in df.columns:
+                    if "Unnamed: 0" in df.columns:
+                        df = df.rename(columns={"Unnamed: 0": "variable"})
+                    else:
+                        first = df.columns[0]
+                        df = df.rename(columns={first: "variable"})
+
                 df.insert(0, "model", lab)
                 frames_lvl.append(df)
             except Exception:
                 pass
 
     if frames:
-        comb = pd.concat(frames, ignore_index=True)
-        if comb["model"].nunique() >= 2:
-            out_csv = dst_ets / "ets_metrics_combined.csv"
-            comb.to_csv(out_csv, index=False)
+        combined = pd.concat(frames, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst_prob / "crps_summary_combined.csv"
+            combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
     if frames_lvl:
-        comb_lvl = pd.concat(frames_lvl, ignore_index=True)
-        if comb_lvl["model"].nunique() >= 2:
-            out_csv = dst_ets / "ets_metrics_per_level_combined.csv"
-            comb_lvl.to_csv(out_csv, index=False)
+        combined_lvl = pd.concat(frames_lvl, ignore_index=True)
+        if combined_lvl["model"].nunique() >= 2:
+            out_csv = dst_prob / "crps_summary_per_level_combined.csv"
+            combined_lvl.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-
-def intercompare_probabilistic(
-    models: list[Path],
-    labels: list[str],
-    out_root: Path,
-    max_crps_map_panels: int = 4,
-) -> None:
-    src_rel = Path("probabilistic")
-    dst = _ensure_dir(out_root / "probabilistic")
-
-    # Availability report (single panel across all probabilistic artifacts)
-    per_model_accum: list[set[str]] = [set() for _ in models]
-    union_total: set[str] = set()
-    for pattern in (
-        "probabilistic/pit_hist_*.npz",
-        "probabilistic/crps_map_*.npz",
-        "probabilistic/*_spatial_wbx_*.npz",
-        "probabilistic/*_temporal_wbx_*.npz",
-    ):
-        per_model, _, uni = _scan_model_sets(models, pattern)
-        union_total |= uni
-        for i, s in enumerate(per_model):
-            per_model_accum[i] |= s
-    _report_missing("probabilistic", models, labels, per_model_accum, union_total)
-
-    # Availability report
-    results = {}
-
-    # CSVs
-    all_csv = _common_files(models, "probabilistic/*.csv")
-    crps_sum = [f for f in all_csv if "crps_summary" in f]
-    crps_sum_avg = [f for f in crps_sum if "per_level" not in f]
-    crps_sum_lvl = [f for f in crps_sum if "per_level" in f]
-
-    spread = [f for f in all_csv if "spread_skill_ratio" in f]
-    crps_ens = [f for f in all_csv if "crps_ensemble" in f]
-
-    results["CRPS Summary"] = 1 if crps_sum_avg else 0
-    results["CRPS Summary Per Level"] = 1 if crps_sum_lvl else 0
-    results["Spread Skill Ratio"] = 1 if spread else 0
-    results["CRPS Ensemble"] = 1 if crps_ens else 0
-
-    # PIT Histograms
-    pit = _common_files(models, "probabilistic/pit_hist_*.npz")
-    results["PIT Histograms"] = len(pit)
-
-    # CRPS Maps
-    maps = _common_files(models, "probabilistic/crps_map_*.npz")
-    processed_maps = min(len(maps), max_crps_map_panels)
-    ignored_maps = max(0, len(maps) - max_crps_map_panels)
-    results["CRPS Maps"] = processed_maps
-    if ignored_maps > 0:
-        results["CRPS Maps (Ignored)"] = ignored_maps
-
-    # NC files
-    spatial = _common_files(models, "probabilistic/prob_metrics_spatial*.nc")
-    temporal = _common_files(models, "probabilistic/prob_metrics_temporal*.nc")
-
-    results["Spatial Metrics"] = 1 if spatial else 0
-    results["Temporal Metrics"] = 1 if temporal else 0
-
-    _report_checklist("probabilistic", results)
-
-    # 1) Combine CRPS summary (non-WBX) across models
-    frames_crps: list[pd.DataFrame] = []
-    frames_crps_lvl: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models, strict=False):
-        for f in (m / src_rel).glob("crps_summary*.csv"):
-            try:
-                df = pd.read_csv(f)
-            except Exception:
-                continue
-            df.insert(0, "model", lab)
-            if "per_level" in f.name:
-                frames_crps_lvl.append(df)
-            else:
-                frames_crps.append(df)
-    if frames_crps:
-        comb = pd.concat(frames_crps, ignore_index=True)
-        if comb["model"].nunique() >= 2:
-            comb.to_csv(dst / "crps_summary_combined.csv", index=False)
-    if frames_crps_lvl:
-        comb_lvl = pd.concat(frames_crps_lvl, ignore_index=True)
-        if comb_lvl["model"].nunique() >= 2:
-            comb_lvl.to_csv(dst / "crps_summary_per_level_combined.csv", index=False)
-
-    # 2) Combine WBX CSV summaries if present
-    for basename, outname in (
-        ("spread_skill_ratio.csv", "spread_skill_ratio_combined.csv"),
-        ("crps_ensemble.csv", "crps_ensemble_combined.csv"),
-    ):
-        frames: list[pd.DataFrame] = []
-        for lab, m in zip(labels, models, strict=False):
-            f = m / src_rel / basename
-            if f.is_file():
-                df = pd.read_csv(f)
-                df.insert(0, "model", lab)
-                frames.append(df)
-        if frames:
-            dfc = pd.concat(frames, ignore_index=True)
-            if dfc["model"].nunique() >= 2:
-                dfc.to_csv(dst / outname, index=False)
-
-    # 3) Overlay PIT histograms by variable
-    common_pit = _common_files(models, str(src_rel / "pit_hist_*.npz"))
-
-    if common_pit:
-        _print_file_list(f"Found {len(common_pit)} common PIT histogram files", common_pit)
-    colors = sns.color_palette("tab10", n_colors=len(models))
-    for base in common_pit:
-        payloads = [_load_npz(m / src_rel / base) for m in models]
-        fig, ax = plt.subplots(figsize=(10, 5), dpi=160)
-        # Uniform reference line at y=1
-        ax.axhline(1.0, color="black", linestyle="--", linewidth=1, label="Uniform")
-
-        # Collect data for bar plot
-        all_counts = []
-        all_edges = None
-        valid_labels = []
-        valid_colors = []
-
-        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-            counts = pay.get("counts")
-            edges = pay.get("edges")
-            if counts is None or edges is None:
-                continue
-            if all_edges is None:
-                all_edges = edges
-            all_counts.append(counts)
-            valid_labels.append(lab)
-            valid_colors.append(colors[i])
-
-        if not all_counts or all_edges is None:
-            plt.close(fig)
-            continue
-
-        edges_arr = np.asarray(all_edges, dtype=float)
-        if edges_arr.size < 2:
-            plt.close(fig)
-            continue
-
-        # Plot side-by-side bars
-        n_models = len(all_counts)
-        # Assuming edges are consistent across models (they should be for intercomparison)
-        # edges has N+1 points for N bins.
-        # We want to plot bars centered in bins.
-        bin_width = edges_arr[1] - edges_arr[0]
-        centers = (edges_arr[:-1] + edges_arr[1:]) / 2
-
-        # Total width available per bin is bin_width. We leave some gap (e.g. 20%).
-        total_bar_width = bin_width * 0.8
-        single_bar_width = total_bar_width / n_models
-
-        for i, (counts, lab, col) in enumerate(
-            zip(all_counts, valid_labels, valid_colors, strict=False)
-        ):
-            # Offset from center
-            # i=0 -> -(n-1)/2 * w
-            offset = (i - (n_models - 1) / 2) * single_bar_width
-            ax.bar(
-                centers + offset, counts, width=single_bar_width, label=lab, color=col, alpha=0.9
-            )
-
-        # Extract variable token from standardized filename: pit_hist_<var>_..._ens*.npz
-        stem = base[:-4] if base.endswith(".npz") else base
-        var = stem
-        if stem.startswith("pit_hist_"):
-            rest = stem[len("pit_hist_") :]
-            # trim ensemble token and optional time tokens
-            if "_ens" in rest:
-                rest = rest.split("_ens", 1)[0]
-            # remove optional _init... and _lead... segments if present
-            for tok in ("_init", "_lead"):
-                if tok in rest:
-                    rest = rest.split(tok, 1)[0]
-            var = rest
-
-        # Extract date info from filename if possible
-        date_suffix = extract_date_from_filename(base)
-
-        ax.set_title(f"PIT histogram — {format_variable_name(var)}{date_suffix}")
-        ax.set_xlabel("PIT value")
-        ax.set_ylabel("Density")
-        ax.legend()
-        plt.tight_layout()
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        c.success(f"Saved {out_png.relative_to(out_root)}")
-        plt.close(fig)
-
-    # 4) Panel CRPS maps from saved NPZ (if available)
-    common_crps_map_npz = _common_files(models, str(src_rel / "crps_map_*.npz"))
-    if common_crps_map_npz:
-        _print_file_list(
-            f"Found {len(common_crps_map_npz)} common CRPS map files", common_crps_map_npz
-        )
-
-    # Report other common probabilistic files (CSVs, NCs)
-    prob_csv = _common_files(models, str(src_rel / "*.csv"))
-    if prob_csv:
-        _print_file_list(f"Found {len(prob_csv)} common probabilistic CSV files", prob_csv)
-
-    prob_nc = _common_files(models, str(src_rel / "*.nc"))
-    if prob_nc:
-        _print_file_list(f"Found {len(prob_nc)} common probabilistic NC files", prob_nc)
-
-    for base in common_crps_map_npz[:max_crps_map_panels]:
-        payloads = [_load_npz(m / src_rel / base) for m in models]
-        # Compute global vmin/vmax across models for consistent color scale
-        arrays = [p.get("crps") for p in payloads]
-        # Require at least two models with arrays
-        if sum(1 for a in arrays if a is not None) < 2:
-            continue
-        vmin = float(np.nanmin([np.nanmin(a) for a in arrays if a is not None]))
-        vmax = float(np.nanmax([np.nanmax(a) for a in arrays if a is not None]))
-        lats = payloads[0].get("latitude")
-        lons = payloads[0].get("longitude")
-        ncols = len(models)
-        fig, axes = plt.subplots(
-            1,
-            ncols,
-            figsize=(6 * ncols, 4),
-            dpi=160,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-            constrained_layout=True,
-        )
-        if ncols == 1:
-            axes = [axes]
-        for ax, lab, arr in zip(axes, labels, arrays, strict=False):
-            mesh = ax.pcolormesh(
-                lons,
-                lats,
-                arr,
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-            )
-            ax.coastlines(linewidth=0.5)
-            ax.set_title(lab)
-        # Use a constrained-layout-friendly colorbar spanning all axes
-        cbar = fig.colorbar(
-            mesh,
-            ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
-            orientation="horizontal",
-            fraction=0.05,
-            pad=0.08,
-        )
-        with contextlib.suppress(Exception):
-            cbar.set_label("CRPS")
-
-        # Extract date info from filename if possible
-        date_suffix = extract_date_from_filename(base)
-
-        # Try to extract variable from filename for title
-        var_title = base
-        if base.startswith("crps_map_"):
-            var_title = base[len("crps_map_") :]
-            if "_init" in var_title:
-                var_title = var_title.split("_init")[0]
-
-        fig.suptitle(f"CRPS Map — {format_variable_name(var_title)}{date_suffix}")
-
-        # No tight_layout here; constrained_layout handles spacing
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        c.success(f"Saved {out_png.relative_to(out_root)}")
-        plt.close(fig)
-
-    # 5) Combine spatial/temporal WBX NPZ aggregates into tidy CSVs and simple plots
-    # Spatial aggregates
-    spatial_rows: list[dict] = []
-    for lab, m in zip(labels, models, strict=False):
-        # New naming: {crps,ssr}_spatial_wbx_<variable>_*.npz
-        npz_files = list((m / src_rel).glob("*_spatial_wbx_*.npz"))
-        for f in npz_files:
-            try:
-                # Extract metric and variable from filename
-                # Pattern: {metric}_spatial_wbx_{variable}_{time_tokens}_ensprob.npz
-                stem = f.stem  # removes .npz
-                # Find metric (crps or ssr)
-                if stem.startswith("crps_spatial_wbx_"):
-                    metric = "CRPS"
-                    rest = stem[len("crps_spatial_wbx_") :]
-                elif stem.startswith("ssr_spatial_wbx_"):
-                    metric = "SSR"
-                    rest = stem[len("ssr_spatial_wbx_") :]
-                else:
-                    continue
-                # Extract variable (everything before time tokens or ensemble token)
-                # Remove ensemble token first
-                if "_ens" in rest:
-                    rest = rest.rsplit("_ens", 1)[0]
-                # Remove time tokens
-                for tok in ("_init", "_lead"):
-                    if tok in rest:
-                        rest = rest.split(tok, 1)[0]
-                variable = rest
-
-                # Load NPZ and reconstruct data
-                npz_data = _load_npz(f)
-                data_arr = npz_data.get("data")
-                if data_arr is None:
-                    continue
-
-                # Build coordinate arrays
-                # Create dataframe rows
-                # For spatial aggregates, we typically have dimensions like region/season
-                # Flatten the data array and create rows
-                if data_arr.ndim == 0:
-                    # Scalar value
-                    spatial_rows.append(
-                        {
-                            "model": lab,
-                            "metric": metric,
-                            "variable": variable,
-                            "value": float(data_arr),
-                        }
-                    )
-                else:
-                    # Multi-dimensional - need to iterate
-                    # This is a simplified approach; adjust based on actual structure
-                    flat_data = data_arr.flatten()
-                    for val in flat_data:
-                        if np.isfinite(val):
-                            spatial_rows.append(
-                                {
-                                    "model": lab,
-                                    "metric": metric,
-                                    "variable": variable,
-                                    "value": float(val),
-                                }
-                            )
-            except Exception:
-                pass
-    if spatial_rows:
-        spatial_df = pd.DataFrame(spatial_rows)
-        # Only save/output if at least two models contributed
-        if len(spatial_df) > 0 and spatial_df["model"].nunique() >= 2:
-            out_csv = dst / "spatial_metrics_combined.csv"
-            spatial_df.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
-            # Simple plot: if a region-like column exists, average across
-            # variables and plot by region
-            region_col = None
-            # Prefer canonical 'region' column; else pick the first object-type column among dims
-            cand_cols = [c for c in spatial_df.columns if c.lower() == "region"]
-            if cand_cols:
-                region_col = cand_cols[0]
-            else:
-                obj_cols = [
-                    c
-                    for c in spatial_df.columns
-                    if spatial_df[c].dtype == object and c not in ("metric", "variable", "model")
-                ]
-                region_col = obj_cols[0] if obj_cols else None
-            if region_col:
-                for metric in sorted(spatial_df["metric"].unique()):
-                    tmp = spatial_df[spatial_df["metric"] == metric].copy()
-                    tmp = tmp.groupby([region_col, "model"], as_index=False)["value"].mean()
-                    pivot = tmp.pivot(
-                        index=region_col, columns="model", values="value"
-                    ).sort_index()
-                    if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
-                        ax = pivot.plot(kind="bar", figsize=(12, 6))
-                        ax.set_title(f"{metric} (spatial aggregates)")
-                        ax.set_ylabel(metric)
-                        ax.set_xlabel("")
-                        plt.xticks(rotation=45, ha="right")
-                        plt.tight_layout()
-                        out_png = dst / f"spatial_{metric}_compare.png"
-                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        c.success(f"Saved {out_png.relative_to(out_root)}")
-                        plt.close()
-
-    # Temporal aggregates
+    # 2) Combine per-lead-time CSV metrics (e.g. CRPS vs lead_time)
     temporal_rows: list[dict] = []
     for lab, m in zip(labels, models, strict=False):
-        # New naming: {crps,ssr}_temporal_wbx_<variable>_*.npz
-        npz_files = list((m / src_rel).glob("*_temporal_wbx_*.npz"))
-        for f in npz_files:
+        # Find all per-lead CSVs
+        # Look for both legacy summary files and new line-plot data files
+        csv_files = list((m / "probabilistic").glob("crps_summary*per_lead_time*.csv"))
+        csv_files.extend((m / "probabilistic").glob("crps_line*by_lead*.csv"))
+
+        for f in csv_files:
             try:
-                # Extract metric and variable from filename
-                stem = f.stem
-                if stem.startswith("crps_temporal_wbx_"):
-                    metric = "CRPS"
-                    rest = stem[len("crps_temporal_wbx_") :]
-                elif stem.startswith("ssr_temporal_wbx_"):
-                    metric = "SSR"
-                    rest = stem[len("ssr_temporal_wbx_") :]
-                else:
-                    continue
-                # Extract variable
-                if "_ens" in rest:
-                    rest = rest.rsplit("_ens", 1)[0]
-                for tok in ("_init", "_lead"):
-                    if tok in rest:
-                        rest = rest.split(tok, 1)[0]
-                variable = rest
+                df = pd.read_csv(f)
+                # Expected columns: lead_time_hours, CRPS, Spread, RMSE, variable
 
-                # Load NPZ and reconstruct data
-                npz_data = _load_npz(f)
-                data_arr = npz_data.get("data")
-                if data_arr is None:
+                excluded = {
+                    "variable",
+                    "model",
+                    "level",
+                    "lead_time",
+                    "lead_time_hours",
+                    "init_time",
+                    "valid_time",
+                    "Unnamed: 0",
+                    "source_file",
+                    "member",
+                    "",
+                }
+                metric_cols = [c for c in df.columns if c not in excluded]
+
+                if not metric_cols:
                     continue
 
-                # Build coordinate arrays
-                # Create dataframe rows
-                if data_arr.ndim == 0:
-                    # Scalar value
-                    temporal_rows.append(
-                        {
-                            "model": lab,
-                            "metric": metric,
-                            "variable": variable,
-                            "value": float(data_arr),
-                        }
-                    )
-                else:
-                    # Multi-dimensional - flatten and create rows
-                    flat_data = data_arr.flatten()
-                    for val in flat_data:
-                        if np.isfinite(val):
-                            temporal_rows.append(
-                                {
-                                    "model": lab,
-                                    "metric": metric,
-                                    "variable": variable,
-                                    "value": float(val),
-                                }
-                            )
+                lt_col = "lead_time_hours" if "lead_time_hours" in df.columns else "lead_time"
+                if lt_col not in df.columns:
+                    continue
+
+                df["model"] = lab
+                df = df.rename(columns={lt_col: "lead_time"})
+
+                melted = df.melt(
+                    id_vars=["model", "variable", "lead_time"],
+                    value_vars=metric_cols,
+                    var_name="metric",
+                    value_name="value",
+                )
+
+                temporal_rows.extend(melted.to_dict("records"))
             except Exception:
                 pass
+
     if temporal_rows:
         temporal_df = pd.DataFrame(temporal_rows)
-        # Only save/output if at least two models contributed
         if len(temporal_df) > 0 and temporal_df["model"].nunique() >= 2:
-            out_csv = dst / "temporal_metrics_combined.csv"
+            out_csv = dst_prob / "temporal_metrics_combined.csv"
             temporal_df.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-            # Simple plot: group by time dimension and model
-            # Identify time column (not metric, variable, model, value)
-            time_col = None
-            cand_cols = [
-                c for c in temporal_df.columns if c not in ("metric", "variable", "model", "value")
-            ]
-            # Prefer 'lead_time' or 'valid_time' or 'init_time' or 'month'
-            for pref in ("lead_time", "valid_time", "init_time", "month", "time"):
-                if pref in cand_cols:
-                    time_col = pref
-                    break
-            if not time_col and cand_cols:
-                time_col = cand_cols[0]
+            # Plot: group by lead_time and model
+            pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
 
-            if time_col:
-                for metric in sorted(temporal_df["metric"].unique()):
-                    tmp = temporal_df[temporal_df["metric"] == metric].copy()
-                    # Average over variables if multiple variables exist for same time/model
-                    tmp = tmp.groupby([time_col, "model"], as_index=False)["value"].mean()
-                    pivot = tmp.pivot(index=time_col, columns="model", values="value").sort_index()
+            for metric, variable in pairs:
+                subset = temporal_df[
+                    (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
+                ].copy()
 
-                    if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
-                        # Bar plot requested
-                        ax = pivot.plot(kind="bar", figsize=(12, 6))
-                        ax.set_title(f"{metric} (temporal aggregates)")
-                        ax.set_ylabel(metric)
-                        ax.set_xlabel(time_col)
-                        plt.xticks(rotation=45, ha="right")
-                        plt.tight_layout()
-                        out_png = dst / f"temporal_{metric}_compare.png"
-                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        c.success(f"Saved {out_png.relative_to(out_root)}")
-                        plt.close()
+                pivot = subset.pivot(
+                    index="lead_time", columns="model", values="value"
+                ).sort_index()
 
-            timebin_col = None
-            pref_cols = ["season", "month", "time_bin"]
-            for col in pref_cols:
-                if col in temporal_df.columns:
-                    timebin_col = col
-                    break
+                if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
 
-            if timebin_col:
-                for metric in sorted(temporal_df["metric"].unique()):
-                    tmp = temporal_df[temporal_df["metric"] == metric].copy()
-                    tmp = tmp.groupby([timebin_col, "model"], as_index=False)["value"].mean()
-                    # Ensure categorical ordering if seasons
-                    if timebin_col == "season":
-                        order = ["DJF", "MAM", "JJA", "SON"]
-                        tmp[timebin_col] = pd.Categorical(
-                            tmp[timebin_col], categories=order, ordered=True
-                        )
-                    piv = tmp.pivot(index=timebin_col, columns="model", values="value").sort_index()
-                    if not piv.empty and piv.notna().sum().sum() > 0 and piv.shape[1] >= 2:
-                        # Changed to bar plot as requested
-                        ax = piv.plot(kind="bar", figsize=(10, 6))
-                        ax.set_title(f"{metric} (temporal aggregates)")
-                        ax.set_ylabel(metric)
-                        ax.set_xlabel(timebin_col.capitalize())
-                        plt.xticks(rotation=0)
-                        plt.tight_layout()
-                        out_png = dst / f"temporal_{metric}_compare.png"
-                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                        c.success(f"Saved {out_png.relative_to(out_root)}")
-                        plt.close()
+                    ax.set_title(f"{metric} vs Lead Time — {format_variable_name(variable)}")
+                    ax.set_ylabel(metric)
+                    ax.set_xlabel("Lead Time (h)")
+                    ax.grid(True, linestyle="--", alpha=0.6)
+                    plt.tight_layout()
+
+                    out_png = dst_prob / f"temporal_{metric}_{variable}_compare.png"
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png.relative_to(out_root)}")
+                    plt.close(fig)
+
+    # 3) CRPS Maps (if available)
+    # Pattern: crps_map_*.npz
+    # We reuse intercompare_maps logic but specific to CRPS maps
+    # Availability report
+    per_model_map, _, uni_map = _scan_model_sets(models, "probabilistic/crps_map_*.npz")
+    _report_missing("crps_maps", models, labels, per_model_map, uni_map)
+
+    common_maps = _common_files(models, "probabilistic/crps_map_*.npz")
+    if common_maps:
+        _print_file_list(f"Found {len(common_maps)} common CRPS map files", common_maps)
+
+        # Limit panels
+        for base in common_maps[:max_crps_map_panels]:
+            key = _parse_map_filename(base)
+            payloads = [_load_npz(m / "probabilistic" / base) for m in models]
+
+            # CRPS maps usually have 'crps' key
+            predictions = []
+            for p in payloads:
+                val = p.get("crps")
+                predictions.append(val)
+
+            if any(x is None for x in predictions):
+                continue
+
+            lats = payloads[0].get("latitude")
+            lons = payloads[0].get("longitude")
+            var_name = payloads[0].get("variable")
+            units = payloads[0].get("units")
+
+            if lats is None or lons is None:
+                continue
+
+            # Plotting
+            ncols = len(models)
+            fig, axes = plt.subplots(
+                1,
+                ncols,
+                figsize=(6 * ncols, 4),
+                dpi=160,
+                subplot_kw={"projection": ccrs.PlateCarree()},
+                constrained_layout=True,
+            )
+            if ncols == 1:
+                axes = [axes]
+
+            # Determine common vmin/vmax
+            try:
+                vmin = float(np.nanmin([np.nanmin(x) for x in predictions]))
+                vmax = float(np.nanmax([np.nanmax(x) for x in predictions]))
+            except ValueError:
+                continue
+
+            im0 = None
+            for ax, lab, pred in zip(axes, labels, predictions, strict=False):
+                im0 = ax.pcolormesh(
+                    lons,
+                    lats,
+                    pred,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                )
+                ax.coastlines(linewidth=0.5)
+                ax.set_title(f"{lab}")
+
+            # Colorbar
+            if im0:
+                cbar = fig.colorbar(
+                    im0,
+                    ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                    orientation="horizontal",
+                    fraction=0.05,
+                    pad=0.08,
+                )
+                if units:
+                    cbar.set_label(f"CRPS ({units})")
+                else:
+                    cbar.set_label("CRPS")
+
+            if var_name:
+                title_base = f"CRPS Map — {format_variable_name(str(var_name))}"
+            else:
+                title_base = "CRPS Map"
+            date_suffix = extract_date_from_filename(key)
+            fig.suptitle(f"{title_base}{date_suffix}")
+
+            out_png = dst_prob / (key + "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+            plt.close(fig)
 
 
 def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> None:

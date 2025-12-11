@@ -272,6 +272,62 @@ def run_probabilistic(
         crps_mean = float(_reduce_mean_all(crps_da).compute().item())
         crps_rows.append({"variable": var, "CRPS": crps_mean})
 
+        # --- Per Lead Time CRPS ---
+        if "lead_time" in crps_da.dims and crps_da.sizes["lead_time"] > 1:
+            dims_to_reduce = [d for d in crps_da.dims if d != "lead_time"]
+            crps_per_lead = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
+
+            leads = crps_per_lead["lead_time"].values
+            # Convert to hours if timedelta
+            if np.issubdtype(leads.dtype, np.timedelta64):
+                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+            else:
+                lead_hours = leads
+
+            values = crps_per_lead.values
+
+            df_lead = pd.DataFrame(
+                {
+                    "lead_time_hours": lead_hours,
+                    "CRPS": values,
+                    "variable": str(var),
+                }
+            )
+
+            out_csv_lead = section_output / build_output_filename(
+                metric="probabilistic_metrics",
+                variable=str(var),
+                level=None,
+                qualifier="per_lead_time",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_lead.to_csv(out_csv_lead, index=False)
+            print(f"[probabilistic] saved {out_csv_lead}")
+
+            # Plot CRPS vs Lead Time
+            fig, ax = plt.subplots(figsize=(8, 4), dpi=150)
+            ax.plot(lead_hours, values, marker="o", linestyle="-")
+            ax.set_xlabel("Lead Time [h]")
+            ax.set_ylabel("CRPS")
+            ax.set_title(f"CRPS Evolution — {format_variable_name(str(var))}")
+            ax.grid(True, linestyle="--", alpha=0.6)
+            out_png_lead = section_output / build_output_filename(
+                metric="probabilistic_metrics",
+                variable=str(var),
+                level=None,
+                qualifier="per_lead_time",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.savefig(out_png_lead, bbox_inches="tight")
+            plt.close(fig)
+            print(f"[probabilistic] saved {out_png_lead}")
+
         if report_per_level and "level" in crps_da.dims:
             dims_to_reduce = [d for d in crps_da.dims if d != "level"]
             crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
@@ -308,6 +364,92 @@ def run_probabilistic(
             edges=edges,
         )
         print(f"[probabilistic] saved {pit_npz}")
+
+        # --- PIT Evolution (Heatmap) ---
+        if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
+            leads = pit_da["lead_time"].values
+            # Convert to hours if timedelta
+            if np.issubdtype(leads.dtype, np.timedelta64):
+                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+            else:
+                lead_hours = leads
+
+            # Compute histogram per lead time
+            # Use fewer bins for the heatmap to be readable, or same?
+            # 20 bins is usually good for PIT.
+            n_bins = 20
+            counts_list = []
+            # Re-use edges from global if possible, but we need fixed range 0-1
+            edges_ev = np.linspace(0.0, 1.0, n_bins + 1)
+
+            for i in range(len(leads)):
+                # Select slice lazily
+                sub = pit_da.isel(lead_time=i)
+                c, _ = _pit_histogram_dask(sub, bins=n_bins, density=True)
+                counts_list.append(c)
+
+            counts_matrix = np.stack(counts_list)  # (n_leads, n_bins)
+
+            # Plot Heatmap
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+            # X axis: PIT bins (0 to 1)
+            # Y axis: Lead Time
+            # We use pcolormesh.
+            # X edges: edges_ev
+            # Y edges: we need boundaries for lead times.
+            # simpler: imshow or pcolormesh with constructed coords
+
+            # Construct Y edges (halfway between lead times)
+            if len(lead_hours) > 1:
+                dy = np.diff(lead_hours)
+                y_edges = np.zeros(len(lead_hours) + 1)
+                y_edges[0] = lead_hours[0] - dy[0] / 2
+                y_edges[1:-1] = lead_hours[:-1] + dy / 2
+                y_edges[-1] = lead_hours[-1] + dy[-1] / 2
+            else:
+                y_edges = np.array([lead_hours[0] - 0.5, lead_hours[0] + 0.5])
+
+            X, Y = np.meshgrid(edges_ev, y_edges)
+
+            # pcolormesh expects shape (ny-1, nx-1) for C
+            # counts_matrix is (n_leads, n_bins) -> matches
+
+            im = ax.pcolormesh(X, Y, counts_matrix, cmap="RdBu_r", shading="flat", vmin=0, vmax=2.0)
+            # vmax=2.0 because ideal is 1.0 (uniform).
+
+            fig.colorbar(im, ax=ax, label="PIT Density")
+            ax.set_xlabel("PIT Quantile")
+            ax.set_ylabel("Lead Time [h]")
+            ax.set_title(f"PIT Evolution — {format_variable_name(str(var))}")
+
+            out_png_pit = section_output / build_output_filename(
+                metric="pit_evolution",
+                variable=str(var),
+                level=None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="png",
+            )
+            plt.savefig(out_png_pit, bbox_inches="tight")
+            plt.close(fig)
+            print(f"[probabilistic] saved {out_png_pit}")
+
+            # Save data
+            out_npz_pit = section_output / build_output_filename(
+                metric="pit_evolution",
+                variable=str(var),
+                level=None,
+                qualifier="data",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="npz",
+            )
+            np.savez(out_npz_pit, counts=counts_matrix, lead_hours=lead_hours, bins=edges_ev)
+            print(f"[probabilistic] saved {out_npz_pit}")
+
         # Always save PIT and CRPS fields for reproducibility
         # Save PIT and CRPS fields as NPZ (memory-efficient, no OOM issues)
         pit_npz_field = section_output / build_output_filename(

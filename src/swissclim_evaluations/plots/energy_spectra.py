@@ -597,6 +597,7 @@ def run(
     # In multi-lead mode, suppress non-spectrogram artifacts (CSV summaries, 1D exports)
     # Initialize holders used in both branches
     lsd_long_rows: list[dict[str, float | str]] = []
+    lsd_banded_long_rows: list[dict[str, float | str]] = []
     if not is_multi_lead:
         summary_rows: list[dict[str, Any]] = []
         # Collect LSD-by-lead for optional line plots/CSVs
@@ -1105,6 +1106,21 @@ def run(
                 ext="csv",
             )
             wdf.to_csv(out_wide, index=False)
+
+        if lsd_banded_long_rows:
+            bdf = _pd.DataFrame(lsd_banded_long_rows)
+            out_banded = section_output / build_output_filename(
+                metric="lsd_bands_2d_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_lead_time",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            bdf.to_csv(out_banded, index=False)
+            print(f"[energy_spectra] saved {out_banded}")
 
     # Completion message
     if is_multi_lead:
