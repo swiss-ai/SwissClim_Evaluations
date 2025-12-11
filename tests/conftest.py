@@ -214,6 +214,23 @@ class _DummyAxis:
     def get_lines(self):
         return []
 
+    def contourf(self, *a, **k):
+        return _DummyImage()
+
+    def contour(self, *a, **k):
+        return _DummyImage()
+
+    def get_figure(self):
+        return _DummyFig(self)
+
+
+class _DummyColorbar:
+    def set_label(self, *a, **k):
+        return None
+
+    def add_lines(self, *a, **k):
+        return None
+
 
 class _DummyFig:
     def __init__(self, axes):
@@ -223,9 +240,11 @@ class _DummyFig:
         return _DummyAxis()
 
     def colorbar(self, *a, **k):
-        return None
+        return _DummyColorbar()
 
     def savefig(self, *a, **k):
+        if a and isinstance(a[0], str | Path):
+            Path(a[0]).touch()
         return None
 
     def subplots_adjust(self, *a, **k):
@@ -266,7 +285,12 @@ def _fast_plots(monkeypatch):
     )
     monkeypatch.setattr(plt, "gcf", lambda: _DummyFig(_np.empty((1, 1), dtype=object)))
     monkeypatch.setattr(plt, "colorbar", lambda *a, **k: None)
-    monkeypatch.setattr(plt, "savefig", lambda *a, **k: None)
+
+    def _mock_savefig(*args, **kwargs):
+        if args and isinstance(args[0], str | Path):
+            Path(args[0]).touch()
+
+    monkeypatch.setattr(plt, "savefig", _mock_savefig)
     monkeypatch.setattr(plt, "close", lambda *a, **k: None)
 
     class _DummyCRS:

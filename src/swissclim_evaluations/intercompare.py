@@ -363,7 +363,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     dst = _ensure_dir(out_root / "energy_spectra")
 
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
+    per_model, _, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
     _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
 
     results = {}
@@ -825,7 +825,7 @@ def intercompare_histograms(
 
     # --- Latitude Bands Histograms ---
     # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
     # Filter out global histograms from this scan
     per_model = [{f for f in s if "global" not in f} for s in per_model]
     uni = {f for f in uni if "global" not in f}
@@ -1081,7 +1081,7 @@ def intercompare_maps(
     src_rel = Path("maps")
     dst = _ensure_dir(out_root / "maps")
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "maps/map_*.npz")
+    per_model, _, uni = _scan_model_sets(models, "maps/map_*.npz")
     _report_missing("maps", models, labels, per_model, uni)
 
     results = {}
@@ -1241,7 +1241,7 @@ def intercompare_deterministic_metrics(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
     # Availability report
-    per_model, inter, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
+    per_model, _, uni = _scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
     _report_missing("deterministic_metrics", models, labels, per_model, uni)
 
     results = {}
@@ -1627,7 +1627,7 @@ def intercompare_probabilistic(
         "probabilistic/prob_metrics_spatial*.nc",
         "probabilistic/prob_metrics_temporal*.nc",
     ):
-        per_model, inter, uni = _scan_model_sets(models, pattern)
+        per_model, _, uni = _scan_model_sets(models, pattern)
         union_total |= uni
         for i, s in enumerate(per_model):
             per_model_accum[i] |= s
@@ -2067,6 +2067,72 @@ def intercompare_probabilistic(
                         plt.close()
 
 
+def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> None:
+    """Combine SSIM metrics from multiple models."""
+    # Availability report
+    per_model, _, uni = _scan_model_sets(models, "ssim/ssim_ssim_*.csv")
+    _report_missing("ssim_ssim", models, labels, per_model, uni)
+
+    results = {}
+    all_multi = _common_files(models, "ssim/ssim_ssim_*.csv")
+
+    # Check for any files
+    results["SSIM Summary"] = 1 if all_multi else 0
+
+    _report_checklist("ssim_ssim", results)
+
+    # Report common files found
+    multi_csv = _common_files(models, "ssim/ssim_ssim_*.csv")
+    if multi_csv:
+        _print_file_list(f"Found {len(multi_csv)} common SSIM metric files", multi_csv)
+
+    # SSIM metrics
+    dst_multi = _ensure_dir(out_root / "ssim")
+    frames: list[pd.DataFrame] = []
+
+    for lab, m in zip(labels, models, strict=False):
+        candidates = sorted((m / "ssim").glob("ssim_ssim_*.csv"))
+        # Prefer ensmean or det
+        f = next(
+            (c for c in candidates if "ensmean" in c.name or "det" in c.name),
+            next(iter(candidates), None),
+        )
+
+        if f is not None and f.is_file():
+            df = pd.read_csv(f)
+            # Normalize variable column
+            if "variable" not in df.columns:
+                if "Unnamed: 0" in df.columns:
+                    df = df.rename(columns={"Unnamed: 0": "variable"})
+                else:
+                    # assume first column is variable name
+                    first = df.columns[0]
+                    df = df.rename(columns={first: "variable"})
+
+            df.insert(0, "model", lab)
+            frames.append(df)
+
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        out_csv = dst_multi / "ssim_combined.csv"
+        combined.to_csv(out_csv, index=False)
+        c.success(f"[SSIM] Saved combined metrics to {out_csv}")
+
+        # Plot SSIM comparison
+        if "SSIM" in combined.columns:
+            # Filter for AVERAGE_SSIM
+            df_avg = combined[combined["variable"] == "AVERAGE_SSIM"]
+            if not df_avg.empty:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                sns.barplot(data=df_avg, x="model", y="SSIM", ax=ax)
+                ax.set_title("SSIM Comparison")
+                plt.tight_layout()
+                out_png = dst_multi / "ssim_comparison.png"
+                fig.savefig(out_png, dpi=150)
+                plt.close(fig)
+                c.success(f"[SSIM] Saved comparison plot to {out_png}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="SwissClim Evaluations — Intercomparison runner (YAML-configured)"
@@ -2121,7 +2187,10 @@ def run_from_config(cfg: dict) -> None:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
+    if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
+    if "ssim" in mods:
+        intercompare_ssim(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels

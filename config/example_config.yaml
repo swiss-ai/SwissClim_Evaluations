@@ -109,6 +109,7 @@ selection:
     vertical_profiles: mean  # mean | pooled | members
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
+    multivariate: mean       # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
@@ -166,6 +167,7 @@ modules:
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ssim: true                 # Structural Similarity Index (SSIM) for spatial patterns
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
@@ -212,10 +214,31 @@ metrics:
 
     thresholds: [50, 70, 90]
 
+  # SSIM configuration
+  ssim:
+    # Parameters for SSIM (defaults from Wang et al. 2004)
+    sigma: 1.5
+    K1: 0.01
+    K2: 0.03
+    gaussian_weights: true
+    use_sample_covariance: true
+
   # Energy Spectra configuration.
   energy_spectra:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
+
+  # Multivariate metrics configuration.
+  multivariate:
+    # Bivariate histograms configuration
+    # List of variable pairs to generate 2D histograms and density plots for.
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
+      - ["temperature", "specific_humidity"]
+      - ["geopotential", "temperature"]
+      - ["total_precipitation", "total_column_water_vapour"]
+      - ["vertical_velocity", "temperature"]
 
 probabilistic:
   # If true, compute and report CRPS summaries per pressure level (for 3D variables).
