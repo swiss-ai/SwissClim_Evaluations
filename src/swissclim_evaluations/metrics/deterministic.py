@@ -123,10 +123,9 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
-    if "latitude" not in ds_target.coords:
-        raise ValueError("latitude coordinate required for weighting")
-    weights = create_latitude_weights(ds_target.latitude)
-    weights = weights / weights.mean()
+    if "latitude" in ds_target.dims:
+        weights = create_latitude_weights(ds_target.latitude)
+        weights = weights / weights.mean()
 
     for var in variables:
         y_true = ds_target[var]

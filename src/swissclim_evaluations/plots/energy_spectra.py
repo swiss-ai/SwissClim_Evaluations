@@ -120,7 +120,9 @@ def calculate_energy_spectra(
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
     if "latitude" not in da_power.coords:
-        raise ValueError("calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray.")
+        raise ValueError(
+            "calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray."
+        )
     weights = create_latitude_weights(da_power["latitude"])
     weights = weights / weights.mean()
     da_power = da_power.weighted(weights).mean(dim="latitude")
