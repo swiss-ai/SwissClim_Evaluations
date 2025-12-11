@@ -4,7 +4,7 @@ import contextlib
 import functools
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import dask
 import numpy as np
@@ -51,7 +51,10 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
 
 
 def _calculate_ssim(
-    da_target: xr.DataArray, da_pred: xr.DataArray, compute: bool = True
+    da_target: xr.DataArray,
+    da_pred: xr.DataArray,
+    compute: bool = True,
+    preserve_dims: list[str] | None = None,
 ) -> float | Any:
     if "latitude" not in da_target.dims or "longitude" not in da_target.dims:
         return np.nan
@@ -72,12 +75,55 @@ def _calculate_ssim(
             dask="parallelized",
             output_dtypes=[float],
         )
-        mean_res = res.mean()
+        if preserve_dims:
+            reduce_dims = [d for d in res.dims if d not in preserve_dims]
+            mean_res = res.mean(dim=reduce_dims)
+        else:
+            mean_res = res.mean()
+
         if compute:
+            if preserve_dims:
+                return mean_res.compute()
             return float(mean_res.compute().item())
         return mean_res
     except Exception:
         return np.nan
+
+
+def _finalize_metrics(
+    metrics_dict: dict[str, dict[str, Any]],
+    lazy_list: list[tuple[str, str, Any]],
+    computed_results: list[Any],
+    preserve_dims: list[str] | None,
+) -> pd.DataFrame:
+    """Populate metrics_dict with computed results and convert to DataFrame."""
+    for (var, metric, _), res in zip(lazy_list, computed_results, strict=False):
+        if preserve_dims and isinstance(res, (xr.DataArray | xr.Dataset)):
+            metrics_dict[var][metric] = res
+        else:
+            try:
+                val = float(res)
+            except Exception:
+                val = float(np.array(res).item())
+            metrics_dict[var][metric] = val
+
+    if preserve_dims:
+        dfs = []
+        for var, metrics in metrics_dict.items():
+            try:
+                ds_var = xr.Dataset(metrics)
+                df_var = ds_var.to_dataframe().reset_index()
+                df_var["variable"] = var
+                dfs.append(df_var)
+            except Exception as e:
+                print(f"[deterministic] Failed to convert metrics for {var} to DataFrame: {e}")
+                continue
+
+        if dfs:
+            return pd.concat(dfs, ignore_index=True)
+        return pd.DataFrame()
+
+    return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
 def _calculate_all_metrics(
@@ -88,7 +134,9 @@ def _calculate_all_metrics(
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
     seeps_climatology_path: str | None = None,
-) -> pd.DataFrame:
+    preserve_dims: list[str] | None = None,
+    compute: bool = True,
+) -> pd.DataFrame | tuple[dict[str, dict[str, Any]], list[tuple[str, str, Any]]]:
     """Compute scalar deterministic metrics per variable.
 
     Metrics supported:
@@ -97,7 +145,7 @@ def _calculate_all_metrics(
     """
 
     variables = list(ds_target.data_vars)
-    metrics_dict: dict[str, dict[str, float]] = {}
+    metrics_dict: dict[str, dict[str, Any]] = {}
 
     # ---- FSS configuration
     auto_window_size = _window_size(ds_target)
@@ -183,46 +231,53 @@ def _calculate_all_metrics(
         if var not in metrics_dict:
             metrics_dict[var] = {}
 
+        # Filter preserve_dims for this variable
+        curr_preserve = None
+        if preserve_dims:
+            curr_preserve = [d for d in preserve_dims if (d in y_true.dims) or (d in y_pred.dims)]
+            if not curr_preserve:
+                curr_preserve = None
+
         # Base error metrics
         if (include is None) or ("MAE" in metrics_to_compute):
             if weights is not None:
-                val = mae(y_pred, y_true, weights=weights)
+                val = mae(y_pred, y_true, weights=weights, preserve_dims=curr_preserve)
             else:
-                val = mae(y_pred, y_true)
+                val = mae(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "MAE", val))
             intermediate_lazy[(var, "MAE")] = val
 
         if (include is None) or ("RMSE" in metrics_to_compute):
             if weights is not None:
-                val = rmse(y_pred, y_true, weights=weights)
+                val = rmse(y_pred, y_true, weights=weights, preserve_dims=curr_preserve)
             else:
-                val = rmse(y_pred, y_true)
+                val = rmse(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "RMSE", val))
 
         if (include is None) or ("MSE" in metrics_to_compute):
             if weights is not None:
-                val = mse(y_pred, y_true, weights=weights)
+                val = mse(y_pred, y_true, weights=weights, preserve_dims=curr_preserve)
             else:
-                val = mse(y_pred, y_true)
+                val = mse(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "MSE", val))
 
         if (include is None) or ("Bias" in metrics_to_compute):
             if weights is not None:
-                val = additive_bias(y_pred, y_true, weights=weights)
+                val = additive_bias(y_pred, y_true, weights=weights, preserve_dims=curr_preserve)
             else:
-                val = additive_bias(y_pred, y_true)
+                val = additive_bias(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "Bias", val))
 
         # Correlation
         if (include is None) or ("Pearson R" in metrics_to_compute):
-            val = pearsonr(y_pred, y_true)
+            val = pearsonr(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "Pearson R", val))
 
         # SSIM
         if (include is None) or ("SSIM" in metrics_to_compute):
             # SSIM implementation here calls compute() internally, so we can't easily lazy-batch it
             # without refactoring _calculate_ssim. We leave it as is for now.
-            val = _calculate_ssim(y_true, y_pred, compute=False)
+            val = _calculate_ssim(y_true, y_pred, compute=False, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "SSIM", val))
 
         # FSS
@@ -277,7 +332,11 @@ def _calculate_all_metrics(
                                 out = out.where(~no_evt, other=1.0)
                             except Exception:
                                 pass
-                            fss_scalar = out.mean(skipna=True)
+                            if curr_preserve:
+                                reduce_dims = [d for d in out.dims if d not in curr_preserve]
+                                fss_scalar = out.mean(dim=reduce_dims, skipna=True)
+                            else:
+                                fss_scalar = out.mean(skipna=True)
                             lazy_metrics_to_compute.append((var, fss_label, fss_scalar))
                         else:
                             metrics_dict[var][fss_label] = float(out)
@@ -297,17 +356,31 @@ def _calculate_all_metrics(
                 y_pred * 1000, y_true * 1000, prob_dry, seeps_threshold, dry_light_threshold=0.25
             )  # convert to mm with *1000
             # SEEPS returns a lazy object usually
+            if curr_preserve:
+                reduce_dims = [d for d in seeps_val.dims if d not in curr_preserve]
+                seeps_val = seeps_val.mean(dim=reduce_dims, skipna=True)
+            else:
+                seeps_val = seeps_val.mean(skipna=True)
             lazy_metrics_to_compute.append((var, "SEEPS", seeps_val))
 
         # Relative metrics
         if calc_relative:
             # Denominator norms on the target
-            l1_norm = np.abs(y_true).sum(skipna=True)
-            l2_norm = (y_true**2).sum(skipna=True) ** 0.5
-            if weights is not None:
-                mean_abs = np.abs(y_true).weighted(weights).mean(skipna=True)
+            if curr_preserve:
+                reduce_dims = [d for d in y_true.dims if d not in curr_preserve]
+                l1_norm = np.abs(y_true).sum(dim=reduce_dims, skipna=True)
+                l2_norm = (y_true**2).sum(dim=reduce_dims, skipna=True) ** 0.5
+                if weights is not None:
+                    mean_abs = np.abs(y_true).weighted(weights).mean(dim=reduce_dims, skipna=True)
+                else:
+                    mean_abs = np.abs(y_true).mean(dim=reduce_dims, skipna=True)
             else:
-                mean_abs = np.abs(y_true).mean(skipna=True)
+                l1_norm = np.abs(y_true).sum(skipna=True)
+                l2_norm = (y_true**2).sum(skipna=True) ** 0.5
+                if weights is not None:
+                    mean_abs = np.abs(y_true).weighted(weights).mean(skipna=True)
+                else:
+                    mean_abs = np.abs(y_true).mean(skipna=True)
 
             # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
@@ -317,17 +390,24 @@ def _calculate_all_metrics(
                     mae_val_lazy = intermediate_lazy[(var, "MAE")]
                 else:
                     if weights is not None:
-                        mae_val_lazy = mae(y_pred, y_true, weights=weights)
+                        mae_val_lazy = mae(
+                            y_pred, y_true, weights=weights, preserve_dims=curr_preserve
+                        )
                     else:
-                        mae_val_lazy = mae(y_pred, y_true)
+                        mae_val_lazy = mae(y_pred, y_true, preserve_dims=curr_preserve)
 
                 rel_mae = mae_val_lazy / mean_abs
                 lazy_metrics_to_compute.append((var, "Relative MAE", rel_mae))
 
             # True norm-based relative errors: ||e||1 / ||y||1 and ||e||2 / ||y||2
             err = y_pred - y_true
-            l1_err = np.abs(err).sum(skipna=True)
-            l2_err = (err**2).sum(skipna=True) ** 0.5
+            if curr_preserve:
+                reduce_dims = [d for d in err.dims if d not in curr_preserve]
+                l1_err = np.abs(err).sum(dim=reduce_dims, skipna=True)
+                l2_err = (err**2).sum(dim=reduce_dims, skipna=True) ** 0.5
+            else:
+                l1_err = np.abs(err).sum(skipna=True)
+                l2_err = (err**2).sum(skipna=True) ** 0.5
 
             # We can't easily check for zero division lazily without map_blocks or just letting
             # it be inf/nan. But we can compute the ratio and handle nan/inf later or rely on
@@ -341,24 +421,21 @@ def _calculate_all_metrics(
                 lazy_metrics_to_compute.append((var, "Relative L2", rel_l2))
 
     # Compute all lazy metrics at once
+    if not compute:
+        return metrics_dict, lazy_metrics_to_compute
+
     if lazy_metrics_to_compute:
         # Unzip
-        vars_list, metrics_list, lazy_objs = zip(*lazy_metrics_to_compute, strict=False)
+        _, _, lazy_objs = zip(*lazy_metrics_to_compute, strict=False)
 
         # Compute
         computed_results = dask.compute(*lazy_objs)
 
-        # Populate metrics_dict
-        for v, m, res in zip(vars_list, metrics_list, computed_results, strict=False):
-            # Convert to float, handling 0-d arrays
-            try:
-                val = float(res)
-            except Exception:
-                # Fallback if it's still an array or something else
-                val = float(np.array(res).item())
-            metrics_dict[v][m] = val
+        return _finalize_metrics(
+            metrics_dict, lazy_metrics_to_compute, computed_results, preserve_dims
+        )
 
-    return pd.DataFrame.from_dict(metrics_dict, orient="index")
+    return _finalize_metrics(metrics_dict, [], [], preserve_dims)
 
 
 def _calculate_per_level_metrics(
@@ -368,7 +445,8 @@ def _calculate_per_level_metrics(
     n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None,
-) -> pd.DataFrame | None:
+    compute: bool = True,
+) -> pd.DataFrame | tuple[dict, list] | None:
     """Compute metrics per pressure level for 3D variables."""
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:
@@ -377,29 +455,20 @@ def _calculate_per_level_metrics(
     if "level" not in ds_target.dims:
         return None
 
-    levels = ds_target.level.values
-    dfs = []
-    for level in levels:
-        # Select level for all 3D variables
-        ds_t_lvl = ds_target[variables_3d].sel(level=level)
-        ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
+    # Optimized implementation using preserve_dims
+    ds_t_3d = ds_target[variables_3d]
+    ds_p_3d = ds_prediction[variables_3d]
 
-        df = _calculate_all_metrics(
-            ds_t_lvl,
-            ds_p_lvl,
-            calc_relative,
-            n_points,
-            include,
-            fss_cfg,
-        )
-        df["level"] = int(level)
-        df["variable"] = df.index
-        dfs.append(df)
-
-    if not dfs:
-        return None
-
-    return pd.concat(dfs).reset_index(drop=True)
+    return _calculate_all_metrics(
+        ds_t_3d,
+        ds_p_3d,
+        calc_relative,
+        n_points,
+        include,
+        fss_cfg,
+        preserve_dims=["level"],
+        compute=compute,
+    )
 
 
 def run(
@@ -513,9 +582,22 @@ def run(
     elif resolved_mode == "members" and had_ensemble_dim:
         ens_token = None  # per-member handled below
 
+    df_all_lead = pd.DataFrame()
+
     if members_indices is None:
-        # Aggregate (non per-member) outputs
-        regular_metrics = _calculate_all_metrics(
+        # Check multi_lead early to include in batch compute
+        try:
+            multi_lead = (
+                (lead_policy is not None)
+                and ("lead_time" in ds_prediction.dims)
+                and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+                and getattr(lead_policy, "mode", "first") != "first"
+            )
+        except Exception:
+            multi_lead = False
+
+        # 1. Regular metrics
+        reg_dict, reg_lazy = _calculate_all_metrics(
             ds_target,
             ds_prediction,
             calc_relative=True,
@@ -523,8 +605,11 @@ def run(
             include=include,
             fss_cfg=fss_cfg,
             seeps_climatology_path=seeps_climatology_path,
+            compute=False,
         )
-        standardized_metrics = _calculate_all_metrics(
+
+        # 2. Standardized metrics
+        std_dict, std_lazy = _calculate_all_metrics(
             ds_target_std,
             ds_prediction_std,
             calc_relative=False,
@@ -532,8 +617,105 @@ def run(
             include=std_include,
             fss_cfg=fss_cfg,
             seeps_climatology_path=seeps_climatology_path,
+            compute=False,
         )
 
+        # 3. Per-level metrics
+        lvl_dict, lvl_lazy = ({}, [])
+        lvl_std_dict, lvl_std_lazy = ({}, [])
+
+        if report_per_level:
+            res = _calculate_per_level_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+                compute=False,
+            )
+            if res is not None:
+                lvl_dict, lvl_lazy = res
+
+            res_std = _calculate_per_level_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                n_points=n_points,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                compute=False,
+            )
+            if res_std is not None:
+                lvl_std_dict, lvl_std_lazy = res_std
+
+        # 4. Multi-lead metrics
+        lead_dict, lead_lazy = ({}, [])
+        if multi_lead:
+            lead_dict, lead_lazy = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+                preserve_dims=["lead_time"],
+                compute=False,
+            )
+
+        # Combine and compute all
+        all_lazy = reg_lazy + std_lazy + lvl_lazy + lvl_std_lazy + lead_lazy
+
+        if all_lazy:
+            _, _, lazy_objs = zip(*all_lazy, strict=False)
+            results = dask.compute(*lazy_objs)
+
+            # Distribute results
+            idx_reg = len(reg_lazy)
+            idx_std = idx_reg + len(std_lazy)
+            idx_lvl = idx_std + len(lvl_lazy)
+            idx_lvl_std = idx_lvl + len(lvl_std_lazy)
+
+            res_reg = results[:idx_reg]
+            res_std = results[idx_reg:idx_std]
+            res_lvl = results[idx_std:idx_lvl]
+            res_lvl_std = results[idx_lvl:idx_lvl_std]
+            res_lead = results[idx_lvl_std:]
+
+            regular_metrics = _finalize_metrics(reg_dict, reg_lazy, res_reg, None)
+            standardized_metrics = _finalize_metrics(std_dict, std_lazy, res_std, None)
+
+            per_level_metrics = None
+            if lvl_lazy or lvl_dict:
+                per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, res_lvl, ["level"])
+                if (
+                    per_level_metrics is not None
+                    and not per_level_metrics.empty
+                    and "level" in per_level_metrics.columns
+                ):
+                    per_level_metrics["level"] = per_level_metrics["level"].astype(int)
+
+            per_level_std = None
+            if lvl_std_lazy or lvl_std_dict:
+                per_level_std = _finalize_metrics(
+                    lvl_std_dict, lvl_std_lazy, res_lvl_std, ["level"]
+                )
+                if (
+                    per_level_std is not None
+                    and not per_level_std.empty
+                    and "level" in per_level_std.columns
+                ):
+                    per_level_std["level"] = per_level_std["level"].astype(int)
+
+            if lead_lazy or lead_dict:
+                df_all_lead = _finalize_metrics(lead_dict, lead_lazy, res_lead, ["lead_time"])
+        else:
+            regular_metrics = pd.DataFrame()
+            standardized_metrics = pd.DataFrame()
+            per_level_metrics = None
+            per_level_std = None
+
+        # Save outputs
         out_csv = section_output / build_output_filename(
             metric="deterministic_metrics",
             variable=None,
@@ -559,50 +741,33 @@ def run(
         print(f"[deterministic] saved {out_csv}")
         print(f"[deterministic] saved {out_csv_std}")
 
-        if report_per_level:
-            per_level_metrics = _calculate_per_level_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                n_points=n_points,
-                include=include,
-                fss_cfg=fss_cfg,
+        if per_level_metrics is not None:
+            out_csv_lvl = section_output / build_output_filename(
+                metric="deterministic_metrics",
+                variable=None,
+                level=None,
+                qualifier="per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
             )
-            if per_level_metrics is not None:
-                out_csv_lvl = section_output / build_output_filename(
-                    metric="deterministic_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="per_level",
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="csv",
-                )
-                per_level_metrics.to_csv(out_csv_lvl, index=False)
-                print(f"[deterministic] saved {out_csv_lvl}")
+            per_level_metrics.to_csv(out_csv_lvl, index=False)
+            print(f"[deterministic] saved {out_csv_lvl}")
 
-            per_level_std = _calculate_per_level_metrics(
-                ds_target_std,
-                ds_prediction_std,
-                calc_relative=False,
-                n_points=n_points,
-                include=std_include,
-                fss_cfg=fss_cfg,
+        if per_level_std is not None:
+            out_csv_lvl_std = section_output / build_output_filename(
+                metric="deterministic_metrics",
+                variable=None,
+                level=None,
+                qualifier="standardized_per_level",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
             )
-            if per_level_std is not None:
-                out_csv_lvl_std = section_output / build_output_filename(
-                    metric="deterministic_metrics",
-                    variable=None,
-                    level=None,
-                    qualifier="standardized_per_level",
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="csv",
-                )
-                per_level_std.to_csv(out_csv_lvl_std, index=False)
-                print(f"[deterministic] saved {out_csv_lvl_std}")
+            per_level_std.to_csv(out_csv_lvl_std, index=False)
+            print(f"[deterministic] saved {out_csv_lvl_std}")
 
         # Console summary
         try:
@@ -638,23 +803,29 @@ def run(
                 else ds_target_std
             )
 
-            reg_m = _calculate_all_metrics(
-                ds_tgt_m,
-                ds_pred_m,
-                calc_relative=True,
-                n_points=n_points,
-                include=include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
+            reg_m = cast(
+                pd.DataFrame,
+                _calculate_all_metrics(
+                    ds_tgt_m,
+                    ds_pred_m,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                    seeps_climatology_path=seeps_climatology_path,
+                ),
             )
-            std_m = _calculate_all_metrics(
-                ds_tgt_m_std,
-                ds_pred_m_std,
-                calc_relative=False,
-                n_points=n_points,
-                include=std_include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
+            std_m = cast(
+                pd.DataFrame,
+                _calculate_all_metrics(
+                    ds_tgt_m_std,
+                    ds_pred_m_std,
+                    calc_relative=False,
+                    n_points=n_points,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                    seeps_climatology_path=seeps_climatology_path,
+                ),
             )
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
@@ -688,13 +859,16 @@ def run(
             pooled_metrics.append(reg_m)
 
             if report_per_level:
-                per_level_m = _calculate_per_level_metrics(
-                    ds_tgt_m,
-                    ds_pred_m,
-                    calc_relative=True,
-                    n_points=n_points,
-                    include=include,
-                    fss_cfg=fss_cfg,
+                per_level_m = cast(
+                    pd.DataFrame | None,
+                    _calculate_per_level_metrics(
+                        ds_tgt_m,
+                        ds_pred_m,
+                        calc_relative=True,
+                        n_points=n_points,
+                        include=include,
+                        fss_cfg=fss_cfg,
+                    ),
                 )
                 if per_level_m is not None:
                     out_csv_m_lvl = section_output / build_output_filename(
@@ -710,13 +884,16 @@ def run(
                     per_level_m.to_csv(out_csv_m_lvl, index=False)
                     print(f"[deterministic] saved {out_csv_m_lvl}")
 
-                per_level_m_std = _calculate_per_level_metrics(
-                    ds_tgt_m_std,
-                    ds_pred_m_std,
-                    calc_relative=False,
-                    n_points=n_points,
-                    include=std_include,
-                    fss_cfg=fss_cfg,
+                per_level_m_std = cast(
+                    pd.DataFrame | None,
+                    _calculate_per_level_metrics(
+                        ds_tgt_m_std,
+                        ds_pred_m_std,
+                        calc_relative=False,
+                        n_points=n_points,
+                        include=std_include,
+                        fss_cfg=fss_cfg,
+                    ),
                 )
                 if per_level_m_std is not None:
                     out_csv_m_lvl_std = section_output / build_output_filename(
@@ -769,55 +946,66 @@ def run(
             pass
 
     # Optional per-lead artifacts when a multi-lead policy is provided
+    # Note: multi_lead check was already done above for members_indices is None case.
+    # We re-evaluate it here for safety or reuse the variable if in scope.
     try:
-        multi_lead = (
+        multi_lead_check = (
             (lead_policy is not None)
             and ("lead_time" in ds_prediction.dims)
             and int(ds_prediction.sizes.get("lead_time", 0)) > 1
             and getattr(lead_policy, "mode", "first") != "first"
         )
     except Exception:
-        multi_lead = False
-    if members_indices is None and multi_lead:
-        rows = []
-        wide_rows = []
-        leads = list(ds_prediction["lead_time"].values)
-        for i, lt in enumerate(leads):
-            try:
-                hours = int(np.timedelta64(lt) / np.timedelta64(1, "h"))
-            except Exception:
-                hours = int(i)
-            ds_t_i = (
-                ds_target.isel(lead_time=i, drop=False)
-                if "lead_time" in ds_target.dims
-                else ds_target
-            )
-            ds_p_i = ds_prediction.isel(lead_time=i, drop=False)
-            df_i = _calculate_all_metrics(
-                ds_t_i,
-                ds_p_i,
+        multi_lead_check = False
+
+    if members_indices is None and multi_lead_check:
+        # Use pre-computed df_all_lead if available, otherwise compute (fallback)
+        if "df_all_lead" in locals() and not df_all_lead.empty:
+            df_all = df_all_lead
+        else:
+            df_all = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
                 calc_relative=True,
                 n_points=n_points,
                 include=include,
                 fss_cfg=fss_cfg,
+                preserve_dims=["lead_time"],
             )
-            df_i = df_i.reset_index().rename(columns={"index": "variable"})
-            df_i.insert(0, "lead_time_hours", hours)
-            rows.append(df_i)
-            # Build a wide row with columns like var_metric
-            flat: dict[str, float] = {"lead_time_hours": float(hours)}
-            for _idx, row in df_i.iterrows():
-                var = str(row["variable"]) if "variable" in row else None
-                for col, val in row.items():
-                    if col in {"lead_time_hours", "variable"}:
-                        continue
-                    key = f"{var}_{col}" if var is not None else col
-                    with contextlib.suppress(Exception):
-                        flat[key] = float(val)
-            wide_rows.append(flat)
-        if rows:
-            long_df = pd.concat(rows, ignore_index=True)
-            # Write standardized filename with tokens for downstream tooling
+
+        wide_df = pd.DataFrame()
+
+        if not df_all.empty and "lead_time" in df_all.columns:
+            # Convert lead_time to hours
+            def _to_hours(val):
+                try:
+                    return int(val / np.timedelta64(1, "h"))
+                except Exception:
+                    try:
+                        return int(val)
+                    except Exception:
+                        return val
+
+            df_all["lead_time_hours"] = df_all["lead_time"].apply(_to_hours)
+            df_all = df_all.drop(columns=["lead_time"])
+
+            # Prepare long_df
+            cols = ["lead_time_hours", "variable"] + [
+                c for c in df_all.columns if c not in ["lead_time_hours", "variable"]
+            ]
+            long_df = df_all[cols]
+
+            # Prepare wide_df
+            melted = long_df.melt(
+                id_vars=["lead_time_hours", "variable"], var_name="metric", value_name="value"
+            )
+            melted["key"] = melted["variable"].astype(str) + "_" + melted["metric"].astype(str)
+            wide_df = melted.pivot(
+                index="lead_time_hours", columns="key", values="value"
+            ).reset_index()
+            wide_df.columns.name = None
+
+            # Save long_df
             try:
                 out_long = section_output / build_output_filename(
                     metric="deterministic_metrics",
@@ -833,9 +1021,8 @@ def run(
                 print(f"[deterministic] saved {out_long}")
             except Exception as e:
                 print(f"[deterministic] Failed to save {out_long}: {e}")
-        if wide_rows:
-            wide_df = pd.DataFrame(wide_rows)
-            # Write standardized filename variant
+
+            # Save wide_df
             try:
                 out_wide = section_output / build_output_filename(
                     metric="deterministic_metrics",

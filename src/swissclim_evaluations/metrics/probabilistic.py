@@ -131,38 +131,57 @@ def _reduce_mean_all(da: xr.DataArray) -> xr.DataArray:
     return da.mean(dim=dims, skipna=True)
 
 
+def _histogram_chunk(block, bins, **kwargs):
+    data = block.ravel()
+    data = data[~np.isnan(data)]
+    counts, _ = np.histogram(data, bins=bins)
+    return counts[None, :]  # (1, n_bins)
+
+
+def _pit_histogram_dask_lazy(da: xr.DataArray, bins: int = 50) -> tuple[Any, np.ndarray]:
+    """Compute PIT histogram lazily using map_blocks to avoid unknown chunk sizes.
+    Returns (lazy_counts, edges).
+    """
+    import functools
+
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    data = getattr(da, "data", da)
+    darr = dsa.asarray(data)
+
+    # Flatten to 1D to simplify reduction
+    darr = darr.flatten()
+
+    # Wrapper to handle potential extra kwargs from map_blocks
+    def _wrapper(block, bins, **kwargs):
+        return _histogram_chunk(block, bins, **kwargs)
+
+    chunk_func = functools.partial(_wrapper, bins=edges)
+
+    # Map each block to a (1, n_bins) histogram
+    counts_blocks = darr.map_blocks(
+        chunk_func, chunks=(1, bins), dtype=np.int64, drop_axis=[0], new_axis=[0, 1]
+    )
+
+    # Sum over the blocks (axis 0) to get total counts
+    counts = counts_blocks.sum(axis=0)
+
+    return counts, edges
+
+
 def _pit_histogram_dask(
     da: xr.DataArray, bins: int = 50, density: bool = True
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute PIT histogram using dask.array.histogram.
+    """Compute PIT histogram using dask.
     Returns (counts, edges). If density=True, return density values.
     """
-    edges = np.linspace(0.0, 1.0, bins + 1)
-    # Use dask-backed data when available; otherwise wrap numpy data lazily
-    data = getattr(da, "data", da)
-    darr = dsa.asarray(data)
-    darr = darr.ravel()
-    darr = darr[~dsa.isnan(darr)]
-    counts = dsa.histogram(darr, bins=np.asarray(edges))[0].compute().astype(np.float64)
+    counts_lazy, edges = _pit_histogram_dask_lazy(da, bins)
+    counts = counts_lazy.compute().astype(np.float64)
+
     if density:
         total = counts.sum()
         if total > 0:
             bin_width = 1.0 / bins
             counts = counts / (total * bin_width)
-    return counts, edges
-
-
-def _pit_histogram_dask_lazy(da: xr.DataArray, bins: int = 50) -> tuple[Any, np.ndarray]:
-    """Compute PIT histogram lazily using dask.array.histogram.
-    Returns (lazy_counts, edges).
-    """
-    edges = np.linspace(0.0, 1.0, bins + 1)
-    # Use dask-backed data when available; otherwise wrap numpy data lazily
-    data = getattr(da, "data", da)
-    darr = dsa.asarray(data)
-    darr = darr.ravel()
-    darr = darr[~dsa.isnan(darr)]
-    counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
     return counts, edges
 
 
