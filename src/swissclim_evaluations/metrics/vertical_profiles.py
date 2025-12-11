@@ -213,13 +213,14 @@ def run(
             lat_min_neg = lat_bins[i]
             lat_max_neg = lat_bins[i + 1]
             lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
+            w_slice_neg = weights.sel(latitude=lat_slice_neg) if weights is not None else None
             south_curves.append(
                 _compute_nmae(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_neg,
                     level_values,
-                    weights=weights,
+                    weights=w_slice_neg,
                 )
             )
             south_meta.append((lat_min_neg, lat_max_neg))
@@ -231,13 +232,14 @@ def run(
             low = min(lat_min_pos, lat_max_pos)
             high = max(lat_min_pos, lat_max_pos)
             lat_slice_pos = _lat_slice(low, high)
+            w_slice_pos = weights.sel(latitude=lat_slice_pos) if weights is not None else None
             north_curves.append(
                 _compute_nmae(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_pos,
                     level_values,
-                    weights=weights,
+                    weights=w_slice_pos,
                 )
             )
             north_meta.append((lat_min_pos, lat_max_pos))
