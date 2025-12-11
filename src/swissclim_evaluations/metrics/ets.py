@@ -26,11 +26,9 @@ def _calculate_ets_for_thresholds(
             quantile = float(da_target.quantile(threshold / 100.0, skipna=True).compute().item())
             obs_events = da_target >= quantile  # targets events
             fcst_events = da_prediction >= quantile  # predictions events
-
             bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
-            bcm = bcm.transform(reduce_dims="all")
-
-            ets_score = bcm.equitable_threat_score()
+            basic_cm = bcm.transform(reduce_dims="all")
+            ets_score = basic_cm.equitable_threat_score()
             metrics_dict[var][f"ETS {threshold}%"] = float(ets_score.values)
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
