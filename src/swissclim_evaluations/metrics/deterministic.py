@@ -123,6 +123,7 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
+    weights = None
     if "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
         weights = weights / weights.mean()
@@ -230,7 +231,10 @@ def _calculate_all_metrics(
             # Denominator norms on the target
             l1_norm = float(np.abs(y_true).sum(skipna=True).compute())
             l2_norm = float(((y_true**2).sum(skipna=True).compute()) ** 0.5)
-            mean_abs = float(np.abs(y_true).weighted(weights).mean(skipna=True).compute())
+            if weights is not None:
+                mean_abs = float(np.abs(y_true).weighted(weights).mean(skipna=True).compute())
+            else:
+                mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
 
             # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
