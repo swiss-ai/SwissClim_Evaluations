@@ -1050,9 +1050,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
             del plotting_block["lead_panel_hours"]
     except Exception:
         # Ignore errors when removing legacy config keys; not critical for pipeline execution.
-        # Ignore errors when removing legacy config keys; not critical for pipeline execution.
-        # Ignore errors when removing legacy config keys; not critical for pipeline execution.
-        # Ignore errors when removing legacy config keys; not critical for pipeline execution.
         pass
 
     # Derive per-plot datasets if a specific plot datetime is requested
@@ -1062,19 +1059,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
     out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
-    # Write lead-time audit if available
-    try:
-        audit = cfg.get("__lead_time_audit") or []
-        if audit:
-            import json
 
-            p = out_root / "lead_time_audit.json"
-            with open(p, "w") as f:
-                json.dump(audit, f, indent=2, default=str)
-            c.info(f"Lead-time audit written to {p}")
-    except Exception:
-        # Ignore errors when writing lead-time audit; not critical for pipeline execution.
-        pass
     # Persist the exact configuration used for this run into the output directory
     _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import dask
+import dask.array as dsa
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -19,6 +21,36 @@ from ..helpers import (
     get_variable_units,
     resolve_ensemble_mode,
 )
+
+
+def _subsample_lazy(da: xr.DataArray, k: int | None, seed: int) -> dsa.Array | None:
+    """Lazy version of subsample_values returning a dask array."""
+    size = int(getattr(da, "size", 0) or 0)
+    if size == 0:
+        return None
+
+    # If k is None or >= size, take all valid values
+    if k is None or size <= k:
+        return da.data.flatten()
+
+    # Subsampling logic
+    dims = list(da.dims)
+    nd = max(1, len(dims))
+    frac = (k / float(size)) ** (1.0 / nd)
+    rng = np.random.default_rng(seed)
+
+    indexers: dict[str, Any] = {}
+    for d in dims:
+        n = int(da.sizes.get(str(d), 1))
+        take = max(1, int(np.ceil(frac * n)))
+        take = min(take, n)
+        idx = rng.choice(n, size=take, replace=False)
+        idx.sort()
+        indexers[str(d)] = idx  # numpy array
+
+    # Lazy selection
+    sub = da.isel(indexers)
+    return sub.data.flatten()
 
 
 def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
@@ -156,23 +188,18 @@ def run(
         # Adjust height based on number of leads
         fig, ax = plt.subplots(figsize=(10, max(6, len(leads) * 0.5)), dpi=dpi)
 
-        # Determine common x-range
-        # Subsample globally for range
-        s_t = _subsample_values(da_target, 100000, base_seed)
-        s_p = _subsample_values(da_pred, 100000, base_seed)
-        if s_t.size == 0 or s_p.size == 0:
-            plt.close(fig)
-            return
+        # Collect all lazy jobs
+        jobs = []
 
-        combined = np.concatenate([s_t, s_p])
-        vmin = float(np.nanquantile(combined, 0.001))
-        vmax = float(np.nanquantile(combined, 0.999))
-        x_eval = np.linspace(vmin, vmax, 200)
+        # 1. Global subsample for range determination
+        range_job = {
+            "type": "range",
+            "sub_t_lazy": _subsample_lazy(da_target, 100000, base_seed),
+            "sub_p_lazy": _subsample_lazy(da_pred, 100000, base_seed),
+        }
+        jobs.append(range_job)
 
-        # We will compute all KDEs first to find max density for scaling
-        kdes = []
-        max_dens = 0.0
-
+        # 2. Per-lead subsamples
         for i, lt in enumerate(leads):
             # Handle lead time selection
             if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
@@ -188,8 +215,70 @@ def run(
 
             # Subsample
             seed = base_seed + i * 100
-            val_t = _subsample_values(da_t_l, max_samples // len(leads), seed)
-            val_p = _subsample_values(da_p_l, max_samples // len(leads), seed)
+
+            job = {
+                "type": "lead",
+                "label": label,
+                "sub_t_lazy": _subsample_lazy(da_t_l, max_samples // len(leads), seed),
+                "sub_p_lazy": _subsample_lazy(da_p_l, max_samples // len(leads), seed),
+            }
+            jobs.append(job)
+
+        # Compute all
+        lazy_all = []
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                lazy_all.append(job["sub_t_lazy"])
+            if job["sub_p_lazy"] is not None:
+                lazy_all.append(job["sub_p_lazy"])
+
+        if not lazy_all:
+            plt.close(fig)
+            return
+
+        results = dask.compute(*lazy_all)
+
+        # Distribute results
+        ptr = 0
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                val = results[ptr]
+                ptr += 1
+                val_t = np.asarray(val).ravel()
+                job["val_t"] = val_t[np.isfinite(val_t)]
+            else:
+                job["val_t"] = np.array([], dtype=float)
+
+            if job["sub_p_lazy"] is not None:
+                val = results[ptr]
+                ptr += 1
+                val_p = np.asarray(val).ravel()
+                job["val_p"] = val_p[np.isfinite(val_p)]
+            else:
+                job["val_p"] = np.array([], dtype=float)
+
+        # Process range
+        range_job = jobs[0]
+        s_t = cast(np.ndarray, range_job["val_t"])
+        s_p = cast(np.ndarray, range_job["val_p"])
+
+        if s_t.size == 0 or s_p.size == 0:
+            plt.close(fig)
+            return
+
+        combined = np.concatenate([s_t, s_p])
+        vmin = float(np.nanquantile(combined, 0.001))
+        vmax = float(np.nanquantile(combined, 0.999))
+        x_eval = np.linspace(vmin, vmax, 200)
+
+        # Process leads
+        kdes = []
+        max_dens = 0.0
+
+        for job in jobs[1:]:
+            val_t = cast(np.ndarray, job["val_t"])
+            val_p = cast(np.ndarray, job["val_p"])
+            label = cast(str, job["label"])
 
             if val_t.size < 10 or val_p.size < 10:
                 continue
@@ -268,37 +357,94 @@ def run(
         ens_token: str | None,
         level_val: Any = None,
     ):
-        # local copy of loop body (with minor modifications to accept arrays directly)
-        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
-            size = int(getattr(da, "size", 0) or 0)
-            if size == 0:
-                return np.array([], dtype=float)
-            if size <= k:
-                arr = np.asarray(da.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-            dims = list(da.dims)
-            nd = max(1, len(dims))
-            frac = (k / float(size)) ** (1.0 / nd)
-            rng = np.random.default_rng(seed)
-            indexers: dict[str, Any] = {}
-            for d in dims:
-                n = int(da.sizes.get(str(d), 1))
-                take = max(1, int(np.ceil(frac * n)))
-                take = min(take, n)
-                idx = rng.choice(n, size=take, replace=False)
-                idx.sort()
-                # Cast to plain numpy array for mypy/xarray typing compatibility
-                indexers[str(d)] = np.asarray(idx)
-            sub = da.isel(indexers)
-            arr = np.asarray(sub.compute().values).ravel()
-            return arr[np.isfinite(arr)]
-
         print(f"[wd_kde] variable: {var_name} level={level_token}")
 
-        # --- Global KDE ---
+        # Collect all jobs
+        jobs = []
+
+        # 1. Global KDE job
         seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
-        ds_flat_g = _subsample_values(da_t_std, max_samples, seed=seed_g)
-        ml_flat_g = _subsample_values(da_p_std, max_samples, seed=seed_g)
+        global_job = {
+            "type": "global",
+            "sub_t_lazy": _subsample_lazy(da_t_std, max_samples, seed_g),
+            "sub_p_lazy": _subsample_lazy(da_p_std, max_samples, seed_g),
+        }
+        jobs.append(global_job)
+
+        # 2. Lat band jobs (if needed)
+        if per_lat_band:
+            # Negative latitudes (right column)
+            for j in range(n_bands // 2):
+                lat_max = lat_bins[j]
+                lat_min = lat_bins[j + 1]
+                da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
+                da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
+
+                seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 1
+
+                job = {
+                    "type": "lat_neg",
+                    "j": j,
+                    "lat_min": lat_min,
+                    "lat_max": lat_max,
+                    "sub_t_lazy": _subsample_lazy(da_target_slice, max_samples, seed),
+                    "sub_p_lazy": _subsample_lazy(da_prediction_slice, max_samples, seed),
+                }
+                jobs.append(job)
+
+            # Positive latitudes (left column)
+            for j in range(n_bands // 2):
+                idx = -(j + 1)
+                lat_max = lat_bins[idx - 1]
+                lat_min = lat_bins[idx]
+                da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
+                da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
+
+                seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 2
+
+                job = {
+                    "type": "lat_pos",
+                    "j": j,
+                    "lat_min": lat_min,
+                    "lat_max": lat_max,
+                    "sub_t_lazy": _subsample_lazy(da_target_slice, max_samples, seed),
+                    "sub_p_lazy": _subsample_lazy(da_prediction_slice, max_samples, seed),
+                }
+                jobs.append(job)
+
+        # Compute all
+        lazy_all = []
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                lazy_all.append(job["sub_t_lazy"])
+            if job["sub_p_lazy"] is not None:
+                lazy_all.append(job["sub_p_lazy"])
+
+        results = dask.compute(*lazy_all) if lazy_all else []
+
+        # Distribute results
+        ptr = 0
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                val = results[ptr]
+                ptr += 1
+                val_t = np.asarray(val).ravel()
+                job["val_t"] = val_t[np.isfinite(val_t)]
+            else:
+                job["val_t"] = np.array([], dtype=float)
+
+            if job["sub_p_lazy"] is not None:
+                val = results[ptr]
+                ptr += 1
+                val_p = np.asarray(val).ravel()
+                job["val_p"] = val_p[np.isfinite(val_p)]
+            else:
+                job["val_p"] = np.array([], dtype=float)
+
+        # --- Process Global KDE ---
+        global_job = jobs[0]
+        ds_flat_g = cast(np.ndarray, global_job["val_t"])
+        ml_flat_g = cast(np.ndarray, global_job["val_p"])
         units = get_variable_units(ds_target, var_name)
 
         if ds_flat_g.size > 0 and ml_flat_g.size > 0:
@@ -399,27 +545,32 @@ def run(
             "pos_lat_min": [],
             "pos_lat_max": [],
         }
-        # Negative latitudes (right column)
-        for j in range(n_bands // 2):
-            lat_max = lat_bins[j]
-            lat_min = lat_bins[j + 1]
-            da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
-            da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
-            if da_target_slice.size == 0 or da_prediction_slice.size == 0:
-                axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                continue
-            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 1
-            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
+
+        # Process lat band results
+        for job in jobs[1:]:
+            ds_flat = job["val_t"]
+            ml_flat = job["val_p"]
+            lat_min = job["lat_min"]
+            lat_max = job["lat_max"]
+            j = job["j"]
+
+            if job["type"] == "lat_neg":
+                ax = axs[j, 1]
+                key_prefix = "neg"
+            else:
+                ax = axs[j, 0]
+                key_prefix = "pos"
+
             if ds_flat.size == 0 or ml_flat.size == 0:
-                axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
+
             w = wasserstein_distance(ds_flat, ml_flat)
             w_distances.append(w)
             wasserstein_rows.append(
                 {
                     "variable": var_name,
-                    "hemisphere": "south",
+                    "hemisphere": "south" if job["type"] == "lat_neg" else "north",
                     "lat_min": float(lat_min),
                     "lat_max": float(lat_max),
                     "wasserstein": float(w),
@@ -432,60 +583,17 @@ def run(
                 max(ds_flat.max(), ml_flat.max()),
                 100,
             )
-            axs[j, 1].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
-            axs[j, 1].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
-            axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
-            axs[j, 1].legend()
+            ax.plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+            ax.plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
+            ax.set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
+            ax.legend()
             if save_npz:
-                combined["neg_x"].append(x_eval)
-                combined["neg_kde_ds"].append(kde_ds(x_eval))
-                combined["neg_kde_ml"].append(kde_ml(x_eval))
-                combined["neg_lat_min"].append(float(lat_min))
-                combined["neg_lat_max"].append(float(lat_max))
-        # Positive latitudes (left column)
-        for j in range(n_bands // 2):
-            idx = -(j + 1)
-            lat_max = lat_bins[idx - 1]
-            lat_min = lat_bins[idx]
-            da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
-            da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
-            if da_target_slice.size == 0 or da_prediction_slice.size == 0:
-                axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                continue
-            seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 2
-            ds_flat = _subsample_values(da_target_slice, max_samples, seed=seed)
-            ml_flat = _subsample_values(da_prediction_slice, max_samples, seed=seed)
-            if ds_flat.size == 0 or ml_flat.size == 0:
-                axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                continue
-            w = wasserstein_distance(ds_flat, ml_flat)
-            w_distances.append(w)
-            wasserstein_rows.append(
-                {
-                    "variable": var_name,
-                    "hemisphere": "north",
-                    "lat_min": float(lat_min),
-                    "lat_max": float(lat_max),
-                    "wasserstein": float(w),
-                }
-            )
-            kde_ds = gaussian_kde(ds_flat)
-            kde_ml = gaussian_kde(ml_flat)
-            x_eval = np.linspace(
-                min(ds_flat.min(), ml_flat.min()),
-                max(ds_flat.max(), ml_flat.max()),
-                100,
-            )
-            axs[j, 0].plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
-            axs[j, 0].plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
-            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
-            axs[j, 0].legend()
-            if save_npz:
-                combined["pos_x"].append(x_eval)
-                combined["pos_kde_ds"].append(kde_ds(x_eval))
-                combined["pos_kde_ml"].append(kde_ml(x_eval))
-                combined["pos_lat_min"].append(float(lat_min))
-                combined["pos_lat_max"].append(float(lat_max))
+                combined[f"{key_prefix}_x"].append(x_eval)
+                combined[f"{key_prefix}_kde_ds"].append(kde_ds(x_eval))
+                combined[f"{key_prefix}_kde_ml"].append(kde_ml(x_eval))
+                combined[f"{key_prefix}_lat_min"].append(float(lat_min))
+                combined[f"{key_prefix}_lat_max"].append(float(lat_max))
+
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
 
         # Check for single date
@@ -617,28 +725,19 @@ def run(
             # Draw a coarse subsample to set robust evaluation range
             da_t_all = ds_target_std_eff[base_var]
             da_p_all = ds_prediction_std_eff[base_var]
+
             # Collapse spatial + time to estimate global min/max quickly
-            q_t = da_t_all.quantile([0.001, 0.999], skipna=True).compute().values
-            q_p = da_p_all.quantile([0.001, 0.999], skipna=True).compute().values
-            vmin = float(min(q_t[0], q_p[0]))
-            vmax = float(max(q_t[1], q_p[1]))
-            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-                vmin, vmax = -3.0, 3.0
-            y_eval = np.linspace(vmin, vmax, 200)
+            q_t_lazy = da_t_all.quantile([0.001, 0.999], skipna=True)
+            q_p_lazy = da_p_all.quantile([0.001, 0.999], skipna=True)
 
             # Build densities per lead for target and model
             leads = list(ds_prediction_std_eff["lead_time"].values)
             lead_hours = []
-            Z_t = []
-            Z_p = []
 
-            def _eval_kde_1d(da: xr.DataArray) -> np.ndarray:
-                arr = np.asarray(da.compute().values).ravel()
-                arr = arr[np.isfinite(arr)]
-                if arr.size < 10:
-                    return np.zeros_like(y_eval)
-                kde = gaussian_kde(arr)
-                return kde(y_eval)
+            jobs = []
+
+            # Quantile job
+            jobs.append({"type": "quantile", "q_t_lazy": q_t_lazy, "q_p_lazy": q_p_lazy})
 
             for i, lt in enumerate(leads):
                 # Convert timedelta leads to hours; fall back to index
@@ -662,8 +761,56 @@ def run(
                 reduce_dims_p = [d for d in ["time", "init_time", "ensemble"] if d in da_p.dims]
                 if reduce_dims_p:
                     da_p = da_p.mean(dim=reduce_dims_p, skipna=True)
-                Z_t.append(_eval_kde_1d(da_t))
-                Z_p.append(_eval_kde_1d(da_p))
+
+                jobs.append({"type": "lead", "i": i, "da_t_lazy": da_t, "da_p_lazy": da_p})
+
+            # Compute all
+            lazy_all = []
+            for job in jobs:
+                if job["type"] == "quantile":
+                    lazy_all.append(job["q_t_lazy"])
+                    lazy_all.append(job["q_p_lazy"])
+                elif job["type"] == "lead":
+                    lazy_all.append(job["da_t_lazy"])
+                    lazy_all.append(job["da_p_lazy"])
+
+            results = dask.compute(*lazy_all) if lazy_all else []
+
+            # Distribute results
+            ptr = 0
+
+            # Process quantiles
+            q_t = results[ptr]
+            ptr += 1
+            q_p = results[ptr]
+            ptr += 1
+
+            vmin = float(min(q_t[0], q_p[0]))
+            vmax = float(max(q_t[1], q_p[1]))
+            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
+                vmin, vmax = -3.0, 3.0
+            y_eval = np.linspace(vmin, vmax, 200)
+
+            Z_t = []
+            Z_p = []
+
+            def _eval_kde_from_array(arr: np.ndarray) -> np.ndarray:
+                arr = arr.ravel()
+                arr = arr[np.isfinite(arr)]
+                if arr.size < 10:
+                    return np.zeros_like(y_eval)
+                kde = gaussian_kde(arr)
+                return kde(y_eval)
+
+            # Process leads
+            for _ in jobs[1:]:
+                arr_t = np.asarray(results[ptr])
+                ptr += 1
+                arr_p = np.asarray(results[ptr])
+                ptr += 1
+
+                Z_t.append(_eval_kde_from_array(arr_t))
+                Z_p.append(_eval_kde_from_array(arr_p))
 
             X = np.asarray(lead_hours, dtype=float)
             Y = y_eval

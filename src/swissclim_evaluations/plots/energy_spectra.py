@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -383,7 +384,7 @@ def _plot_energy_spectra(
 
     # Create stacked iterator
     stacked_target = spectrum_target.stack(__time__=time_dims)
-    # (stacked_pred not needed explicitly; we index spectrum_pred directly below)
+    stacked_pred = spectrum_pred.stack(__time__=time_dims)
     stacked_lsd = lsd_da.stack(__time__=time_dims)
     coords_df = stacked_target.__time__.to_index()  # MultiIndex with labels
 
@@ -391,18 +392,10 @@ def _plot_energy_spectra(
     section_output = out_path.parent if out_path else Path(".")
     section_output.mkdir(parents=True, exist_ok=True)
 
+    # Collect jobs
+    jobs = []
     for idx, key in enumerate(coords_df):
         sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
-        spec_t_1d = spectrum_target.isel(
-            **{str(d): spectrum_target.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
-        )
-        spec_p_1d = spectrum_pred.isel(
-            **{str(d): spectrum_pred.get_index(d).get_loc(sel_kwargs[str(d)]) for d in time_dims}
-        )
-        wn = spec_t_1d["wavenumber"].values
-        arr_t = spec_t_1d.values
-        arr_p = spec_p_1d.values
-        lsd_val = float(stacked_lsd.isel(__time__=idx).values)
 
         # Robust init_time formatting (ensure numpy datetime64)
         if "init_time" in sel_kwargs:
@@ -452,16 +445,50 @@ def _plot_energy_spectra(
         )
         # Provide a path if either figure OR plot data requested
         target_path = section_output / fname if (save_figure or save_plot_data) else None
+
+        jobs.append(
+            {
+                "idx": idx,
+                "init_label": init_label,
+                "lead_label": lead_label,
+                "target_path": target_path,
+                "t_lazy": stacked_target.isel(__time__=idx),
+                "p_lazy": stacked_pred.isel(__time__=idx),
+                "lsd_lazy": stacked_lsd.isel(__time__=idx),
+            }
+        )
+
+    # Compute all
+    lazy_all = []
+    for job in jobs:
+        lazy_all.append(job["t_lazy"])
+        lazy_all.append(job["p_lazy"])
+        lazy_all.append(job["lsd_lazy"])
+
+    results = dask.compute(*lazy_all) if lazy_all else []
+
+    # Distribute and plot
+    ptr = 0
+    wn = spectrum_target["wavenumber"].values
+
+    for job in jobs:
+        arr_t = results[ptr]
+        ptr += 1
+        arr_p = results[ptr]
+        ptr += 1
+        lsd_val = float(results[ptr])
+        ptr += 1
+
         _plot_single_spectrum(
             wn,
-            arr_t,
-            arr_p,
+            np.asarray(arr_t),
+            np.asarray(arr_p),
             lsd_val,
             var,
             level,
-            init_label,
-            lead_label,
-            target_path,
+            job["init_label"],
+            job["lead_label"],
+            job["target_path"],
             dpi,
             save_plot_data,
             save_figure,
@@ -673,23 +700,33 @@ def run(
 
         levels = tgt["level"].values
         for var in variables_3d:
+            # Compute spectra for ALL levels at once (vectorized)
+            spec_t, spec_p = _compute_spectra_pair(
+                tgt, pred, str(var), level=None, reduce_ensemble=(resolved == "mean")
+            )
+
+            # 1. Global LSD per level
+            lsd_da = _compute_lsd_da(spec_t, spec_p)
+            # Average over all dims except level
+            red_dims = [d for d in lsd_da.dims if d != "level"]
+            lsd_means_per_level = lsd_da.mean(dim=red_dims).compute()
+
             var_lsd_values = []
             for lvl in levels:
-                # Compute spectra for this level
-                spec_t, spec_p = _compute_spectra_pair(
-                    tgt, pred, str(var), int(lvl), reduce_ensemble=(resolved == "mean")
-                )
-                lsd_da = _compute_lsd_da(spec_t, spec_p)
-                lsd_mean = float(lsd_da.mean().values)
-                lsd_3d_rows.append({"variable": str(var), "level": int(lvl), "lsd_mean": lsd_mean})
-                var_lsd_values.append(lsd_mean)
+                val = float(lsd_means_per_level.sel(level=lvl).item())
+                lsd_3d_rows.append({"variable": str(var), "level": int(lvl), "lsd_mean": val})
+                var_lsd_values.append(val)
 
-                # Compute banded LSD
-                lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
-                red_dims = [d for d in lsd_bands_da.dims if d != "band"]
-                lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
+            # 2. Banded LSD per level
+            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+            # Average over all dims except level and band
+            red_dims = [d for d in lsd_bands_da.dims if d not in ("level", "band")]
+            # This compute results only in a small DataArray – safe to compute here
+            lsd_bands_mean = lsd_bands_da.mean(dim=red_dims).compute()
+
+            for lvl in levels:
                 for bname in lsd_bands_mean["band"].values:
-                    val = float(lsd_bands_mean.sel(band=bname).values)
+                    val = float(lsd_bands_mean.sel(level=lvl, band=bname).item())
                     lsd_banded_3d_rows.append(
                         {
                             "variable": str(var),

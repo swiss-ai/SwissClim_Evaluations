@@ -1,24 +1,31 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import dask
 import numpy as np
 import pandas as pd
 import xarray as xr
 from scores.categorical import seeps
 from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
-from scores.spatial import fss_2d
+from scores.spatial import fss_2d_single_field
 from skimage.metrics import structural_similarity as ssim
 
 from ..aggregations import latitude_weights
 
 
+@functools.lru_cache(maxsize=1)
+def _open_climatology(path: str) -> xr.Dataset:
+    return xr.open_zarr(path)
+
+
 def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
-    ds_clim = xr.open_zarr(path_climatology)
+    ds_clim = _open_climatology(path_climatology)
     ds_clim = ds_clim.sel(latitude=y_true.latitude, longitude=y_true.longitude)
 
     prob_dry = ds_clim.total_precipitation_6hr_seeps_dry_fraction
@@ -43,7 +50,9 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     return (ws, ws)
 
 
-def _calculate_ssim(da_target: xr.DataArray, da_pred: xr.DataArray) -> float:
+def _calculate_ssim(
+    da_target: xr.DataArray, da_pred: xr.DataArray, compute: bool = True
+) -> float | Any:
     if "latitude" not in da_target.dims or "longitude" not in da_target.dims:
         return np.nan
 
@@ -63,7 +72,10 @@ def _calculate_ssim(da_target: xr.DataArray, da_pred: xr.DataArray) -> float:
             dask="parallelized",
             output_dtypes=[float],
         )
-        return float(res.mean().compute().item())
+        mean_res = res.mean()
+        if compute:
+            return float(mean_res.compute().item())
+        return mean_res
     except Exception:
         return np.nan
 
@@ -154,53 +166,64 @@ def _calculate_all_metrics(
     weights = None
     weights = latitude_weights(ds_target.latitude)
 
+    # Store lazy objects to compute in one go
+    # List of (variable_name, metric_name, lazy_object)
+    lazy_metrics_to_compute: list[tuple[str, str, Any]] = []
+
+    # We also need to store intermediate lazy objects that are used for other metrics
+    # e.g. MAE is used for Relative MAE.
+    # (variable_name, metric_name) -> lazy_object
+    intermediate_lazy: dict[tuple[str, str], Any] = {}
+
     for var in variables:
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
-        row: dict[str, float] = {}
+
+        # Initialize row in metrics_dict
+        if var not in metrics_dict:
+            metrics_dict[var] = {}
 
         # Base error metrics
         if (include is None) or ("MAE" in metrics_to_compute):
             if weights is not None:
-                mae_val = float(mae(y_pred, y_true, weights=weights))
+                val = mae(y_pred, y_true, weights=weights)
             else:
-                mae_val = float(mae(y_pred, y_true))
-            row["MAE"] = mae_val
-        else:
-            mae_val = np.nan
+                val = mae(y_pred, y_true)
+            lazy_metrics_to_compute.append((var, "MAE", val))
+            intermediate_lazy[(var, "MAE")] = val
 
         if (include is None) or ("RMSE" in metrics_to_compute):
             if weights is not None:
-                rmse_val = float(rmse(y_pred, y_true, weights=weights))
+                val = rmse(y_pred, y_true, weights=weights)
             else:
-                rmse_val = float(rmse(y_pred, y_true))
-            row["RMSE"] = rmse_val
-        else:
-            rmse_val = np.nan
+                val = rmse(y_pred, y_true)
+            lazy_metrics_to_compute.append((var, "RMSE", val))
 
         if (include is None) or ("MSE" in metrics_to_compute):
             if weights is not None:
-                mse_val = float(mse(y_pred, y_true, weights=weights))
+                val = mse(y_pred, y_true, weights=weights)
             else:
-                mse_val = float(mse(y_pred, y_true))
-            row["MSE"] = mse_val
+                val = mse(y_pred, y_true)
+            lazy_metrics_to_compute.append((var, "MSE", val))
 
         if (include is None) or ("Bias" in metrics_to_compute):
             if weights is not None:
-                bias_val = float(additive_bias(y_pred, y_true, weights=weights))
+                val = additive_bias(y_pred, y_true, weights=weights)
             else:
-                bias_val = float(additive_bias(y_pred, y_true))
-            row["Bias"] = bias_val
-        else:
-            bias_val = np.nan
+                val = additive_bias(y_pred, y_true)
+            lazy_metrics_to_compute.append((var, "Bias", val))
 
         # Correlation
         if (include is None) or ("Pearson R" in metrics_to_compute):
-            row["Pearson R"] = float(pearsonr(y_pred, y_true))
+            val = pearsonr(y_pred, y_true)
+            lazy_metrics_to_compute.append((var, "Pearson R", val))
 
         # SSIM
         if (include is None) or ("SSIM" in metrics_to_compute):
-            row["SSIM"] = _calculate_ssim(y_true, y_pred)
+            # SSIM implementation here calls compute() internally, so we can't easily lazy-batch it
+            # without refactoring _calculate_ssim. We leave it as is for now.
+            val = _calculate_ssim(y_true, y_pred, compute=False)
+            lazy_metrics_to_compute.append((var, "SSIM", val))
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):
@@ -220,19 +243,26 @@ def _calculate_all_metrics(
                     yt_evt = bool((y_true >= event_threshold).any().compute().item())
                     yp_evt = bool((y_pred >= event_threshold).any().compute().item())
                     if (not yt_evt) and (not yp_evt):
-                        row[fss_label] = no_event_value
+                        metrics_dict[var][fss_label] = no_event_value
                     else:
                         spatial_dims = ["latitude", "longitude"]
 
                         # Proper call to fss_2d with config-driven arguments only
-                        out = fss_2d(
-                            y_pred.compute(),
-                            y_true.compute(),
-                            event_threshold=event_threshold,
-                            window_size=fss_window_size,
-                            spatial_dims=spatial_dims,
-                            # this has no effect here, unfortunately we need to compute() above
+                        # We use fss_2d_single_field via apply_ufunc directly to control dask
+                        # behavior and avoid inference issues with small chunks by providing
+                        # output_dtypes.
+                        out = xr.apply_ufunc(
+                            fss_2d_single_field,
+                            y_pred,
+                            y_true,
+                            input_core_dims=[spatial_dims, spatial_dims],
+                            kwargs={
+                                "event_threshold": event_threshold,
+                                "window_size": fss_window_size,
+                            },
+                            vectorize=True,
                             dask="parallelized",
+                            output_dtypes=[float],
                         )
                         # Reduce to scalar
                         if isinstance(out, xr.DataArray):
@@ -247,15 +277,15 @@ def _calculate_all_metrics(
                                 out = out.where(~no_evt, other=1.0)
                             except Exception:
                                 pass
-                            fss_scalar = float(out.mean(skipna=True).compute().item())
+                            fss_scalar = out.mean(skipna=True)
+                            lazy_metrics_to_compute.append((var, fss_label, fss_scalar))
                         else:
-                            fss_scalar = float(out)
-                        row[fss_label] = fss_scalar
+                            metrics_dict[var][fss_label] = float(out)
                 except Exception as e:
                     # Surface the error context once while keeping pipeline resilient
                     with contextlib.suppress(Exception):
                         print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
-                    row[fss_label] = float("nan")
+                    metrics_dict[var][fss_label] = float("nan")
 
         if "total_precipitation" in var and "SEEPS" in metrics_to_compute:
             if seeps_climatology_path is None:
@@ -266,36 +296,67 @@ def _calculate_all_metrics(
             seeps_val = seeps(
                 y_pred * 1000, y_true * 1000, prob_dry, seeps_threshold, dry_light_threshold=0.25
             )  # convert to mm with *1000
-            row["SEEPS"] = float(seeps_val)
+            # SEEPS returns a lazy object usually
+            lazy_metrics_to_compute.append((var, "SEEPS", seeps_val))
 
         # Relative metrics
         if calc_relative:
             # Denominator norms on the target
-            l1_norm = float(np.abs(y_true).sum(skipna=True).compute())
-            l2_norm = float(((y_true**2).sum(skipna=True).compute()) ** 0.5)
+            l1_norm = np.abs(y_true).sum(skipna=True)
+            l2_norm = (y_true**2).sum(skipna=True) ** 0.5
             if weights is not None:
-                mean_abs = float(np.abs(y_true).weighted(weights).mean(skipna=True).compute())
+                mean_abs = np.abs(y_true).weighted(weights).mean(skipna=True)
             else:
-                mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
+                mean_abs = np.abs(y_true).mean(skipna=True)
 
             # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
-                row["Relative MAE"] = (mae_val / mean_abs) if mean_abs else float("nan")
+                # We need MAE val. If we computed it lazily, we use the lazy object.
+                # If not (e.g. not requested), we compute it now lazily.
+                if (var, "MAE") in intermediate_lazy:
+                    mae_val_lazy = intermediate_lazy[(var, "MAE")]
+                else:
+                    if weights is not None:
+                        mae_val_lazy = mae(y_pred, y_true, weights=weights)
+                    else:
+                        mae_val_lazy = mae(y_pred, y_true)
+
+                rel_mae = mae_val_lazy / mean_abs
+                lazy_metrics_to_compute.append((var, "Relative MAE", rel_mae))
 
             # True norm-based relative errors: ||e||1 / ||y||1 and ||e||2 / ||y||2
             err = y_pred - y_true
-            l1_err = float(np.abs(err).sum(skipna=True).compute())
-            l2_err = float(((err**2).sum(skipna=True).compute()) ** 0.5)
+            l1_err = np.abs(err).sum(skipna=True)
+            l2_err = (err**2).sum(skipna=True) ** 0.5
 
-            eps = 1e-12
+            # We can't easily check for zero division lazily without map_blocks or just letting
+            # it be inf/nan. But we can compute the ratio and handle nan/inf later or rely on
+            # xarray handling.
             if (include is None) or ("Relative L1" in metrics_to_compute):
-                row["Relative L1"] = (l1_err / l1_norm) if (abs(l1_norm) > eps) else float("nan")
+                rel_l1 = l1_err / l1_norm
+                lazy_metrics_to_compute.append((var, "Relative L1", rel_l1))
+
             if (include is None) or ("Relative L2" in metrics_to_compute):
-                row["Relative L2"] = (l2_err / l2_norm) if (abs(l2_norm) > eps) else float("nan")
+                rel_l2 = l2_err / l2_norm
+                lazy_metrics_to_compute.append((var, "Relative L2", rel_l2))
 
-        # If include provided, trim extra keys
+    # Compute all lazy metrics at once
+    if lazy_metrics_to_compute:
+        # Unzip
+        vars_list, metrics_list, lazy_objs = zip(*lazy_metrics_to_compute, strict=False)
 
-        metrics_dict[var] = row
+        # Compute
+        computed_results = dask.compute(*lazy_objs)
+
+        # Populate metrics_dict
+        for v, m, res in zip(vars_list, metrics_list, computed_results, strict=False):
+            # Convert to float, handling 0-d arrays
+            try:
+                val = float(res)
+            except Exception:
+                # Fallback if it's still an array or something else
+                val = float(np.array(res).item())
+            metrics_dict[v][m] = val
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 

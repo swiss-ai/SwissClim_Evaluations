@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -134,25 +135,19 @@ def run(
                 da = da.isel(longitude=order).assign_coords(longitude=("longitude", new[order]))
             return da
 
-        # Compute global vmin/vmax from first and last selected lead to save time
-        # (approximate but usually sufficient)
-        def _get_min_max(da, lt):
-            if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
-                d = da.sel(lead_time=lt)
-            else:
-                d = da.sel(lead_time=lt)
-            return float(d.min()), float(d.max())
+        # Collect jobs for min/max and data
+        jobs = []
 
-        vmin, vmax = float("inf"), float("-inf")
+        # Min/Max jobs
+        # We check first and last selected lead
         for lt in [selected_leads[0], selected_leads[-1]]:
-            if "lead_time" in da_target.dims:
-                mn, mx = _get_min_max(da_target, lt)
-                vmin = min(vmin, mn)
-                vmax = max(vmax, mx)
-            mn, mx = _get_min_max(da_pred, lt)
-            vmin = min(vmin, mn)
-            vmax = max(vmax, mx)
+            lt_sel = lt
 
+            if "lead_time" in da_target.dims:
+                jobs.append({"type": "minmax", "da_lazy": da_target.sel(lead_time=lt_sel)})
+            jobs.append({"type": "minmax", "da_lazy": da_pred.sel(lead_time=lt_sel)})
+
+        # Data jobs
         for i, lt in enumerate(selected_leads):
             if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
                 lt_sel = lt
@@ -176,38 +171,92 @@ def run(
             ds_var = _unwrap_lon_for_plot(ds_var)
             ds_ml_var = _unwrap_lon_for_plot(ds_ml_var)
 
-            lon = ds_var.coords.get("longitude", None)
-            lat = ds_var.coords.get("latitude", None)
-
-            # Target
-            im = axes[i, 0].pcolormesh(
-                lon if lon is not None else ds_var.longitude,
-                lat if lat is not None else ds_var.latitude,
-                ds_var.values,
-                cmap=get_colormap_for_variable(variable_name),
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-                shading="auto",
+            jobs.append(
+                {
+                    "type": "plot",
+                    "i": i,
+                    "label": label,
+                    "ds_var": ds_var,  # Keep xarray object for coords
+                    "ds_ml_var": ds_ml_var,
+                    "var_lazy": ds_var,
+                    "ml_lazy": ds_ml_var,
+                }
             )
-            axes[i, 0].coastlines(linewidth=0.5)
-            axes[i, 0].set_title(f"Target — Lead {label}")
 
-            # Prediction
-            lon_ml = ds_ml_var.coords.get("longitude", None)
-            lat_ml = ds_ml_var.coords.get("latitude", None)
-            axes[i, 1].pcolormesh(
-                lon_ml if lon_ml is not None else ds_ml_var.longitude,
-                lat_ml if lat_ml is not None else ds_ml_var.latitude,
-                ds_ml_var.values,
-                cmap=get_colormap_for_variable(variable_name),
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-                shading="auto",
-            )
-            axes[i, 1].coastlines(linewidth=0.5)
-            axes[i, 1].set_title(f"Prediction — Lead {label}")
+        # Compute all
+        lazy_all = []
+        for job in jobs:
+            if job["type"] == "minmax":
+                # We need min and max.
+                # da.min() and da.max() are lazy
+                lazy_all.append(job["da_lazy"].min())
+                lazy_all.append(job["da_lazy"].max())
+            elif job["type"] == "plot":
+                lazy_all.append(job["var_lazy"])
+                lazy_all.append(job["ml_lazy"])
+
+        results = dask.compute(*lazy_all) if lazy_all else []
+
+        # Process results
+        ptr = 0
+        vmin, vmax = float("inf"), float("-inf")
+
+        # Process minmax
+        for job in jobs:
+            if job["type"] == "minmax":
+                mn = float(results[ptr])
+                ptr += 1
+                mx = float(results[ptr])
+                ptr += 1
+                vmin = min(vmin, mn)
+                vmax = max(vmax, mx)
+
+        # Process plots
+        im = None
+        for job in jobs:
+            if job["type"] == "plot":
+                arr_var = results[ptr]
+                ptr += 1
+                arr_ml = results[ptr]
+                ptr += 1
+
+                i = job["i"]
+                label = job["label"]
+                ds_var = job["ds_var"]
+                ds_ml_var = job["ds_ml_var"]
+
+                lon = ds_var.coords.get("longitude", None)
+                lat = ds_var.coords.get("latitude", None)
+
+                # Target
+                im = axes[i, 0].pcolormesh(
+                    lon if lon is not None else ds_var.longitude,
+                    lat if lat is not None else ds_var.latitude,
+                    arr_var,
+                    cmap=get_colormap_for_variable(variable_name),
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                    shading="auto",
+                )
+                axes[i, 0].coastlines(linewidth=0.5)
+                axes[i, 0].set_title(f"Target — Lead {label}")
+
+                # Prediction
+                lon_ml = ds_ml_var.coords.get("longitude", None)
+                lat_ml = ds_ml_var.coords.get("latitude", None)
+                axes[i, 1].pcolormesh(
+                    lon_ml if lon_ml is not None else ds_ml_var.longitude,
+                    lat_ml if lat_ml is not None else ds_ml_var.latitude,
+                    arr_ml,
+                    cmap=get_colormap_for_variable(variable_name),
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                    shading="auto",
+                )
+                axes[i, 1].coastlines(linewidth=0.5)
+                axes[i, 1].set_title(f"Prediction — Lead {label}")
 
         # Colorbar
         cb = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.025, pad=0.02)

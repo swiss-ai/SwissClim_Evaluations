@@ -27,6 +27,9 @@ selection:
 
   check_missing: false
 
+  lead_time:
+    mode: "first"
+
 plotting:
   random_seed: 42
   plot_datetime: null
@@ -34,17 +37,20 @@ plotting:
   dpi: 48
   kde_max_samples: 10000
   histogram_max_samples: 10000
+  histograms_per_lat_band: false
+  wd_kde_per_lat_band: false
   output_mode: both
 
 modules:
-  maps: false
-  histograms: false
-  wd_kde: false
-  energy_spectra: false
-  vertical_profiles: false
+  maps: true
+  histograms: true
+  wd_kde: true
+  energy_spectra: true
+  vertical_profiles: true
   deterministic: true
+  ssim: true
   ets: true
-  probabilistic: false
+  probabilistic: true
 
 metrics:
   deterministic:
@@ -57,6 +63,12 @@ metrics:
   ets:
     report_per_level: true
     thresholds: [90]
+  ssim:
+    sigma: 1.5
+    k1: 0.01
+    k2: 0.03
+    gaussian_weights: true
+    use_sample_covariance: true
   energy_spectra:
     report_per_level: true
 

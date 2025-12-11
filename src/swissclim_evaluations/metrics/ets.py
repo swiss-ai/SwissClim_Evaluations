@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -13,29 +14,62 @@ import matplotlib.pyplot as plt
 from scores.categorical import BinaryContingencyManager
 
 
+def _compute_ets_raw(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
+    preserve_dims: list[str] | None = None,
+) -> dict[str, xr.DataArray]:
+    variables = list(ds_target.data_vars)
+    lazy_results = {}
+    q_values = [t / 100.0 for t in thresholds]
+
+    for var in variables:
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
+
+        # Determine dimensions to reduce for quantile calculation
+        reduce_dims = list(da_target.dims)
+        if preserve_dims:
+            reduce_dims = [d for d in reduce_dims if d not in preserve_dims]
+
+        # Compute quantiles lazily.
+        quantiles = da_target.quantile(q_values, dim=reduce_dims, skipna=True)
+
+        # Create events. Broadcasting will add 'quantile' dimension.
+        obs_events = da_target >= quantiles
+        fcst_events = da_prediction >= quantiles
+
+        bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
+        bcm = bcm.transform(reduce_dims=reduce_dims)
+
+        ets_score = bcm.equitable_threat_score()
+        lazy_results[var] = ets_score
+
+    # Compute all at once
+    if not lazy_results:
+        return {}
+
+    keys = list(lazy_results.keys())
+    values = list(lazy_results.values())
+    computed_values = dask.compute(*values)
+
+    return dict(zip(keys, computed_values, strict=False))
+
+
 def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
 ) -> pd.DataFrame:
-    variables = list(ds_target.data_vars)
+    raw_results = _compute_ets_raw(ds_target, ds_prediction, thresholds)
     metrics_dict: dict[str, dict[str, float]] = {}
 
-    for var in variables:
-        da_target = ds_target[var]
-        da_prediction = ds_prediction[var]
+    for var, ets_score in raw_results.items():
         metrics_dict[var] = {}
-        for threshold in thresholds:
-            # Dask-friendly quantile over all dims
-            quantile = float(da_target.quantile(threshold / 100.0, skipna=True).compute().item())
-            obs_events = da_target >= quantile  # targets events
-            fcst_events = da_prediction >= quantile  # predictions events
-
-            bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
-            bcm = bcm.transform(reduce_dims="all")
-
-            ets_score = bcm.equitable_threat_score()
-            metrics_dict[var][f"ETS {threshold}%"] = float(ets_score.values)
+        ets_values = ets_score.values
+        for i, threshold in enumerate(thresholds):
+            metrics_dict[var][f"ETS {threshold}%"] = float(ets_values[i].item())
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
@@ -51,21 +85,30 @@ def _calculate_ets_per_level(
     if "level" not in ds_target.dims:
         return None
 
-    levels = ds_target.level.values
-    dfs = []
-    for level in levels:
-        ds_t_lvl = ds_target[variables_3d].sel(level=level)
-        ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
+    # Vectorized computation preserving 'level'
+    raw_results = _compute_ets_raw(
+        ds_target[variables_3d], ds_prediction[variables_3d], thresholds, preserve_dims=["level"]
+    )
 
-        df = _calculate_ets_for_thresholds(ds_t_lvl, ds_p_lvl, thresholds)
-        df["level"] = int(level)
-        df["variable"] = df.index
-        dfs.append(df)
+    dfs = []
+    for var, ets_score in raw_results.items():
+        # ets_score: (quantile, level)
+        levels = ets_score.level.values
+        for lvl in levels:
+            row = {"variable": var, "level": int(lvl)}
+            # Select this level
+            ets_lvl = ets_score.sel(level=lvl).values
+            for i, threshold in enumerate(thresholds):
+                row[f"ETS {threshold}%"] = float(ets_lvl[i].item())
+            dfs.append(row)
 
     if not dfs:
         return None
 
-    return pd.concat(dfs).reset_index(drop=True)
+    df = pd.DataFrame(dfs)
+    # Set index to variable to match original structure (though original had repeated index)
+    df = df.set_index("variable", drop=False)
+    return df
 
 
 def run(

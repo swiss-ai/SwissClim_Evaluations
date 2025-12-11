@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import dask
 import dask.array as dsa
 import matplotlib.pyplot as plt
 import numpy as np
@@ -101,6 +102,29 @@ def run(
         arr = np.asarray(sub.compute().values).ravel()
         return arr[np.isfinite(arr)]
 
+    # Lazy helpers for batch computation
+    def _subsample_lazy(da: xr.DataArray, k: int | None, seed: int):
+        if k is None:
+            return da
+        size = int(getattr(da, "size", 0) or 0)
+        if size == 0:
+            return None
+        if size <= k:
+            return da
+        dims = list(da.dims)
+        nd = max(1, len(dims))
+        frac = (k / float(size)) ** (1.0 / nd)
+        rng = np.random.default_rng(seed)
+        indexers: dict[str, Any] = {}
+        for d in dims:
+            n = int(da.sizes.get(str(d), 1))
+            take = max(1, int(np.ceil(frac * n)))
+            take = min(take, n)
+            idx = rng.choice(n, size=take, replace=False)
+            idx.sort()
+            indexers[str(d)] = np.asarray(idx)
+        return da.isel(indexers)
+
     # Helper to choose common bin edges without loading full arrays
     def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
         # Fast guard: empty selections → default symmetric range
@@ -115,7 +139,21 @@ def run(
                 vmin, vmax = -1.0, 1.0
         return np.linspace(vmin, vmax, bins + 1)
 
+    def _choose_edges_lazy(da1: xr.DataArray, da2: xr.DataArray):
+        if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
+            return None
+        both = xr.concat([da1, da2], dim="_t")
+        return both.quantile([0.001, 0.999], skipna=True)
+
     def _dask_hist(da: xr.DataArray, edges: np.ndarray):
+        data = getattr(da, "data", da)
+        darr = dsa.asarray(data)
+        darr = darr.ravel()
+        darr = darr[~dsa.isnan(darr)]
+        counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
+        return counts
+
+    def _dask_hist_lazy(da: xr.DataArray, edges: np.ndarray):
         data = getattr(da, "data", da)
         darr = dsa.asarray(data)
         darr = darr.ravel()
@@ -156,11 +194,21 @@ def run(
         axs = np.atleast_1d(axs).ravel()
 
         # Common edges for the whole variable (to keep x-axis consistent)
-        edges = _choose_edges(da_target_var, da_pred_var, bins=100)
+        # Use subsampling for edge determination if configured, to avoid full data scan
+        sub_t_edges = _subsample_lazy(da_target_var, max_samples, base_seed)
+        sub_p_edges = _subsample_lazy(da_pred_var, max_samples, base_seed)
+        # Fallback to full array if subsample returned None (empty)
+        if sub_t_edges is None:
+            sub_t_edges = da_target_var
+        if sub_p_edges is None:
+            sub_p_edges = da_pred_var
+
+        edges = _choose_edges(sub_t_edges, sub_p_edges, bins=100)
         width = np.diff(edges)
 
+        # Prepare jobs for batch computation
+        jobs = []
         for idx, lead in enumerate(selected_leads):
-            ax = axs[idx]
             if np.issubdtype(leads.dtype, np.timedelta64):
                 lead_val = lead
                 lead_label = f"{int(lead / np.timedelta64(1, 'h'))}h"
@@ -175,23 +223,77 @@ def run(
             )
             da_p = da_pred_var.sel(lead_time=lead_val)
 
+            job = {
+                "idx": idx,
+                "lead_label": lead_label,
+                "da_t": da_t,
+                "da_p": da_p,
+            }
+
             if max_samples is not None:
                 seed = base_seed + idx * 100
-                ds_sample = _subsample_values(da_t, max_samples, seed)
-                ml_sample = _subsample_values(da_p, max_samples, seed)
-                if ds_sample.size == 0 or ml_sample.size == 0:
-                    ax.set_title(f"Lead {lead_label} (No data)")
-                    continue
-                # Re-compute edges for this specific plot? No, use global edges for comparison
-                # But if global edges are too wide, it might look bad.
-                # Let's use global edges.
-                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
-                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+                job["sub_true_lazy"] = _subsample_lazy(da_t, max_samples, seed)
+                job["sub_pred_lazy"] = _subsample_lazy(da_p, max_samples, seed)
             else:
-                counts_ds = _dask_hist(da_t, edges).compute().astype(float)
-                counts_ml = _dask_hist(da_p, edges).compute().astype(float)
+                job["hist_true_lazy"] = _dask_hist_lazy(da_t, edges)
+                job["hist_pred_lazy"] = _dask_hist_lazy(da_p, edges)
+
+            jobs.append(job)
+
+        # Compute
+        lazy_all = []
+        for job in jobs:
+            if max_samples is not None:
+                if job["sub_true_lazy"] is not None:
+                    lazy_all.append(job["sub_true_lazy"])
+                if job["sub_pred_lazy"] is not None:
+                    lazy_all.append(job["sub_pred_lazy"])
+            else:
+                lazy_all.extend([job["hist_true_lazy"], job["hist_pred_lazy"]])
+
+        results = dask.compute(*lazy_all) if lazy_all else []
+
+        # Distribute results
+        ptr = 0
+        for job in jobs:
+            if max_samples is not None:
+                if job["sub_true_lazy"] is not None:
+                    sub_true = results[ptr]
+                    ptr += 1
+                    job["sub_true"] = np.asarray(sub_true).ravel()
+                    job["sub_true"] = job["sub_true"][np.isfinite(job["sub_true"])]
+                else:
+                    job["sub_true"] = np.array([], dtype=float)
+
+                if job["sub_pred_lazy"] is not None:
+                    sub_pred = results[ptr]
+                    ptr += 1
+                    job["sub_pred"] = np.asarray(sub_pred).ravel()
+                    job["sub_pred"] = job["sub_pred"][np.isfinite(job["sub_pred"])]
+                else:
+                    job["sub_pred"] = np.array([], dtype=float)
+
+                # Compute histogram on in-memory subsamples
+                counts_ds, _ = np.histogram(job["sub_true"], bins=edges)
+                counts_ml, _ = np.histogram(job["sub_pred"], bins=edges)
+                job["counts_ds"] = counts_ds
+                job["counts_ml"] = counts_ml
+            else:
+                job["counts_ds"] = results[ptr].astype(float)
+                ptr += 1
+                job["counts_ml"] = results[ptr].astype(float)
+                ptr += 1
+
+        for job in jobs:
+            idx = job["idx"]
+            lead_label = job["lead_label"]
+            ax = axs[idx]
+            counts_ds = job["counts_ds"]
+            counts_ml = job["counts_ml"]
+
+            if counts_ds.sum() == 0 or counts_ml.sum() == 0:
+                ax.set_title(f"Lead {lead_label} (No data)")
+                continue
 
             # Density
             bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
@@ -263,28 +365,6 @@ def run(
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         print(f"[histograms] lat_bands: {variable_name}")
 
-        # Helper to choose common bin edges without loading full arrays
-        def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
-            # Fast guard: empty selections → default symmetric range
-            if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
-                vmin, vmax = -1.0, 1.0
-            else:
-                both = xr.concat([da1, da2], dim="_t")
-                q = both.quantile([0.001, 0.999], skipna=True).compute()
-                vmin = float(q.isel(quantile=0).item())
-                vmax = float(q.isel(quantile=1).item())
-                if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-                    vmin, vmax = -1.0, 1.0
-            return np.linspace(vmin, vmax, bins + 1)
-
-        def _dask_hist(da: xr.DataArray, edges: np.ndarray):
-            data = getattr(da, "data", da)
-            darr = dsa.asarray(data)
-            darr = darr.ravel()
-            darr = darr[~dsa.isnan(darr)]
-            counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
-            return counts
-
         fig, axs = plt.subplots(
             n_rows,
             2,
@@ -304,70 +384,33 @@ def run(
             "pos_lat_max": [],
         }
 
+        # Prepare jobs for batch computation
+        jobs = []
+
         # Negative latitudes (right column)
         for j in range(n_bands // 2):
             lat_max = lat_bins[j]
             lat_min = lat_bins[j + 1]
             da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
             da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
-            # If subsampling enabled, compute edges on subsampled arrays
+
+            job = {
+                "type": "neg",
+                "j": j,
+                "lat_min": lat_min,
+                "lat_max": lat_max,
+                "da_true": da_true,
+                "da_pred": da_pred,
+            }
+
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-                ds_sample = _subsample_values(da_true, max_samples, seed)
-                ml_sample = _subsample_values(da_pred, max_samples, seed)
-                if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                    continue
-                # Determine edges from combined sample quantiles
-                try:
-                    both = np.concatenate([ds_sample, ml_sample])
-                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                        qlow, qhigh = -1.0, 1.0
-                except Exception:
-                    qlow, qhigh = -1.0, 1.0
-                edges = np.linspace(qlow, qhigh, 1001)
-                # Histogram on subsamples using dask.histogram for consistency
-                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
-                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+                job["sub_true_lazy"] = _subsample_lazy(da_true, max_samples, seed)
+                job["sub_pred_lazy"] = _subsample_lazy(da_pred, max_samples, seed)
             else:
-                # Use dask-based histogram over explicit edges (full arrays)
-                edges = _choose_edges(da_true, da_pred, bins=1000)
-                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
-            # Convert to density
-            width = np.diff(edges)
-            bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
-            counts_ds = counts_ds / bin_area
-            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            counts_ml = counts_ml / bin_area_ml
-            axs[j, 1].bar(
-                edges[:-1],
-                counts_ds,
-                width=width,
-                align="edge",
-                alpha=0.5,
-                color=COLOR_GROUND_TRUTH,
-                label="Target",
-            )
-            axs[j, 1].bar(
-                edges[:-1],
-                counts_ml,
-                width=width,
-                align="edge",
-                alpha=0.5,
-                color=COLOR_MODEL_PREDICTION,
-                label="Prediction",
-            )
-            axs[j, 1].set_title(f"Lat {lat_min}° to {lat_max}°")
-            axs[j, 1].legend(loc="upper right")
-            if save_npz:
-                combined["neg_counts"].append((counts_ds, counts_ml))
-                combined["neg_bins"].append(edges)
-                combined["neg_lat_min"].append(float(lat_min))
-                combined["neg_lat_max"].append(float(lat_max))
+                job["quantile_lazy"] = _choose_edges_lazy(da_true, da_pred)
+
+            jobs.append(job)
 
         # Positive latitudes (left column)
         for j in range(n_bands // 2):
@@ -376,35 +419,131 @@ def run(
             lat_min = lat_bins[idx]
             da_true = da_target_var.sel(latitude=slice(lat_min, lat_max))
             da_pred = da_pred_var.sel(latitude=slice(lat_min, lat_max))
+
+            job = {
+                "type": "pos",
+                "j": j,
+                "lat_min": lat_min,
+                "lat_max": lat_max,
+                "da_true": da_true,
+                "da_pred": da_pred,
+            }
+
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                ds_sample = _subsample_values(da_true, max_samples, seed)
-                ml_sample = _subsample_values(da_pred, max_samples, seed)
-                if ds_sample.size == 0 or ml_sample.size == 0:
-                    axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
-                    continue
-                try:
-                    both = np.concatenate([ds_sample, ml_sample])
-                    qlow, qhigh = np.quantile(both, [0.001, 0.999])
-                    if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
-                        qlow, qhigh = -1.0, 1.0
-                except Exception:
-                    qlow, qhigh = -1.0, 1.0
-                edges = np.linspace(qlow, qhigh, 1001)
-                dsa_ds = dsa.from_array(ds_sample, chunks=ds_sample.shape[0] // 4 or 1)
-                dsa_ml = dsa.from_array(ml_sample, chunks=ml_sample.shape[0] // 4 or 1)
-                counts_ds = dsa.histogram(dsa_ds, bins=edges)[0].compute()
-                counts_ml = dsa.histogram(dsa_ml, bins=edges)[0].compute()
+                job["sub_true_lazy"] = _subsample_lazy(da_true, max_samples, seed)
+                job["sub_pred_lazy"] = _subsample_lazy(da_pred, max_samples, seed)
             else:
-                edges = _choose_edges(da_true, da_pred, bins=1000)
-                counts_ds = _dask_hist(da_true, edges).compute().astype(float)
-                counts_ml = _dask_hist(da_pred, edges).compute().astype(float)
+                job["quantile_lazy"] = _choose_edges_lazy(da_true, da_pred)
+
+            jobs.append(job)
+
+        # Step 1: Compute subsamples or quantiles
+        lazy_step1 = []
+        for job in jobs:
+            if max_samples is not None:
+                if job["sub_true_lazy"] is not None:
+                    lazy_step1.append(job["sub_true_lazy"])
+                if job["sub_pred_lazy"] is not None:
+                    lazy_step1.append(job["sub_pred_lazy"])
+            else:
+                if job["quantile_lazy"] is not None:
+                    lazy_step1.append(job["quantile_lazy"])
+
+        results_step1 = dask.compute(*lazy_step1) if lazy_step1 else []
+
+        # Distribute results step 1
+        ptr = 0
+        for job in jobs:
+            if max_samples is not None:
+                if job["sub_true_lazy"] is not None:
+                    sub_true = results_step1[ptr]
+                    ptr += 1
+                    job["sub_true"] = np.asarray(sub_true).ravel()
+                    job["sub_true"] = job["sub_true"][np.isfinite(job["sub_true"])]
+                else:
+                    job["sub_true"] = np.array([], dtype=float)
+
+                if job["sub_pred_lazy"] is not None:
+                    sub_pred = results_step1[ptr]
+                    ptr += 1
+                    job["sub_pred"] = np.asarray(sub_pred).ravel()
+                    job["sub_pred"] = job["sub_pred"][np.isfinite(job["sub_pred"])]
+                else:
+                    job["sub_pred"] = np.array([], dtype=float)
+
+                # Calculate edges immediately (fast in memory)
+                if job["sub_true"].size == 0 or job["sub_pred"].size == 0:
+                    job["edges"] = np.linspace(-1.0, 1.0, 1001)
+                else:
+                    try:
+                        both = np.concatenate([job["sub_true"], job["sub_pred"]])
+                        qlow, qhigh = np.quantile(both, [0.001, 0.999])
+                        if not np.isfinite(qlow) or not np.isfinite(qhigh) or qlow == qhigh:
+                            qlow, qhigh = -1.0, 1.0
+                    except Exception:
+                        qlow, qhigh = -1.0, 1.0
+                    job["edges"] = np.linspace(qlow, qhigh, 1001)
+            else:
+                if job["quantile_lazy"] is not None:
+                    q = results_step1[ptr]
+                    ptr += 1
+                    vmin = float(q.isel(quantile=0).item())
+                    vmax = float(q.isel(quantile=1).item())
+                    if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
+                        vmin, vmax = -1.0, 1.0
+                else:
+                    vmin, vmax = -1.0, 1.0
+                job["edges"] = np.linspace(vmin, vmax, 1001)
+
+        # Step 2: Compute histograms (only for full data mode, subsamples are already in memory)
+        lazy_step2 = []
+        for job in jobs:
+            if max_samples is None:
+                job["hist_true_lazy"] = _dask_hist_lazy(job["da_true"], job["edges"])
+                job["hist_pred_lazy"] = _dask_hist_lazy(job["da_pred"], job["edges"])
+                lazy_step2.extend([job["hist_true_lazy"], job["hist_pred_lazy"]])
+
+        results_step2 = dask.compute(*lazy_step2) if lazy_step2 else []
+
+        # Distribute results step 2
+        ptr = 0
+        for job in jobs:
+            if max_samples is not None:
+                # Compute histogram on in-memory subsamples
+                counts_ds, _ = np.histogram(job["sub_true"], bins=job["edges"])
+                counts_ml, _ = np.histogram(job["sub_pred"], bins=job["edges"])
+                job["counts_ds"] = counts_ds
+                job["counts_ml"] = counts_ml
+            else:
+                job["counts_ds"] = results_step2[ptr].astype(float)
+                ptr += 1
+                job["counts_ml"] = results_step2[ptr].astype(float)
+                ptr += 1
+
+        # Plotting
+        for job in jobs:
+            j = job["j"]
+            col = 1 if job["type"] == "neg" else 0
+            ax = axs[j, col]
+
+            counts_ds = job["counts_ds"]
+            counts_ml = job["counts_ml"]
+            edges = job["edges"]
+            lat_min = job["lat_min"]
+            lat_max = job["lat_max"]
+
+            if counts_ds.sum() == 0 or counts_ml.sum() == 0:
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                continue
+
             width = np.diff(edges)
             bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
             bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
             counts_ml = counts_ml / bin_area_ml
-            axs[j, 0].bar(
+
+            ax.bar(
                 edges[:-1],
                 counts_ds,
                 width=width,
@@ -413,7 +552,7 @@ def run(
                 color=COLOR_GROUND_TRUTH,
                 label="Target",
             )
-            axs[j, 0].bar(
+            ax.bar(
                 edges[:-1],
                 counts_ml,
                 width=width,
@@ -422,13 +561,19 @@ def run(
                 color=COLOR_MODEL_PREDICTION,
                 label="Prediction",
             )
-            axs[j, 0].set_title(f"Lat {lat_min}° to {lat_max}°")
-            axs[j, 0].legend(loc="upper right")
+            ax.set_title(f"Lat {lat_min}° to {lat_max}°")
+            ax.legend(loc="upper right")
+
             if save_npz:
-                combined["pos_counts"].append((counts_ds, counts_ml))
-                combined["pos_bins"].append(edges)
-                combined["pos_lat_min"].append(float(lat_min))
-                combined["pos_lat_max"].append(float(lat_max))
+                key_counts = "neg_counts" if job["type"] == "neg" else "pos_counts"
+                key_bins = "neg_bins" if job["type"] == "neg" else "pos_bins"
+                key_lat_min = "neg_lat_min" if job["type"] == "neg" else "pos_lat_min"
+                key_lat_max = "neg_lat_max" if job["type"] == "neg" else "pos_lat_max"
+
+                combined[key_counts].append((counts_ds, counts_ml))
+                combined[key_bins].append(edges)
+                combined[key_lat_min].append(float(lat_min))
+                combined[key_lat_max].append(float(lat_max))
 
         units = get_variable_units(ds_target, variable_name)
 
@@ -639,26 +784,21 @@ def run(
 
         # Compute global bin edges once to keep x-axis consistent
         # We use a subsample of the full data to determine edges
+        jobs = []
+
+        # Edge determination job
+        edge_job = {"type": "edges"}
         if max_samples:
-            # Take a smaller subsample for edge determination
-            s_t = _subsample_values(da_target_var, max_samples // n_leads, base_seed)
-            s_p = _subsample_values(da_pred_var, max_samples // n_leads, base_seed)
+            edge_job["sub_t_lazy"] = _subsample_lazy(
+                da_target_var, max_samples // n_leads, base_seed
+            )
+            edge_job["sub_p_lazy"] = _subsample_lazy(da_pred_var, max_samples // n_leads, base_seed)
         else:
-            # If no subsampling, we might still want to limit for quantile calc
-            s_t = _subsample_values(da_target_var, 100000, base_seed)
-            s_p = _subsample_values(da_pred_var, 100000, base_seed)
-
-        if s_t.size == 0 or s_p.size == 0:
-            vmin, vmax = -1.0, 1.0
-        else:
-            combined = np.concatenate([s_t, s_p])
-            vmin = float(np.nanquantile(combined, 0.001))
-            vmax = float(np.nanquantile(combined, 0.999))
-
-        edges = np.linspace(vmin, vmax, 100 + 1)
+            edge_job["sub_t_lazy"] = _subsample_lazy(da_target_var, 100000, base_seed)
+            edge_job["sub_p_lazy"] = _subsample_lazy(da_pred_var, 100000, base_seed)
+        jobs.append(edge_job)
 
         for i, lt in enumerate(leads):
-            ax = axs[i]
             # Select lead time
             # Handle timedelta vs int lead times
             if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
@@ -680,8 +820,65 @@ def run(
             # Use different seed per lead to avoid correlation artifacts if random
             seed = base_seed + i
 
-            val_t = _subsample_values(da_t, k, seed)
-            val_p = _subsample_values(da_p, k, seed)
+            job = {
+                "type": "lead",
+                "i": i,
+                "label": label,
+                "da_t": da_t,
+                "da_p": da_p,
+            }
+            job["sub_t_lazy"] = _subsample_lazy(da_t, k, seed)
+            job["sub_p_lazy"] = _subsample_lazy(da_p, k, seed)
+            jobs.append(job)
+
+        # Compute all
+        lazy_all = []
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                lazy_all.append(job["sub_t_lazy"])
+            if job["sub_p_lazy"] is not None:
+                lazy_all.append(job["sub_p_lazy"])
+
+        results = dask.compute(*lazy_all) if lazy_all else []
+
+        # Distribute
+        ptr = 0
+        for job in jobs:
+            if job["sub_t_lazy"] is not None:
+                sub_t = results[ptr]
+                ptr += 1
+                job["val_t"] = np.asarray(sub_t).ravel()
+                job["val_t"] = job["val_t"][np.isfinite(job["val_t"])]
+            else:
+                job["val_t"] = np.array([], dtype=float)
+
+            if job["sub_p_lazy"] is not None:
+                sub_p = results[ptr]
+                ptr += 1
+                job["val_p"] = np.asarray(sub_p).ravel()
+                job["val_p"] = job["val_p"][np.isfinite(job["val_p"])]
+            else:
+                job["val_p"] = np.array([], dtype=float)
+
+        # Calculate edges from edge_job
+        edge_job = jobs[0]
+        val_t_edge = cast(np.ndarray, edge_job["val_t"])
+        val_p_edge = cast(np.ndarray, edge_job["val_p"])
+        if val_t_edge.size == 0 or val_p_edge.size == 0:
+            vmin, vmax = -1.0, 1.0
+        else:
+            combined = np.concatenate([val_t_edge, val_p_edge])
+            vmin = float(np.nanquantile(combined, 0.001))
+            vmax = float(np.nanquantile(combined, 0.999))
+
+        edges = np.linspace(vmin, vmax, 100 + 1)
+
+        for job in jobs[1:]:
+            i = cast(int, job["i"])
+            label = cast(str, job["label"])
+            val_t = cast(np.ndarray, job["val_t"])
+            val_p = cast(np.ndarray, job["val_p"])
+            ax = axs[i]
 
             if val_t.size > 0:
                 ax.hist(
@@ -1073,8 +1270,6 @@ def run(
                             level_token=str(lvl_clean),
                             qualifier="latbands",
                             ens_token=token,
-                            lead_time_range=None,
-                            level_val=lvl,
                         )
                 else:  # pooled/none
                     token = (

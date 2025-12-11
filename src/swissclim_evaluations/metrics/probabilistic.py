@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Hashable, Mapping
 from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import dask
 import dask.array as dsa
 import matplotlib.pyplot as plt
-
-# plotting dependencies will be used in plot_probabilistic() and WBX map (optional)
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -31,27 +31,36 @@ from ..helpers import (
 
 
 def compute_wbx_crps(
-    da_target: xr.DataArray, da_prediction: xr.DataArray, ensemble_dim: str = "ensemble"
-) -> xr.DataArray:
+    preds: dict[str, xr.DataArray] | xr.Dataset,
+    targs: dict[str, xr.DataArray] | xr.Dataset,
+    ensemble_dim: str = "ensemble",
+) -> xr.Dataset:
     """Compute Fair CRPS using WeatherBenchX implementation.
 
     Replicates logic of CRPSEnsemble: CRPS = CRPSSkill - 0.5 * CRPSSpread.
     """
     metric = CRPSEnsemble(ensemble_dim=ensemble_dim)
-    # WBX expects dicts of DataArrays
-    # We use a dummy variable name 'v'
-    preds = {"v": da_prediction}
-    targs = {"v": da_target}
+
+    # Ensure inputs are dicts if they are Datasets
+    if isinstance(preds, xr.Dataset):
+        preds = {v: preds[v] for v in preds.data_vars}
+    if isinstance(targs, xr.Dataset):
+        targs = {v: targs[v] for v in targs.data_vars}
 
     stats = {}
     for name, stat in metric.statistics.items():
         # compute returns dict {var: da}
         res = stat.compute(preds, targs)
-        stats[name] = res["v"]
+        stats[name] = res
 
     # CRPS = CRPSSkill - 0.5 * CRPSSpread
-    crps = stats["CRPSSkill"] - 0.5 * stats["CRPSSpread"]
-    return _add_metric_prefix(crps, "CRPS")
+    crps_results = {}
+    for var in preds:
+        if var in stats["CRPSSkill"] and var in stats["CRPSSpread"]:
+            crps = stats["CRPSSkill"][var] - 0.5 * stats["CRPSSpread"][var]
+            crps_results[var] = _add_metric_prefix(crps, "CRPS")
+
+    return xr.Dataset(crps_results)
 
 
 def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
@@ -75,7 +84,7 @@ def _pit(da_target, da_prediction):
 
 
 def probability_integral_transform(
-    da_target, da_prediction, ensemble_dim="ensemble", name_prefix: str = "PIT"
+    da_target, da_prediction, ensemble_dim="ensemble", name_prefix: str | None = "PIT"
 ):
     """Compute the probability integral transform for ensemble predictions vs targets."""
     res = xr.apply_ufunc(
@@ -140,6 +149,20 @@ def _pit_histogram_dask(
         if total > 0:
             bin_width = 1.0 / bins
             counts = counts / (total * bin_width)
+    return counts, edges
+
+
+def _pit_histogram_dask_lazy(da: xr.DataArray, bins: int = 50) -> tuple[Any, np.ndarray]:
+    """Compute PIT histogram lazily using dask.array.histogram.
+    Returns (lazy_counts, edges).
+    """
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    # Use dask-backed data when available; otherwise wrap numpy data lazily
+    data = getattr(da, "data", da)
+    darr = dsa.asarray(data)
+    darr = darr.ravel()
+    darr = darr[~dsa.isnan(darr)]
+    counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
     return counts, edges
 
 
@@ -247,38 +270,133 @@ def run_probabilistic(
 
     crps_rows_per_level: list[dict[str, Any]] = []
 
+    # --- Optimization: Batch compute CRPS and PIT ---
+    ds_target_sub = ds_target[variables]
+    ds_prediction_sub = ds_prediction[variables]
+
+    if "ensemble" in ds_target_sub.dims:
+        ds_target_sub = ds_target_sub.isel(ensemble=0, drop=True)
+
+    with contextlib.suppress(Exception):
+        ds_target_sub, ds_prediction_sub = xr.align(
+            ds_target_sub, ds_prediction_sub, join="exact", exclude=["ensemble"]
+        )
+
+    ds_crps = compute_wbx_crps(ds_prediction_sub, ds_target_sub, ensemble_dim="ensemble")
+    ds_pit = probability_integral_transform(
+        ds_target_sub, ds_prediction_sub, ensemble_dim="ensemble", name_prefix=None
+    )
+
+    # --- Optimization: Collect all lazy computations ---
+    jobs = []
     for var in variables:
-        # Extract and align targets and predictions along shared coordinates
-        da_target = ds_target[var]
-        da_prediction = ds_prediction[var]
+        job: dict[str, Any] = {"var": var}
+        crps_da = ds_crps[var]
+        pit_da = ds_pit[var]
 
-        # Drop ensemble from target if present (it's a dummy for strict compliance)
-        # to allow broadcasting against the full prediction ensemble.
-        if "ensemble" in da_target.dims:
-            da_target = da_target.isel(ensemble=0, drop=True)
+        # 1. CRPS Mean
+        job["crps_mean_lazy"] = _reduce_mean_all(crps_da)
 
-        try:
-            da_target, da_prediction = xr.align(
-                da_target, da_prediction, join="exact", exclude=["ensemble"]
-            )
-        except Exception:
-            # Fallback to by-position if shapes match exactly
-            if da_target.shape == da_prediction.shape:
-                da_target = da_target.copy()
-                da_prediction = da_prediction.copy()
-            else:
-                raise
-        crps_da = compute_wbx_crps(da_target, da_prediction, ensemble_dim="ensemble")
-        crps_mean = float(_reduce_mean_all(crps_da).compute().item())
-        crps_rows.append({"variable": var, "CRPS": crps_mean})
-
-        # --- Per Lead Time CRPS ---
+        # 2. CRPS Per Lead
         if "lead_time" in crps_da.dims and crps_da.sizes["lead_time"] > 1:
             dims_to_reduce = [d for d in crps_da.dims if d != "lead_time"]
-            crps_per_lead = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
+            job["crps_per_lead_lazy"] = crps_da.mean(dim=dims_to_reduce, skipna=True)
+        else:
+            job["crps_per_lead_lazy"] = None
 
-            leads = crps_per_lead["lead_time"].values
+        # 3. CRPS Per Level
+        if report_per_level and "level" in crps_da.dims:
+            dims_to_reduce = [d for d in crps_da.dims if d != "level"]
+            job["crps_per_level_lazy"] = crps_da.mean(dim=dims_to_reduce, skipna=True)
+        else:
+            job["crps_per_level_lazy"] = None
+
+        # 4. PIT Global Histogram
+        counts_lazy, edges = _pit_histogram_dask_lazy(pit_da, bins=50)
+        job["pit_counts_lazy"] = counts_lazy
+        job["pit_edges"] = edges
+
+        # 5. PIT Per Lead Histogram
+        job["pit_per_lead_lazy"] = []
+        if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
+            leads = pit_da["lead_time"].values
             # Convert to hours if timedelta
+            if np.issubdtype(leads.dtype, np.timedelta64):
+                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+            else:
+                lead_hours = leads
+            job["lead_hours"] = lead_hours
+
+            n_bins = 20
+            edges_ev = np.linspace(0.0, 1.0, n_bins + 1)
+            job["pit_ev_edges"] = edges_ev
+
+            for i in range(len(leads)):
+                sub = pit_da.isel(lead_time=i)
+                c, _ = _pit_histogram_dask_lazy(sub, bins=n_bins)
+                job["pit_per_lead_lazy"].append(c)
+
+        # 6. Full Fields (for saving)
+        job["crps_field_lazy"] = crps_da
+        job["pit_field_lazy"] = pit_da
+
+        jobs.append(job)
+
+    # --- Batch Compute ---
+    all_lazy = []
+    for job in jobs:
+        all_lazy.append(job["crps_mean_lazy"])
+        if job["crps_per_lead_lazy"] is not None:
+            all_lazy.append(job["crps_per_lead_lazy"])
+        if job["crps_per_level_lazy"] is not None:
+            all_lazy.append(job["crps_per_level_lazy"])
+        all_lazy.append(job["pit_counts_lazy"])
+        all_lazy.extend(job["pit_per_lead_lazy"])
+        all_lazy.append(job["crps_field_lazy"])
+        all_lazy.append(job["pit_field_lazy"])
+
+    results = dask.compute(*all_lazy) if all_lazy else []
+
+    # --- Distribute Results ---
+    idx = 0
+    for job in jobs:
+        job["crps_mean_res"] = results[idx]
+        idx += 1
+        if job["crps_per_lead_lazy"] is not None:
+            job["crps_per_lead_res"] = results[idx]
+            idx += 1
+        if job["crps_per_level_lazy"] is not None:
+            job["crps_per_level_res"] = results[idx]
+            idx += 1
+        job["pit_counts_res"] = results[idx]
+        idx += 1
+
+        job["pit_per_lead_res"] = []
+        for _ in job["pit_per_lead_lazy"]:
+            job["pit_per_lead_res"].append(results[idx])
+            idx += 1
+
+        job["crps_field_res"] = results[idx]
+        idx += 1
+        job["pit_field_res"] = results[idx]
+        idx += 1
+
+    # --- Process Results (Save/Plot) ---
+    for job in jobs:
+        var = job["var"]
+
+        # 1. CRPS Mean
+        try:
+            crps_mean = float(job["crps_mean_res"].item())
+        except Exception:
+            crps_mean = float(job["crps_mean_res"])
+        crps_rows.append({"variable": var, "CRPS": crps_mean})
+
+        # 2. Per Lead Time CRPS
+        if job["crps_per_lead_lazy"] is not None:
+            crps_per_lead = job["crps_per_lead_res"]
+            # Re-extract leads from the computed result (coords preserved)
+            leads = crps_per_lead["lead_time"].values
             if np.issubdtype(leads.dtype, np.timedelta64):
                 lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
             else:
@@ -328,10 +446,9 @@ def run_probabilistic(
             plt.close(fig)
             print(f"[probabilistic] saved {out_png_lead}")
 
-        if report_per_level and "level" in crps_da.dims:
-            dims_to_reduce = [d for d in crps_da.dims if d != "level"]
-            crps_per_level = crps_da.mean(dim=dims_to_reduce, skipna=True).compute()
-
+        # 3. Per Level CRPS
+        if job["crps_per_level_lazy"] is not None:
+            crps_per_level = job["crps_per_level_res"]
             for lvl in crps_per_level.level.values:
                 crps_rows_per_level.append(
                     {
@@ -341,13 +458,14 @@ def run_probabilistic(
                     }
                 )
 
-        pit_da = probability_integral_transform(
-            da_target,
-            da_prediction,
-            ensemble_dim="ensemble",
-            name_prefix="PIT",
-        )
-        counts, edges = _pit_histogram_dask(pit_da, bins=50, density=True)
+        # 4. PIT Global Histogram
+        counts = job["pit_counts_res"].astype(np.float64)
+        edges = job["pit_edges"]
+        # Density normalization
+        width = np.diff(edges)
+        bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
+        counts = counts / bin_area
+
         pit_npz = section_output / build_output_filename(
             metric="pit_hist",
             variable=str(var),
@@ -365,39 +483,24 @@ def run_probabilistic(
         )
         print(f"[probabilistic] saved {pit_npz}")
 
-        # --- PIT Evolution (Heatmap) ---
-        if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
-            leads = pit_da["lead_time"].values
-            # Convert to hours if timedelta
-            if np.issubdtype(leads.dtype, np.timedelta64):
-                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
-            else:
-                lead_hours = leads
+        # 5. PIT Evolution (Heatmap)
+        if job["pit_per_lead_lazy"]:
+            lead_hours = job["lead_hours"]
+            edges_ev = job["pit_ev_edges"]
 
-            # Compute histogram per lead time
-            # Use fewer bins for the heatmap to be readable, or same?
-            # 20 bins is usually good for PIT.
-            n_bins = 20
             counts_list = []
-            # Re-use edges from global if possible, but we need fixed range 0-1
-            edges_ev = np.linspace(0.0, 1.0, n_bins + 1)
+            width_ev = np.diff(edges_ev)
 
-            for i in range(len(leads)):
-                # Select slice lazily
-                sub = pit_da.isel(lead_time=i)
-                c, _ = _pit_histogram_dask(sub, bins=n_bins, density=True)
-                counts_list.append(c)
+            for c in job["pit_per_lead_res"]:
+                c = c.astype(np.float64)
+                # Density normalization per lead
+                bin_area = c.sum() * width_ev.mean() if c.sum() > 0 else 1.0
+                counts_list.append(c / bin_area)
 
             counts_matrix = np.stack(counts_list)  # (n_leads, n_bins)
 
             # Plot Heatmap
             fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-            # X axis: PIT bins (0 to 1)
-            # Y axis: Lead Time
-            # We use pcolormesh.
-            # X edges: edges_ev
-            # Y edges: we need boundaries for lead times.
-            # simpler: imshow or pcolormesh with constructed coords
 
             # Construct Y edges (halfway between lead times)
             if len(lead_hours) > 1:
@@ -411,11 +514,7 @@ def run_probabilistic(
 
             X, Y = np.meshgrid(edges_ev, y_edges)
 
-            # pcolormesh expects shape (ny-1, nx-1) for C
-            # counts_matrix is (n_leads, n_bins) -> matches
-
             im = ax.pcolormesh(X, Y, counts_matrix, cmap="RdBu_r", shading="flat", vmin=0, vmax=2.0)
-            # vmax=2.0 because ideal is 1.0 (uniform).
 
             fig.colorbar(im, ax=ax, label="PIT Density")
             ax.set_xlabel("PIT Quantile")
@@ -447,22 +546,16 @@ def run_probabilistic(
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(out_npz_pit, counts=counts_matrix, lead_hours=lead_hours, bins=edges_ev)
+            np.savez(
+                out_npz_pit,
+                counts_matrix=counts_matrix,
+                lead_hours=lead_hours,
+                edges=edges_ev,
+            )
             print(f"[probabilistic] saved {out_npz_pit}")
 
-        # Always save PIT and CRPS fields for reproducibility
-        # Save PIT and CRPS fields as NPZ (memory-efficient, no OOM issues)
-        pit_npz_field = section_output / build_output_filename(
-            metric="pit_field",
-            variable=str(var),
-            level=None,
-            qualifier=None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token,
-            ext="npz",
-        )
-        crps_npz_field = section_output / build_output_filename(
+        # 6. Save Full Fields
+        out_npz_crps = section_output / build_output_filename(
             metric="crps_field",
             variable=str(var),
             level=None,
@@ -472,13 +565,23 @@ def run_probabilistic(
             ensemble=ens_token,
             ext="npz",
         )
-        # Use NPZ format (same lightweight approach as maps.py)
-        # Saves essential arrays without full xarray overhead - memory efficient
-        _save_npz_with_coords(pit_npz_field, pit_da)
-        _save_npz_with_coords(crps_npz_field, crps_da)
-        print(f"[probabilistic] saved {pit_npz_field}")
-        print(f"[probabilistic] saved {crps_npz_field}")
+        _save_npz_with_coords(out_npz_crps, job["crps_field_res"])
+        print(f"[probabilistic] saved {out_npz_crps}")
 
+        out_npz_pit = section_output / build_output_filename(
+            metric="pit_field",
+            variable=str(var),
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="npz",
+        )
+        _save_npz_with_coords(out_npz_pit, job["pit_field_res"])
+        print(f"[probabilistic] saved {out_npz_pit}")
+
+    if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
         out_csv = section_output / build_output_filename(
             metric="crps_summary",
@@ -1472,21 +1575,3 @@ def run_probabilistic_wbx(
                     print(f"[probabilistic] saved {out_png_spatial}")
                 else:
                     print(f"[probabilistic] Skipping spatial plot for {var_name}: No numeric data.")
-
-
-def _per_variable_mean_df(da_or_ds: xr.Dataset | xr.DataArray) -> pd.DataFrame:
-    ds = da_or_ds.to_dataset(name="value") if isinstance(da_or_ds, xr.DataArray) else da_or_ds
-    dims = [
-        d
-        for d in [
-            "time",
-            "init_time",
-            "lead_time",
-            "latitude",
-            "longitude",
-            "level",
-            "ensemble",
-        ]
-        if d in ds.dims
-    ]
-    return ds.mean(dim=dims, skipna=True).to_dataframe()

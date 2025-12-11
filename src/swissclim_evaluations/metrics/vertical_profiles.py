@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
@@ -31,6 +32,7 @@ def _compute_nmae(
     lat_slice: slice,
     level_values: Sequence[int | float],
     weights: xr.DataArray | None = None,
+    preserve_dims: Sequence[str] | None = None,
 ) -> xr.DataArray:
     """Compute NMAE per level (percentage) for a latitude slice lazily with xarray.
 
@@ -60,8 +62,13 @@ def _compute_nmae(
     ]
     reduce_dims = [d for d in candidate_dims if (d in sub_true.dims) or (d in sub_pred.dims)]
     reduce_dims_true = [d for d in candidate_dims if d in sub_true.dims]
+
+    if preserve_dims:
+        reduce_dims = [d for d in reduce_dims if d not in preserve_dims]
+        reduce_dims_true = [d for d in reduce_dims_true if d not in preserve_dims]
+
     diff = (sub_pred - sub_true).astype("float32")
-    abs_err = xr.ufuncs.abs(diff)
+    abs_err = np.abs(diff)
 
     if weights is not None:
         mae = abs_err.weighted(weights).mean(dim=reduce_dims, skipna=True)
@@ -272,24 +279,13 @@ def run(
         ens_token = None
 
     fig_count = 0
-    for var in variables_3d:
-        print(f"[vertical_profiles] variable: {var}")
-        level_coord = ds_target[var].coords.get("level", None)
-        if level_coord is None or int(level_coord.size) == 0:
-            continue
-        if select_cfg.get("levels"):
-            requested = select_cfg.get("levels")
-            avail = set(level_coord.values.tolist())
-            try:
-                level_values = [lv for lv in (requested or []) if lv in avail]
-            except Exception:
-                level_values = []
-            if len(level_values) == 0:
-                continue
-        else:
-            level_values = list(level_coord.values)
 
-        # Build NMAE curves once per band (southern + northern)
+    # Collect all lazy computations
+    jobs = []
+
+    for var in variables_3d:
+        print(f"[vertical_profiles] preparing {var}...")
+        level_values = ds_target[var].level.values
         south_curves: list[xr.DataArray] = []
         north_curves: list[xr.DataArray] = []
         south_meta = []  # (lat_min, lat_max)
@@ -352,8 +348,165 @@ def run(
         north_da = xr.concat(north_curves, dim=band_idx).assign_coords(band=band_idx)
         hemisphere = xr.DataArray(["south", "north"], dims=["hemisphere"], name="hemisphere")
         combined = xr.concat([south_da, north_da], dim=hemisphere)
-        # Materialize full combined array once; then derive global x-range.
-        combined = combined.compute()
+
+        job = {
+            "var": var,
+            "south_meta": south_meta,
+            "north_meta": north_meta,
+            "combined_lazy": combined,
+            "half": half,
+            "ens_token_local": ens_token,
+        }
+
+        if resolved_mode == "members" and has_ens:
+            # Vectorized calculation for all members
+            south_curves_m: list[xr.DataArray] = []
+            north_curves_m: list[xr.DataArray] = []
+            for i in range(half):
+                lat_min_neg, lat_max_neg = south_meta[i]
+                lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
+                south_curves_m.append(
+                    _compute_nmae(
+                        ds_target[var],
+                        ds_prediction[var],
+                        lat_slice_neg,
+                        level_values,
+                        preserve_dims=["ensemble"],
+                    )
+                )
+                idx = -(i + 1)
+                lat_min_pos = lat_bins[idx]
+                lat_max_pos = lat_bins[idx - 1]
+                low = min(lat_min_pos, lat_max_pos)
+                high = max(lat_min_pos, lat_max_pos)
+                lat_slice_pos = _lat_slice(low, high)
+                north_curves_m.append(
+                    _compute_nmae(
+                        ds_target[var],
+                        ds_prediction[var],
+                        lat_slice_pos,
+                        level_values,
+                        preserve_dims=["ensemble"],
+                    )
+                )
+            band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
+            south_da_m = xr.concat(south_curves_m, dim=band_idx).assign_coords(band=band_idx)
+            north_da_m = xr.concat(north_curves_m, dim=band_idx).assign_coords(band=band_idx)
+            hemisphere = xr.DataArray(["south", "north"], dims=["hemisphere"], name="hemisphere")
+            combined_all = xr.concat([south_da_m, north_da_m], dim=hemisphere)
+            job["combined_all_lazy"] = combined_all
+
+        # Optional: overlay vertical profiles for selected lead_time values (evolution)
+        evolve = bool((plotting_cfg or {}).get("vertical_profiles_evolve_lead", False))
+        if (
+            evolve
+            and ("lead_time" in ds_prediction.dims)
+            and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+        ):
+            # Use all retained lead_time hours (panel concept removed)
+            if np.issubdtype(np.asarray(ds_prediction["lead_time"].values).dtype, np.timedelta64):
+                all_hours = [
+                    int(np.timedelta64(x) / np.timedelta64(1, "h"))
+                    for x in ds_prediction["lead_time"].values
+                ]
+            else:
+                all_hours = [int(x) for x in range(int(ds_prediction.sizes.get("lead_time", 0)))]
+            panel_hours = all_hours
+
+            job["evolve_info"] = {
+                "panel_hours": panel_hours,
+                "all_hours": all_hours,
+            }
+
+            # Collect lazy profiles for panel_hours (line plot)
+            evolve_profiles_lazy = []
+            for idx, h in enumerate(panel_hours):
+                li = all_hours.index(int(h)) if int(h) in all_hours else idx
+                da_t = ds_target[var]
+                da_p = ds_prediction[var]
+                if "lead_time" in da_t.dims:
+                    da_t = da_t.isel(lead_time=li)
+                if "lead_time" in da_p.dims:
+                    da_p = da_p.isel(lead_time=li)
+                prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                evolve_profiles_lazy.append(prof)
+            job["evolve_profiles_lazy"] = evolve_profiles_lazy
+
+            # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
+            hour_index_pairs = []
+            for h in panel_hours:
+                try:
+                    hour_index_pairs.append((int(h), all_hours.index(int(h))))
+                except Exception:
+                    hour_index_pairs.append((int(h), panel_hours.index(h)))
+
+            job["evolve_info"]["hour_index_pairs"] = hour_index_pairs
+
+            if hour_index_pairs:
+                heatmap_profiles_lazy = []
+                for _j, (_h, li) in enumerate(hour_index_pairs):
+                    da_t = ds_target[var]
+                    da_p = ds_prediction[var]
+                    if "lead_time" in da_t.dims:
+                        da_t = da_t.isel(lead_time=li)
+                    if "lead_time" in da_p.dims:
+                        da_p = da_p.isel(lead_time=li)
+                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                    heatmap_profiles_lazy.append(prof)
+                job["heatmap_profiles_lazy"] = heatmap_profiles_lazy
+
+        # Compute per-lead NMAE vertical profiles
+        nmae_lead = _compute_nmae_per_lead(
+            ds_target[var], ds_prediction[var], level_values, weights
+        )
+        job["nmae_lead_lazy"] = nmae_lead
+
+        jobs.append(job)
+
+    # Batch compute
+    print(f"[vertical_profiles] computing {len(jobs)} jobs...")
+    all_lazy = []
+    for job in jobs:
+        all_lazy.append(job["combined_lazy"])
+        if "combined_all_lazy" in job:
+            all_lazy.append(job["combined_all_lazy"])
+        if "evolve_profiles_lazy" in job:
+            all_lazy.extend(job["evolve_profiles_lazy"])
+        if "heatmap_profiles_lazy" in job:
+            all_lazy.extend(job["heatmap_profiles_lazy"])
+        all_lazy.append(job["nmae_lead_lazy"])
+
+    results = dask.compute(*all_lazy) if all_lazy else []
+
+    # Distribute results
+    ptr = 0
+    for job in jobs:
+        job["combined"] = results[ptr]
+        ptr += 1
+        if "combined_all_lazy" in job:
+            job["combined_all"] = results[ptr]
+            ptr += 1
+        if "evolve_profiles_lazy" in job:
+            n = len(job["evolve_profiles_lazy"])
+            job["evolve_profiles"] = results[ptr : ptr + n]
+            ptr += n
+        if "heatmap_profiles_lazy" in job:
+            n = len(job["heatmap_profiles_lazy"])
+            job["heatmap_profiles"] = results[ptr : ptr + n]
+            ptr += n
+        job["nmae_lead"] = results[ptr]
+        ptr += 1
+
+    # Process results
+    for job in jobs:
+        var = job["var"]
+        print(f"[vertical_profiles] post-processing {var}...")
+        combined = job["combined"]
+        south_meta = job["south_meta"]
+        north_meta = job["north_meta"]
+        half = job["half"]
+        ens_token_local = job["ens_token_local"]
+
         vals = combined.values
         # Mask of finite values (ignores NaN/inf). If none are finite, skip gracefully.
         finite_mask = np.isfinite(vals)
@@ -470,73 +623,31 @@ def run(
                 print(f"[vertical_profiles] saved {out_npz}")
             plt.close(fig)
 
-        if resolved_mode == "members" and has_ens:
-            for member_index, tgt_m, pred_m in _iter_members():
-                # Recompute combined curves for this member
-                # (Reuse existing logic by calling _compute_nmae per band again)
-                south_curves_m: list[xr.DataArray] = []
-                north_curves_m: list[xr.DataArray] = []
-                for i in range(half):
-                    lat_min_neg, lat_max_neg = south_meta[i]
-                    lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
-                    south_curves_m.append(
-                        _compute_nmae(tgt_m[var], pred_m[var], lat_slice_neg, level_values)
-                    )
-                    idx = -(i + 1)
-                    lat_min_pos = lat_bins[idx]
-                    lat_max_pos = lat_bins[idx - 1]
-                    low = min(lat_min_pos, lat_max_pos)
-                    high = max(lat_min_pos, lat_max_pos)
-                    lat_slice_pos = _lat_slice(low, high)
-                    north_curves_m.append(
-                        _compute_nmae(tgt_m[var], pred_m[var], lat_slice_pos, level_values)
-                    )
-                band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
-                south_da_m = xr.concat(south_curves_m, dim=band_idx).assign_coords(band=band_idx)
-                north_da_m = xr.concat(north_curves_m, dim=band_idx).assign_coords(band=band_idx)
-                hemisphere = xr.DataArray(
-                    ["south", "north"], dims=["hemisphere"], name="hemisphere"
-                )
-                combined_m = xr.concat([south_da_m, north_da_m], dim=hemisphere)
-                combined_m = combined_m.compute()
+        if "combined_all" in job:
+            combined_all = job["combined_all"]
+            for member_index in range(int(ds_prediction.sizes["ensemble"])):
+                combined_m = combined_all.isel(ensemble=member_index)
                 _emit(
                     ensemble_mode_to_token("members", member_index),
                     member_index=member_index,
                     _combined=combined_m,
                 )
         else:
-            _emit(ens_token)
+            _emit(ens_token_local)
         fig_count += 1
 
         # Optional: overlay vertical profiles for selected lead_time values (evolution)
-        evolve = bool((plotting_cfg or {}).get("vertical_profiles_evolve_lead", False))
-        if (
-            evolve
-            and ("lead_time" in ds_prediction.dims)
-            and int(ds_prediction.sizes.get("lead_time", 0)) > 1
-        ):
-            # Use all retained lead_time hours (panel concept removed)
-            if np.issubdtype(np.asarray(ds_prediction["lead_time"].values).dtype, np.timedelta64):
-                all_hours = [
-                    int(np.timedelta64(x) / np.timedelta64(1, "h"))
-                    for x in ds_prediction["lead_time"].values
-                ]
-            else:
-                all_hours = [int(x) for x in range(int(ds_prediction.sizes.get("lead_time", 0)))]
-            panel_hours = all_hours
+        if "evolve_profiles" in job:
+            evolve_info = job["evolve_info"]
+            panel_hours = evolve_info["panel_hours"]
+            all_hours = evolve_info["all_hours"]
+            evolve_profiles = job["evolve_profiles"]
+
             # Compute global (all-latitudes) profiles per selected lead
             fig, ax = plt.subplots(figsize=(7, 6), dpi=dpi * 2)
             colors = plt.get_cmap("viridis")(np.linspace(0.1, 0.9, len(panel_hours)))
             for idx, h in enumerate(panel_hours):
-                li = all_hours.index(int(h)) if int(h) in all_hours else idx
-                # Slice datasets at this lead
-                da_t = ds_target[var]
-                da_p = ds_prediction[var]
-                if "lead_time" in da_t.dims:
-                    da_t = da_t.isel(lead_time=li)
-                if "lead_time" in da_p.dims:
-                    da_p = da_p.isel(lead_time=li)
-                prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                prof = evolve_profiles[idx]
                 ax.plot(prof.values, level_values, label=f"{int(h)}h", color=colors[idx])
             ax.set_xlabel("NMAE (%)")
             ax.set_ylabel("Level")
@@ -568,20 +679,7 @@ def run(
                     ensemble=ens_token if resolved_mode != "members" else None,
                     ext="npz",
                 )
-                profiles = []
-                for idx, h in enumerate(panel_hours):
-                    try:
-                        li = all_hours.index(int(h))
-                    except Exception:
-                        li = idx
-                    da_t = ds_target[var]
-                    da_p = ds_prediction[var]
-                    if "lead_time" in da_t.dims:
-                        da_t = da_t.isel(lead_time=li)
-                    if "lead_time" in da_p.dims:
-                        da_p = da_p.isel(lead_time=li)
-                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
-                    profiles.append(np.asarray(prof.values))
+                profiles = [p.values for p in evolve_profiles]
                 np.savez(
                     out_npz,
                     lead_hours=np.array(panel_hours, dtype=float),
@@ -592,31 +690,15 @@ def run(
                 print(f"[vertical_profiles] saved {out_npz}")
 
             # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
-            if np.issubdtype(np.asarray(ds_prediction["lead_time"].values).dtype, np.timedelta64):
-                all_hours = [
-                    int(np.timedelta64(x) / np.timedelta64(1, "h"))
-                    for x in ds_prediction["lead_time"].values
-                ]
-            else:
-                all_hours = [int(x) for x in range(int(ds_prediction.sizes.get("lead_time", 0)))]
-            hour_index_pairs = []
-            for h in panel_hours:
-                try:
-                    hour_index_pairs.append((int(h), all_hours.index(int(h))))
-                except Exception:
-                    hour_index_pairs.append((int(h), panel_hours.index(h)))
-            if hour_index_pairs:
+            if "heatmap_profiles" in job:
+                hour_index_pairs = evolve_info["hour_index_pairs"]
+                heatmap_profiles = job["heatmap_profiles"]
+
                 n_levels = len(level_values)
                 n_leads = len(hour_index_pairs)
                 grid = np.full((n_levels, n_leads), np.nan, dtype=float)
-                for j, (_h, li) in enumerate(hour_index_pairs):  # rename unused h -> _h (ruff B007)
-                    da_t = ds_target[var]
-                    da_p = ds_prediction[var]
-                    if "lead_time" in da_t.dims:
-                        da_t = da_t.isel(lead_time=li)
-                    if "lead_time" in da_p.dims:
-                        da_p = da_p.isel(lead_time=li)
-                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                for j, (_h, _li) in enumerate(hour_index_pairs):
+                    prof = heatmap_profiles[j]
                     grid[:, j] = np.asarray(prof.values).ravel()
                 lead_hours_plot = [h for h, _ in hour_index_pairs]
                 fig2, ax2 = plt.subplots(figsize=(9, 6), dpi=dpi * 2)
@@ -667,9 +749,7 @@ def run(
                     print(f"[vertical_profiles] saved {out_npz2}")
 
         # Compute and plot per-lead NMAE vertical profiles
-        nmae_lead = _compute_nmae_per_lead(
-            ds_target[var], ds_prediction[var], level_values, weights
-        )
+        nmae_lead = job["nmae_lead"]
         if nmae_lead.size > 0:
             # Emit NPZ with all data
             if save_npz:
