@@ -385,7 +385,7 @@ def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | 
     For members mode we expect caller to invoke once per member with member_index.
     """
     if mode == "mean":
-        return "mean"  # builder normalises to ensmean
+        return "ensmean"  # builder normalises to ensmean
     if mode == "pooled":
         return "enspooled"
     if mode == "prob":

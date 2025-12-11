@@ -760,10 +760,9 @@ def intercompare_histograms(
 ) -> None:
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
-
-    # --- Latbands Histograms ---
-    per_model, inter, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
-    _report_missing("histograms (latbands)", models, labels, per_model, uni)
+    # Availability report
+    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
+    _report_missing("histograms", models, labels, per_model, uni)
 
     results = {}
     # Plots: 1-to-1
