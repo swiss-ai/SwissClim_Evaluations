@@ -134,28 +134,19 @@ def _calculate_all_metrics(
 
         # Base error metrics
         if (include is None) or ("MAE" in metrics_to_compute):
-            if weights is not None:
-                mae_val = float(mae(y_pred, y_true, weights=weights))
-            else:
-                mae_val = float(mae(y_pred, y_true))
+            mae_val = float(mae(y_pred, y_true, weights=weights))
             row["MAE"] = mae_val
         else:
             mae_val = np.nan
 
         if (include is None) or ("RMSE" in metrics_to_compute):
-            if weights is not None:
-                rmse_val = float(rmse(y_pred, y_true, weights=weights))
-            else:
-                rmse_val = float(rmse(y_pred, y_true))
+            rmse_val = float(rmse(y_pred, y_true, weights=weights))
             row["RMSE"] = rmse_val
         else:
             rmse_val = np.nan
 
         if (include is None) or ("MSE" in metrics_to_compute):
-            if weights is not None:
-                mse_val = float(mse(y_pred, y_true, weights=weights))
-            else:
-                mse_val = float(mse(y_pred, y_true))
+            mse_val = float(mse(y_pred, y_true, weights=weights))
             row["MSE"] = mse_val
 
         if (include is None) or ("Bias" in metrics_to_compute):
