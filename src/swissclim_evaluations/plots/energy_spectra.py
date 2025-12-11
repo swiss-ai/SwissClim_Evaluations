@@ -119,12 +119,9 @@ def calculate_energy_spectra(
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
-    if "latitude" in da_power.dims:
-        weights = create_latitude_weights(da_power["latitude"])
-        weights = weights / weights.mean()
-        da_power = da_power.weighted(weights).mean(dim="latitude")
-    else:
-        da_power = da_power.mean(dim="latitude")
+    weights = create_latitude_weights(da_power["latitude"])
+    weights = weights / weights.mean()
+    da_power = da_power.weighted(weights).mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
     if average_dims:
