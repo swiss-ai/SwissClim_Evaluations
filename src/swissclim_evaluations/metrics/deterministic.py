@@ -123,7 +123,6 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
-    weights = None
     weights = create_latitude_weights(ds_target.latitude)
     weights = weights / weights.mean()
 
