@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from scores.functions import create_latitude_weights
 
-from ..aggregations import latitude_weights
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -120,7 +120,8 @@ def calculate_energy_spectra(
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
     if "latitude" in da_power.dims:
-        weights = latitude_weights(da_power["latitude"])
+        weights = create_latitude_weights(da_power["latitude"])
+        weights = weights / weights.mean()
         da_power = da_power.weighted(weights).mean(dim="latitude")
     else:
         da_power = da_power.mean(dim="latitude")

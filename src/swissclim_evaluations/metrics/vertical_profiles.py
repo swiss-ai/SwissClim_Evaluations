@@ -7,8 +7,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
+from scores.functions import create_latitude_weights
 
-from ..aggregations import latitude_weights
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -101,7 +101,8 @@ def run(
 
     weights = None
     if "latitude" in ds_target.dims:
-        weights = latitude_weights(ds_target.latitude)
+        weights = create_latitude_weights(ds_target.latitude)
+        weights = weights / weights.mean()
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):

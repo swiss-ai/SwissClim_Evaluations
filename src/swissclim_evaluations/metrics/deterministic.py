@@ -11,9 +11,8 @@ import xarray as xr
 from scores.categorical import seeps
 from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
+from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d
-
-from ..aggregations import latitude_weights
 
 
 def _prepare_seeps(y_true: xr.DataArray, path_climatology: str):
@@ -125,7 +124,8 @@ def _calculate_all_metrics(
     metrics_to_compute = all_metric_names if include is None else set(include)
 
     weights = None
-    weights = latitude_weights(ds_target.latitude)
+    weights = create_latitude_weights(ds_target.latitude)
+    weights = weights / weights.mean()
 
     for var in variables:
         y_true = ds_target[var]
