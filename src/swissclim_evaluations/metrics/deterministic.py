@@ -149,10 +149,7 @@ def _calculate_all_metrics(
             row["MSE"] = mse_val
 
         if (include is None) or ("Bias" in metrics_to_compute):
-            if weights is not None:
-                bias_val = float(additive_bias(y_pred, y_true, weights=weights))
-            else:
-                bias_val = float(additive_bias(y_pred, y_true))
+            bias_val = float(additive_bias(y_pred, y_true, weights=weights))
             row["Bias"] = bias_val
         else:
             bias_val = np.nan
