@@ -19,8 +19,8 @@ def calculate_ssim(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     sigma: float = 1.5,
-    k1: float = 0.01,
-    k2: float = 0.03,
+    K1: float = 0.01,
+    K2: float = 0.03,
     gaussian_weights: bool = True,
     use_sample_covariance: bool = True,
 ) -> pd.DataFrame:
@@ -75,8 +75,8 @@ def calculate_ssim(
                 gaussian_weights=gaussian_weights,
                 sigma=sigma,
                 use_sample_covariance=use_sample_covariance,
-                K1=k1,
-                K2=k2,
+                K1=K1,
+                K2=K2,
             )
 
         # Apply SSIM over spatial dimensions
@@ -112,8 +112,8 @@ def run(
 
     # Extract SSIM parameters
     sigma = float(cfg.get("sigma", 1.5))
-    k1 = float(cfg.get("k1", 0.01))
-    k2 = float(cfg.get("k2", 0.03))
+    K1 = float(cfg.get("K1", 0.01))
+    K2 = float(cfg.get("K2", 0.03))
     gaussian_weights = bool(cfg.get("gaussian_weights", True))
     use_sample_covariance = bool(cfg.get("use_sample_covariance", True))
 
@@ -158,8 +158,8 @@ def run(
                 ds_t_mem,
                 ds_p_mem,
                 sigma=sigma,
-                k1=k1,
-                k2=k2,
+                K1=K1,
+                K2=K2,
                 gaussian_weights=gaussian_weights,
                 use_sample_covariance=use_sample_covariance,
             )
@@ -186,8 +186,8 @@ def run(
             ds_target_stacked,
             ds_prediction_stacked,
             sigma=sigma,
-            k1=k1,
-            k2=k2,
+            K1=K1,
+            K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )
@@ -200,8 +200,8 @@ def run(
             ds_target,
             ds_prediction,
             sigma=sigma,
-            k1=k1,
-            k2=k2,
+            K1=K1,
+            K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
         )

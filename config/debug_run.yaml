@@ -19,8 +19,8 @@ selection:
   # - If first < second → standard band [first, second]
   # - If first > second → wrap-around union [first..max_lon] ∪ [min_lon..second]
   longitudes: [0.0, 359.75]
-  variables_2d: ["10m_u_component_of_wind"]
-  variables_3d: ["u_component_of_wind"]
+  variables_2d: ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+  variables_3d: ["u_component_of_wind", "v_component_of_wind"]
   ensemble_members: null
   ensemble:
     maps: members
@@ -50,7 +50,8 @@ modules:
   deterministic: true
   ssim: true
   ets: true
-  probabilistic: true
+  multivariate: true
+  probabilistic: false
 
 metrics:
   deterministic:
@@ -71,6 +72,12 @@ metrics:
     use_sample_covariance: true
   energy_spectra:
     report_per_level: true
+  ssim:
+    sigma: 1.5
+  multivariate:
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
 
 probabilistic:
   report_per_level: true
