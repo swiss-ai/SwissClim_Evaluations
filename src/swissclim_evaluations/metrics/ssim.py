@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import dask
+import numpy as np
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
@@ -23,14 +24,20 @@ def calculate_ssim(
     K2: float = 0.03,
     gaussian_weights: bool = True,
     use_sample_covariance: bool = True,
-) -> pd.DataFrame:
+    report_per_level: bool = False,
+    report_per_lead_time: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
     """
     Calculate SSIM for each variable.
 
     SSIM is calculated for each 2D spatial slice (lat/lon) and averaged over other dimensions.
+    Returns:
+        (df_global, df_per_level, df_per_lead_time)
     """
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
+    per_level_data: list[dict[str, Any]] = []
+    per_lead_time_data: list[dict[str, Any]] = []
 
     for var in variables:
         if var not in ds_prediction:
@@ -95,7 +102,53 @@ def calculate_ssim(
         mean_ssim = float(ssim_da.mean(skipna=True).compute())
         metrics_dict[var] = {"SSIM": mean_ssim}
 
-    return pd.DataFrame.from_dict(metrics_dict, orient="index")
+        # Per-level breakdown
+        if report_per_level and "level" in ssim_da.dims:
+            dims_to_mean = [d for d in ssim_da.dims if d != "level"]
+            ssim_level = ssim_da.mean(dim=dims_to_mean, skipna=True).compute()
+            # ssim_level is 1D array along 'level'
+            for lvl_val, score in zip(ssim_level["level"].values, ssim_level.values, strict=False):
+                per_level_data.append(
+                    {
+                        "variable": var,
+                        "level": float(lvl_val),
+                        "SSIM": float(score),
+                    }
+                )
+
+        # Per-lead-time breakdown
+        if report_per_lead_time and "lead_time" in ssim_da.dims:
+            dims_to_mean = [d for d in ssim_da.dims if d != "lead_time"]
+            ssim_lead = ssim_da.mean(dim=dims_to_mean, skipna=True).compute()
+            # ssim_lead is 1D array along 'lead_time'
+            for lt_val, score in zip(ssim_lead["lead_time"].values, ssim_lead.values, strict=False):
+                if isinstance(lt_val, np.timedelta64):
+                    lt_val_hours = lt_val / np.timedelta64(1, "h")
+                else:
+                    lt_val_hours = lt_val
+                per_lead_time_data.append(
+                    {
+                        "variable": var,
+                        "lead_time": float(lt_val_hours),
+                        "SSIM": float(score),
+                    }
+                )
+
+    df_global = pd.DataFrame.from_dict(metrics_dict, orient="index")
+
+    df_per_level = None
+    if per_level_data:
+        df_per_level = pd.DataFrame(per_level_data)
+        # Sort for tidiness
+        df_per_level = df_per_level.sort_values(by=["variable", "level"])
+
+    df_per_lead_time = None
+    if per_lead_time_data:
+        df_per_lead_time = pd.DataFrame(per_lead_time_data)
+        # Sort for tidiness
+        df_per_lead_time = df_per_lead_time.sort_values(by=["variable", "lead_time"])
+
+    return df_global, df_per_level, df_per_lead_time
 
 
 def run(
@@ -116,26 +169,35 @@ def run(
     K2 = float(cfg.get("K2", 0.03))
     gaussian_weights = bool(cfg.get("gaussian_weights", True))
     use_sample_covariance = bool(cfg.get("use_sample_covariance", True))
+    report_per_level = bool(cfg.get("report_per_level", True))
+    report_per_lead_time = bool(cfg.get("report_per_lead_time", True))
 
     # Resolve ensemble mode
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
 
     # Helper to save output
-    def _save_output(df: pd.DataFrame, ens_token: str):
+    def _save_output(df: pd.DataFrame, ens_token: str, qualifier: str = "ssim"):
         if df.empty:
             return
 
-        # Calculate average SSIM across variables
-        avg_score = df["SSIM"].mean()
-        summary_row = pd.DataFrame({"SSIM": [avg_score]}, index=["AVERAGE_SSIM"])
-        df_final = pd.concat([df, summary_row])
+        # Calculate average SSIM across variables if it's the main table
+        if "level" not in df.columns and "lead_time" not in df.columns:
+            avg_score = df["SSIM"].mean()
+            summary_row = pd.DataFrame({"SSIM": [avg_score]}, index=["AVERAGE_SSIM"])
+            df_final = pd.concat([df, summary_row])
+            index_arg = True
+            index_label = "variable"
+        else:
+            df_final = df
+            index_arg = False
+            index_label = None
 
         filename = build_output_filename(
-            metric="ssim", qualifier="ssim", ensemble=ens_token, ext="csv"
+            metric="ssim", qualifier=qualifier, ensemble=ens_token, ext="csv"
         )
         out_path = out_root / "ssim" / filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        df_final.to_csv(out_path, index_label="variable")
+        df_final.to_csv(out_path, index=index_arg, index_label=index_label)
         print(f"[ssim] saved {out_path}")
 
     # Handle ensemble dimension
@@ -154,7 +216,7 @@ def run(
             else:
                 ds_t_mem = ds_target
 
-            df = calculate_ssim(
+            df, df_lvl, df_lead = calculate_ssim(
                 ds_t_mem,
                 ds_p_mem,
                 sigma=sigma,
@@ -162,9 +224,15 @@ def run(
                 K2=K2,
                 gaussian_weights=gaussian_weights,
                 use_sample_covariance=use_sample_covariance,
+                report_per_level=report_per_level,
+                report_per_lead_time=report_per_lead_time,
             )
             ens_token = ensemble_mode_to_token(mode, member_index=m)
             _save_output(df, ens_token)
+            if df_lvl is not None:
+                _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+            if df_lead is not None:
+                _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
         # Stack ensemble into the sample dimension (e.g., "time")
@@ -182,7 +250,7 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_target_stacked = ds_target.stack(pooled_sample=("ensemble", sample_dim))
 
-        df = calculate_ssim(
+        df, df_lvl, df_lead = calculate_ssim(
             ds_target_stacked,
             ds_prediction_stacked,
             sigma=sigma,
@@ -190,13 +258,19 @@ def run(
             K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
+            report_per_level=report_per_level,
+            report_per_lead_time=report_per_lead_time,
         )
         ens_token = ensemble_mode_to_token(mode)
         _save_output(df, ens_token)
+        if df_lvl is not None:
+            _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+        if df_lead is not None:
+            _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")
 
     else:
         # Single output (mean, none, or pooled if supported)
-        df = calculate_ssim(
+        df, df_lvl, df_lead = calculate_ssim(
             ds_target,
             ds_prediction,
             sigma=sigma,
@@ -204,6 +278,12 @@ def run(
             K2=K2,
             gaussian_weights=gaussian_weights,
             use_sample_covariance=use_sample_covariance,
+            report_per_level=report_per_level,
+            report_per_lead_time=report_per_lead_time,
         )
         ens_token = ensemble_mode_to_token(mode)
         _save_output(df, ens_token)
+        if df_lvl is not None:
+            _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+        if df_lead is not None:
+            _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")

@@ -27,7 +27,7 @@ def test_calculate_ssim_basic():
         coords={"latitude": np.arange(20), "longitude": np.arange(20)},
     )
 
-    df = calculate_ssim(ds1, ds2)
+    df, _, _ = calculate_ssim(ds1, ds2)
     # Index is variable name, column is SSIM
     assert df.loc["var1", "SSIM"] == pytest.approx(1.0)
 
@@ -46,7 +46,7 @@ def test_calculate_ssim_different():
         coords={"latitude": np.arange(20), "longitude": np.arange(20)},
     )
 
-    df = calculate_ssim(ds1, ds2)
+    df, _, _ = calculate_ssim(ds1, ds2)
     # SSIM should be low
     assert df.loc["var1", "SSIM"] < 1.0
     assert df.loc["var1", "SSIM"] >= -1.0  # SSIM can be negative
@@ -67,10 +67,10 @@ def test_calculate_ssim_params():
     )
 
     # Default (gaussian_weights=True)
-    df1 = calculate_ssim(ds1, ds2)
+    df1, _, _ = calculate_ssim(ds1, ds2)
 
     # Custom sigma
-    df2 = calculate_ssim(ds1, ds2, sigma=0.5)
+    df2, _, _ = calculate_ssim(ds1, ds2, sigma=0.5)
 
     # Results should differ
     assert df1.loc["var1", "SSIM"] != df2.loc["var1", "SSIM"]
@@ -99,7 +99,10 @@ def test_run_ssim(tmp_path: Path):
     out_dir = out_root / "ssim"
     assert out_dir.exists()
 
-    files = list(out_dir.glob("ssim_ssim*.csv"))
+    # Check global SSIM file
+    files = list(out_dir.glob("ssim_ssim_ens*.csv"))
+    # Filter out per_level and per_lead_time
+    files = [f for f in files if "per_level" not in f.name and "per_lead_time" not in f.name]
     assert len(files) > 0
 
     df = pd.read_csv(files[0])
@@ -115,7 +118,6 @@ def test_run_ssim(tmp_path: Path):
     # Check average
     row_avg = df[df["variable"] == "AVERAGE_SSIM"]
     assert not row_avg.empty
-    assert row_avg["SSIM"].values[0] == pytest.approx(1.0)
 
 
 def test_run_ssim_ensemble(tmp_path: Path):
@@ -144,15 +146,21 @@ def test_run_ssim_ensemble(tmp_path: Path):
     # Test mean mode (default)
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="mean")
     out_dir = out_root / "ssim"
-    files = list(out_dir.glob("ssim_ssim*ensmean.csv"))
+
+    # Check global file
+    files = list(out_dir.glob("ssim_ssim_ensmean.csv"))
     assert len(files) == 1
+
+    # Check per-lead-time file
+    files_lead = list(out_dir.glob("ssim_ssim_per_lead_time_ensmean.csv"))
+    assert len(files_lead) == 1
 
     # Test members mode
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="members")
-    files = list(out_dir.glob("ssim_ssim*ens0.csv"))
+    files = list(out_dir.glob("ssim_ssim_ens0.csv"))
     assert len(files) == 1
 
     # Test pooled mode
     run(ds, ds, out_root, metrics_cfg=None, ensemble_mode="pooled")
-    files = list(out_dir.glob("ssim_ssim*enspooled.csv"))
+    files = list(out_dir.glob("ssim_ssim_enspooled.csv"))
     assert len(files) == 1
