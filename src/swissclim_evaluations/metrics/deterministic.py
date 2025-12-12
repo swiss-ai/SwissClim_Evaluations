@@ -13,10 +13,10 @@ import xarray as xr
 from scores.categorical import seeps
 from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
+from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d_single_field
 from skimage.metrics import structural_similarity as ssim
 
-from ..aggregations import latitude_weights
 from ..helpers import save_data, save_dataframe, save_figure
 
 
@@ -213,7 +213,9 @@ def _calculate_all_metrics(
     metrics_to_compute = all_metric_names if include is None else set(include)
 
     weights = None
-    weights = latitude_weights(ds_target.latitude)
+    if "latitude" in ds_target.dims:
+        weights = create_latitude_weights(ds_target.latitude)
+        weights = weights / weights.mean()
 
     # Store lazy objects to compute in one go
     # List of (variable_name, metric_name, lazy_object)

@@ -7,8 +7,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
+from scores.functions import create_latitude_weights
 
-from ..aggregations import latitude_weights
 from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
@@ -207,9 +207,11 @@ def run(
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
 
-    weights = None
-    if "latitude" in ds_target.dims:
-        weights = latitude_weights(ds_target.latitude)
+    if "latitude" not in ds_target.dims:
+        raise ValueError("Latitude dimension required for vertical profiles metrics.")
+
+    weights = create_latitude_weights(ds_target.latitude)
+    weights = weights / weights.mean()
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):
@@ -314,13 +316,14 @@ def run(
             lat_min_neg = lat_bins[i]
             lat_max_neg = lat_bins[i + 1]
             lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
+            w_slice_neg = weights.sel(latitude=lat_slice_neg)
             south_curves.append(
                 _compute_nmae(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_neg,
                     level_values,
-                    weights=weights,
+                    weights=w_slice_neg,
                 )
             )
             south_meta.append((lat_min_neg, lat_max_neg))
@@ -332,13 +335,14 @@ def run(
             low = min(lat_min_pos, lat_max_pos)
             high = max(lat_min_pos, lat_max_pos)
             lat_slice_pos = _lat_slice(low, high)
+            w_slice_pos = weights.sel(latitude=lat_slice_pos)
             north_curves.append(
                 _compute_nmae(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_pos,
                     level_values,
-                    weights=weights,
+                    weights=w_slice_pos,
                 )
             )
             north_meta.append((lat_min_pos, lat_max_pos))
@@ -365,12 +369,14 @@ def run(
             for i in range(half):
                 lat_min_neg, lat_max_neg = south_meta[i]
                 lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
+                w_slice_neg = weights.sel(latitude=lat_slice_neg)
                 south_curves_m.append(
                     _compute_nmae(
                         ds_target[var],
                         ds_prediction[var],
                         lat_slice_neg,
                         level_values,
+                        weights=w_slice_neg,
                         preserve_dims=["ensemble"],
                     )
                 )
@@ -380,12 +386,14 @@ def run(
                 low = min(lat_min_pos, lat_max_pos)
                 high = max(lat_min_pos, lat_max_pos)
                 lat_slice_pos = _lat_slice(low, high)
+                w_slice_pos = weights.sel(latitude=lat_slice_pos)
                 north_curves_m.append(
                     _compute_nmae(
                         ds_target[var],
                         ds_prediction[var],
                         lat_slice_pos,
                         level_values,
+                        weights=w_slice_pos,
                         preserve_dims=["ensemble"],
                     )
                 )
