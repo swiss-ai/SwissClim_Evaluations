@@ -77,7 +77,9 @@ def _report_missing(
 ) -> None:
     """Pretty-print which basenames were missing per model for a module scan."""
     if not union:
-        c.warn(f"[{module}] No files found in any model.")
+        # Only warn if we really expected something (i.e. not a sub-scan that might be empty)
+        # But since this is called for sub-scans, we should be less alarming or more specific.
+        # c.warn(f"[{module}] No files found in any model.")
         return
 
     intersection = set.intersection(*per_model) if per_model else set()
@@ -176,13 +178,14 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
     """Return common vertical profile NPZ basenames (current schema).
 
     New naming uses the standardized builder:
-      vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz
+      vertical_profiles_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz
     We locate files by the stable prefix and the "_combined" qualifier.
     Returns sorted list of basenames existing across all model folders.
     """
     vp_dir = Path("vertical_profiles")
     patterns = [
-        "vprof_nmae_*_combined*.npz",  # current
+        "vertical_profiles_nmae_*_combined*.npz",  # current
+        "vprof_nmae_*_combined*.npz",  # legacy
         "*_pl_nmae_combined*.npz",  # legacy fallback
     ]
     # Build intersection over models; if multiple patterns match, union per model first
@@ -213,7 +216,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
     per_model_vp: list[set[str]] = []
     for m in models:
         s: set[str] = set()
-        for pat in ("vprof_nmae_*_combined*.npz", "*_pl_nmae_combined*.npz"):
+        for pat in (
+            "vertical_profiles_nmae_*_combined*.npz",
+            "vprof_nmae_*_combined*.npz",
+            "*_pl_nmae_combined*.npz",
+        ):
             s.update({f.name for f in (m / "vertical_profiles").glob(pat) if f.is_file()})
         per_model_vp.append(s)
     union_vp = set().union(*per_model_vp) if per_model_vp else set()
@@ -298,7 +305,14 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             )
         # Derive variable name from filename robustly
         var = base[:-4] if base.endswith(".npz") else base
-        if var.startswith("vprof_nmae_"):
+        if var.startswith("vertical_profiles_nmae_"):
+            # vertical_profiles_nmae_<variable>_multi_combined[...]
+            tail = var[len("vertical_profiles_nmae_") :]
+            if "_multi_combined" in tail:
+                var = tail.split("_multi_combined", 1)[0]
+            else:
+                var = tail.split("_combined", 1)[0]
+        elif var.startswith("vprof_nmae_"):
             # vprof_nmae_<variable>_multi_combined[...]
             tail = var[len("vprof_nmae_") :]
             if "_multi_combined" in tail:
@@ -362,8 +376,21 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     dst = _ensure_dir(out_root / "energy_spectra")
 
     # Availability report
-    per_model, _, uni = _scan_model_sets(models, "energy_spectra/*_spectrum*.npz")
-    _report_missing("energy_spectra (spectra NPZ)", models, labels, per_model, uni)
+    patterns = [
+        "energy_spectra/*_spectrum*.npz",
+        "energy_spectra/lsd_*.csv",
+        "energy_spectra/energy_spectrogram_*_bundle.npz",
+    ]
+    total_per_model: list[set[str]] = [set() for _ in models]
+    total_union = set()
+
+    for pat in patterns:
+        pm, _, uni = _scan_model_sets(models, pat)
+        for i, s in enumerate(pm):
+            total_per_model[i].update(s)
+        total_union.update(uni)
+
+    _report_missing("energy_spectra", models, labels, total_per_model, total_union)
 
     results = {}
     # Spectra: 1-to-1 mapping (each file -> one plot)
@@ -403,8 +430,97 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
     _report_checklist("energy_spectra", results)
 
+    if all_lsd:
+        _print_file_list(f"Found {len(all_lsd)} common LSD metric files", all_lsd)
+
+    # Process LSD Metrics
+    # 1. Averaged (Global)
+    frames_avg: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = [
+            f for f in (m / "energy_spectra").glob("lsd_*averaged*.csv") if "bands" not in f.name
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_avg.append(df)
+            except Exception:
+                pass
+
+    if frames_avg:
+        combined = pd.concat(frames_avg, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_averaged_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 2. Banded Averaged
+    frames_band_avg: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = list((m / "energy_spectra").glob("lsd_bands_*averaged*.csv"))
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_band_avg.append(df)
+            except Exception:
+                pass
+
+    if frames_band_avg:
+        combined = pd.concat(frames_band_avg, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_banded_averaged_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 3. Per-Level (Global)
+    frames_lvl: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = [
+            f for f in (m / "energy_spectra").glob("lsd_*per_level*.csv") if "bands" not in f.name
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_lvl.append(df)
+            except Exception:
+                pass
+
+    if frames_lvl:
+        combined = pd.concat(frames_lvl, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_per_level_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 4. Banded Per-Level
+    frames_band_lvl: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = list((m / "energy_spectra").glob("lsd_bands_*per_level*.csv"))
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_band_lvl.append(df)
+            except Exception:
+                pass
+
+    if frames_band_lvl:
+        combined = pd.concat(frames_band_lvl, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_banded_per_level_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
     # Helper to plot a group of NPZ with baseline
     def _plot_group(basenames: list[str]) -> None:
+        _print_file_list(f"Found {len(basenames)} common energy spectra files", basenames)
         for base in basenames:
             datas = [_load_npz(m / src_rel / base) for m in models]
             # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
@@ -588,6 +704,10 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     c.warn("No lines were added to the plot; no output saved.")
                 plt.close(fig_r)
 
+    # Call the helper to actually generate plots
+    if spectra_files:
+        _plot_group(spectra_files)
+
     # 4) Plot Energy Spectra per Lead Time (from bundle NPZ)
     # Look for energy_spectrogram_*_bundle.npz
     bundles = _common_files(models, str(src_rel / "energy_spectrogram_*_bundle.npz"))
@@ -664,29 +784,57 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
     dst_ets = _ensure_dir(out_root / "ets")
 
     # Availability report
-    per_model, _, uni = _scan_model_sets(models, "ets/ets_metrics_by_lead_wide.csv")
+    # Look for any ETS metrics CSV
+    per_model, _, uni = _scan_model_sets(models, "ets/ets_metrics_*.csv")
     _report_missing("ets_metrics", models, labels, per_model, uni)
 
     results = {}
-    all_ets = _common_files(models, "ets/ets_metrics_by_lead_wide.csv")
-    results["ETS Metrics (Wide)"] = 1 if all_ets else 0
+    all_ets = _common_files(models, "ets/ets_metrics_*.csv")
+    results["ETS Metrics"] = len(all_ets)
     _report_checklist("ets_metrics", results)
 
     if not all_ets:
-        c.warn("No common ETS wide metrics files found. Skipping plots.")
+        c.warn("No common ETS metrics files found. Skipping plots.")
         return
 
-    # Combine wide CSVs
+    _print_file_list(f"Found {len(all_ets)} common ETS metrics files", all_ets)
+
+    # Combine wide CSVs if they exist (legacy)
     frames: list[pd.DataFrame] = []
+    # Also look for per-lead or averaged files that might contain ETS data
+    # We'll try to find a file that has 'ets' in the name and looks like a metric file
+
+    # Strategy: Look for specific patterns
+    patterns = [
+        "ets_metrics_by_lead_wide.csv",
+        "ets_metrics_averaged*.csv",
+        "ets_metrics_per_lead*.csv",
+    ]
+
     for lab, m in zip(labels, models, strict=False):
-        f = m / "ets" / "ets_metrics_by_lead_wide.csv"
-        if f.is_file():
-            try:
-                df = pd.read_csv(f)
-                df.insert(0, "model", lab)
-                frames.append(df)
-            except Exception:
-                pass
+        found_df = None
+        for pat in patterns:
+            candidates = list((m / "ets").glob(pat))
+            # Prefer 'wide' if exists, else averaged/per_lead
+            if not candidates:
+                continue
+            # Pick the first one that works
+            for cand in candidates:
+                try:
+                    df = pd.read_csv(cand)
+                    # Check if it has ETS-like columns (e.g. ETS, EDI, FBI, or threshold columns)
+                    # or if it's in the 'wide' format
+                    if "ETS" in df.columns or any("ETS" in c for c in df.columns):
+                        found_df = df
+                        break
+                except Exception:
+                    continue
+            if found_df is not None:
+                break
+
+        if found_df is not None:
+            found_df.insert(0, "model", lab)
+            frames.append(found_df)
 
     if not frames:
         return
@@ -782,8 +930,20 @@ def intercompare_histograms(
     src_rel = Path("histograms")
     dst = _ensure_dir(out_root / "histograms")
     # Availability report
-    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands_combined*.npz")
-    _report_missing("histograms", models, labels, per_model, uni)
+    patterns = [
+        "histograms/hist_*latbands_combined*.npz",
+        "histograms/hist_*global*.npz",
+    ]
+    total_per_model: list[set[str]] = [set() for _ in models]
+    total_union = set()
+
+    for pat in patterns:
+        pm, _, uni = _scan_model_sets(models, pat)
+        for i, s in enumerate(pm):
+            total_per_model[i].update(s)
+        total_union.update(uni)
+
+    _report_missing("histograms", models, labels, total_per_model, total_union)
 
     results = {}
     # Plots: 1-to-1
@@ -796,65 +956,86 @@ def intercompare_histograms(
     if ignored:
         results["Other Histograms (Ignored)"] = len(ignored)
 
-    common = _common_files(models, str(src_rel / "hist_*latbands_combined*.npz"))
-    if common:
-        _print_file_list(f"Found {len(common)} common latbands histogram files", common)
-
-    colors = sns.color_palette("tab10", n_colors=len(models))
+    # --- Latbands Histograms ---
+    common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
+    # Filter out global if it matches latbands (unlikely but safe)
+    common = [f for f in common if "global" not in f]
+    results["Histograms (Latbands)"] = len(common)
 
     # --- Global Histograms ---
-    per_model_g, inter_g, uni_g = _scan_model_sets(models, "histograms/hist_*global*.npz")
-    _report_missing("histograms (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "hist_*global*.npz"))
-
     results["Histograms (Global)"] = len(common_g)
+
     _report_checklist("histograms", results)
 
     if not common and not common_g:
         c.warn("No common histogram files found (latbands or global). Skipping plots.")
         return
 
-    for base in common_g:
-        payloads = [_load_npz(m / src_rel / base) for m in models]
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+    colors = sns.color_palette("tab10", n_colors=len(models))
 
-        # Target (from first model)
-        counts_ds = payloads[0]["counts_ds"]
-        bins_ds = payloads[0]["bins"]
-        _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
+    # Process Global
+    if common_g:
+        _print_file_list(f"Found {len(common_g)} common global histogram files", common_g)
+        for base in common_g:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-        # Models
-        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-            counts_ml = pay["counts_ml"]
-            bins_ml = pay["bins"]
-            _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+            # Target (from first model)
+            counts_ds = payloads[0].get("counts_ds", payloads[0].get("counts_true"))
+            if counts_ds is None:
+                counts_ds = payloads[0].get("densities_true")
 
-        var = _clean_var_from_filename(base, prefix="hist_")
-        date_suffix = extract_date_from_filename(base)
-        ax.set_title(f"Global Histogram — {var}{date_suffix}")
-        ax.set_ylabel("Frequency (log)")
-        ax.set_yscale("log")
-        ax.legend(frameon=False)
-        ax.grid(True, which="both", ls="--", alpha=0.4)
+            bins_ds = payloads[0].get("bins", payloads[0].get("edges"))
 
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        plt.close(fig)
-        c.success(f"Saved {out_png.relative_to(out_root)}")
+            if counts_ds is not None:
+                counts_ds = np.asarray(counts_ds)
+                if counts_ds.ndim > 1:
+                    counts_ds = counts_ds.flatten()
+            if bins_ds is not None:
+                bins_ds = np.asarray(bins_ds)
+                if bins_ds.ndim > 1:
+                    bins_ds = bins_ds.flatten()
 
-    # --- Latitude Bands Histograms ---
-    # Availability report (always display)
-    per_model, _, uni = _scan_model_sets(models, "histograms/hist_*latbands*.npz")
-    # Filter out global histograms from this scan
-    per_model = [{f for f in s if "global" not in f} for s in per_model]
-    uni = {f for f in uni if "global" not in f}
+            _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
 
-    _report_missing("histograms (latbands)", models, labels, per_model, uni)
-    common = _common_files(models, str(src_rel / "hist_*latbands*.npz"))
-    common = [f for f in common if "global" not in f]
+            # Models
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                counts_ml = pay.get("counts_ml", pay.get("counts_pred"))
+                if counts_ml is None:
+                    counts_ml = pay.get("densities_pred")
 
+                bins_ml = pay.get("bins", pay.get("edges"))
+
+                if counts_ml is not None:
+                    counts_ml = np.asarray(counts_ml)
+                    if counts_ml.ndim > 1:
+                        counts_ml = counts_ml.flatten()
+                if bins_ml is not None:
+                    bins_ml = np.asarray(bins_ml)
+                    if bins_ml.ndim > 1:
+                        bins_ml = bins_ml.flatten()
+
+                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+
+            var = _clean_var_from_filename(base, prefix="hist_")
+            date_suffix = extract_date_from_filename(base)
+            ax.set_title(f"Global Histogram — {var}{date_suffix}")
+            ax.set_ylabel("Frequency (log)")
+            ax.set_yscale("log")
+            ax.legend(frameon=False)
+            ax.grid(True, which="both", ls="--", alpha=0.4)
+
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.tight_layout()
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            plt.close(fig)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+
+    # Process Latbands
     if common:
+        _print_file_list(f"Found {len(common)} common latbands histogram files", common)
+
         for base in common:
             payloads = [_load_npz(m / src_rel / base) for m in models]
             units = payloads[0].get("units")
@@ -949,114 +1130,142 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
     dst = _ensure_dir(out_root / "wd_kde")
     colors = sns.color_palette("tab10", n_colors=len(models))
 
+    # Availability report
+    patterns = [
+        "wd_kde/wd_kde_*global*.npz",
+        "wd_kde/wd_kde_*latbands*.npz",
+        "wd_kde/wd_kde_wasserstein_averaged_*.csv",
+    ]
+    total_per_model: list[set[str]] = [set() for _ in models]
+    total_union = set()
+
+    for pat in patterns:
+        pm, _, uni = _scan_model_sets(models, pat)
+        for i, s in enumerate(pm):
+            total_per_model[i].update(s)
+        total_union.update(uni)
+
+    _report_missing("wd_kde", models, labels, total_per_model, total_union)
+
+    results = {}
+
     # --- Global KDE ---
-    per_model_g, inter_g, uni_g = _scan_model_sets(models, "wd_kde/wd_kde_*global*.npz")
-    _report_missing("wd_kde (global)", models, labels, per_model_g, uni_g)
     common_g = _common_files(models, str(src_rel / "wd_kde_*global*.npz"))
-
-    for base in common_g:
-        payloads = [_load_npz(m / src_rel / base) for m in models]
-        units = payloads[0].get("units")
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-
-        # Target (from first model)
-        x_ds = payloads[0]["x"]
-        kde_ds = payloads[0]["kde_ds"]
-        ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
-
-        # Models
-        for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-            x_ml = pay["x"]
-            kde_ml = pay["kde_ml"]
-            ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
-
-        var = _clean_var_from_filename(base, prefix="wd_kde_")
-        date_suffix = extract_date_from_filename(base)
-        ax.set_title(f"Global Normalized KDE — {var}{date_suffix}")
-        if units:
-            ax.set_xlabel(str(units))
-        ax.legend()
-
-        out_png = dst / base.replace(".npz", "_compare.png")
-        fig.savefig(out_png, bbox_inches="tight")
-        plt.close(fig)
-        c.success(f"Saved {out_png.relative_to(out_root)}")
+    results["KDE Plots (Global)"] = len(common_g)
 
     # --- Latitude Bands KDE ---
-    # Availability report (always display)
-    per_model, inter, uni = _scan_model_sets(models, "wd_kde/wd_kde_*latbands*.npz")
-    _report_missing("wd_kde (latbands)", models, labels, per_model, uni)
     common = _common_files(models, str(src_rel / "wd_kde_*latbands*.npz"))
-    if not common:
+    results["KDE Plots (Latbands)"] = len(common)
+
+    # Wasserstein
+    common_w = _common_files(models, str(src_rel / "wd_kde_wasserstein_averaged_*.csv"))
+    results["Wasserstein Metrics"] = 1 if common_w else 0
+
+    _report_checklist("wd_kde", results)
+
+    if not common and not common_g:
         c.warn("No common WD KDE files found. Skipping plots.")
         return
 
-    # colors already defined
-    for base in common:
-        payloads = [_load_npz(m / src_rel / base) for m in models]
-        units = payloads[0].get("units")
-        # Assume each payload carries arrays of object dtype per band
-        pos_x0 = payloads[0]["pos_x"]
-        n_rows = len(pos_x0)
-        fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
-        # South (right)
-        for j in range(n_rows):
-            ax = axs[j, 1]
-            x_ds = payloads[0]["neg_x"][j]
-            kde_ds = payloads[0]["neg_kde_ds"][j]
+    # Process Global
+    if common_g:
+        _print_file_list(f"Found {len(common_g)} common global KDE files", common_g)
+        for base in common_g:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+
+            # Target (from first model)
+            x_ds = payloads[0]["x"]
+            kde_ds = payloads[0]["kde_ds"]
             ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
 
+            # Models
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                ax.plot(
-                    pay["neg_x"][j],
-                    pay["neg_kde_ml"][j],
-                    color=colors[i],
-                    label=lab,
-                )
-            lat_min = float(payloads[0]["neg_lat_min"][j])
-            lat_max = float(payloads[0]["neg_lat_max"][j])
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
-            if units:
+                x_ml = pay["x"]
+                kde_ml = pay["kde_ml"]
+                ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
+
+            var = _clean_var_from_filename(base, prefix="wd_kde_")
+            date_suffix = extract_date_from_filename(base)
+            ax.set_title(f"Global Normalized KDE — {var}{date_suffix}")
+            if units := payloads[0].get("units"):
                 ax.set_xlabel(str(units))
+            ax.legend()
 
-        # North (left)
-        for j in range(n_rows):
-            ax = axs[j, 0]
-            x_ds = payloads[0]["pos_x"][j]
-            kde_ds = payloads[0]["pos_kde_ds"][j]
-            ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
+            out_png = dst / base.replace(".npz", "_compare.png")
+            fig.savefig(out_png, bbox_inches="tight")
+            plt.close(fig)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
 
-            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                ax.plot(
-                    pay["pos_x"][j],
-                    pay["pos_kde_ml"][j],
-                    color=colors[i],
-                    label=lab,
+    # Process Latbands
+    if common:
+        _print_file_list(f"Found {len(common)} common latbands KDE files", common)
+        # colors already defined
+        for base in common:
+            payloads = [_load_npz(m / src_rel / base) for m in models]
+            units = payloads[0].get("units")
+            # Assume each payload carries arrays of object dtype per band
+            pos_x0 = payloads[0]["pos_x"]
+            n_rows = len(pos_x0)
+            fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=160)
+            # South (right)
+            for j in range(n_rows):
+                ax = axs[j, 1]
+                x_ds = payloads[0]["neg_x"][j]
+                kde_ds = payloads[0]["neg_kde_ds"][j]
+                ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
+
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    ax.plot(
+                        pay["neg_x"][j],
+                        pay["neg_kde_ml"][j],
+                        color=colors[i],
+                        label=lab,
+                    )
+                lat_min = float(payloads[0]["neg_lat_min"][j])
+                lat_max = float(payloads[0]["neg_lat_max"][j])
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
+                if units:
+                    ax.set_xlabel(str(units))
+
+            # North (left)
+            for j in range(n_rows):
+                ax = axs[j, 0]
+                x_ds = payloads[0]["pos_x"][j]
+                kde_ds = payloads[0]["pos_kde_ds"][j]
+                ax.plot(x_ds, kde_ds, color=COLOR_GROUND_TRUTH, lw=2.0, label="Target")
+
+                for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    ax.plot(
+                        pay["pos_x"][j],
+                        pay["pos_kde_ml"][j],
+                        color=colors[i],
+                        label=lab,
+                    )
+                lat_min = float(payloads[0]["pos_lat_min"][j])
+                lat_max = float(payloads[0]["pos_lat_max"][j])
+                ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
+                if units:
+                    ax.set_xlabel(str(units))
+
+            handles, labels_leg = axs[0, 0].get_legend_handles_labels()
+            if handles:
+                fig.legend(
+                    handles[: 1 + len(models)],
+                    labels_leg[: 1 + len(models)],
+                    loc="lower center",
+                    ncol=min(6, 1 + len(models)),
                 )
-            lat_min = float(payloads[0]["pos_lat_min"][j])
-            lat_max = float(payloads[0]["pos_lat_max"][j])
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
-            if units:
-                ax.set_xlabel(str(units))
+            plt.tight_layout(rect=(0, 0.05, 1, 1))
+            # Extract variable/level part.
+            var = _clean_var_from_filename(base, prefix="wd_kde_")
+            date_suffix = extract_date_from_filename(base)
 
-        handles, labels_leg = axs[0, 0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles[: 1 + len(models)],
-                labels_leg[: 1 + len(models)],
-                loc="lower center",
-                ncol=min(6, 1 + len(models)),
-            )
-        plt.tight_layout(rect=(0, 0.05, 1, 1))
-        # Extract variable/level part.
-        var = _clean_var_from_filename(base, prefix="wd_kde_")
-        date_suffix = extract_date_from_filename(base)
-
-        fig.suptitle(f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02)
-        out_png = dst / base.replace(".npz", "_compare.png")
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        c.success(f"Saved {out_png.relative_to(out_root)}")
-        plt.close(fig)
+            fig.suptitle(f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02)
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+            plt.close(fig)
 
     # Combine averaged Wasserstein summary across models if present
     frames_w: list[pd.DataFrame] = []
@@ -1573,6 +1782,29 @@ def intercompare_deterministic_metrics(
                 df["model"] = lab
                 df = df.rename(columns={lt_col: "lead_time"})
 
+                # If variable column is missing, try to infer from filename
+                if "variable" not in df.columns:
+                    # Try to extract variable from filename
+                    # Pattern: crps_line_<var>_by_lead...
+                    fname = f.name
+                    if fname.startswith("crps_line_"):
+                        # Remove prefix
+                        rest = fname[len("crps_line_") :]
+                        # Remove suffix starting with _by_lead
+                        if "_by_lead" in rest:
+                            var_name = rest.split("_by_lead")[0]
+                            df["variable"] = var_name
+                    elif fname.startswith("crps_summary_"):
+                        # Remove prefix
+                        rest = fname[len("crps_summary_") :]
+                        # Remove suffix starting with _per_lead
+                        if "_per_lead" in rest:
+                            var_name = rest.split("_per_lead")[0]
+                            df["variable"] = var_name
+
+                if "variable" not in df.columns:
+                    continue
+
                 melted = df.melt(
                     id_vars=["model", "variable", "lead_time"],
                     value_vars=metric_cols,
@@ -1622,32 +1854,63 @@ def intercompare_probabilistic(
     models: list[Path], labels: list[str], out_root: Path, max_crps_map_panels: int = 4
 ) -> None:
     """Combine Probabilistic metrics (CRPS, Spread/Error) from multiple models."""
+
     dst_prob = _ensure_dir(out_root / "probabilistic")
 
-    # Availability report
-    per_model, _, uni = _scan_model_sets(models, "probabilistic/crps_summary*.csv")
-    _report_missing("probabilistic_metrics", models, labels, per_model, uni)
+    # --- 1. Unified Input Availability Report ---
+    patterns = [
+        "probabilistic/crps_summary*.csv",
+        "probabilistic/crps_map_*.npz",
+        "probabilistic/spread_skill_ratio*.csv",
+        "probabilistic/pit_hist*.npz",
+    ]
+
+    total_per_model: list[set[str]] = [set() for _ in models]
+    total_union = set()
+
+    for pat in patterns:
+        pm, _, uni = _scan_model_sets(models, pat)
+        for i, s in enumerate(pm):
+            total_per_model[i].update(s)
+        total_union.update(uni)
+
+    _report_missing("probabilistic", models, labels, total_per_model, total_union)
 
     results = {}
-    all_prob = _common_files(models, "probabilistic/crps_summary*.csv")
-    results["Probabilistic Metrics"] = 1 if all_prob else 0
 
-    # Ignored
-    init_time = [f for f in all_prob if "init_time" in f]
-    lead_time = [f for f in all_prob if "per_lead_time" in f]
-    if init_time:
-        results["Probabilistic Init Time (Ignored)"] = len(init_time)
-    if lead_time:
-        results["Probabilistic Lead Time (Ignored)"] = len(lead_time)
+    # Pre-calculate availability for checklist
+    # CRPS Summary
+    summary_files = _common_files(models, "probabilistic/crps_summary*.csv")
+    results["CRPS Summary"] = 1 if summary_files else 0
 
-    _report_checklist("probabilistic_metrics", results)
+    # Temporal Metrics (approximate check)
+    temp_files = []
+    for m in models:
+        temp_files.extend(list((m / "probabilistic").glob("crps_summary*per_lead_time*.csv")))
+        temp_files.extend(list((m / "probabilistic").glob("crps_line*by_lead*.csv")))
+        temp_files.extend(list((m / "probabilistic").glob("pit_hist*by_lead*.csv")))
+    results["Temporal Metrics"] = 1 if temp_files else 0
 
+    # CRPS Maps
+    common_maps = _common_files(models, "probabilistic/crps_map_*.npz")
+    results["CRPS Maps"] = len(common_maps)
+
+    # PIT Histograms
+    common_pit = _common_files(models, "probabilistic/pit_hist*.npz")
+    results["PIT Histograms"] = len(common_pit)
+
+    # Spread Skill
+    common_ss = _common_files(models, "probabilistic/spread_skill_ratio*.csv")
+    results["Spread Skill Ratio"] = 1 if common_ss else 0
+
+    _report_checklist("probabilistic", results)
+
+    # --- 2. CRPS Summary (Averaged & Per-Level) ---
     # Report common files found
     prob_csv = _common_files(models, "probabilistic/crps_summary*.csv")
     if prob_csv:
         _print_file_list(f"Found {len(prob_csv)} common probabilistic metric files", prob_csv)
 
-    # 1) Combine standard Probabilistic metrics (averaged)
     frames: list[pd.DataFrame] = []
     frames_lvl: list[pd.DataFrame] = []
 
@@ -1700,6 +1963,7 @@ def intercompare_probabilistic(
             out_csv = dst_prob / "crps_summary_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
+            results["CRPS Summary"] = 1
 
     if frames_lvl:
         combined_lvl = pd.concat(frames_lvl, ignore_index=True)
@@ -1707,14 +1971,16 @@ def intercompare_probabilistic(
             out_csv = dst_prob / "crps_summary_per_level_combined.csv"
             combined_lvl.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
+            results["CRPS Summary (Per Level)"] = 1
 
-    # 2) Combine per-lead-time CSV metrics (e.g. CRPS vs lead_time)
+    # --- 3. Temporal Metrics ---
     temporal_rows: list[dict] = []
     for lab, m in zip(labels, models, strict=False):
         # Find all per-lead CSVs
         # Look for both legacy summary files and new line-plot data files
         csv_files = list((m / "probabilistic").glob("crps_summary*per_lead_time*.csv"))
         csv_files.extend((m / "probabilistic").glob("crps_line*by_lead*.csv"))
+        csv_files.extend((m / "probabilistic").glob("pit_hist*by_lead*.csv"))
 
         for f in csv_files:
             try:
@@ -1746,6 +2012,38 @@ def intercompare_probabilistic(
                 df["model"] = lab
                 df = df.rename(columns={lt_col: "lead_time"})
 
+                # If variable column is missing, try to infer from filename
+                if "variable" not in df.columns:
+                    # Try to extract variable from filename
+                    # Pattern: crps_line_<var>_by_lead...
+                    fname = f.name
+                    if fname.startswith("crps_line_"):
+                        # Remove prefix
+                        rest = fname[len("crps_line_") :]
+                        # Remove suffix starting with _by_lead
+                        if "_by_lead" in rest:
+                            var_name = rest.split("_by_lead")[0]
+                            df["variable"] = var_name
+                    elif fname.startswith("crps_summary_"):
+                        # Remove prefix
+                        rest = fname[len("crps_summary_") :]
+                        # Remove suffix starting with _per_lead
+                        if "_per_lead" in rest:
+                            var_name = rest.split("_per_lead")[0]
+                            df["variable"] = var_name
+                    elif fname.startswith("pit_hist_"):
+                        # Remove prefix
+                        rest = fname[len("pit_hist_") :]
+                        # Remove suffix starting with _by_lead
+                        if "_by_lead" in rest:
+                            var_name = rest.split("_by_lead")[0]
+                            if "_uniform_diff" in var_name:
+                                var_name = var_name.split("_uniform_diff")[0]
+                            df["variable"] = var_name
+
+                if "variable" not in df.columns:
+                    continue
+
                 melted = df.melt(
                     id_vars=["model", "variable", "lead_time"],
                     value_vars=metric_cols,
@@ -1763,6 +2061,7 @@ def intercompare_probabilistic(
             out_csv = dst_prob / "temporal_metrics_combined.csv"
             temporal_df.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
+            results["Temporal Metrics"] = 1
 
             # Plot: group by lead_time and model
             pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
@@ -1790,14 +2089,9 @@ def intercompare_probabilistic(
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
+                    results["Temporal Plots"] = results.get("Temporal Plots", 0) + 1
 
-    # 3) CRPS Maps (if available)
-    # Pattern: crps_map_*.npz
-    # We reuse intercompare_maps logic but specific to CRPS maps
-    # Availability report
-    per_model_map, _, uni_map = _scan_model_sets(models, "probabilistic/crps_map_*.npz")
-    _report_missing("crps_maps", models, labels, per_model_map, uni_map)
-
+    # --- 4. CRPS Maps ---
     common_maps = _common_files(models, "probabilistic/crps_map_*.npz")
     if common_maps:
         _print_file_list(f"Found {len(common_maps)} common CRPS map files", common_maps)
@@ -1818,10 +2112,10 @@ def intercompare_probabilistic(
 
             lats = payloads[0].get("latitude")
             lons = payloads[0].get("longitude")
-            var_name = payloads[0].get("variable")
+            map_var_name = payloads[0].get("variable")
             units = payloads[0].get("units")
 
-            if lats is None or lons is None:
+            if lats is None or lons is None or map_var_name is None:
                 continue
 
             # Plotting
@@ -1872,8 +2166,8 @@ def intercompare_probabilistic(
                 else:
                     cbar.set_label("CRPS")
 
-            if var_name:
-                title_base = f"CRPS Map — {format_variable_name(str(var_name))}"
+            if map_var_name:
+                title_base = f"CRPS Map — {format_variable_name(str(map_var_name))}"
             else:
                 title_base = "CRPS Map"
             date_suffix = extract_date_from_filename(key)
@@ -1883,24 +2177,117 @@ def intercompare_probabilistic(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+            results["CRPS Maps"] = results.get("CRPS Maps", 0) + 1
+
+    # --- 5. Spread Skill Ratio (SSR) ---
+    frames_ssr: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        candidates = sorted((m / "probabilistic").glob("spread_skill_ratio*.csv"))
+        if candidates:
+            try:
+                df = pd.read_csv(candidates[0])
+                df.insert(0, "model", lab)
+                frames_ssr.append(df)
+            except Exception:
+                pass
+
+    if frames_ssr:
+        combined_ssr = pd.concat(frames_ssr, ignore_index=True)
+        if combined_ssr["model"].nunique() >= 2:
+            out_csv = dst_prob / "spread_skill_ratio_combined.csv"
+            combined_ssr.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            results["Spread Skill Ratio"] = 1
+
+    # --- 6. CRPS Ensemble ---
+    frames_ens: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        candidates = sorted((m / "probabilistic").glob("crps_ensemble*.csv"))
+        if candidates:
+            try:
+                df = pd.read_csv(candidates[0])
+                df.insert(0, "model", lab)
+                frames_ens.append(df)
+            except Exception:
+                pass
+
+    if frames_ens:
+        combined_ens = pd.concat(frames_ens, ignore_index=True)
+        if combined_ens["model"].nunique() >= 2:
+            out_csv = dst_prob / "crps_ensemble_combined.csv"
+            combined_ens.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            results["CRPS Ensemble"] = 1
+
+    # --- 7. PIT Histograms ---
+    common_pit = _common_files(models, "probabilistic/pit_hist*.npz")
+    if common_pit:
+        _print_file_list(f"Found {len(common_pit)} common PIT histogram files", common_pit)
+        for base in common_pit:
+            # Skip if it's a grid file or data file that we don't want to plot directly
+            if "grid" in base or "data" in base:
+                continue
+
+            payloads = [_load_npz(m / "probabilistic" / base) for m in models]
+
+            # Check if we have counts and bins/edges
+            if not all("counts" in p and ("bins" in p or "edges" in p) for p in payloads):
+                continue
+
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+
+            # Plot ideal uniform line (dashed)
+            # Assuming normalized counts or we normalize them
+            # Usually PIT histograms are normalized so that area is 1 or mean height is 1
+
+            colors = sns.color_palette("tab10", n_colors=len(models))
+
+            for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                counts = pay["counts"]
+                bins = pay.get("bins", pay.get("edges"))
+
+                # Normalize if needed? Usually they are raw counts.
+                # Let's plot density
+                width = np.diff(bins)
+                density = counts / (counts.sum() * width)
+
+                # Plot as step
+                ax.stairs(density, bins, label=lab, color=colors[i], linewidth=2)
+
+            # Add reference line at 1.0
+            ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal")
+
+            var = _clean_var_from_filename(base, prefix="pit_hist_")
+            ax.set_title(f"PIT Histogram — {var}")
+            ax.set_ylabel("Probability Density")
+            ax.set_xlabel("PIT Value")
+            ax.set_ylim(bottom=0)
+            ax.legend(frameon=False)
+            ax.grid(True, linestyle="--", alpha=0.4)
+
+            out_png = dst_prob / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+            plt.close(fig)
+            # results["PIT Histograms"] = results.get("PIT Histograms", 0) + 1
 
 
 def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Combine SSIM metrics from multiple models."""
     # Availability report
-    per_model, _, uni = _scan_model_sets(models, "ssim/ssim_ssim_*.csv")
-    _report_missing("ssim_ssim", models, labels, per_model, uni)
+    per_model, _, uni = _scan_model_sets(models, "ssim/ssim_*.csv")
+    _report_missing("ssim", models, labels, per_model, uni)
 
     results = {}
-    all_multi = _common_files(models, "ssim/ssim_ssim_*.csv")
+    all_multi = _common_files(models, "ssim/ssim_*.csv")
 
     # Check for any files
     results["SSIM Summary"] = 1 if all_multi else 0
 
-    _report_checklist("ssim_ssim", results)
+    _report_checklist("ssim", results)
 
     # Report common files found
-    multi_csv = _common_files(models, "ssim/ssim_ssim_*.csv")
+    multi_csv = _common_files(models, "ssim/ssim_*.csv")
     if multi_csv:
         _print_file_list(f"Found {len(multi_csv)} common SSIM metric files", multi_csv)
 
@@ -1909,7 +2296,7 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
     frames: list[pd.DataFrame] = []
 
     for lab, m in zip(labels, models, strict=False):
-        candidates = sorted((m / "ssim").glob("ssim_ssim_*.csv"))
+        candidates = sorted((m / "ssim").glob("ssim_*.csv"))
         # Prefer ensmean or det
         f = next(
             (c for c in candidates if "ensmean" in c.name or "det" in c.name),

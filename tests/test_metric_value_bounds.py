@@ -147,7 +147,9 @@ def test_vertical_profiles_nmae_bounds(tmp_path: Path, monkeypatch):
         plotting_cfg={"output_mode": "npz"},
         select_cfg={},
     )
-    npz = next((out / "vertical_profiles").glob("vprof_nmae_temperature_multi_combined_*.npz"))
+    npz = next(
+        (out / "vertical_profiles").glob("vertical_profiles_nmae_temperature_multi_combined_*.npz")
+    )
     data = np.load(npz)
     # Arrays may include zeros for NaN fills; ensure within [0,100]
     for key in ("nmae_neg", "nmae_pos"):

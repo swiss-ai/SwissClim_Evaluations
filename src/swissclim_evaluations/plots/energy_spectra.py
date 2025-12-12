@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,6 +11,7 @@ import xarray as xr
 from matplotlib.lines import Line2D
 
 from ..aggregations import latitude_weights
+from ..dask_utils import compute_jobs
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -21,6 +21,8 @@ from ..helpers import (
     format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
+    save_data,
+    save_figure as save_fig_helper,
 )
 
 EARTH_RADIUS_KM = 6371.0
@@ -297,11 +299,11 @@ def _plot_single_spectrum(
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
     if save_figure and out_path is not None:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(out_path, bbox_inches="tight", dpi=200)
+        save_fig_helper(fig, out_path)
     if save_plot_data and out_path is not None:
-        np.savez(
-            out_path.with_suffix(".npz"),
+        np_path = out_path.with_suffix(".npz")
+        save_data(
+            np_path,
             wavenumber=wavenumber,
             spectrum_target=arr_target,
             spectrum_prediction=arr_pred,
@@ -459,25 +461,18 @@ def _plot_energy_spectra(
         )
 
     # Compute all
-    lazy_all = []
-    for job in jobs:
-        lazy_all.append(job["t_lazy"])
-        lazy_all.append(job["p_lazy"])
-        lazy_all.append(job["lsd_lazy"])
-
-    results = dask.compute(*lazy_all) if lazy_all else []
+    compute_jobs(
+        jobs,
+        key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
+    )
 
     # Distribute and plot
-    ptr = 0
     wn = spectrum_target["wavenumber"].values
 
     for job in jobs:
-        arr_t = results[ptr]
-        ptr += 1
-        arr_p = results[ptr]
-        ptr += 1
-        lsd_val = float(results[ptr])
-        ptr += 1
+        arr_t = job["arr_t"]
+        arr_p = job["arr_p"]
+        lsd_val = float(job["lsd_val"])
 
         _plot_single_spectrum(
             wn,
@@ -625,6 +620,12 @@ def run(
     # Initialize holders used in both branches
     lsd_long_rows: list[dict[str, float | str]] = []
     lsd_banded_long_rows: list[dict[str, float | str]] = []
+
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_npz = mode in ("npz", "both")
+    save_plot = mode in ("plot", "both")
+    dpi = int((plotting_cfg or {}).get("dpi", 200))
+
     if not is_multi_lead:
         summary_rows: list[dict[str, Any]] = []
         # Collect LSD-by-lead for optional line plots/CSVs
@@ -688,6 +689,22 @@ def run(
                 )
                 df_banded.to_csv(out_csv_banded, index=False)
                 print(f"[energy_spectra] saved {out_csv_banded}")
+
+            # Generate plots and NPZ for 2D variables
+            if save_plot or save_npz:
+                for var in variables_2d:
+                    _plot_energy_spectra(
+                        tgt,
+                        pred,
+                        str(var),
+                        None,
+                        section_output / "placeholder",
+                        dpi=dpi,
+                        save_plot_data=save_npz,
+                        save_figure=save_plot,
+                        override_ensemble_token=ens_token,
+                    )
+
     # 3D variables (per-level)
     variables_3d = []
     if "level" in tgt.dims:
@@ -796,6 +813,22 @@ def run(
             )
             df_3d_avg.to_csv(out_csv_3d_avg, index=False)
             print(f"[energy_spectra] saved {out_csv_3d_avg}")
+
+        # Generate plots and NPZ for 3D variables per level
+        if (save_plot or save_npz) and not is_multi_lead:
+            for var in variables_3d:
+                for lvl in levels:
+                    _plot_energy_spectra(
+                        tgt,
+                        pred,
+                        str(var),
+                        int(lvl),
+                        section_output / "placeholder",
+                        dpi=dpi,
+                        save_plot_data=save_npz,
+                        save_figure=save_plot,
+                        override_ensemble_token=ens_token,
+                    )
 
     # Optional: per-member NPZ spectrum exports when requested
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
@@ -909,8 +942,7 @@ def run(
                     ext="png",
                 )
                 plt.tight_layout()
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[energy_spectra] saved {out_png}")
+                save_fig_helper(fig, out_png)
                 plt.close(fig)
 
             _plot_spec_img(Zt, "target")
@@ -948,8 +980,7 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[energy_spectra] saved {out_png}")
+            save_fig_helper(fig, out_png)
             plt.close(fig)
 
             # Also compute LSD versus lead_time and emit one plot per variable
@@ -983,7 +1014,7 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            save_fig_helper(fig, out_png)
             plt.close(fig)
 
             # Save bundle NPZ for programmatic use
@@ -997,7 +1028,7 @@ def run(
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(
+            save_data(
                 out_npz,
                 lead_hours=x_hours,
                 wavenumber=kvals,
@@ -1006,7 +1037,6 @@ def run(
                 log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
                 variable=str(var),
             )
-            print(f"[energy_spectra] saved {out_npz}")
 
             # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
             from matplotlib import gridspec as _gridspec
@@ -1110,9 +1140,8 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_tripanel, bbox_inches="tight", dpi=200)
+            save_fig_helper(fig, out_tripanel)
             plt.close(fig)
-            print(f"[energy_spectra] saved {out_tripanel}")
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:

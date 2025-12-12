@@ -3,21 +3,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-import dask
-import dask.array as dsa
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from ..dask_utils import as_float_array, compute_jobs, dask_histogram, to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
+    format_level_label,
     format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
+    save_data,
+    save_figure,
+    subsample_values,
 )
 
 
@@ -75,56 +78,6 @@ def run(
         print(f"[histograms] Processing {len(variables_3d)} 3D variables (per-level).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
-    # Run-scope helper for paired subsampling, visible to all inner blocks
-    def _subsample_values(da: xr.DataArray, k: int | None, seed: int) -> np.ndarray:
-        if k is None:
-            arr = np.asarray(da.compute().values).ravel()
-            return arr[np.isfinite(arr)]
-        size = int(getattr(da, "size", 0) or 0)
-        if size == 0:
-            return np.array([], dtype=float)
-        if size <= k:
-            arr = np.asarray(da.compute().values).ravel()
-            return arr[np.isfinite(arr)]
-        dims = list(da.dims)
-        nd = max(1, len(dims))
-        frac = (k / float(size)) ** (1.0 / nd)
-        rng = np.random.default_rng(seed)
-        indexers: dict[str, Any] = {}
-        for d in dims:
-            n = int(da.sizes.get(str(d), 1))
-            take = max(1, int(np.ceil(frac * n)))
-            take = min(take, n)
-            idx = rng.choice(n, size=take, replace=False)
-            idx.sort()
-            indexers[str(d)] = np.asarray(idx)
-        sub = da.isel(indexers)
-        arr = np.asarray(sub.compute().values).ravel()
-        return arr[np.isfinite(arr)]
-
-    # Lazy helpers for batch computation
-    def _subsample_lazy(da: xr.DataArray, k: int | None, seed: int):
-        if k is None:
-            return da
-        size = int(getattr(da, "size", 0) or 0)
-        if size == 0:
-            return None
-        if size <= k:
-            return da
-        dims = list(da.dims)
-        nd = max(1, len(dims))
-        frac = (k / float(size)) ** (1.0 / nd)
-        rng = np.random.default_rng(seed)
-        indexers: dict[str, Any] = {}
-        for d in dims:
-            n = int(da.sizes.get(str(d), 1))
-            take = max(1, int(np.ceil(frac * n)))
-            take = min(take, n)
-            idx = rng.choice(n, size=take, replace=False)
-            idx.sort()
-            indexers[str(d)] = np.asarray(idx)
-        return da.isel(indexers)
-
     # Helper to choose common bin edges without loading full arrays
     def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
         # Fast guard: empty selections → default symmetric range
@@ -144,22 +97,6 @@ def run(
             return None
         both = xr.concat([da1, da2], dim="_t")
         return both.quantile([0.001, 0.999], skipna=True)
-
-    def _dask_hist(da: xr.DataArray, edges: np.ndarray):
-        data = getattr(da, "data", da)
-        darr = dsa.asarray(data)
-        darr = darr.ravel()
-        darr = darr[~dsa.isnan(darr)]
-        counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
-        return counts
-
-    def _dask_hist_lazy(da: xr.DataArray, edges: np.ndarray):
-        data = getattr(da, "data", da)
-        darr = dsa.asarray(data)
-        darr = darr.ravel()
-        darr = darr[~dsa.isnan(darr)]
-        counts = dsa.histogram(darr, bins=np.asarray(edges))[0]
-        return counts
 
     def _plot_histograms_by_lead(
         da_target_var: xr.DataArray,
@@ -195,8 +132,8 @@ def run(
 
         # Common edges for the whole variable (to keep x-axis consistent)
         # Use subsampling for edge determination if configured, to avoid full data scan
-        sub_t_edges = _subsample_lazy(da_target_var, max_samples, base_seed)
-        sub_p_edges = _subsample_lazy(da_pred_var, max_samples, base_seed)
+        sub_t_edges = subsample_values(da_target_var, max_samples, base_seed, lazy=True)
+        sub_p_edges = subsample_values(da_pred_var, max_samples, base_seed, lazy=True)
         # Fallback to full array if subsample returned None (empty)
         if sub_t_edges is None:
             sub_t_edges = da_target_var
@@ -232,57 +169,39 @@ def run(
 
             if max_samples is not None:
                 seed = base_seed + idx * 100
-                job["sub_true_lazy"] = _subsample_lazy(da_t, max_samples, seed)
-                job["sub_pred_lazy"] = _subsample_lazy(da_p, max_samples, seed)
+                job["sub_true_lazy"] = subsample_values(da_t, max_samples, seed, lazy=True)
+                job["sub_pred_lazy"] = subsample_values(da_p, max_samples, seed, lazy=True)
             else:
-                job["hist_true_lazy"] = _dask_hist_lazy(da_t, edges)
-                job["hist_pred_lazy"] = _dask_hist_lazy(da_p, edges)
+                job["hist_true_lazy"] = dask_histogram(da_t, edges)
+                job["hist_pred_lazy"] = dask_histogram(da_p, edges)
 
             jobs.append(job)
 
         # Compute
-        lazy_all = []
+        compute_jobs(
+            jobs,
+            key_map={
+                "sub_true_lazy": "sub_true",
+                "sub_pred_lazy": "sub_pred",
+                "hist_true_lazy": "counts_ds",
+                "hist_pred_lazy": "counts_ml",
+            },
+            post_process={
+                "sub_true": to_finite_array,
+                "sub_pred": to_finite_array,
+                "counts_ds": as_float_array,
+                "counts_ml": as_float_array,
+            },
+        )
+
+        # Distribute results (post-processing for subsamples)
         for job in jobs:
             if max_samples is not None:
-                if job["sub_true_lazy"] is not None:
-                    lazy_all.append(job["sub_true_lazy"])
-                if job["sub_pred_lazy"] is not None:
-                    lazy_all.append(job["sub_pred_lazy"])
-            else:
-                lazy_all.extend([job["hist_true_lazy"], job["hist_pred_lazy"]])
-
-        results = dask.compute(*lazy_all) if lazy_all else []
-
-        # Distribute results
-        ptr = 0
-        for job in jobs:
-            if max_samples is not None:
-                if job["sub_true_lazy"] is not None:
-                    sub_true = results[ptr]
-                    ptr += 1
-                    job["sub_true"] = np.asarray(sub_true).ravel()
-                    job["sub_true"] = job["sub_true"][np.isfinite(job["sub_true"])]
-                else:
-                    job["sub_true"] = np.array([], dtype=float)
-
-                if job["sub_pred_lazy"] is not None:
-                    sub_pred = results[ptr]
-                    ptr += 1
-                    job["sub_pred"] = np.asarray(sub_pred).ravel()
-                    job["sub_pred"] = job["sub_pred"][np.isfinite(job["sub_pred"])]
-                else:
-                    job["sub_pred"] = np.array([], dtype=float)
-
                 # Compute histogram on in-memory subsamples
                 counts_ds, _ = np.histogram(job["sub_true"], bins=edges)
                 counts_ml, _ = np.histogram(job["sub_pred"], bins=edges)
                 job["counts_ds"] = counts_ds
                 job["counts_ml"] = counts_ml
-            else:
-                job["counts_ds"] = results[ptr].astype(float)
-                ptr += 1
-                job["counts_ml"] = results[ptr].astype(float)
-                ptr += 1
 
         for job in jobs:
             idx = job["idx"]
@@ -328,7 +247,6 @@ def run(
             axs[i].axis("off")
 
         if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_png = section_output / build_output_filename(
                 metric="histogram_by_lead",
                 variable=variable_name,
@@ -339,9 +257,9 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight")
-            print(f"[histograms] saved {out_png}")
-        plt.close(fig)
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
 
     # Resolve ensemble handling
     resolved_mode = resolve_ensemble_mode("histograms", ensemble_mode, ds_target, ds_prediction)
@@ -405,8 +323,8 @@ def run(
 
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 1
-                job["sub_true_lazy"] = _subsample_lazy(da_true, max_samples, seed)
-                job["sub_pred_lazy"] = _subsample_lazy(da_pred, max_samples, seed)
+                job["sub_true_lazy"] = subsample_values(da_true, max_samples, seed, lazy=True)
+                job["sub_pred_lazy"] = subsample_values(da_pred, max_samples, seed, lazy=True)
             else:
                 job["quantile_lazy"] = _choose_edges_lazy(da_true, da_pred)
 
@@ -431,47 +349,21 @@ def run(
 
             if max_samples is not None:
                 seed = base_seed + (i + 1) * 1000 + (j + 1) * 10 + 2
-                job["sub_true_lazy"] = _subsample_lazy(da_true, max_samples, seed)
-                job["sub_pred_lazy"] = _subsample_lazy(da_pred, max_samples, seed)
+                job["sub_true_lazy"] = subsample_values(da_true, max_samples, seed, lazy=True)
+                job["sub_pred_lazy"] = subsample_values(da_pred, max_samples, seed, lazy=True)
             else:
                 job["quantile_lazy"] = _choose_edges_lazy(da_true, da_pred)
 
             jobs.append(job)
 
         # Step 1: Compute subsamples or quantiles
-        lazy_step1 = []
-        for job in jobs:
-            if max_samples is not None:
-                if job["sub_true_lazy"] is not None:
-                    lazy_step1.append(job["sub_true_lazy"])
-                if job["sub_pred_lazy"] is not None:
-                    lazy_step1.append(job["sub_pred_lazy"])
-            else:
-                if job["quantile_lazy"] is not None:
-                    lazy_step1.append(job["quantile_lazy"])
-
-        results_step1 = dask.compute(*lazy_step1) if lazy_step1 else []
-
-        # Distribute results step 1
-        ptr = 0
-        for job in jobs:
-            if max_samples is not None:
-                if job["sub_true_lazy"] is not None:
-                    sub_true = results_step1[ptr]
-                    ptr += 1
-                    job["sub_true"] = np.asarray(sub_true).ravel()
-                    job["sub_true"] = job["sub_true"][np.isfinite(job["sub_true"])]
-                else:
-                    job["sub_true"] = np.array([], dtype=float)
-
-                if job["sub_pred_lazy"] is not None:
-                    sub_pred = results_step1[ptr]
-                    ptr += 1
-                    job["sub_pred"] = np.asarray(sub_pred).ravel()
-                    job["sub_pred"] = job["sub_pred"][np.isfinite(job["sub_pred"])]
-                else:
-                    job["sub_pred"] = np.array([], dtype=float)
-
+        if max_samples is not None:
+            compute_jobs(
+                jobs,
+                key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
+                post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
+            )
+            for job in jobs:
                 # Calculate edges immediately (fast in memory)
                 if job["sub_true"].size == 0 or job["sub_pred"].size == 0:
                     job["edges"] = np.linspace(-1.0, 1.0, 1001)
@@ -484,10 +376,11 @@ def run(
                     except Exception:
                         qlow, qhigh = -1.0, 1.0
                     job["edges"] = np.linspace(qlow, qhigh, 1001)
-            else:
-                if job["quantile_lazy"] is not None:
-                    q = results_step1[ptr]
-                    ptr += 1
+        else:
+            compute_jobs(jobs, key_map={"quantile_lazy": "quantile_res"})
+            for job in jobs:
+                q = job.get("quantile_res")
+                if q is not None:
                     vmin = float(q.isel(quantile=0).item())
                     vmax = float(q.isel(quantile=1).item())
                     if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
@@ -496,30 +389,24 @@ def run(
                     vmin, vmax = -1.0, 1.0
                 job["edges"] = np.linspace(vmin, vmax, 1001)
 
-        # Step 2: Compute histograms (only for full data mode, subsamples are already in memory)
-        lazy_step2 = []
-        for job in jobs:
-            if max_samples is None:
-                job["hist_true_lazy"] = _dask_hist_lazy(job["da_true"], job["edges"])
-                job["hist_pred_lazy"] = _dask_hist_lazy(job["da_pred"], job["edges"])
-                lazy_step2.extend([job["hist_true_lazy"], job["hist_pred_lazy"]])
+        # Step 2: Compute histograms
+        if max_samples is None:
+            for job in jobs:
+                job["hist_true_lazy"] = dask_histogram(job["da_true"], job["edges"])
+                job["hist_pred_lazy"] = dask_histogram(job["da_pred"], job["edges"])
 
-        results_step2 = dask.compute(*lazy_step2) if lazy_step2 else []
-
-        # Distribute results step 2
-        ptr = 0
-        for job in jobs:
-            if max_samples is not None:
+            compute_jobs(
+                jobs,
+                key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_ml"},
+                post_process={"counts_ds": as_float_array, "counts_ml": as_float_array},
+            )
+        else:
+            for job in jobs:
                 # Compute histogram on in-memory subsamples
                 counts_ds, _ = np.histogram(job["sub_true"], bins=job["edges"])
                 counts_ml, _ = np.histogram(job["sub_pred"], bins=job["edges"])
                 job["counts_ds"] = counts_ds
                 job["counts_ml"] = counts_ml
-            else:
-                job["counts_ds"] = results_step2[ptr].astype(float)
-                ptr += 1
-                job["counts_ml"] = results_step2[ptr].astype(float)
-                ptr += 1
 
         # Plotting
         for job in jobs:
@@ -579,9 +466,11 @@ def run(
 
         # Check for single date
         date_str = extract_date_from_dataset(da_target_var)
+        level_str = format_level_label(level_val if level_val is not None else level_token)
 
         plt.suptitle(
-            f"Distributions by Latitude Bands — {format_variable_name(variable_name)}{date_str}",
+            f"Distributions by Latitude Bands — {format_variable_name(variable_name)}"
+            f"{level_str}{date_str}",
             y=1.02,
         )
 
@@ -597,10 +486,11 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[histograms] saved {out_png}")
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
+
         if save_npz:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_npz = section_output / build_output_filename(
                 metric="hist",
                 variable=variable_name,
@@ -611,7 +501,7 @@ def run(
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(
+            save_data(
                 out_npz,
                 neg_counts=np.array(combined["neg_counts"], dtype=object),
                 neg_bins=np.array(combined["neg_bins"], dtype=object),
@@ -624,8 +514,6 @@ def run(
                 units=units,
                 allow_pickle=True,
             )
-            print(f"[histograms] saved {out_npz}")
-        plt.close(fig)
 
     def _plot_global_hist(
         da_target_var: xr.DataArray,
@@ -634,6 +522,7 @@ def run(
         level_token: str,
         ens_token: str | None,
         lead_time_range: tuple[str, str] | None,
+        level_val: int | float | None = None,
     ) -> None:
         """Plot a single global histogram comparing target vs prediction.
 
@@ -641,33 +530,6 @@ def run(
         - Chooses common bin edges from combined quantiles
         - Saves PNG and NPZ with counts/edges
         """
-
-        # Helper subsampling function (reuse logic inline to avoid nested closures surprises)
-        def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
-            if k is None:
-                arr = np.asarray(da.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-            size = int(getattr(da, "size", 0) or 0)
-            if size == 0:
-                return np.array([], dtype=float)
-            if size <= k:
-                arr = np.asarray(da.compute().values).ravel()
-                return arr[np.isfinite(arr)]
-            dims = list(da.dims)
-            nd = max(1, len(dims))
-            frac = (k / float(size)) ** (1.0 / nd)
-            rng = np.random.default_rng(base_seed + 1337)
-            indexers: dict[str, Any] = {}
-            for d in dims:
-                n = int(da.sizes.get(str(d), 1))
-                take = max(1, int(np.ceil(frac * n)))
-                take = min(take, n)
-                idx = rng.choice(n, size=take, replace=False)
-                idx.sort()
-                indexers[str(d)] = np.asarray(idx)
-            sub = da.isel(indexers)
-            arr = np.asarray(sub.compute().values).ravel()
-            return arr[np.isfinite(arr)]
 
         def _choose_edges_arr(arr1: np.ndarray, arr2: np.ndarray, bins: int = 1000):
             if arr1.size == 0 or arr2.size == 0:
@@ -683,8 +545,8 @@ def run(
 
         # Get paired samples or full arrays
         if max_samples is not None:
-            a_true = _subsample_values(da_target_var, max_samples, base_seed + 9001)
-            a_pred = _subsample_values(da_pred_var, max_samples, base_seed + 9001)
+            a_true = subsample_values(da_target_var, max_samples, base_seed + 9001)
+            a_pred = subsample_values(da_pred_var, max_samples, base_seed + 9001)
         else:
             a_true = np.asarray(da_target_var.compute().values).ravel()
             a_pred = np.asarray(da_pred_var.compute().values).ravel()
@@ -722,39 +584,38 @@ def run(
         )
         units = da_target_var.attrs.get("units", "")
         title_lt = f" — lead {lead_time_range[0]}" if lead_time_range else ""
-        ax.set_title(f"Global histogram {variable_name}{title_lt} ({units})")
+        level_str = format_level_label(level_val if level_val is not None else level_token)
+        ax.set_title(f"Global histogram {variable_name}{level_str}{title_lt} ({units})")
         ax.set_xlabel(variable_name)
         ax.set_ylabel("Density")
         ax.legend(loc="upper right")
         if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_png = section_output / build_output_filename(
-                metric="hist_global",
+                metric="hist",
                 variable=variable_name,
                 level=level_token,
-                qualifier=None,
+                qualifier="global",
                 init_time_range=None,
                 lead_time_range=lead_time_range,
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[histograms] saved {out_png}")
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
+
         if save_npz:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_npz = section_output / build_output_filename(
-                metric="hist_global",
+                metric="hist",
                 variable=variable_name,
                 level=level_token,
-                qualifier="data",
+                qualifier="global_data",
                 init_time_range=None,
                 lead_time_range=lead_time_range,
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(out_npz, counts_true=dens_true, counts_pred=dens_pred, edges=edges)
-            print(f"[histograms] saved {out_npz}")
-        plt.close(fig)
+            save_data(out_npz, counts_true=dens_true, counts_pred=dens_pred, edges=edges)
 
     def _plot_global_hist_gridded(
         da_target_var: xr.DataArray,
@@ -787,15 +648,17 @@ def run(
         jobs = []
 
         # Edge determination job
-        edge_job = {"type": "edges"}
+        edge_job: dict[str, Any] = {"type": "edges"}
         if max_samples:
-            edge_job["sub_t_lazy"] = _subsample_lazy(
-                da_target_var, max_samples // n_leads, base_seed
+            edge_job["sub_t_lazy"] = subsample_values(
+                da_target_var, max_samples // n_leads, base_seed, lazy=True
             )
-            edge_job["sub_p_lazy"] = _subsample_lazy(da_pred_var, max_samples // n_leads, base_seed)
+            edge_job["sub_p_lazy"] = subsample_values(
+                da_pred_var, max_samples // n_leads, base_seed, lazy=True
+            )
         else:
-            edge_job["sub_t_lazy"] = _subsample_lazy(da_target_var, 100000, base_seed)
-            edge_job["sub_p_lazy"] = _subsample_lazy(da_pred_var, 100000, base_seed)
+            edge_job["sub_t_lazy"] = subsample_values(da_target_var, None, base_seed, lazy=True)
+            edge_job["sub_p_lazy"] = subsample_values(da_pred_var, None, base_seed, lazy=True)
         jobs.append(edge_job)
 
         for i, lt in enumerate(leads):
@@ -827,38 +690,16 @@ def run(
                 "da_t": da_t,
                 "da_p": da_p,
             }
-            job["sub_t_lazy"] = _subsample_lazy(da_t, k, seed)
-            job["sub_p_lazy"] = _subsample_lazy(da_p, k, seed)
+            job["sub_t_lazy"] = subsample_values(da_t, k, seed, lazy=True)
+            job["sub_p_lazy"] = subsample_values(da_p, k, seed, lazy=True)
             jobs.append(job)
 
         # Compute all
-        lazy_all = []
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                lazy_all.append(job["sub_t_lazy"])
-            if job["sub_p_lazy"] is not None:
-                lazy_all.append(job["sub_p_lazy"])
-
-        results = dask.compute(*lazy_all) if lazy_all else []
-
-        # Distribute
-        ptr = 0
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                sub_t = results[ptr]
-                ptr += 1
-                job["val_t"] = np.asarray(sub_t).ravel()
-                job["val_t"] = job["val_t"][np.isfinite(job["val_t"])]
-            else:
-                job["val_t"] = np.array([], dtype=float)
-
-            if job["sub_p_lazy"] is not None:
-                sub_p = results[ptr]
-                ptr += 1
-                job["val_p"] = np.asarray(sub_p).ravel()
-                job["val_p"] = job["val_p"][np.isfinite(job["val_p"])]
-            else:
-                job["val_p"] = np.array([], dtype=float)
+        compute_jobs(
+            jobs,
+            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
+            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
+        )
 
         # Calculate edges from edge_job
         edge_job = jobs[0]
@@ -910,7 +751,6 @@ def run(
         plt.suptitle(f"Histograms by Lead Time — {format_variable_name(variable_name)}")
 
         if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_png = section_output / build_output_filename(
                 metric="hist_by_lead",
                 variable=variable_name,
@@ -921,9 +761,9 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[histograms] saved {out_png}")
-        plt.close(fig)
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
 
     # 2D variables
     def _iter_members():
@@ -1002,7 +842,7 @@ def run(
                         tgt_m[variable_name],
                         pred_m[variable_name],
                         str(variable_name),
-                        level_token="",
+                        level_token="surface",
                         ens_token=token,
                         lead_time_range=None,
                     )
@@ -1010,7 +850,7 @@ def run(
                         tgt_m[variable_name],
                         pred_m[variable_name],
                         str(variable_name),
-                        level_token="",
+                        level_token="surface",
                         qualifier="latbands",
                         ens_token=token,
                         lead_time_range=None,
@@ -1024,7 +864,7 @@ def run(
                         tgt_m[variable_name],
                         pred_m[variable_name],
                         str(variable_name),
-                        level_token="",
+                        level_token="surface",
                         ens_token=token,
                         lead_time_range=None,
                     )
@@ -1042,7 +882,7 @@ def run(
                     ds_target[variable_name],
                     ds_prediction[variable_name],
                     str(variable_name),
-                    level_token="",
+                    level_token="surface",
                     ens_token=token,
                     lead_time_range=None,
                 )
@@ -1050,7 +890,7 @@ def run(
                     ds_target[variable_name],
                     ds_prediction[variable_name],
                     str(variable_name),
-                    level_token="",
+                    level_token="surface",
                     qualifier="latbands",
                     ens_token=token,
                     lead_time_range=None,
@@ -1096,8 +936,12 @@ def run(
                     if "lead_time" in da_p.dims:
                         da_p = da_p.isel(lead_time=idx, drop=True)
                     if max_samples is not None:
-                        a_true = _subsample_values(da_t, max_samples, base_seed + 9001 + i)
-                        a_pred = _subsample_values(da_p, max_samples, base_seed + 9001 + i)
+                        a_true = cast(
+                            np.ndarray, subsample_values(da_t, max_samples, base_seed + 9001 + i)
+                        )
+                        a_pred = cast(
+                            np.ndarray, subsample_values(da_p, max_samples, base_seed + 9001 + i)
+                        )
                     else:
                         a_true = np.asarray(da_t.compute().values).ravel()
                         a_pred = np.asarray(da_p.compute().values).ravel()
@@ -1173,20 +1017,22 @@ def run(
                     out_png = section_output / build_output_filename(
                         metric="hist_global",
                         variable=str(variable_name),
-                        level="",
+                        level="surface",
                         qualifier="grid",
                         init_time_range=None,
                         lead_time_range=None,
                         ensemble=token,
                         ext="png",
                     )
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                    print(f"[histograms] saved {out_png}")
+                    save_figure(fig, out_png)
+                else:
+                    plt.close(fig)
+
                 if save_npz:
                     out_npz = section_output / build_output_filename(
                         metric="hist_global",
                         variable=str(variable_name),
-                        level="",
+                        level="surface",
                         qualifier="grid_data",
                         init_time_range=None,
                         lead_time_range=None,
@@ -1197,7 +1043,7 @@ def run(
                     dens_true_list = [pr[1] for pr in panel_results]
                     dens_pred_list = [pr[2] for pr in panel_results]
                     edges_list = [pr[0] for pr in panel_results]
-                    np.savez(
+                    save_data(
                         out_npz,
                         lead_hours=lead_hours,
                         densities_true=np.array(dens_true_list, dtype=object),
@@ -1205,8 +1051,6 @@ def run(
                         edges=np.array(edges_list, dtype=object),
                         allow_pickle=True,
                     )
-                    print(f"[histograms] saved {out_npz}")
-                plt.close(fig)
 
     # 3D variables per level
     if process_3d:
@@ -1233,6 +1077,7 @@ def run(
                         level_token=str(lvl_clean),
                         ens_token=ensemble_mode_to_token("mean"),
                         lead_time_range=None,
+                        level_val=lvl,
                     )
                     _plot_lat_bands(
                         da_t_lvl_mean,
@@ -1258,6 +1103,7 @@ def run(
                             level_token=str(lvl_clean),
                             ens_token=token,
                             lead_time_range=None,
+                            level_val=lvl,
                         )
                         _plot_lat_bands(
                             (
@@ -1270,6 +1116,7 @@ def run(
                             level_token=str(lvl_clean),
                             qualifier="latbands",
                             ens_token=token,
+                            level_val=lvl,
                         )
                 else:  # pooled/none
                     token = (
@@ -1284,6 +1131,7 @@ def run(
                         level_token=str(lvl_clean),
                         ens_token=token,
                         lead_time_range=None,
+                        level_val=lvl,
                     )
                     _plot_lat_bands(
                         da_t_lvl,

@@ -12,6 +12,8 @@ from matplotlib.colors import LogNorm
 from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
 
+from ..helpers import save_data, save_figure
+
 # Import console for rich output
 try:
     from .. import console as c
@@ -95,9 +97,8 @@ def calculate_and_plot_bivariate_histograms(
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
         out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
-        out_file.parent.mkdir(parents=True, exist_ok=True)
 
-        np.savez(
+        save_data(
             out_file,
             hist=hist_pred,
             bins_x=xedges,
@@ -128,10 +129,9 @@ def calculate_and_plot_bivariate_histograms(
             )
 
         plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
-        fig.savefig(plot_out, bbox_inches="tight")
+        save_figure(fig, plot_out)
         plt.close(fig)
 
-        print(f"[multivariate] Saved bivariate plot: {plot_out.name}")
         plotted_pairs.append(f"{var_x} vs {var_y}")
 
     # Summary output

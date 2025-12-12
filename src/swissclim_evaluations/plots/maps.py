@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
-import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -20,6 +20,8 @@ from ..helpers import (
     get_colormap_for_variable,
     get_variable_units,
     resolve_ensemble_mode,
+    save_data,
+    save_figure,
 )
 
 
@@ -47,10 +49,6 @@ def run(
         lead_index = 0
     if "time" in ds_target.dims and ds_target.time.size > 0:
         time_index = 0
-
-    time_selected = None
-    if "init_time" in ds_target.dims and ds_target.init_time.size > time_index:
-        time_selected = ds_target.init_time.isel(init_time=time_index)
 
     # Extract time/lead ranges for naming helper
     def _extract_init_range(ds: xr.Dataset):
@@ -91,6 +89,7 @@ def run(
         variable_name: str,
         ens_token: str | None,
         init_time_idx: int,
+        ens_member: int | None = None,
     ) -> None:
         if "lead_time" not in da_pred.dims:
             return
@@ -144,18 +143,34 @@ def run(
             lt_sel = lt
 
             if "lead_time" in da_target.dims:
-                jobs.append({"type": "minmax", "da_lazy": da_target.sel(lead_time=lt_sel)})
-            jobs.append({"type": "minmax", "da_lazy": da_pred.sel(lead_time=lt_sel)})
+                da = da_target.sel(lead_time=lt_sel)
+                jobs.append(
+                    {
+                        "type": "minmax",
+                        "da_lazy": da,
+                        "min_lazy": da.min(),
+                        "max_lazy": da.max(),
+                    }
+                )
+            da = da_pred.sel(lead_time=lt_sel)
+            jobs.append(
+                {
+                    "type": "minmax",
+                    "da_lazy": da,
+                    "min_lazy": da.min(),
+                    "max_lazy": da.max(),
+                }
+            )
 
         # Data jobs
         for i, lt in enumerate(selected_leads):
-            if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
+            if np.issubdtype(type(lt), np.timedelta64):
                 lt_sel = lt
                 hours = int(lt / np.timedelta64(1, "h"))
-                label = f"{hours}h"
+                label = f" (+{hours}h)"
             else:
                 lt_sel = lt
-                label = str(lt)
+                label = f" (lead={lt})"
 
             ds_var = da_target.sel(lead_time=lt_sel) if "lead_time" in da_target.dims else da_target
             ds_ml_var = da_pred.sel(lead_time=lt_sel)
@@ -184,30 +199,24 @@ def run(
             )
 
         # Compute all
-        lazy_all = []
-        for job in jobs:
-            if job["type"] == "minmax":
-                # We need min and max.
-                # da.min() and da.max() are lazy
-                lazy_all.append(job["da_lazy"].min())
-                lazy_all.append(job["da_lazy"].max())
-            elif job["type"] == "plot":
-                lazy_all.append(job["var_lazy"])
-                lazy_all.append(job["ml_lazy"])
-
-        results = dask.compute(*lazy_all) if lazy_all else []
+        compute_jobs(
+            jobs,
+            key_map={
+                "min_lazy": "min_val",
+                "max_lazy": "max_val",
+                "var_lazy": "var_arr",
+                "ml_lazy": "ml_arr",
+            },
+        )
 
         # Process results
-        ptr = 0
         vmin, vmax = float("inf"), float("-inf")
 
         # Process minmax
         for job in jobs:
             if job["type"] == "minmax":
-                mn = float(results[ptr])
-                ptr += 1
-                mx = float(results[ptr])
-                ptr += 1
+                mn = float(job["min_val"])
+                mx = float(job["max_val"])
                 vmin = min(vmin, mn)
                 vmax = max(vmax, mx)
 
@@ -215,10 +224,8 @@ def run(
         im = None
         for job in jobs:
             if job["type"] == "plot":
-                arr_var = results[ptr]
-                ptr += 1
-                arr_ml = results[ptr]
-                ptr += 1
+                arr_var = job["var_arr"]
+                arr_ml = job["ml_arr"]
 
                 i = job["i"]
                 label = job["label"]
@@ -240,7 +247,7 @@ def run(
                     shading="auto",
                 )
                 axes[i, 0].coastlines(linewidth=0.5)
-                axes[i, 0].set_title(f"Target — Lead {label}")
+                axes[i, 0].set_title(f"Target{label}")
 
                 # Prediction
                 lon_ml = ds_ml_var.coords.get("longitude", None)
@@ -256,7 +263,10 @@ def run(
                     shading="auto",
                 )
                 axes[i, 1].coastlines(linewidth=0.5)
-                axes[i, 1].set_title(f"Prediction — Lead {label}")
+                ens_str = f" (member {ens_member})" if ens_member is not None else ""
+                if not ens_str and ens_token:
+                    ens_str = f" ({ens_token})"
+                axes[i, 1].set_title(f"Prediction{label}{ens_str}")
 
         # Colorbar
         cb = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.025, pad=0.02)
@@ -265,8 +275,6 @@ def run(
                 cb.set_label(get_variable_units(ds_target, variable_name))
         except Exception:
             pass
-
-        plt.suptitle(f"Maps Evolution — {format_variable_name(variable_name)}")
 
         if save_fig:
             section_output.mkdir(parents=True, exist_ok=True)
@@ -280,9 +288,9 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[maps] saved {out_png}")
-        plt.close(fig)
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
 
     # Determine variables
     if "level" in ds_target.dims and int(ds_target.level.size) > 1:
@@ -456,6 +464,7 @@ def run(
                 date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
                 ax_tgt.set_title(f"{format_variable_name(str(var))} — Target{date_str}{lead_str}")
 
+                ens_str = f" (member {ens})" if ens is not None else ""
                 lon_ml = ds_ml_var.coords.get("longitude", None)
                 lat_ml = ds_ml_var.coords.get("latitude", None)
                 ax_pred.pcolormesh(
@@ -481,7 +490,7 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                ax_pred.set_title(f"Prediction{lead_str}")
+                ax_pred.set_title(f"Prediction{lead_str}{ens_str}")
 
             # Colorbar spanning both axes — vertical to save vertical space
             cb = fig.colorbar(
@@ -499,27 +508,12 @@ def run(
                 # Non-fatal: continue without setting label
                 pass
 
-            title_extra = "" if ens is None else f" (Ensemble {ens})"
-            if time_selected is not None:
-                # Robust formatting without relying on .dt accessor
-                ts_val = np.asarray(time_selected.values, dtype="datetime64[h]")
-                init_label = str(np.datetime_as_string(ts_val)).replace("T", " ") + "Z"
-                ensemble_label = ens_token_global or (
-                    "member " + str(ens) if ens is not None else "none"
-                )
-                title_text = (
-                    f"Maps — {var}{title_extra} | ensemble={ensemble_label} | "
-                    f"init_time={init_label} | lead_range={lead_range}"
-                )
-                plt.suptitle(title_text, fontsize=14)
-
             ens_token = (
                 ensemble_mode_to_token("members", ens)
                 if (resolved_mode == "members" and ens is not None)
                 else ens_token_global
             )
             if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -530,10 +524,10 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[maps] saved {out_png}")
+                save_figure(fig, out_png)
+            else:
+                plt.close(fig)
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -544,7 +538,7 @@ def run(
                     ensemble=ens_token,
                     ext="npz",
                 )
-                np.savez(
+                save_data(
                     npz_path,
                     target=ds_var.values,
                     prediction=ds_ml_var.values,
@@ -558,7 +552,6 @@ def run(
                     variable=str(var),
                     units=get_variable_units(ds_target, str(var)),
                 )
-                print(f"[maps] saved {npz_path}")
             plt.close(fig)
 
             # Optional grid of subplots for multiple lead_times PER ENSEMBLE MEMBER
@@ -579,6 +572,7 @@ def run(
                     str(var),
                     ens_token,
                     time_index,
+                    ens_member=ens,
                 )
 
     # 3D maps per level (one figure with rows per level)
@@ -633,6 +627,18 @@ def run(
                 ds_var = ds_var.isel(time=time_index)
             if "time" in ds_ml_var.dims:
                 ds_ml_var = ds_ml_var.isel(time=time_index)
+
+            lead_str = ""
+            if "lead_time" in ds_ml_var.coords:
+                val = ds_ml_var.coords["lead_time"].values
+                if val.size == 1:
+                    val = val.item()
+                    if np.issubdtype(type(val), np.timedelta64):
+                        h = int(val / np.timedelta64(1, "h"))
+                        lead_str = f" (+{h}h)"
+                    else:
+                        lead_str = f" (lead={val})"
+            ens_str = f" (member {ens})" if ens is not None else ""
 
             for idx, level in enumerate(levels):
                 level_val = int(level.values) if hasattr(level, "values") else int(level)
@@ -709,7 +715,7 @@ def run(
                         crs=ccrs.PlateCarree(),
                     )
 
-                ax_ds_ml.set_title(f"Model{format_level_label(level_val)}")
+                ax_ds_ml.set_title(f"Model{format_level_label(level_val)}{lead_str}{ens_str}")
 
                 fig.colorbar(
                     im_ds,
@@ -720,28 +726,12 @@ def run(
                     label=f"{get_variable_units(ds_target, str(var))} (level {level_val})",
                 )
 
-            # HEAD's suptitle logic
-            title_extra = "" if ens is None else f" (Ensemble {ens})"
-            if time_selected is not None:
-                # Robust formatting without relying on .dt accessor
-                ts_val = np.asarray(time_selected.values, dtype="datetime64[h]")
-                init_label = str(np.datetime_as_string(ts_val)).replace("T", " ") + "Z"
-                ensemble_label = ens_token_global or (
-                    "member " + str(ens) if ens is not None else "none"
-                )
-                title_text = (
-                    f"Maps — {var}{title_extra} | ensemble={ensemble_label} | "
-                    f"init_time={init_label} | lead_range={lead_range}"
-                )
-                plt.suptitle(title_text, fontsize=14)
-
             ens_token = (
                 ensemble_mode_to_token("members", ens)
                 if (resolved_mode == "members" and ens is not None)
                 else ens_token_global
             )
             if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -752,10 +742,10 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[maps] saved {out_png}")
+                save_figure(fig, out_png)
+            else:
+                plt.close(fig)
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -766,7 +756,7 @@ def run(
                     ensemble=ens_token,
                     ext="npz",
                 )
-                np.savez(
+                save_data(
                     npz_path,
                     target=ds_var.values,
                     prediction=ds_ml_var.values,
@@ -782,4 +772,3 @@ def run(
                     units=get_variable_units(ds_target, str(var)),
                     allow_pickle=True,
                 )
-                print(f"[maps] saved {npz_path}")

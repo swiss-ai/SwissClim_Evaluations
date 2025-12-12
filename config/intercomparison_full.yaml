@@ -1,0 +1,14 @@
+models:
+  - output/full_verification_run
+  - output/full_verification_run_2
+
+labels:
+  - Full Run 1
+  - Full Run 2
+
+output_root: output/intercomparison_full
+
+modules: [spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim]
+
+max_map_panels: 4
+max_crps_map_panels: 4

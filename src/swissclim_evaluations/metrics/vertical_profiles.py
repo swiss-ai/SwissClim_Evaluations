@@ -4,18 +4,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import dask
 import matplotlib.pyplot as plt
 import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
 import xarray as xr
 
 from ..aggregations import latitude_weights
+from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
     format_variable_name,
     resolve_ensemble_mode,
+    save_data,
+    save_figure,
 )
 
 
@@ -173,7 +175,6 @@ def _plot_vertical_profile_evolution(
 
     if save_fig:
         section_output = out_root / "vertical_profiles"
-        section_output.mkdir(parents=True, exist_ok=True)
         out_png = section_output / build_output_filename(
             metric="vertical_profile_evolution",
             variable=variable_name,
@@ -184,8 +185,7 @@ def _plot_vertical_profile_evolution(
             ensemble=ens_token,
             ext="png",
         )
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
-        print(f"[vertical_profiles] saved {out_png}")
+        save_figure(fig, out_png)
     plt.close(fig)
 
 
@@ -465,37 +465,16 @@ def run(
 
     # Batch compute
     print(f"[vertical_profiles] computing {len(jobs)} jobs...")
-    all_lazy = []
-    for job in jobs:
-        all_lazy.append(job["combined_lazy"])
-        if "combined_all_lazy" in job:
-            all_lazy.append(job["combined_all_lazy"])
-        if "evolve_profiles_lazy" in job:
-            all_lazy.extend(job["evolve_profiles_lazy"])
-        if "heatmap_profiles_lazy" in job:
-            all_lazy.extend(job["heatmap_profiles_lazy"])
-        all_lazy.append(job["nmae_lead_lazy"])
-
-    results = dask.compute(*all_lazy) if all_lazy else []
-
-    # Distribute results
-    ptr = 0
-    for job in jobs:
-        job["combined"] = results[ptr]
-        ptr += 1
-        if "combined_all_lazy" in job:
-            job["combined_all"] = results[ptr]
-            ptr += 1
-        if "evolve_profiles_lazy" in job:
-            n = len(job["evolve_profiles_lazy"])
-            job["evolve_profiles"] = results[ptr : ptr + n]
-            ptr += n
-        if "heatmap_profiles_lazy" in job:
-            n = len(job["heatmap_profiles_lazy"])
-            job["heatmap_profiles"] = results[ptr : ptr + n]
-            ptr += n
-        job["nmae_lead"] = results[ptr]
-        ptr += 1
+    compute_jobs(
+        jobs,
+        key_map={
+            "combined_lazy": "combined",
+            "combined_all_lazy": "combined_all",
+            "evolve_profiles_lazy": "evolve_profiles",
+            "heatmap_profiles_lazy": "heatmap_profiles",
+            "nmae_lead_lazy": "nmae_lead",
+        },
+    )
 
     # Process results
     for job in jobs:
@@ -578,9 +557,8 @@ def run(
             )
             plt.tight_layout()
             if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
-                    metric="vprof_nmae",
+                    metric="vertical_profiles_nmae",
                     variable=str(_var_name),
                     level="multi",
                     qualifier="plot",
@@ -589,12 +567,10 @@ def run(
                     ensemble=ens_token_local,
                     ext="png",
                 )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[vertical_profiles] saved {out_png}")
+                save_figure(fig, out_png)
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_npz = section_output / build_output_filename(
-                    metric="vprof_nmae",
+                    metric="vertical_profiles_nmae",
                     variable=str(_var_name),
                     level="multi",
                     qualifier="combined",
@@ -609,7 +585,7 @@ def run(
                 neg_max = np.asarray([m[1] for m in _south_meta])
                 pos_min = np.asarray([m[0] for m in _north_meta])
                 pos_max = np.asarray([m[1] for m in _north_meta])
-                np.savez(
+                save_data(
                     out_npz,
                     nmae_neg=south_vals,
                     nmae_pos=north_vals,
@@ -620,7 +596,6 @@ def run(
                     pos_lat_min=pos_min,
                     pos_lat_max=pos_max,
                 )
-                print(f"[vertical_profiles] saved {out_npz}")
             plt.close(fig)
 
         if "combined_all" in job:
@@ -655,7 +630,7 @@ def run(
             ax.set_title(f"Vertical Profiles NMAE — lead evolution — {var}")
             ax.legend(title="lead_time", fontsize=8, ncols=min(3, len(panel_hours)))
             out_png = section_output / build_output_filename(
-                metric="vprof_nmae",
+                metric="vertical_profiles_nmae",
                 variable=str(var),
                 level="multi",
                 qualifier="evolve",
@@ -665,12 +640,11 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[vertical_profiles] saved {out_png}")
+            save_figure(fig, out_png)
             plt.close(fig)
             if save_npz:
                 out_npz = section_output / build_output_filename(
-                    metric="vprof_nmae",
+                    metric="vertical_profiles_nmae",
                     variable=str(var),
                     level="multi",
                     qualifier="evolve_data",
@@ -680,14 +654,13 @@ def run(
                     ext="npz",
                 )
                 profiles = [p.values for p in evolve_profiles]
-                np.savez(
+                save_data(
                     out_npz,
                     lead_hours=np.array(panel_hours, dtype=float),
                     level=np.asarray(level_values),
                     nmae_profiles=np.array(profiles, dtype=object),
                     allow_pickle=True,
                 )
-                print(f"[vertical_profiles] saved {out_npz}")
 
             # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
             if "heatmap_profiles" in job:
@@ -716,7 +689,7 @@ def run(
                 cbar = plt.colorbar(im, ax=ax2, orientation="vertical")
                 cbar.set_label("NMAE (%)")
                 out_png2 = section_output / build_output_filename(
-                    metric="vprof_nmae",
+                    metric="vertical_profiles_nmae",
                     variable=str(var),
                     level="multi",
                     qualifier="evolve_heatmap",
@@ -726,12 +699,11 @@ def run(
                     ext="png",
                 )
                 plt.tight_layout()
-                plt.savefig(out_png2, bbox_inches="tight", dpi=200)
-                print(f"[vertical_profiles] saved {out_png2}")
+                save_figure(fig2, out_png2)
                 plt.close(fig2)
                 if save_npz:
                     out_npz2 = section_output / build_output_filename(
-                        metric="vprof_nmae",
+                        metric="vertical_profiles_nmae",
                         variable=str(var),
                         level="multi",
                         qualifier="evolve_heatmap_data",
@@ -740,13 +712,12 @@ def run(
                         ensemble=ens_token if resolved_mode != "members" else None,
                         ext="npz",
                     )
-                    np.savez(
+                    save_data(
                         out_npz2,
                         lead_hours=np.array(lead_hours_plot, dtype=float),
                         level=np.asarray(level_values),
                         nmae_grid=grid,
                     )
-                    print(f"[vertical_profiles] saved {out_npz2}")
 
         # Compute and plot per-lead NMAE vertical profiles
         nmae_lead = job["nmae_lead"]
@@ -754,7 +725,7 @@ def run(
             # Emit NPZ with all data
             if save_npz:
                 out_npz = section_output / build_output_filename(
-                    metric="vprof_nmae",
+                    metric="vertical_profiles_nmae",
                     variable=str(var),
                     level="multi",
                     qualifier="all_leads",
@@ -770,8 +741,7 @@ def run(
                 if "lead_time" in ds_prediction:
                     save_dict["lead_time"] = ds_prediction["lead_time"].values
 
-                np.savez(out_npz, **save_dict)
-                print(f"[vertical_profiles] saved {out_npz}")
+                save_data(out_npz, **save_dict)
 
             # Plot evolution of vertical profile (contour plot)
             _plot_vertical_profile_evolution(
@@ -782,9 +752,3 @@ def run(
                 dpi=dpi,
                 save_fig=save_fig,
             )
-
-    # Final debug output: list all generated files
-    if (save_fig or save_npz) and section_output.exists():
-        print("[vertical_profiles] output files:")
-        for p in sorted(section_output.glob("*")):
-            print(f"  {p.name}")

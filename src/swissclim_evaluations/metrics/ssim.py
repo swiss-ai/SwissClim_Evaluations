@@ -13,6 +13,7 @@ from swissclim_evaluations.helpers import (
     build_output_filename,
     ensemble_mode_to_token,
     resolve_ensemble_mode,
+    save_dataframe,
 )
 
 
@@ -176,7 +177,7 @@ def run(
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
 
     # Helper to save output
-    def _save_output(df: pd.DataFrame, ens_token: str, qualifier: str = "ssim"):
+    def _save_output(df: pd.DataFrame, ens_token: str, qualifier: str | None = None):
         if df.empty:
             return
 
@@ -196,9 +197,7 @@ def run(
             metric="ssim", qualifier=qualifier, ensemble=ens_token, ext="csv"
         )
         out_path = out_root / "ssim" / filename
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df_final.to_csv(out_path, index=index_arg, index_label=index_label)
-        print(f"[ssim] saved {out_path}")
+        save_dataframe(df_final, out_path, index=index_arg, index_label=index_label)
 
     # Handle ensemble dimension
     if "ensemble" in ds_prediction.dims and mode == "mean":
@@ -230,9 +229,9 @@ def run(
             ens_token = ensemble_mode_to_token(mode, member_index=m)
             _save_output(df, ens_token)
             if df_lvl is not None:
-                _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+                _save_output(df_lvl, ens_token, qualifier="per_level")
             if df_lead is not None:
-                _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")
+                _save_output(df_lead, ens_token, qualifier="per_lead_time")
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
         # Stack ensemble into the sample dimension (e.g., "time")
@@ -264,9 +263,9 @@ def run(
         ens_token = ensemble_mode_to_token(mode)
         _save_output(df, ens_token)
         if df_lvl is not None:
-            _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+            _save_output(df_lvl, ens_token, qualifier="per_level")
         if df_lead is not None:
-            _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")
+            _save_output(df_lead, ens_token, qualifier="per_lead_time")
 
     else:
         # Single output (mean, none, or pooled if supported)
@@ -284,6 +283,6 @@ def run(
         ens_token = ensemble_mode_to_token(mode)
         _save_output(df, ens_token)
         if df_lvl is not None:
-            _save_output(df_lvl, ens_token, qualifier="ssim_per_level")
+            _save_output(df_lvl, ens_token, qualifier="per_level")
         if df_lead is not None:
-            _save_output(df_lead, ens_token, qualifier="ssim_per_lead_time")
+            _save_output(df_lead, ens_token, qualifier="per_lead_time")

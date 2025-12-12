@@ -1,8 +1,12 @@
 import itertools
 import re
+from pathlib import Path
 from typing import Any
 
+import dask.array as dsa
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xarray as xr
 from matplotlib.colors import Colormap
 
@@ -283,16 +287,14 @@ def build_output_filename(
     return "_".join(parts) + f".{ext}"
 
 
-def format_level_token(level: Any) -> str:
-    """Return a filesystem-safe label for a single level value."""
-    value = level.item() if hasattr(level, "item") else level
-    try:
-        as_int = int(value)
-        if float(as_int) == float(value):
-            return str(as_int)
-    except Exception:
-        pass
-    return str(value).replace(".", "_")
+def format_level_token(level: str | int | float | None) -> str:
+    """Format level for filenames/tokens (e.g. '500', 'sfc')."""
+    if level is None:
+        return "sfc"
+    s = str(level).lower().strip()
+    if s in ("sfc", "surface", "0", "0.0", "-1", "-1.0"):
+        return "sfc"
+    return str(level).replace(".", "p")
 
 
 """Helper utilities for chunking over init and lead times."""
@@ -471,7 +473,6 @@ def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=
     from itertools import islice
     from pathlib import Path
 
-    import pandas as pd
     from IPython.display import HTML, Image, display
 
     def natural_key(file_path):
@@ -617,3 +618,79 @@ def get_variable_units(ds: xr.Dataset | xr.DataArray, var_name: str) -> str:
     elif var_name in ds and "units" in ds[var_name].attrs:
         return str(ds[var_name].attrs["units"])
     return VARIABLE_UNITS.get(var_name, "")
+
+
+def subsample_values(
+    da: xr.DataArray, k: int | None, seed: int, lazy: bool = False
+) -> np.ndarray | dsa.Array | None:
+    """Dimension-aware uniform subsample across all dims.
+
+    Uses per-dimension index sampling so very large arrays don't need to be fully
+    materialized. Always pairs subsamples when given the same seed.
+
+    Args:
+        da: Input DataArray
+        k: Number of samples to take (approximate)
+        seed: Random seed
+        lazy: If True, return a dask array without computing.
+              If False, compute and return numpy array with finite values only.
+    """
+    size = int(getattr(da, "size", 0) or 0)
+    if size == 0:
+        return None if lazy else np.array([], dtype=float)
+
+    # If k is None or >= size, take all valid values
+    if k is None or size <= k:
+        if lazy:
+            return da.data.flatten()
+        else:
+            arr = np.asarray(da.compute().values).ravel()
+            return arr[np.isfinite(arr)]
+
+    # Subsampling logic
+    dims = list(da.dims)
+    nd = max(1, len(dims))
+    frac = (k / float(size)) ** (1.0 / nd)
+    rng = np.random.default_rng(seed)
+
+    indexers: dict[str, Any] = {}
+    for d in dims:
+        n = int(da.sizes.get(str(d), 1))
+        take = max(1, int(np.ceil(frac * n)))
+        take = min(take, n)
+        idx = rng.choice(n, size=take, replace=False)
+        idx.sort()
+        indexers[str(d)] = idx  # numpy array
+
+    # Lazy selection
+    sub = da.isel(indexers)
+
+    if lazy:
+        return sub.data.flatten()
+    else:
+        arr = np.asarray(sub.compute().values).ravel()
+        return arr[np.isfinite(arr)]
+
+
+def save_figure(fig: plt.Figure, path: Path, dpi: int = 200) -> None:
+    """Save figure to path, creating parent directories if needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, bbox_inches="tight", dpi=dpi)
+    print(f"Saved {path}")
+    plt.close(fig)
+
+
+def save_data(path: Path, **kwargs: Any) -> None:
+    """Save data to NPZ file, creating parent directories if needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **kwargs)
+    print(f"Saved {path}")
+
+
+def save_dataframe(
+    df: pd.DataFrame, path: Path, index: bool = True, index_label: str | None = None, **kwargs: Any
+) -> None:
+    """Save pandas DataFrame to CSV file, creating parent directories if needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=index, index_label=index_label, **kwargs)
+    print(f"Saved {path}")

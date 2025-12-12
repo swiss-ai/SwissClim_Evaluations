@@ -129,7 +129,11 @@ def run(
     aggregate_members_mean = bool(ets_cfg.get("aggregate_members_mean", True))
 
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
-    from ..helpers import ensemble_mode_to_token, resolve_ensemble_mode
+    from ..helpers import (
+        ensemble_mode_to_token,
+        resolve_ensemble_mode,
+        save_dataframe,
+    )
 
     resolved_mode = resolve_ensemble_mode("ets", ensemble_mode, ds_target, ds_prediction)
     has_ens = "ensemble" in ds_prediction.dims
@@ -201,15 +205,11 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            df.to_csv(out_csv)
-            print(f"[ets] saved {out_csv}")
+            save_dataframe(df, out_csv)
             # Optional per-lead wide CSV when multi-lead policy provided
-            multi_lead = (
-                (lead_policy is not None)
-                and ("lead_time" in ds_prediction.dims)
-                and int(ds_prediction.sizes.get("lead_time", 0)) > 1
-                and getattr(lead_policy, "mode", "first") != "first"
-            )
+            multi_lead = ("lead_time" in ds_prediction.dims) and int(
+                ds_prediction.sizes.get("lead_time", 0)
+            ) > 1
             if multi_lead:
                 rows = []
                 leads = list(ds_prediction["lead_time"].values)
@@ -233,8 +233,7 @@ def run(
                 if rows:
                     wide_df = pd.DataFrame(rows)
                     out_wide = section_output / "ets_metrics_by_lead_wide.csv"
-                    wide_df.to_csv(out_wide, index=False)
-                    print(f"[ets] saved {out_wide}")
+                    save_dataframe(wide_df, out_wide, index=False)
                     # Optional: line plot of thresholds vs lead_time per variable
                     # Default to True so ETS thresholds per lead are visualized
                     do_plot = bool(ets_cfg.get("line_plot", True))
@@ -364,8 +363,7 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                df_m.to_csv(out_csv_m, index_label="variable")
-                print(f"[ets] saved {out_csv_m}")
+                save_dataframe(df_m, out_csv_m, index_label="variable")
                 per_member_dfs.append(df_m)
 
                 if report_per_level:

@@ -62,6 +62,6 @@ def test_vertical_profiles_outputs(tmp_path: Path, monkeypatch):
     assert vp_dir.exists()
     # NPZ combined file should follow standardized filename builder (vprof_nmae_<var>...)
     assert any(
-        f.name.startswith("vprof_nmae_temperature_multi_combined_")
-        for f in vp_dir.glob("vprof_nmae_*temperature*_combined_*.npz")
+        f.name.startswith("vertical_profiles_nmae_temperature_multi_combined_")
+        for f in vp_dir.glob("vertical_profiles_nmae_*temperature*_combined_*.npz")
     )

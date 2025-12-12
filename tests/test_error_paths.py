@@ -118,5 +118,6 @@ def test_vertical_profiles_empty_band_outputs(tmp_path: Path, monkeypatch):
     # There should be at least one NPZ (may be more if multiple variables);
     # allow any matching prefix
     assert any(
-        f.name.startswith("vprof_nmae_") and f.suffix == ".npz" for f in vp_dir.iterdir()
-    ), "Expected vprof_nmae*.npz even with empty bands"
+        f.name.startswith("vertical_profiles_nmae_") and f.suffix == ".npz"
+        for f in vp_dir.iterdir()
+    ), "Expected vertical_profiles_nmae*.npz even with empty bands"

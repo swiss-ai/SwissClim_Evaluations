@@ -3,13 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-import dask
-import dask.array as dsa
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
+from ..dask_utils import compute_jobs, to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -20,66 +19,10 @@ from ..helpers import (
     format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
+    save_data,
+    save_figure,
+    subsample_values,
 )
-
-
-def _subsample_lazy(da: xr.DataArray, k: int | None, seed: int) -> dsa.Array | None:
-    """Lazy version of subsample_values returning a dask array."""
-    size = int(getattr(da, "size", 0) or 0)
-    if size == 0:
-        return None
-
-    # If k is None or >= size, take all valid values
-    if k is None or size <= k:
-        return da.data.flatten()
-
-    # Subsampling logic
-    dims = list(da.dims)
-    nd = max(1, len(dims))
-    frac = (k / float(size)) ** (1.0 / nd)
-    rng = np.random.default_rng(seed)
-
-    indexers: dict[str, Any] = {}
-    for d in dims:
-        n = int(da.sizes.get(str(d), 1))
-        take = max(1, int(np.ceil(frac * n)))
-        take = min(take, n)
-        idx = rng.choice(n, size=take, replace=False)
-        idx.sort()
-        indexers[str(d)] = idx  # numpy array
-
-    # Lazy selection
-    sub = da.isel(indexers)
-    return sub.data.flatten()
-
-
-def _subsample_values(da: xr.DataArray, k: int, seed: int) -> np.ndarray:
-    """Dimension-aware uniform subsample across all dims.
-
-    Uses per-dimension index sampling so very large arrays don't need to be fully
-    materialized. Always pairs subsamples when given the same seed.
-    """
-    size = int(getattr(da, "size", 0) or 0)
-    if size == 0:
-        return np.array([], dtype=float)
-    if size <= k:
-        arr = np.asarray(da.compute().values).ravel()
-        return arr[np.isfinite(arr)]
-    dims = list(da.dims)
-    nd = max(1, len(dims))
-    frac = (k / float(size)) ** (1.0 / nd)
-    rng = np.random.default_rng(seed)
-    indexers: dict[str, Any] = {}
-    for d in dims:
-        n = int(da.sizes.get(str(d), 1))
-        take = max(1, int(np.ceil(frac * n)))
-        take = min(take, n)
-        idx = rng.choice(n, size=take, replace=False)
-        idx.sort()
-        indexers[str(d)] = np.asarray(idx)
-    sub = da.isel(indexers)
-    arr = np.asarray(sub.compute().values).ravel()
-    return arr[np.isfinite(arr)]
 
 
 def run(
@@ -194,8 +137,8 @@ def run(
         # 1. Global subsample for range determination
         range_job = {
             "type": "range",
-            "sub_t_lazy": _subsample_lazy(da_target, 100000, base_seed),
-            "sub_p_lazy": _subsample_lazy(da_pred, 100000, base_seed),
+            "sub_t_lazy": subsample_values(da_target, max_samples, base_seed, lazy=True),
+            "sub_p_lazy": subsample_values(da_pred, max_samples, base_seed, lazy=True),
         }
         jobs.append(range_job)
 
@@ -219,43 +162,17 @@ def run(
             job = {
                 "type": "lead",
                 "label": label,
-                "sub_t_lazy": _subsample_lazy(da_t_l, max_samples // len(leads), seed),
-                "sub_p_lazy": _subsample_lazy(da_p_l, max_samples // len(leads), seed),
+                "sub_t_lazy": subsample_values(da_t_l, max_samples // len(leads), seed, lazy=True),
+                "sub_p_lazy": subsample_values(da_p_l, max_samples // len(leads), seed, lazy=True),
             }
             jobs.append(job)
 
         # Compute all
-        lazy_all = []
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                lazy_all.append(job["sub_t_lazy"])
-            if job["sub_p_lazy"] is not None:
-                lazy_all.append(job["sub_p_lazy"])
-
-        if not lazy_all:
-            plt.close(fig)
-            return
-
-        results = dask.compute(*lazy_all)
-
-        # Distribute results
-        ptr = 0
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                val = results[ptr]
-                ptr += 1
-                val_t = np.asarray(val).ravel()
-                job["val_t"] = val_t[np.isfinite(val_t)]
-            else:
-                job["val_t"] = np.array([], dtype=float)
-
-            if job["sub_p_lazy"] is not None:
-                val = results[ptr]
-                ptr += 1
-                val_p = np.asarray(val).ravel()
-                job["val_p"] = val_p[np.isfinite(val_p)]
-            else:
-                job["val_p"] = np.array([], dtype=float)
+        compute_jobs(
+            jobs,
+            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
+            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
+        )
 
         # Process range
         range_job = jobs[0]
@@ -334,7 +251,6 @@ def run(
         ax.legend(custom_lines, ["Target", "Prediction"], loc="upper right")
 
         if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_png = section_output / build_output_filename(
                 metric="wd_kde_joyplot",
                 variable=variable_name,
@@ -345,8 +261,7 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[wd_kde] saved {out_png}")
+            save_figure(fig, out_png)
         plt.close(fig)
 
     def _process_variable(
@@ -366,8 +281,8 @@ def run(
         seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
         global_job = {
             "type": "global",
-            "sub_t_lazy": _subsample_lazy(da_t_std, max_samples, seed_g),
-            "sub_p_lazy": _subsample_lazy(da_p_std, max_samples, seed_g),
+            "sub_t_lazy": subsample_values(da_t_std, max_samples, seed_g, lazy=True),
+            "sub_p_lazy": subsample_values(da_p_std, max_samples, seed_g, lazy=True),
         }
         jobs.append(global_job)
 
@@ -387,8 +302,10 @@ def run(
                     "j": j,
                     "lat_min": lat_min,
                     "lat_max": lat_max,
-                    "sub_t_lazy": _subsample_lazy(da_target_slice, max_samples, seed),
-                    "sub_p_lazy": _subsample_lazy(da_prediction_slice, max_samples, seed),
+                    "sub_t_lazy": subsample_values(da_target_slice, max_samples, seed, lazy=True),
+                    "sub_p_lazy": subsample_values(
+                        da_prediction_slice, max_samples, seed, lazy=True
+                    ),
                 }
                 jobs.append(job)
 
@@ -407,39 +324,19 @@ def run(
                     "j": j,
                     "lat_min": lat_min,
                     "lat_max": lat_max,
-                    "sub_t_lazy": _subsample_lazy(da_target_slice, max_samples, seed),
-                    "sub_p_lazy": _subsample_lazy(da_prediction_slice, max_samples, seed),
+                    "sub_t_lazy": subsample_values(da_target_slice, max_samples, seed, lazy=True),
+                    "sub_p_lazy": subsample_values(
+                        da_prediction_slice, max_samples, seed, lazy=True
+                    ),
                 }
                 jobs.append(job)
 
         # Compute all
-        lazy_all = []
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                lazy_all.append(job["sub_t_lazy"])
-            if job["sub_p_lazy"] is not None:
-                lazy_all.append(job["sub_p_lazy"])
-
-        results = dask.compute(*lazy_all) if lazy_all else []
-
-        # Distribute results
-        ptr = 0
-        for job in jobs:
-            if job["sub_t_lazy"] is not None:
-                val = results[ptr]
-                ptr += 1
-                val_t = np.asarray(val).ravel()
-                job["val_t"] = val_t[np.isfinite(val_t)]
-            else:
-                job["val_t"] = np.array([], dtype=float)
-
-            if job["sub_p_lazy"] is not None:
-                val = results[ptr]
-                ptr += 1
-                val_p = np.asarray(val).ravel()
-                job["val_p"] = val_p[np.isfinite(val_p)]
-            else:
-                job["val_p"] = np.array([], dtype=float)
+        compute_jobs(
+            jobs,
+            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
+            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
+        )
 
         # --- Process Global KDE ---
         global_job = jobs[0]
@@ -486,11 +383,9 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                fig_g.savefig(out_png_g, bbox_inches="tight", dpi=200)
-                print(f"[wd_kde] saved {out_png_g}")
+                save_figure(fig_g, out_png_g)
 
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_npz_g = section_output / build_output_filename(
                     metric="wd_kde",
                     variable=var_name,
@@ -501,7 +396,7 @@ def run(
                     ensemble=ens_token,
                     ext="npz",
                 )
-                np.savez(
+                save_data(
                     out_npz_g,
                     w_dist=w_g,
                     x=x_eval_g,
@@ -510,7 +405,6 @@ def run(
                     units=units,
                     allow_pickle=True,
                 )
-                print(f"[wd_kde] saved {out_npz_g}")
             plt.close(fig_g)
 
             # Add to CSV rows
@@ -618,10 +512,8 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            print(f"[wd_kde] saved {out_png}")
+            save_figure(fig, out_png)
         if save_npz:
-            section_output.mkdir(parents=True, exist_ok=True)
             out_npz = section_output / build_output_filename(
                 metric="wd_kde",
                 variable=var_name,
@@ -632,7 +524,7 @@ def run(
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(
+            save_data(
                 out_npz,
                 mean_w=mean_w,
                 neg_x=np.array(combined["neg_x"], dtype=object),
@@ -645,10 +537,8 @@ def run(
                 pos_kde_ml=np.array(combined["pos_kde_ml"], dtype=object),
                 pos_lat_min=np.array(combined["pos_lat_min"]),
                 pos_lat_max=np.array(combined["pos_lat_max"]),
-                units=units,
                 allow_pickle=True,
             )
-            print(f"[wd_kde] saved {out_npz}")
         plt.close(fig)
 
     # 2D standardized variables (run once per variable; avoid prior recursion issue)
@@ -765,25 +655,19 @@ def run(
                 jobs.append({"type": "lead", "i": i, "da_t_lazy": da_t, "da_p_lazy": da_p})
 
             # Compute all
-            lazy_all = []
-            for job in jobs:
-                if job["type"] == "quantile":
-                    lazy_all.append(job["q_t_lazy"])
-                    lazy_all.append(job["q_p_lazy"])
-                elif job["type"] == "lead":
-                    lazy_all.append(job["da_t_lazy"])
-                    lazy_all.append(job["da_p_lazy"])
-
-            results = dask.compute(*lazy_all) if lazy_all else []
-
-            # Distribute results
-            ptr = 0
+            compute_jobs(
+                jobs,
+                key_map={
+                    "q_t_lazy": "q_t",
+                    "q_p_lazy": "q_p",
+                    "da_t_lazy": "da_t",
+                    "da_p_lazy": "da_p",
+                },
+            )
 
             # Process quantiles
-            q_t = results[ptr]
-            ptr += 1
-            q_p = results[ptr]
-            ptr += 1
+            q_t = jobs[0]["q_t"]
+            q_p = jobs[0]["q_p"]
 
             vmin = float(min(q_t[0], q_p[0]))
             vmax = float(max(q_t[1], q_p[1]))
@@ -803,11 +687,9 @@ def run(
                 return kde(y_eval)
 
             # Process leads
-            for _ in jobs[1:]:
-                arr_t = np.asarray(results[ptr])
-                ptr += 1
-                arr_p = np.asarray(results[ptr])
-                ptr += 1
+            for job in jobs[1:]:
+                arr_t = np.asarray(job["da_t"])
+                arr_p = np.asarray(job["da_p"])
 
                 Z_t.append(_eval_kde_from_array(arr_t))
                 Z_p.append(_eval_kde_from_array(arr_p))
@@ -855,8 +737,7 @@ def run(
                 ext="png",
             )
             if save_fig:
-                fig_r.savefig(out_png_r, bbox_inches="tight", dpi=200)
-                print(f"[wd_kde] saved {out_png_r}")
+                save_figure(fig_r, out_png_r)
             plt.close(fig_r)
             if save_npz:
                 out_npz = section_output / build_output_filename(
@@ -869,7 +750,7 @@ def run(
                     ensemble=ens_token_base,
                     ext="npz",
                 )
-                np.savez(
+                save_data(
                     out_npz,
                     lead_hours=X,
                     y_eval=Y,

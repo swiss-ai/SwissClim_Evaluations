@@ -102,7 +102,7 @@ Outputs:
 SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
 
 ```text
-ssim_ssim_ensmean.csv
+ssim_ensmean.csv
 ssim_ssim_ens0.csv   # members mode per-member file
 ```
 
@@ -136,10 +136,10 @@ By default, histograms and KDEs are computed globally (`*_global.npz`). To also 
 Examples (pooled vs members):
 
 ```text
-hist_2m_temperature_global_enspooled.npz
-hist_2m_temperature_latbands_enspooled.npz
-wd_kde_2m_temperature_global_enspooled.npz
-wd_kde_2m_temperature_latbands_enspooled.npz
+hist_2m_temperature_surface_global_enspooled.npz
+hist_2m_temperature_surface_latbands_enspooled.npz
+wd_kde_2m_temperature_surface_global_enspooled.npz
+wd_kde_2m_temperature_surface_latbands_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
 ```
 
@@ -149,8 +149,8 @@ Time ranges (if present) appear just before the ensemble token: `..._init2023010
 
 Outputs (standardized naming):
 
-- Plot: `vertical_profiles/vprof_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
-- Combined band data (NPZ): `vertical_profiles/vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Plot: `vertical_profiles/vertical_profiles_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
+- Combined band data (NPZ): `vertical_profiles/vertical_profiles_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
 - Summaries (CSV) may be produced by intercomparison rather than the module itself.
 
 ### Spatial Maps

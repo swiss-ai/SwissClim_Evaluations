@@ -13,36 +13,70 @@ Outputs are written under `output/intercomparison/` mirroring the module folders
 What gets combined:
 
 *   **Energy Spectra**
-    *   Overlays of DS baseline + model spectra per variable (and per level).
-    *   Merged CSVs: `lsd_metrics_averaged_combined.csv`, `lsd_metrics_per_level_combined.csv`, and banded variants.
+    *   **Plots**:
+        *   `*_compare.png`: Overlays of DS baseline + model spectra per variable (and per level).
+        *   `*_compare_ratio.png`: Ratio of Model/Target energy density vs wavenumber.
+        *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
+    *   **CSVs**:
+        *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
+        *   `lsd_metrics_banded_averaged_combined.csv`: Banded averaged LSD metrics.
+        *   `lsd_metrics_per_level_combined.csv`: Per-level LSD metrics.
+        *   `lsd_metrics_banded_per_level_combined.csv`: Banded per-level LSD metrics.
 
 *   **Histograms**
-    *   Per-latitude band distributions (DS line + model lines) using saved combined NPZs.
+    *   **Plots**:
+        *   `hist_*global*_compare.png`: Global histogram comparison (log scale).
+        *   `hist_*latbands*_compare.png`: Per-latitude band distributions (DS line + model lines).
 
 *   **WD KDE**
-    *   Standardized KDE overlays by latitude band (DS + models) using saved NPZs.
+    *   **Plots**:
+        *   `wd_kde_*global*_compare.png`: Global normalized KDE comparison.
+        *   `wd_kde_*latbands*_compare.png`: Standardized KDE overlays by latitude band (DS + models).
+    *   **CSVs**:
+        *   `wd_kde_wasserstein_averaged_combined.csv`: Averaged Wasserstein distance metrics.
 
 *   **Maps**
-    *   Panel maps with DS in the first column and each model as subsequent columns.
+    *   **Plots**:
+        *   `map_<var>[_level<lvl>]_compare.png`: Panel maps with DS in the first column and each model as subsequent columns.
 
 *   **Deterministic Metrics**
-    *   Merged CSVs: `metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`.
-    *   Simple bar charts for MAE/RMSE/FSS when data is present.
+    *   **CSVs**:
+        *   `metrics_combined.csv`: Combined deterministic metrics.
+        *   `metrics_per_level_combined.csv`: Combined per-level deterministic metrics.
+        *   `metrics_standardized_combined.csv`: Combined standardized metrics.
+        *   `metrics_standardized_per_level_combined.csv`: Combined standardized per-level metrics.
+        *   `temporal_metrics_combined.csv`: Combined temporal metrics (metrics vs lead time).
+    *   **Plots**:
+        *   `<metric>_compare.png`: Bar charts for each metric (e.g., RMSE, MAE) by variable and model.
+        *   `temporal_<metric>_<variable>_compare.png`: Line plots of metric vs lead time.
 
 *   **ETS**
-    *   Merged CSVs: `ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`.
+    *   **CSVs**:
+        *   `ets_metrics_combined.csv`: Combined ETS metrics.
+    *   **Plots**:
+        *   `ets_<var>_ETS_<thresh>pct_compare.png`: ETS vs Lead Time plots.
 
 *   **SSIM**
-    *   Merged CSVs: `ssim_combined.csv`.
-    *   Comparison bar plot of the average SSIM (`ssim_comparison.png`).
+    *   **CSVs**:
+        *   `ssim_combined.csv`: Combined SSIM metrics.
+    *   **Plots**:
+        *   `ssim_comparison.png`: Comparison bar plot of the average SSIM.
 
 *   **Probabilistic**
-    *   Merged CSVs: `crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`, `crps_ensemble_combined.csv`.
-    *   PIT histogram overlays and CRPS map panels (when NPZ map exports exist).
-    *   **WBX Integration**: Merges spatial/temporal aggregates into `spatial_metrics_combined.csv` and `temporal_metrics_combined.csv`.
-    *   **Plots**: Simple region-wise bar charts, time-bin line plots, and a single availability panel covering all probabilistic artifacts.
+    *   **CSVs**:
+        *   `crps_summary_combined.csv`: Combined CRPS summary.
+        *   `crps_summary_per_level_combined.csv`: Combined per-level CRPS summary.
+        *   `temporal_metrics_combined.csv`: Combined temporal probabilistic metrics.
+        *   `spread_skill_ratio_combined.csv`: Combined Spread-Skill Ratio.
+        *   `crps_ensemble_combined.csv`: Combined CRPS ensemble metrics.
+    *   **Plots**:
+        *   `temporal_<metric>_<variable>_compare.png`: Line plots of probabilistic metrics vs lead time.
+        *   `crps_map_<var>_compare.png`: CRPS map panels.
+        *   `pit_hist_<var>_compare.png`: PIT histogram comparison.
 
-*   **Vertical Profiles (vprof)**
-    *   Overlay plots per variable of latitude-band vertical NMAE across models (`vprof_nmae_<variable>_multi_combined_compare.png`).
-    *   Per-variable summary tables (`vprof_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model.
+*   **Vertical Profiles**
+    *   **Plots**:
+        *   `vertical_profiles_nmae_<var>_compare.png`: Overlay plots per variable of latitude-band vertical NMAE across models.
+    *   **CSVs**:
+        *   `vertical_profiles_nmae_<var>_summary.csv`: Per-variable summary tables listing mean metric by band, hemisphere, and model.
     *   *Note: Legacy `*_pl_nmae_combined*` files are still supported.*

@@ -17,6 +17,7 @@ from scores.spatial import fss_2d_single_field
 from skimage.metrics import structural_similarity as ssim
 
 from ..aggregations import latitude_weights
+from ..helpers import save_data, save_dataframe, save_figure
 
 
 @functools.lru_cache(maxsize=1)
@@ -736,10 +737,8 @@ def run(
             ensemble=ens_token,
             ext="csv",
         )
-        regular_metrics.to_csv(out_csv, index_label="variable")
-        standardized_metrics.to_csv(out_csv_std, index_label="variable")
-        print(f"[deterministic] saved {out_csv}")
-        print(f"[deterministic] saved {out_csv_std}")
+        save_dataframe(regular_metrics, out_csv, index_label="variable")
+        save_dataframe(standardized_metrics, out_csv_std, index_label="variable")
 
         if per_level_metrics is not None:
             out_csv_lvl = section_output / build_output_filename(
@@ -752,8 +751,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            per_level_metrics.to_csv(out_csv_lvl, index=False)
-            print(f"[deterministic] saved {out_csv_lvl}")
+            save_dataframe(per_level_metrics, out_csv_lvl, index=False)
 
         if per_level_std is not None:
             out_csv_lvl_std = section_output / build_output_filename(
@@ -766,8 +764,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            per_level_std.to_csv(out_csv_lvl_std, index=False)
-            print(f"[deterministic] saved {out_csv_lvl_std}")
+            save_dataframe(per_level_std, out_csv_lvl_std, index=False)
 
         # Console summary
         try:
@@ -852,10 +849,8 @@ def run(
                 ensemble=token_m,
                 ext="csv",
             )
-            reg_m.to_csv(out_csv_m, index_label="variable")
-            std_m.to_csv(out_csv_m_std, index_label="variable")
-            print(f"[deterministic] saved {out_csv_m}")
-            print(f"[deterministic] saved {out_csv_m_std}")
+            save_dataframe(reg_m, out_csv_m, index_label="variable")
+            save_dataframe(std_m, out_csv_m_std, index_label="variable")
             pooled_metrics.append(reg_m)
 
             if report_per_level:
@@ -881,8 +876,7 @@ def run(
                         ensemble=token_m,
                         ext="csv",
                     )
-                    per_level_m.to_csv(out_csv_m_lvl, index=False)
-                    print(f"[deterministic] saved {out_csv_m_lvl}")
+                    save_dataframe(per_level_m, out_csv_m_lvl, index=False)
 
                 per_level_m_std = cast(
                     pd.DataFrame | None,
@@ -906,8 +900,7 @@ def run(
                         ensemble=token_m,
                         ext="csv",
                     )
-                    per_level_m_std.to_csv(out_csv_m_lvl_std, index=False)
-                    print(f"[deterministic] saved {out_csv_m_lvl_std}")
+                    save_dataframe(per_level_m_std, out_csv_m_lvl_std, index=False)
 
         # Aggregate pooled metrics across members if requested
         if pooled_metrics and aggregate_members_mean:
@@ -923,8 +916,7 @@ def run(
                     ensemble="enspooled",
                     ext="csv",
                 )
-                pooled_df.to_csv(out_csv_pool, index_label="variable")
-                print(f"[deterministic] saved {out_csv_pool}")
+                save_dataframe(pooled_df, out_csv_pool, index_label="variable")
 
         # Console previews for members mode
         try:
@@ -949,12 +941,9 @@ def run(
     # Note: multi_lead check was already done above for members_indices is None case.
     # We re-evaluate it here for safety or reuse the variable if in scope.
     try:
-        multi_lead_check = (
-            (lead_policy is not None)
-            and ("lead_time" in ds_prediction.dims)
-            and int(ds_prediction.sizes.get("lead_time", 0)) > 1
-            and getattr(lead_policy, "mode", "first") != "first"
-        )
+        multi_lead_check = ("lead_time" in ds_prediction.dims) and int(
+            ds_prediction.sizes.get("lead_time", 0)
+        ) > 1
     except Exception:
         multi_lead_check = False
 
@@ -1017,8 +1006,7 @@ def run(
                     ensemble=ens_token,
                     ext="csv",
                 )
-                long_df.to_csv(out_long, index=False)
-                print(f"[deterministic] saved {out_long}")
+                save_dataframe(long_df, out_long, index=False)
             except Exception as e:
                 print(f"[deterministic] Failed to save {out_long}: {e}")
 
@@ -1034,8 +1022,7 @@ def run(
                     ensemble=ens_token,
                     ext="csv",
                 )
-                wide_df.to_csv(out_wide, index=False)
-                print(f"[deterministic] saved {out_wide}")
+                save_dataframe(wide_df, out_wide, index=False)
             except Exception as e:
                 print(f"[deterministic] Failed to save {out_wide}: {e}")
 
@@ -1073,8 +1060,7 @@ def run(
                             ext="png",
                         )
                         _plt.tight_layout()
-                        _plt.savefig(out_png, bbox_inches="tight", dpi=150)
-                        _plt.close(fig)
+                        save_figure(fig, out_png)
                         # Save NPZ and CSV for the line plot
                         out_npz = section_output / build_output_filename(
                             metric="det_line",
@@ -1086,13 +1072,13 @@ def run(
                             ensemble=ens_token,
                             ext="npz",
                         )
-                        np.savez(
+                        save_data(
                             out_npz,
                             lead_hours=x.astype(float),
                             values=y.astype(float),
                             metric=m,
                             variable=str(v),
-                        )  # line wrapped to satisfy E501
+                        )
                         out_csv = section_output / build_output_filename(
                             metric="det_line",
                             variable=str(v),
@@ -1103,7 +1089,9 @@ def run(
                             ensemble=ens_token,
                             ext="csv",
                         )
-                        pd.DataFrame({"lead_time_hours": x, m: y}).to_csv(out_csv, index=False)
+                        save_dataframe(
+                            pd.DataFrame({"lead_time_hours": x, m: y}), out_csv, index=False
+                        )
         except Exception:
             pass
         # (Removed duplicate standardized metrics console summary to reduce noise)

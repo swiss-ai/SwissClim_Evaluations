@@ -1701,9 +1701,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 pass
             else:
                 c.success(format_ensemble_log("probabilistic", "prob", ens_size))
-                # Xarray-based CRPS/PIT + plots
+                # Combined probabilistic module
                 _t = time.time()
                 try:
+                    # 1. Xarray-based CRPS/PIT
                     run_probabilistic(
                         ds_target,
                         ds_prediction,
@@ -1712,59 +1713,16 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         cfg,
                         ensemble_mode=ensemble_cfg.get("probabilistic"),
                     )
-                    dt = time.time() - _t
-                    module_timings.append(("probabilistic:xarray", dt))
-                    module_results.append(
-                        {
-                            "name": "probabilistic:xarray",
-                            "status": "success",
-                            "seconds": dt,
-                            "error": None,
-                        }
-                    )
-                except Exception as ex:  # pragma: no cover
-                    dt = time.time() - _t
-                    c.error(f"probabilistic:xarray failed: {ex}")
-                    module_results.append(
-                        {
-                            "name": "probabilistic:xarray",
-                            "status": "failed",
-                            "seconds": dt,
-                            "error": str(ex),
-                        }
-                    )
-                _t = time.time()
-                try:
+                    # 2. Plots
                     plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
-                    dt = time.time() - _t
-                    module_timings.append(("probabilistic:plots", dt))
-                    module_results.append(
-                        {
-                            "name": "probabilistic:plots",
-                            "status": "success",
-                            "seconds": dt,
-                            "error": None,
-                        }
-                    )
-                except Exception as ex:  # pragma: no cover
-                    dt = time.time() - _t
-                    c.error(f"probabilistic:plots failed: {ex}")
-                    module_results.append(
-                        {
-                            "name": "probabilistic:plots",
-                            "status": "failed",
-                            "seconds": dt,
-                            "error": str(ex),
-                        }
-                    )
-                _t = time.time()
-                try:
+                    # 3. WBX Metrics
                     run_probabilistic_wbx(ds_target, ds_prediction, out_root, plotting, cfg)
+
                     dt = time.time() - _t
-                    module_timings.append(("probabilistic:wbx", dt))
+                    module_timings.append(("probabilistic", dt))
                     module_results.append(
                         {
-                            "name": "probabilistic:wbx",
+                            "name": "probabilistic",
                             "status": "success",
                             "seconds": dt,
                             "error": None,
@@ -1772,10 +1730,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     )
                 except Exception as ex:  # pragma: no cover
                     dt = time.time() - _t
-                    c.error(f"probabilistic:wbx failed: {ex}")
+                    c.error(f"probabilistic failed: {ex}")
                     module_results.append(
                         {
-                            "name": "probabilistic:wbx",
+                            "name": "probabilistic",
                             "status": "failed",
                             "seconds": dt,
                             "error": str(ex),
