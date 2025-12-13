@@ -1,13 +1,13 @@
-# Full verification run configuration based on performance_config.yaml
-# Designed to generate each table and plot once.
+# Configuration for testing deterministic multi-lead time plots
+# Uses a multi-lead time dataset but selects a single ensemble member.
 
 paths:
-  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_aa_unmask3v3_ri/predictions_step100000.zarr"
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
   target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
-  output_root: "output/full_verification_run"
+  output_root: "output/test_multilead"
 
 selection:
   levels: [100, 500, 1000]
@@ -21,11 +21,13 @@ selection:
     "10m_u_component_of_wind",
     "10m_v_component_of_wind",
   ]
-  variables_3d: [
-    "geopotential",
-  ]
+  # Select member 0 to treat as deterministic
   ensemble_member: 0
   check_missing: false
+  lead_time:
+    mode: "stride"
+    stride: 24
+    max_hour: 120
 
 plotting:
   random_seed: 42
@@ -35,6 +37,8 @@ plotting:
   kde_max_samples: 50000
   histogram_max_samples: 50000
   output_mode: both
+
+  # Enable specific multi-lead plot features
   histograms_per_lat_band: true
   wd_kde_per_lat_band: true
   wd_kde_global_evolution: true

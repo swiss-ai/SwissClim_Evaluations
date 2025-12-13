@@ -184,13 +184,13 @@ def run(
                 "sub_true_lazy": "sub_true",
                 "sub_pred_lazy": "sub_pred",
                 "hist_true_lazy": "counts_ds",
-                "hist_pred_lazy": "counts_ml",
+                "hist_pred_lazy": "counts_prediction",
             },
             post_process={
                 "sub_true": to_finite_array,
                 "sub_pred": to_finite_array,
                 "counts_ds": as_float_array,
-                "counts_ml": as_float_array,
+                "counts_prediction": as_float_array,
             },
         )
 
@@ -199,26 +199,28 @@ def run(
             if max_samples is not None:
                 # Compute histogram on in-memory subsamples
                 counts_ds, _ = np.histogram(job["sub_true"], bins=edges)
-                counts_ml, _ = np.histogram(job["sub_pred"], bins=edges)
+                counts_prediction, _ = np.histogram(job["sub_pred"], bins=edges)
                 job["counts_ds"] = counts_ds
-                job["counts_ml"] = counts_ml
+                job["counts_prediction"] = counts_prediction
 
         for job in jobs:
             idx = job["idx"]
             lead_label = job["lead_label"]
             ax = axs[idx]
             counts_ds = job["counts_ds"]
-            counts_ml = job["counts_ml"]
+            counts_prediction = job["counts_prediction"]
 
-            if counts_ds.sum() == 0 or counts_ml.sum() == 0:
+            if counts_ds.sum() == 0 or counts_prediction.sum() == 0:
                 ax.set_title(f"Lead {lead_label} (No data)")
                 continue
 
             # Density
             bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
-            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            counts_ml = counts_ml / bin_area_ml
+            bin_area_prediction = (
+                counts_prediction.sum() * width.mean() if counts_prediction.sum() > 0 else 1.0
+            )
+            counts_prediction = counts_prediction / bin_area_prediction
 
             ax.bar(
                 edges[:-1],
@@ -231,20 +233,29 @@ def run(
             )
             ax.bar(
                 edges[:-1],
-                counts_ml,
+                counts_prediction,
                 width=width,
                 align="edge",
                 alpha=0.5,
                 color=COLOR_MODEL_PREDICTION,
                 label="Prediction",
             )
-            ax.set_title(f"Lead {lead_label}")
+            ax.set_title(f"Lead {lead_label}", fontsize=10)
             if idx == 0:
-                ax.legend(loc="upper right", fontsize="small")
+                ax.legend(loc="upper right", fontsize=10)
 
         # Hide unused axes
         for i in range(len(selected_leads), len(axs)):
             axs[i].axis("off")
+
+        # Add super title
+        date_str = extract_date_from_dataset(da_target_var)
+        level_str = format_level_label(level_token) if level_token != "surface" else ""
+        fig.suptitle(
+            f"{format_variable_name(variable_name)} — Histograms by Lead Time{level_str}{date_str}",
+            y=1.02,
+            fontsize=16,
+        )
 
         if save_fig:
             out_png = section_output / build_output_filename(
@@ -397,16 +408,16 @@ def run(
 
             compute_jobs(
                 jobs,
-                key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_ml"},
-                post_process={"counts_ds": as_float_array, "counts_ml": as_float_array},
+                key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
+                post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
             )
         else:
             for job in jobs:
                 # Compute histogram on in-memory subsamples
                 counts_ds, _ = np.histogram(job["sub_true"], bins=job["edges"])
-                counts_ml, _ = np.histogram(job["sub_pred"], bins=job["edges"])
+                counts_prediction, _ = np.histogram(job["sub_pred"], bins=job["edges"])
                 job["counts_ds"] = counts_ds
-                job["counts_ml"] = counts_ml
+                job["counts_prediction"] = counts_prediction
 
         # Plotting
         for job in jobs:
@@ -415,20 +426,22 @@ def run(
             ax = axs[j, col]
 
             counts_ds = job["counts_ds"]
-            counts_ml = job["counts_ml"]
+            counts_prediction = job["counts_prediction"]
             edges = job["edges"]
             lat_min = job["lat_min"]
             lat_max = job["lat_max"]
 
-            if counts_ds.sum() == 0 or counts_ml.sum() == 0:
+            if counts_ds.sum() == 0 or counts_prediction.sum() == 0:
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
 
             width = np.diff(edges)
             bin_area = counts_ds.sum() * width.mean() if counts_ds.sum() > 0 else 1.0
             counts_ds = counts_ds / bin_area
-            bin_area_ml = counts_ml.sum() * width.mean() if counts_ml.sum() > 0 else 1.0
-            counts_ml = counts_ml / bin_area_ml
+            bin_area_prediction = (
+                counts_prediction.sum() * width.mean() if counts_prediction.sum() > 0 else 1.0
+            )
+            counts_prediction = counts_prediction / bin_area_prediction
 
             ax.bar(
                 edges[:-1],
@@ -441,7 +454,7 @@ def run(
             )
             ax.bar(
                 edges[:-1],
-                counts_ml,
+                counts_prediction,
                 width=width,
                 align="edge",
                 alpha=0.5,
@@ -450,6 +463,9 @@ def run(
             )
             ax.set_title(f"Lat {lat_min}° to {lat_max}°")
             ax.legend(loc="upper right")
+            units = get_variable_units(ds_target, variable_name)
+            if units:
+                ax.set_xlabel(f"{format_variable_name(variable_name)} [{units}]")
 
             if save_npz:
                 key_counts = "neg_counts" if job["type"] == "neg" else "pos_counts"
@@ -457,7 +473,7 @@ def run(
                 key_lat_min = "neg_lat_min" if job["type"] == "neg" else "pos_lat_min"
                 key_lat_max = "neg_lat_max" if job["type"] == "neg" else "pos_lat_max"
 
-                combined[key_counts].append((counts_ds, counts_ml))
+                combined[key_counts].append((counts_ds, counts_prediction))
                 combined[key_bins].append(edges)
                 combined[key_lat_min].append(float(lat_min))
                 combined[key_lat_max].append(float(lat_max))
@@ -570,8 +586,8 @@ def run(
             width=width,
             align="edge",
             alpha=0.5,
-            color="skyblue",
-            label="Ground Truth",
+            color=COLOR_GROUND_TRUTH,
+            label="Target",
         )
         ax.bar(
             edges[:-1],
@@ -579,16 +595,23 @@ def run(
             width=width,
             align="edge",
             alpha=0.5,
-            color="salmon",
-            label="Model Prediction",
+            color=COLOR_MODEL_PREDICTION,
+            label="Prediction",
         )
         units = da_target_var.attrs.get("units", "")
         title_lt = f" — lead {lead_time_range[0]}" if lead_time_range else ""
         level_str = format_level_label(level_val if level_val is not None else level_token)
-        ax.set_title(f"Global histogram {variable_name}{level_str}{title_lt} ({units})")
-        ax.set_xlabel(variable_name)
+        ax.set_title(
+            f"{format_variable_name(variable_name)} — Global Histogram{level_str}{title_lt}"
+        )
+        if units:
+            ax.set_xlabel(f"{format_variable_name(variable_name)} [{units}]")
+        else:
+            ax.set_xlabel(f"{format_variable_name(variable_name)}")
         ax.set_ylabel("Density")
-        ax.legend(loc="upper right")
+        ax.set_yscale("log")
+        ax.legend()
+
         if save_fig:
             out_png = section_output / build_output_filename(
                 metric="hist",
@@ -615,7 +638,7 @@ def run(
                 ensemble=ens_token,
                 ext="npz",
             )
-            save_data(out_npz, counts_true=dens_true, counts_pred=dens_pred, edges=edges)
+            save_data(out_npz, counts_target=dens_true, counts_prediction=dens_pred, edges=edges)
 
     def _plot_global_hist_gridded(
         da_target_var: xr.DataArray,
@@ -740,7 +763,9 @@ def run(
                     label="Model",
                 )
 
-            ax.set_title(f"Lead: {label}")
+            ax.set_title(f"Lead: {label}", fontsize=14)
+            if units := da_target_var.attrs.get("units"):
+                ax.set_xlabel(str(units))
             if i == 0:
                 ax.legend()
 
@@ -748,7 +773,9 @@ def run(
         for j in range(i + 1, len(axs)):
             axs[j].axis("off")
 
-        plt.suptitle(f"Histograms by Lead Time — {format_variable_name(variable_name)}")
+        plt.suptitle(
+            f"Histograms by Lead Time — {format_variable_name(variable_name)}", fontsize=20
+        )
 
         if save_fig:
             out_png = section_output / build_output_filename(
@@ -985,8 +1012,8 @@ def run(
                         width=width,
                         align="edge",
                         alpha=0.5,
-                        color="skyblue",
-                        label="Ground Truth" if i == 0 else None,
+                        color=COLOR_GROUND_TRUTH,
+                        label="Target" if i == 0 else None,
                     )
                     ax.bar(
                         edges[:-1],
@@ -994,8 +1021,8 @@ def run(
                         width=width,
                         align="edge",
                         alpha=0.5,
-                        color="salmon",
-                        label="Model Prediction" if i == 0 else None,
+                        color=COLOR_MODEL_PREDICTION,
+                        label="Prediction" if i == 0 else None,
                     )
                     ax.set_title(f"Lead {int(h)}h", fontsize=11)
                     ax.set_xlim(x_min, x_max)

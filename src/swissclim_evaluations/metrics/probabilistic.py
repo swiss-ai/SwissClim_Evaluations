@@ -441,7 +441,7 @@ def run_probabilistic(
             )
 
             out_csv_lead = section_output / build_output_filename(
-                metric="probabilistic_metrics",
+                metric="temporal_probabilistic_metrics",
                 variable=str(var),
                 level=None,
                 qualifier="per_lead_time",
@@ -460,7 +460,7 @@ def run_probabilistic(
             ax.set_title(f"CRPS Evolution — {format_variable_name(str(var))}")
             ax.grid(True, linestyle="--", alpha=0.6)
             out_png_lead = section_output / build_output_filename(
-                metric="probabilistic_metrics",
+                metric="temporal_probabilistic_metrics",
                 variable=str(var),
                 level=None,
                 qualifier="per_lead_time",
@@ -565,7 +565,7 @@ def run_probabilistic(
                 metric="pit_evolution",
                 variable=str(var),
                 level=None,
-                qualifier="data",
+                qualifier=None,
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=ens_token,
@@ -767,7 +767,8 @@ def plot_probabilistic(
     # Check for single date
     date_str = extract_date_from_dataset(ds_target)
 
-    ax.set_title(f"CRPS Map (Mean) — {format_variable_name(base_var)}{date_str}")
+    ax.set_title(f"CRPS Map (Mean) — {format_variable_name(base_var)}", loc="left", fontsize=10)
+    ax.set_title(date_str, loc="right", fontsize=10)
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -813,7 +814,7 @@ def plot_probabilistic(
         from ..helpers import build_output_filename, ensemble_mode_to_token
 
         ens_token_plot = ensemble_mode_to_token("prob")
-        ax.set_title(f"CRPS map — {format_variable_name(base_var)}{date_str}")
+        # Title set above
         out_png = section / build_output_filename(
             metric="crps_map",
             variable=base_var,
@@ -955,7 +956,7 @@ def plot_probabilistic(
                             ],
                             crs=ccrs.PlateCarree(),
                         )
-                    ax.set_title(f"CRPS (+{int(h)}h)", fontsize=11)
+                    ax.set_title(f"CRPS (+{int(h)}h)", fontsize=10)
                     # Mean CRPS per lead for later CSV/NPZ line output
                     crps_line_rows.append(
                         {
@@ -1056,7 +1057,8 @@ def plot_probabilistic(
         # Check for single date
         date_str = extract_date_from_dataset(ds_target)
 
-        ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}{date_str}")
+        ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}", loc="left", fontsize=10)
+        ax.set_title(date_str, loc="right", fontsize=10)
         ax.set_xlabel("PIT value")
         ax.set_ylabel("Density")
         ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
@@ -1079,9 +1081,19 @@ def plot_probabilistic(
             save_data(out_npz, counts=counts, edges=edges, variable=base_var)
 
         if save_fig:
-            out_png = (
-                section / f"pit_hist_{base_var}.png"
-            )  # legacy non-tokenized image filename retained
+            from ..helpers import build_output_filename, ensemble_mode_to_token
+
+            ens_token_plot = ensemble_mode_to_token("prob")
+            out_png = section / build_output_filename(
+                metric="pit_hist",
+                variable=base_var,
+                level=None,
+                qualifier=None,
+                init_time_range=init_range_plot,
+                lead_time_range=lead_range_plot,
+                ensemble=ens_token_plot,
+                ext="png",
+            )
             save_figure(fig, out_png)
         else:
             plt.close(fig)
@@ -1136,7 +1148,7 @@ def plot_probabilistic(
                         edgecolor="white",
                     )
                     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1)
-                    ax.set_title(f"(+{int(h)}h)", fontsize=11)
+                    ax.set_title(f"PIT (+{int(h)}h)", fontsize=10)
                     pit_line_rows.append(
                         {
                             "lead_time_hours": float(h),
@@ -1218,9 +1230,11 @@ def plot_probabilistic(
                     continue
             if hour_index_pairs:
                 for var in variables:
-                    crps = compute_wbx_crps(
+                    crps_ds = compute_wbx_crps(
                         ds_prediction[var], ds_target[var], ensemble_dim="ensemble"
                     )
+                    # Extract DataArray (compute_wbx_crps returns Dataset)
+                    crps = crps_ds[var] if var in crps_ds else crps_ds[list(crps_ds.data_vars)[0]]
                     reduce_dims = [
                         d
                         for d in [
@@ -1243,7 +1257,10 @@ def plot_probabilistic(
                     ax.plot(hours_plot, vals, marker="o")
                     ax.set_xlabel("lead_time (h)")
                     ax.set_ylabel("CRPS")
-                    ax.set_title(f"CRPS vs lead_time — {format_variable_name(var)}{date_str}")
+                    ax.set_title(
+                        f"CRPS vs lead_time — {format_variable_name(var)}", loc="left", fontsize=10
+                    )
+                    ax.set_title(date_str, loc="right", fontsize=10)
                     out_png = section / build_output_filename(
                         metric="crps_line",
                         variable=str(var),
@@ -1563,14 +1580,17 @@ def run_probabilistic_wbx(
             date_str = extract_date_from_dataset(ds_target)
             display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
 
-            ax.set_title(f"SSR over Lead Time - {format_variable_name(display_var)}{date_str}")
+            ax.set_title(
+                f"SSR over Lead Time — {format_variable_name(display_var)}", loc="left", fontsize=10
+            )
+            ax.set_title(date_str, loc="right", fontsize=10)
             ax.set_ylabel("SSR")
             ax.set_xlabel("Lead Time [h]")
             ax.grid(True, axis="y")
 
             out_png_temp = section / build_output_filename(
                 metric="wbx_temporal",
-                variable=str(var_name),
+                variable=display_var,
                 level=None,
                 qualifier=None,
                 init_time_range=init_range,
@@ -1609,19 +1629,21 @@ def run_probabilistic_wbx(
                         str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
                     )
                     ax.set_title(
-                        f"SSR by Region (Time-Averaged) - "
-                        f"{format_variable_name(display_var)}{date_str}"
+                        f"SSR by Region (Time-Averaged) — {format_variable_name(display_var)}",
+                        loc="left",
+                        fontsize=10,
                     )
+                    ax.set_title(date_str, loc="right", fontsize=10)
                     ax.set_ylabel("SSR")
                     ax.set_xlabel("")  # Remove Region label
                     ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal (1.0)")
-                    ax.legend()
+                    ax.legend(fontsize=10)
                     plt.xticks(rotation=45, ha="right")
                     plt.tight_layout()
 
                     out_png_spatial = section / build_output_filename(
                         metric="wbx_spatial",
-                        variable=str(var_name),
+                        variable=display_var,
                         level=None,
                         qualifier=None,
                         init_time_range=init_range,

@@ -601,14 +601,8 @@ def prepare_datasets(
     if variables_2d or variables_3d:
         var_list = list(variables_2d or []) + list(variables_3d or [])
 
-    # Support legacy keys
-    target_path = paths.get("target") or paths.get("nwp")
-    prediction_path = paths.get("prediction") or paths.get("ml")
-
-    if paths.get("nwp"):
-        c.warn("Config key 'paths.nwp' is deprecated; use 'paths.target'.")
-    if paths.get("ml"):
-        c.warn("Config key 'paths.ml' is deprecated; use 'paths.prediction'.")
+    target_path = paths.get("target")
+    prediction_path = paths.get("prediction")
 
     ds_target = data_mod.open_target(target_path, variables=var_list)
     ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
@@ -621,7 +615,7 @@ def prepare_datasets(
     if errors:
         raise ValueError("Missing data requirements:\n" + "\n".join(errors))
 
-    # Debug visibility: show raw lead_time counts in ML/targets before any selection
+    # Debug visibility: show raw lead_time counts in prediction/targets before any selection
     def _lead_hours(ds: xr.Dataset) -> list[int]:
         if "lead_time" not in ds.dims:
             return []
@@ -636,9 +630,9 @@ def prepare_datasets(
     lead_audit: list[dict[str, Any]] = []
 
     def _audit(
-        step: str, ds_ml: xr.Dataset | None = None, ds_nwp: xr.Dataset | None = None
+        step: str, ds_prediction: xr.Dataset | None = None, ds_target: xr.Dataset | None = None
     ) -> None:
-        """Record lead_time hours and sizes for ML and NWP at a named step."""
+        """Record lead_time hours and sizes for prediction and target at a named step."""
 
         def _hours(ds: xr.Dataset | None) -> list[int]:
             if ds is None or "lead_time" not in ds.dims:
@@ -650,12 +644,12 @@ def prepare_datasets(
                 return []
 
         entry: dict[str, Any] = {"step": step}
-        if ds_ml is not None:
-            hrs_ml = _hours(ds_ml)
-            entry["ml"] = {"count": len(hrs_ml), "sample": hrs_ml[:12]}
-        if ds_nwp is not None:
-            hrs_nwp = _hours(ds_nwp)
-            entry["nwp"] = {"count": len(hrs_nwp), "sample": hrs_nwp[:12]}
+        if ds_prediction is not None:
+            hrs_prediction = _hours(ds_prediction)
+            entry["prediction"] = {"count": len(hrs_prediction), "sample": hrs_prediction[:12]}
+        if ds_target is not None:
+            hrs_target = _hours(ds_target)
+            entry["target"] = {"count": len(hrs_target), "sample": hrs_target[:12]}
         lead_audit.append(entry)
 
     # Defer detailed lead-time prints; record via audit only here
@@ -671,7 +665,7 @@ def prepare_datasets(
     if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
         raise ValueError(
             "No init_time labels remain after selection. Check selection.datetimes window "
-            "and ensure it overlaps the ML store's init_time coordinates."
+            "and ensure it overlaps the prediction store's init_time coordinates."
         )
     # Defer selection prints; capture only in audit
     _audit("after selection", ds_prediction, ds_target)
@@ -697,6 +691,8 @@ def prepare_datasets(
     # Standardize temporal dims and enforce required schema
     # Lead time policy parsing (opt-in multi-lead) ---------------------------------
     lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
+    if lt_cfg is None and isinstance(cfg, dict):
+        lt_cfg = cfg.get("selection", {}).get("lead_time")
     lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
     # preserve_all_leads when mode != first
     preserve_all = lead_policy.mode != "first"
@@ -706,13 +702,13 @@ def prepare_datasets(
     # (preserve_all=True), retain all leads to allow downstream selection/stride.
     ds_target = data_mod.standardize_dims(
         ds_target,
-        dataset_name="ground_truth",
+        dataset_name="target",
         first_lead_only=not preserve_all,
         preserve_all_leads=preserve_all,
     )
     ds_prediction = data_mod.standardize_dims(
         ds_prediction,
-        dataset_name="ml",
+        dataset_name="prediction",
         first_lead_only=not preserve_all,
         preserve_all_leads=preserve_all,
     )
@@ -801,15 +797,14 @@ def prepare_datasets(
                     )
                 }
             )
-            # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
-            try:
-                pre_align_hours = (
-                    (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
-                    .astype(int)
-                    .tolist()
-                )
-            except Exception:
-                pre_align_hours = []
+
+        # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
+        try:
+            pre_align_hours = (
+                (ds_prediction["lead_time"].values // np.timedelta64(1, "h")).astype(int).tolist()
+            )
+        except Exception:
+            pre_align_hours = []
 
         # Build stacked predictions with valid_time
         pred_init = ds_prediction["init_time"].astype("datetime64[ns]")
@@ -866,22 +861,22 @@ def prepare_datasets(
                 "No overlapping valid times between ground_truth (time/init+lead) and "
                 "predictions (init+lead) after selection."
             )
-        ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
-        nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
+        prediction_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
+        target_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
         # Cast masks to boolean arrays to satisfy mypy (avoiding Hashable/Any ambiguity)
-        ml_mask_bool = np.asarray(ml_mask, dtype=bool)
-        nwp_mask_bool = np.asarray(nwp_mask, dtype=bool)
-        ds_pred_stacked = ds_pred_stacked.isel(pair=ml_mask_bool)
-        ds_tgt_stacked = ds_tgt_stacked.isel(pair=nwp_mask_bool)
+        prediction_mask_bool = np.asarray(prediction_mask, dtype=bool)
+        target_mask_bool = np.asarray(target_mask, dtype=bool)
+        ds_pred_stacked = ds_pred_stacked.isel(pair=prediction_mask_bool)
+        ds_tgt_stacked = ds_tgt_stacked.isel(pair=target_mask_bool)
 
         # Order targets to match predictions
-        nwp_vt = ds_tgt_stacked["valid_time"].values
-        ml_vt = ds_pred_stacked["valid_time"].values
+        target_vt = ds_tgt_stacked["valid_time"].values
+        prediction_vt = ds_pred_stacked["valid_time"].values
         index_map: dict[np.datetime64, int] = {}
-        for i, vt in enumerate(nwp_vt):
+        for i, vt in enumerate(target_vt):
             index_map.setdefault(vt, i)
         try:
-            take_idx = np.array([index_map[vt] for vt in ml_vt], dtype=int)
+            take_idx = np.array([index_map[vt] for vt in prediction_vt], dtype=int)
         except KeyError as err:
             raise ValueError(
                 "Internal alignment error: Prediction valid_time not found in targets "
@@ -1196,11 +1191,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
                     def _fmt(step_key: str, label: str) -> str | None:
                         for e in audit:
-                            if e.get("step") == step_key and "ml" in e:
-                                ml = e["ml"]
-                                sample = ml.get("sample", [])
+                            if e.get("step") == step_key and "prediction" in e:
+                                pred = e["prediction"]
+                                sample = pred.get("sample", [])
                                 return (
-                                    f"[lead-time] ML {label}: count={ml.get('count', 0)} "
+                                    f"[lead-time] prediction {label}: count={pred.get('count', 0)} "
                                     f"sample={sample[:8]}"
                                 )
                         return None
@@ -1247,11 +1242,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 ):
                     c.warn(
                         "Multi-lead policy requested but only a single lead is present after "
-                        "selection/alignment. This typically means either your ML store has a "
-                        "single lead, your date window clips most valid times, or target/ML "
-                        "time alignment leaves only one overlapping offset. Consider widening "
-                        "'selection.datetimes', setting lead_time.mode=full temporarily, or "
-                        "inspecting the ML Zarr with tools/inspect_zarr.py."
+                        "selection/alignment. This typically means either your prediction store "
+                        "has a single lead, your date window clips most valid times, or "
+                        "target/prediction time alignment leaves only one overlapping offset. "
+                        "Consider widening 'selection.datetimes', setting lead_time.mode=full "
+                        "temporarily, or inspecting the prediction Zarr with tools/inspect_zarr.py."
                     )
         except Exception as ex:
             c.warn(f"Exception occurred during lead time policy handling: {ex}")

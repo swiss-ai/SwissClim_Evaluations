@@ -2,9 +2,9 @@
 # Designed to generate each table and plot once.
 
 paths:
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
 
-  nwp: [
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]

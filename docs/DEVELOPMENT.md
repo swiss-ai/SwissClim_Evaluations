@@ -59,4 +59,4 @@ pre-commit run --all-files
 ### Naming conventions
 
 - target: the ground-truth/reference dataset (e.g., ERA5). Public APIs now consistently use the parameter name `target`.
-- prediction: the model outputs to be evaluated (e.g., ML). Public APIs now consistently use the parameter name `prediction`.
+- prediction: the model outputs to be evaluated (e.g., Machine Learning model). Public APIs now consistently use the parameter name `prediction`.

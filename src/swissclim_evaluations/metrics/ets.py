@@ -205,7 +205,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            save_dataframe(df, out_csv)
+            save_dataframe(df, out_csv, index_label="variable")
             # Optional per-lead wide CSV when multi-lead policy provided
             multi_lead = ("lead_time" in ds_prediction.dims) and int(
                 ds_prediction.sizes.get("lead_time", 0)
@@ -250,16 +250,16 @@ def run(
                                 v, rest = c.split("_ETS ", 1)
                                 by_var.setdefault(v, []).append((c, rest))
                         for v, pairs in by_var.items():
-                            fig, ax = plt.subplots(figsize=(7, 3))
+                            fig, ax = plt.subplots(figsize=(10, 6))
                             pairs_sorted = sorted(pairs, key=lambda kv: int(kv[1].rstrip("%")))
                             for col, tlabel in pairs_sorted:
                                 ax.plot(
                                     hours, wide_df[col].values, marker="o", label=f"ETS {tlabel}"
                                 )
-                            ax.set_xlabel("lead_time (h)")
+                            ax.set_xlabel("Lead Time [h]")
                             ax.set_ylabel("ETS")
-                            ax.set_title(f"ETS thresholds vs lead_time — {v}")
-                            ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=8)
+                            ax.set_title(f"ETS thresholds vs Lead Time — {v}", fontsize=10)
+                            ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=10)
                             out_png = section_output / build_output_filename(
                                 metric="ets_line",
                                 variable=str(v),

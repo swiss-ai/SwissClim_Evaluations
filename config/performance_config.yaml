@@ -5,13 +5,13 @@
 paths:
   # Path to your model predictions in Zarr format (root directory).
   # Must contain variables with dims (init_time, [lead_time], latitude, longitude[, level][, ensemble]).
-  # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_aa_unmask3v3_ri/predictions_step50000.zarr"
-  # ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
-  ml: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_aa_unmask3v3_ri/predictions_step100000.zarr"
+  # prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_aa_unmask3v3_ri/predictions_step50000.zarr"
+  # prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_precipERA5_8tails_6h/rollout_predensemble_ci-co2-sst_2023-01-02x28_40steps.zarr"
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_aa_unmask3v3_ri/predictions_step100000.zarr"
 
   # Path to the reference dataset (ERA5 in WeatherBench2 layout).
   # Expected dims: (time or init_time+lead_time), latitude, longitude[, level].
-  nwp: [
+  target: [
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2022_2023.zarr",
     "/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr"
   ]
@@ -39,7 +39,7 @@ selection:
   #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
   #   3) Explicit non-contiguous timestamps:
   #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
-  # For ERA5 (time) and ML (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
+  # For ERA5 (time) and Prediction (init_time+lead_time), the CLI aligns by valid_time = init_time + lead_time.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     # "2023-04-02T00:2023-04-08T23",
@@ -76,7 +76,7 @@ selection:
     # "v_component_of_wind",
   ]
 
-  # For ML datasets with an 'ensemble' dimension:
+  # For Prediction datasets with an 'ensemble' dimension:
   #   - Set to an integer index to select a single member for deterministic runs.
   #   - Leave as null/omit to use the ensemble mean when probabilistic modules are disabled.
   #   - When probabilistic modules are enabled, ensemble is kept regardless.

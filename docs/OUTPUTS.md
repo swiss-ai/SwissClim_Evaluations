@@ -167,13 +167,17 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (o
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
 
-Per-variable artifacts (NPZ format):
+Per-variable artifacts (NPZ/CSV/PNG):
 
 ```text
 pit_hist_2m_temperature_ensprob.npz
+pit_evolution_2m_temperature_ensprob.png
+pit_evolution_2m_temperature_data_ensprob.npz
 pit_field_2m_temperature_ensprob.npz
 crps_field_2m_temperature_ensprob.npz
 crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
+probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv
+probabilistic_metrics_2m_temperature_per_lead_time_ensprob.png
 ```
 
 WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
@@ -183,14 +187,14 @@ crps_temporal_wbx_2m_temperature_ensprob.npz
 crps_spatial_wbx_2m_temperature_ensprob.npz
 ssr_temporal_wbx_2m_temperature_ensprob.npz
 ssr_spatial_wbx_2m_temperature_ensprob.npz
-crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map (optional)
+wbx_temporal_SSR.2m_temperature_ensprob.png # SSR temporal plot
+wbx_spatial_SSR.2m_temperature_ensprob.png  # SSR spatial plot
 ```
 
 Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
-crps_ensemble_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv

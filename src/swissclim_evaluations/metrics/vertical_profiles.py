@@ -11,6 +11,7 @@ from scores.functions import create_latitude_weights
 
 from ..dask_utils import compute_jobs
 from ..helpers import (
+    COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
     extract_date_from_dataset,
@@ -171,7 +172,7 @@ def _plot_vertical_profile_evolution(
     # Standard convention for vertical profiles (top is low pressure)
     ax.invert_yaxis()
 
-    ax.set_title(f"Vertical Profile Evolution — {format_variable_name(variable_name)}")
+    ax.set_title(f"Vertical Profile Evolution — {format_variable_name(variable_name)}", fontsize=10)
 
     if save_fig:
         section_output = out_root / "vertical_profiles"
@@ -531,26 +532,29 @@ def run(
             Defaulted keyword arguments bind loop variables (Ruff B023 safe).
             """
             n_cols = 2
-            fig, axes = plt.subplots(n_cols, _half, figsize=(24, 10), dpi=dpi * 2, sharey=True)
+            fig, axes = plt.subplots(
+                n_cols, _half, figsize=(24, 10), dpi=dpi * 2, sharey=True, sharex=True
+            )
             for bi in range(_half):
                 ax_s = axes[0, bi]
                 curve_s_da = _combined.sel(hemisphere="south").isel(band=bi).squeeze(drop=True)
                 curve_s = np.asarray(curve_s_da.values).squeeze()
                 lat_min_neg, lat_max_neg = _south_meta[bi]
-                ax_s.plot(curve_s, _lvl_vals)
+                ax_s.plot(curve_s, _lvl_vals, color=COLOR_MODEL_PREDICTION)
                 ax_s.set_title(f"Lat {lat_min_neg}° to {lat_max_neg}°")
-                ax_s.set_xlabel("NMAE (%)")
-                ax_s.set_ylabel("Level")
+                if bi == 0:
+                    ax_s.set_ylabel("Level")
                 ax_s.invert_yaxis()
                 ax_s.set_xlim(_gmin, _gmax)
                 ax_n = axes[1, bi]
                 curve_n_da = _combined.sel(hemisphere="north").isel(band=bi).squeeze(drop=True)
                 curve_n = np.asarray(curve_n_da.values).squeeze()
                 lat_min_pos, lat_max_pos = _north_meta[bi]
-                ax_n.plot(curve_n, _lvl_vals)
+                ax_n.plot(curve_n, _lvl_vals, color=COLOR_MODEL_PREDICTION)
                 ax_n.set_title(f"Lat {lat_min_pos}° to {lat_max_pos}°")
+                if bi == 0:
+                    ax_n.set_ylabel("Level")
                 ax_n.set_xlabel("NMAE (%)")
-                ax_n.set_ylabel("Level")
                 ax_n.invert_yaxis()
                 ax_n.set_xlim(_gmin, _gmax)
             plt.gca().invert_yaxis()
@@ -561,7 +565,8 @@ def run(
 
             plt.suptitle(
                 f"Vertical Profiles of NMAE for {format_variable_name(_var_name)} "
-                f"(band-wise){title_extra}{date_str}"
+                f"(band-wise){title_extra}{date_str}",
+                fontsize=24,
             )
             plt.tight_layout()
             if save_fig:
@@ -576,6 +581,24 @@ def run(
                     ext="png",
                 )
                 save_figure(fig, out_png)
+
+                # Also save as CSV
+                out_csv = section_output / build_output_filename(
+                    metric="vertical_profiles_nmae",
+                    variable=str(_var_name),
+                    level="multi",
+                    qualifier="plot",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token_local,
+                    ext="csv",
+                )
+                try:
+                    df = _combined.to_dataframe(name="nmae").reset_index()
+                    df.to_csv(out_csv, index=False)
+                except Exception as e:
+                    print(f"[vertical_profiles] Warning: could not save CSV: {e}")
+
             if save_npz:
                 out_npz = section_output / build_output_filename(
                     metric="vertical_profiles_nmae",

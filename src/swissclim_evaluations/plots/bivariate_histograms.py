@@ -12,7 +12,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
 
-from ..helpers import save_data, save_figure
+from ..helpers import format_variable_name, save_data, save_figure
 
 # Import console for rich output
 try:
@@ -24,10 +24,12 @@ except ImportError:
         import console as c  # type: ignore
 
 
-def _get_label(da: xr.DataArray, var_name: str) -> str:
+def _get_label(da: xr.DataArray, var_name: str, da_fallback: xr.DataArray | None = None) -> str:
     """Get a formatted label with unit for a variable from DataArray attributes."""
-    name = var_name
+    name = format_variable_name(var_name)
     unit = da.attrs.get("units", "")
+    if not unit and da_fallback is not None:
+        unit = da_fallback.attrs.get("units", "")
     if unit:
         return f"{name} [{unit}]"
     return name
@@ -78,8 +80,6 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (empty prediction data)")
             continue
 
-        hist_pred, xedges, yedges = np.histogram2d(x_data, y_data, bins=bins)
-
         # Compute for Target
         x_data_t = ds_target[var_x].values.flatten()
         y_data_t = ds_target[var_y].values.flatten()
@@ -91,7 +91,22 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (empty target data)")
             continue
 
-        # Use same bins as prediction
+        # Determine common range for both datasets to avoid cutting off data
+        x_min = min(x_data.min(), x_data_t.min())
+        x_max = max(x_data.max(), x_data_t.max())
+        y_min = min(y_data.min(), y_data_t.min())
+        y_max = max(y_data.max(), y_data_t.max())
+
+        # Add 10% padding
+        x_pad = (x_max - x_min) * 0.10
+        y_pad = (y_max - y_min) * 0.10
+        range_x = [x_min - x_pad, x_max + x_pad]
+        range_y = [y_min - y_pad, y_max + y_pad]
+
+        # Compute histograms with common range
+        hist_pred, xedges, yedges = np.histogram2d(
+            x_data, y_data, bins=bins, range=[range_x, range_y]
+        )
         hist_target, _, _ = np.histogram2d(x_data_t, y_data_t, bins=[xedges, yedges])
 
         # Save and Plot
@@ -124,8 +139,12 @@ def calculate_and_plot_bivariate_histograms(
                 var_x=var_x,
                 var_y=var_y,
                 ax=ax,
-                xlabel=_get_label(ds_prediction[var_x], var_x),
-                ylabel=_get_label(ds_prediction[var_y], var_y),
+                xlabel=_get_label(
+                    ds_prediction[var_x], var_x, ds_target[var_x] if ds_target else None
+                ),
+                ylabel=_get_label(
+                    ds_prediction[var_y], var_y, ds_target[var_y] if ds_target else None
+                ),
             )
 
         plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
@@ -278,23 +297,23 @@ def plot_bivariate_histogram(
         cbar.set_label("Density (log scale)")
         cbar.add_lines(cs1)
 
-    ax.set_xlabel(xlabel if xlabel else var_x)
-    ax.set_ylabel(ylabel if ylabel else var_y)
-    ax.set_title(f"{var_x} vs {var_y}")
+    ax.set_xlabel(xlabel if xlabel else format_variable_name(var_x))
+    ax.set_ylabel(ylabel if ylabel else format_variable_name(var_y))
+    ax.set_title(f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}")
 
     # Zoom out by 25%
-    x_min, x_max = bins_x.min(), bins_x.max()
-    y_min, y_max = bins_y.min(), bins_y.max()
+    # x_min, x_max = bins_x.min(), bins_x.max()
+    # y_min, y_max = bins_y.min(), bins_y.max()
 
-    x_range = x_max - x_min
-    y_range = y_max - y_min
+    # x_range = x_max - x_min
+    # y_range = y_max - y_min
 
-    x_center = (x_max + x_min) / 2
-    y_center = (y_max + y_min) / 2
+    # x_center = (x_max + x_min) / 2
+    # y_center = (y_max + y_min) / 2
 
     # Expand by 25% (factor 1.25)
-    ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
-    ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
+    # ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
+    # ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
 
     # Add legend for the contours
     # Use 3 representative colors for the filled contours (low, mid, high)

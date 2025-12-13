@@ -374,7 +374,7 @@ def resolve_ensemble_mode(
     return base
 
 
-def ensemble_mode_to_token(mode: str, member_index: int | None = None) -> str | None:
+def ensemble_mode_to_token(mode: str | None, member_index: int | None = None) -> str | None:
     """Map resolved ensemble mode to filename token.
 
     Returns token WITHOUT leading underscore; build_output_filename will append as part list.
@@ -461,7 +461,9 @@ def validate_and_normalize_ensemble_config(
     return normalized, warnings
 
 
-def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=None):
+def display_outputs(
+    output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=None, exclude_pattern=None
+):
     """Display all images and tables in the given directory matching the patterns.
 
     Args:
@@ -469,6 +471,7 @@ def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=
         pattern_img: Glob pattern for images (default: "*.png"). Set to None or "" to skip.
         pattern_csv: Glob pattern for CSV tables (default: "*.csv"). Set to None or "" to skip.
         limit: Maximum number of images to display (default: None, show all).
+        exclude_pattern: Substring to exclude from filenames (default: None).
     """
     from itertools import islice
     from pathlib import Path
@@ -495,6 +498,9 @@ def display_outputs(output_dir, pattern_img="*.png", pattern_csv="*.csv", limit=
     # Images
     if pattern_img:
         images = sorted(path.glob(pattern_img), key=natural_key)
+        if exclude_pattern:
+            images = [img for img in images if exclude_pattern not in img.name]
+
         if images:
             to_show = images if limit is None else list(islice(images, 0, limit))
             count_str = f"({len(to_show)}/{len(images)})" if limit is not None else ""

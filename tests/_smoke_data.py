@@ -33,7 +33,7 @@ def make_synthetic_datasets(
     )
 
     if with_ensemble:
-        coords_ml = coords | {"ensemble": np.arange(ensemble)}
+        coords_prediction = coords | {"ensemble": np.arange(ensemble)}
         predictions = xr.Dataset(
             {
                 v: (
@@ -43,12 +43,12 @@ def make_synthetic_datasets(
                 )
                 for v in VARS_2D
             },
-            coords=coords_ml,
+            coords=coords_prediction,
         )
     else:
         # Even if with_ensemble=False, we must provide an ensemble dimension for strict compliance
         # This branch effectively creates a single-member prediction (deterministic)
-        coords_ml = coords | {"ensemble": [0]}
+        coords_prediction = coords | {"ensemble": [0]}
         predictions = xr.Dataset(
             {
                 v: (
@@ -58,7 +58,7 @@ def make_synthetic_datasets(
                 )
                 for v in VARS_2D
             },
-            coords=coords_ml,
+            coords=coords_prediction,
         )
 
     return targets, predictions

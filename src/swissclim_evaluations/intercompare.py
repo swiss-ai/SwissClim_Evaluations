@@ -273,19 +273,15 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         level_values = payloads[0].get("level")
         if level_values is None:
             continue
-        fig, axs = plt.subplots(bands, 2, figsize=(14, 2.2 * bands), dpi=160, sharey=True)
+
+        # vertical_profiles.py does:
+        # Row 0: South
+        # Row 1: North
+        fig, axs = plt.subplots(2, bands, figsize=(24, 10), dpi=160, sharey=True, sharex=True)
+
         for j in range(bands):
-            axn = axs[j, 0]
-            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get(key_pos))
-                if arr is None or arr.shape[0] <= j:
-                    continue
-                axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
-            if pos_lat_min is not None and pos_lat_max is not None:
-                axn.set_title(f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)")
-            axn.invert_yaxis()
-            axn.set_xlabel("NMAE (%)")
-            axsou = axs[j, 1]
+            # South (Row 0)
+            axsou = axs[0, j]
             for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 arr = np.asarray(pay.get(key_neg))
                 if arr is None or arr.shape[0] <= j:
@@ -293,8 +289,26 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                 axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
             if neg_lat_min is not None and neg_lat_max is not None:
                 axsou.set_title(f"Lat {float(neg_lat_min[j])}° to {float(neg_lat_max[j])}° (South)")
-            axsou.invert_yaxis()
-            axsou.set_xlabel("NMAE (%)")
+
+            if j == 0:
+                axsou.set_ylabel("Level")
+                # Only invert once because axes are shared
+                axsou.invert_yaxis()
+
+            # North (Row 1)
+            axn = axs[1, j]
+            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                arr = np.asarray(pay.get(key_pos))
+                if arr is None or arr.shape[0] <= j:
+                    continue
+                axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
+            if pos_lat_min is not None and pos_lat_max is not None:
+                axn.set_title(f"Lat {float(pos_lat_min[j])}° to {float(pos_lat_max[j])}° (North)")
+
+            axn.set_xlabel("NMAE (%)")
+            if j == 0:
+                axn.set_ylabel("Level")
+
         handles, labels_leg = axs[0, 0].get_legend_handles_labels()
         if handles:
             fig.legend(
@@ -326,7 +340,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         # Extract date info from filename if possible
         date_suffix = extract_date_from_filename(base)
 
-        fig.suptitle(f"Vertical Profiles — {var} (NMAE %){date_suffix}", y=1.02)
+        fig.suptitle(
+            f"Vertical Profiles of NMAE for {format_variable_name(var)} (band-wise){date_suffix}",
+            y=1.02,
+            fontsize=24,
+        )
         plt.tight_layout(rect=(0, 0.04, 1, 1))
         out_png = dst / base.replace(".npz", "_compare.png")
         # Save only if at least two models contributed lines
@@ -533,6 +551,9 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
             # Determine surface vs level from metadata
             var = datas[0].get("variable") or "var"
+            # Ensure var is a string (handle 0-d numpy arrays from NPZ)
+            var = str(var.item()) if hasattr(var, "item") else str(var)
+
             level_raw = datas[0].get("level")
 
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
@@ -550,11 +571,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             colors = sns.color_palette("tab10", n_colors=len(models))
             for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
-                if specm is None:
-                    specm = dat.get("spectrum_ml")
                 wnm = dat.get("wavenumber")
-                if wnm is None:
-                    wnm = dat.get("wavenumber_ml")
                 if wnm is None or specm is None or len(np.asarray(specm)) == 0:
                     continue
                 try:
@@ -568,7 +585,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     continue
             ax.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax.set_ylabel("Energy Density (weighted)")
-            title = f"Energy Spectra — {var}{format_level_label(level_raw)}"
+            title = f"Energy Spectra — {format_variable_name(var)}{format_level_label(level_raw)}"
 
             # Extract date info if available (single init time)
             init_t = datas[0].get("init_time")
@@ -620,7 +637,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                     specm = dat.get("spectrum_prediction")
                     if specm is None:
-                        specm = dat.get("spectrum_ml")
+                        specm = dat.get("spectrum_prediction")
 
                     # Try to get the matching target spectrum for this model
                     spec_t = dat.get("spectrum_target")
@@ -632,7 +649,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
                     wnm = dat.get("wavenumber")
                     if wnm is None:
-                        wnm = dat.get("wavenumber_ml")
+                        wnm = dat.get("wavenumber_prediction")
 
                     if wnm is None or specm is None or spec_t is None:
                         continue
@@ -683,7 +700,10 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
                 ax_r.set_ylabel("Energy Density Ratio (%)")
 
-                title_ratio = f"Energy Spectra Ratio — {var}{format_level_label(level_raw)}"
+                title_ratio = (
+                    f"Energy Spectra Ratio — {format_variable_name(var)}"
+                    f"{format_level_label(level_raw)}"
+                )
                 ax_r.set_title(title_ratio)
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
                 ax_r.legend(frameon=False)
@@ -719,7 +739,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
             # Check if all have necessary keys
             if not all(
-                "energy_model" in p and "lead_hours" in p and "wavenumber" in p for p in payloads
+                "energy_prediction" in p and "lead_hours" in p and "wavenumber" in p
+                for p in payloads
             ):
                 continue
 
@@ -747,7 +768,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
                 colors = sns.color_palette("tab10", n_colors=len(models))
                 for j, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    em = pay["energy_model"]
+                    em = pay["energy_prediction"]
                     if em.ndim == 2 and em.shape[0] > i:
                         with contextlib.suppress(Exception):
                             ax.loglog(
@@ -982,47 +1003,53 @@ def intercompare_histograms(
             fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
             # Target (from first model)
-            counts_ds = payloads[0].get("counts_ds", payloads[0].get("counts_true"))
-            if counts_ds is None:
-                counts_ds = payloads[0].get("densities_true")
+            counts_target = payloads[0].get("counts_target", payloads[0].get("counts_true"))
+            if counts_target is None:
+                counts_target = payloads[0].get("densities_true")
 
-            bins_ds = payloads[0].get("bins", payloads[0].get("edges"))
+            bins_target = payloads[0].get("bins", payloads[0].get("edges"))
 
-            if counts_ds is not None:
-                counts_ds = np.asarray(counts_ds)
-                if counts_ds.ndim > 1:
-                    counts_ds = counts_ds.flatten()
-            if bins_ds is not None:
-                bins_ds = np.asarray(bins_ds)
-                if bins_ds.ndim > 1:
-                    bins_ds = bins_ds.flatten()
+            if counts_target is not None:
+                counts_target = np.asarray(counts_target)
+                if counts_target.ndim > 1:
+                    counts_target = counts_target.flatten()
+            if bins_target is not None:
+                bins_target = np.asarray(bins_target)
+                if bins_target.ndim > 1:
+                    bins_target = bins_target.flatten()
 
-            _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
+            _plot_hist_counts(
+                ax, bins_target, counts_target, label="Target", color=COLOR_GROUND_TRUTH
+            )
 
             # Models
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                counts_ml = pay.get("counts_ml", pay.get("counts_pred"))
-                if counts_ml is None:
-                    counts_ml = pay.get("densities_pred")
+                counts_prediction = pay.get("counts_prediction", pay.get("counts_pred"))
+                if counts_prediction is None:
+                    counts_prediction = pay.get("densities_pred")
 
-                bins_ml = pay.get("bins", pay.get("edges"))
+                bins_prediction = pay.get("bins", pay.get("edges"))
 
-                if counts_ml is not None:
-                    counts_ml = np.asarray(counts_ml)
-                    if counts_ml.ndim > 1:
-                        counts_ml = counts_ml.flatten()
-                if bins_ml is not None:
-                    bins_ml = np.asarray(bins_ml)
-                    if bins_ml.ndim > 1:
-                        bins_ml = bins_ml.flatten()
+                if counts_prediction is not None:
+                    counts_prediction = np.asarray(counts_prediction)
+                    if counts_prediction.ndim > 1:
+                        counts_prediction = counts_prediction.flatten()
+                if bins_prediction is not None:
+                    bins_prediction = np.asarray(bins_prediction)
+                    if bins_prediction.ndim > 1:
+                        bins_prediction = bins_prediction.flatten()
 
-                _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                _plot_hist_counts(
+                    ax, bins_prediction, counts_prediction, label=lab, color=colors[i]
+                )
 
             var = _clean_var_from_filename(base, prefix="hist_")
             date_suffix = extract_date_from_filename(base)
-            ax.set_title(f"Global Histogram — {var}{date_suffix}")
+            ax.set_title(f"Global Histogram — {var}{date_suffix}", fontsize=16)
             ax.set_ylabel("Frequency (log)")
             ax.set_yscale("log")
+            if units := payloads[0].get("units"):
+                ax.set_xlabel(str(units))
             ax.legend(frameon=False)
             ax.grid(True, which="both", ls="--", alpha=0.4)
 
@@ -1051,18 +1078,20 @@ def intercompare_histograms(
             for j in range(n_rows):
                 ax = axs[j, 1]
                 # Baseline DS from first payload
-                ds_ml_pairs = payloads[0]["neg_counts"][j]
-                # Each element is (counts_ds, counts_ml)
-                counts_ds = ds_ml_pairs[0]
+                ds_prediction_pairs = payloads[0]["neg_counts"][j]
+                # Each element is (counts_ds, counts_prediction)
+                counts_ds = ds_prediction_pairs[0]
                 bins_ds = payloads[0]["neg_bins"][j]
 
                 _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
 
                 # Plot each prediction model
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    counts_ml = pay["neg_counts"][j][1]
-                    bins_ml = pay["neg_bins"][j]
-                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                    counts_prediction = pay["neg_counts"][j][1]
+                    bins_prediction = pay["neg_bins"][j]
+                    _plot_hist_counts(
+                        ax, bins_prediction, counts_prediction, label=lab, color=colors[i]
+                    )
                 lat_min = (
                     float(lat_neg_min[j])
                     if isinstance(lat_neg_min, (list | np.ndarray))
@@ -1080,16 +1109,18 @@ def intercompare_histograms(
             # Left column: northern hemisphere bands
             for j in range(n_rows):
                 ax = axs[j, 0]
-                ds_ml_pairs = payloads[0]["pos_counts"][j]
-                counts_ds = ds_ml_pairs[0]
+                ds_prediction_pairs = payloads[0]["pos_counts"][j]
+                counts_ds = ds_prediction_pairs[0]
                 bins_ds = payloads[0]["pos_bins"][j]
 
                 _plot_hist_counts(ax, bins_ds, counts_ds, label="Target", color=COLOR_GROUND_TRUTH)
 
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    counts_ml = pay["pos_counts"][j][1]
-                    bins_ml = pay["pos_bins"][j]
-                    _plot_hist_counts(ax, bins_ml, counts_ml, label=lab, color=colors[i])
+                    counts_prediction = pay["pos_counts"][j][1]
+                    bins_prediction = pay["pos_bins"][j]
+                    _plot_hist_counts(
+                        ax, bins_prediction, counts_prediction, label=lab, color=colors[i]
+                    )
                 lat_min = (
                     float(lat_pos_min[j])
                     if isinstance(lat_pos_min, (list | np.ndarray))
@@ -1118,7 +1149,9 @@ def intercompare_histograms(
             var = _clean_var_from_filename(base, prefix="hist_")
             date_suffix = extract_date_from_filename(base)
 
-            fig.suptitle(f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02)
+            fig.suptitle(
+                f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02, fontsize=20
+            )
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
@@ -1181,15 +1214,15 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
             # Models
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                x_ml = pay["x"]
-                kde_ml = pay["kde_ml"]
-                ax.plot(x_ml, kde_ml, color=colors[i], label=lab)
+                x_prediction = pay["x"]
+                kde_prediction = pay["kde_prediction"]
+                ax.plot(x_prediction, kde_prediction, color=colors[i], label=lab)
 
             var = _clean_var_from_filename(base, prefix="wd_kde_")
             date_suffix = extract_date_from_filename(base)
-            ax.set_title(f"Global Normalized KDE — {var}{date_suffix}")
-            if units := payloads[0].get("units"):
-                ax.set_xlabel(str(units))
+            ax.set_title(f"Global Normalized KDE — {var}{date_suffix}", fontsize=16)
+            # if units := payloads[0].get("units"):
+            #     ax.set_xlabel(str(units))
             ax.legend()
 
             out_png = dst / base.replace(".npz", "_compare.png")
@@ -1203,7 +1236,7 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
         # colors already defined
         for base in common:
             payloads = [_load_npz(m / src_rel / base) for m in models]
-            units = payloads[0].get("units")
+            # units = payloads[0].get("units")
             # Assume each payload carries arrays of object dtype per band
             pos_x0 = payloads[0]["pos_x"]
             n_rows = len(pos_x0)
@@ -1218,15 +1251,15 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     ax.plot(
                         pay["neg_x"][j],
-                        pay["neg_kde_ml"][j],
+                        pay["neg_kde_prediction"][j],
                         color=colors[i],
                         label=lab,
                     )
                 lat_min = float(payloads[0]["neg_lat_min"][j])
                 lat_max = float(payloads[0]["neg_lat_max"][j])
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
-                if units:
-                    ax.set_xlabel(str(units))
+                # if units:
+                #     ax.set_xlabel(str(units))
 
             # North (left)
             for j in range(n_rows):
@@ -1238,15 +1271,15 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
                 for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                     ax.plot(
                         pay["pos_x"][j],
-                        pay["pos_kde_ml"][j],
+                        pay["pos_kde_prediction"][j],
                         color=colors[i],
                         label=lab,
                     )
                 lat_min = float(payloads[0]["pos_lat_min"][j])
                 lat_max = float(payloads[0]["pos_lat_max"][j])
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
-                if units:
-                    ax.set_xlabel(str(units))
+                # if units:
+                #     ax.set_xlabel(str(units))
 
             handles, labels_leg = axs[0, 0].get_legend_handles_labels()
             if handles:
@@ -1261,7 +1294,9 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
             var = _clean_var_from_filename(base, prefix="wd_kde_")
             date_suffix = extract_date_from_filename(base)
 
-            fig.suptitle(f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02)
+            fig.suptitle(
+                f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02, fontsize=20
+            )
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
@@ -1338,14 +1373,10 @@ def intercompare_maps(
         payloads = [_load_npz(m / src_rel / f"{key}.npz") for m in models]
         # Extract DS from first payload
         target = payloads[0].get("target")
-        if target is None:
-            target = payloads[0].get("nwp")
 
         predictions = []
         for p in payloads:
             val = p.get("prediction")
-            if val is None:
-                val = p.get("ml")
             predictions.append(val)
 
         if any(x is None for x in predictions) or target is None:
@@ -2225,7 +2256,8 @@ def intercompare_probabilistic(
         _print_file_list(f"Found {len(common_pit)} common PIT histogram files", common_pit)
         for base in common_pit:
             # Skip if it's a grid file or data file that we don't want to plot directly
-            if "grid" in base or "data" in base:
+            # Also skip per-lead files to avoid duplicates
+            if "grid" in base or "data" in base or "lead" in base:
                 continue
 
             payloads = [_load_npz(m / "probabilistic" / base) for m in models]
@@ -2242,6 +2274,15 @@ def intercompare_probabilistic(
 
             colors = sns.color_palette("tab10", n_colors=len(models))
 
+            # Calculate width for side-by-side bars
+            n_models = len(models)
+
+            # First pass to get bins and check consistency
+            bins0 = payloads[0].get("bins", payloads[0].get("edges"))
+            width_total = np.diff(bins0)
+            # Bar width for each model
+            bar_width = width_total / n_models
+
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                 counts = pay["counts"]
                 bins = pay.get("bins", pay.get("edges"))
@@ -2251,8 +2292,19 @@ def intercompare_probabilistic(
                 width = np.diff(bins)
                 density = counts / (counts.sum() * width)
 
-                # Plot as step
-                ax.stairs(density, bins, label=lab, color=colors[i], linewidth=2)
+                # Plot as filled bars side-by-side
+                # Shift x position based on model index
+                x_pos = bins[:-1] + (i * bar_width)
+
+                ax.bar(
+                    x_pos,
+                    density,
+                    width=bar_width,
+                    align="edge",
+                    label=lab,
+                    color=colors[i],
+                    alpha=0.8,
+                )
 
             # Add reference line at 1.0
             ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal")

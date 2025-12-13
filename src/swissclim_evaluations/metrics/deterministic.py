@@ -1044,13 +1044,13 @@ def run(
                         col = f"{v}_{m}"
                         if col not in wide_df:
                             continue
-                        fig, ax = _plt.subplots(figsize=(6.5, 3.2))
+                        fig, ax = _plt.subplots(figsize=(10, 6))
                         x = wide_df["lead_time_hours"].values
                         y = wide_df[col].values
                         ax.plot(x, y, marker="o")
-                        ax.set_xlabel("lead_time (h)")
+                        ax.set_xlabel("Lead Time [h]")
                         ax.set_ylabel(m)
-                        ax.set_title(f"{v} — {m} vs lead_time")
+                        ax.set_title(f"{v} — {m} vs Lead Time", fontsize=10)
                         out_png = section_output / build_output_filename(
                             metric="det_line",
                             variable=str(v),

@@ -296,8 +296,9 @@ def _plot_single_spectrum(
     ax.set_title(
         f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
         pad=24,
+        fontsize=10,
     )
-    ax.legend()
+    ax.legend(fontsize=10)
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
     if save_figure and out_path is not None:
@@ -442,8 +443,8 @@ def _plot_energy_spectra(
             variable=var,
             level=f"{level}hPa" if level is not None else None,
             qualifier="spectrum",
-            init_time_range=None,
-            lead_time_range=None,
+            init_time_range=(init_label, init_label),
+            lead_time_range=(lead_label, lead_label),
             ensemble=ens_token,
             ext="png",
         )
@@ -611,6 +612,44 @@ def run(
     else:
         variables_2d = list(tgt.data_vars)
 
+    # Prepare plotting subset (single init_time) to avoid figure explosion
+    tgt_plot = tgt
+    pred_plot = pred
+    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
+
+    if plot_dt_str and "init_time" in pred.dims:
+        try:
+            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
+            if plot_dt in pred["init_time"].values:
+                pred_plot = pred.sel(init_time=[plot_dt])
+                if "init_time" in tgt.dims and plot_dt in tgt["init_time"].values:
+                    tgt_plot = tgt.sel(init_time=[plot_dt])
+                print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
+        except Exception as e:
+            print(
+                f"[energy_spectra] Warning: plot_datetime failed ({e}); "
+                "using full dataset for plots."
+            )
+
+    elif (not plot_dt_str) and ("init_time" in pred.dims):
+        # Default: plot only first init_time
+        try:
+            first_dt = pred["init_time"].values[0]
+            pred_plot = pred.sel(init_time=[first_dt])
+            if "init_time" in tgt.dims and first_dt in tgt["init_time"].values:
+                tgt_plot = tgt.sel(init_time=[first_dt])
+            dt_str = str(first_dt)
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
+            print(
+                f"[energy_spectra] Plotting only first init_time: {dt_str} "
+                "(metrics cover full range)"
+            )
+        except Exception:
+            pass
+
     # Basic schema validation: require longitude for spectra
     has_lon_any = ("longitude" in tgt.dims) or any(
         ("longitude" in tgt[v].dims) for v in variables_2d
@@ -696,8 +735,8 @@ def run(
             if save_plot or save_npz:
                 for var in variables_2d:
                     _plot_energy_spectra(
-                        tgt,
-                        pred,
+                        tgt_plot,
+                        pred_plot,
                         str(var),
                         None,
                         section_output / "placeholder",
@@ -821,8 +860,8 @@ def run(
             for var in variables_3d:
                 for lvl in levels:
                     _plot_energy_spectra(
-                        tgt,
-                        pred,
+                        tgt_plot,
+                        pred_plot,
                         str(var),
                         int(lvl),
                         section_output / "placeholder",
@@ -839,25 +878,26 @@ def run(
         (not is_multi_lead)
         and save_npz
         and (resolved == "members")
-        and ("ensemble" in ds_prediction.dims)
+        and ("ensemble" in pred_plot.dims)
     ):
         dpi = int((plotting_cfg or {}).get("dpi", 48))
 
-        for mi in range(int(ds_prediction.sizes["ensemble"])):
-            token = ensemble_mode_to_token("members", mi)
-            ds_t_m = tgt.isel(ensemble=mi) if "ensemble" in tgt.dims else tgt
-            ds_p_m = pred.isel(ensemble=mi) if "ensemble" in pred.dims else pred
-            _plot_energy_spectra(
-                ds_t_m,
-                ds_p_m,
-                str(var),
-                None,
-                section_output / "_anchor.png",
-                dpi=dpi,
-                save_plot_data=True,
-                save_figure=False,
-                override_ensemble_token=token,
-            )
+        for var in variables_2d:
+            for mi in range(int(pred_plot.sizes["ensemble"])):
+                token = ensemble_mode_to_token("members", mi)
+                ds_t_m = tgt_plot.isel(ensemble=mi) if "ensemble" in tgt_plot.dims else tgt_plot
+                ds_p_m = pred_plot.isel(ensemble=mi) if "ensemble" in pred_plot.dims else pred_plot
+                _plot_energy_spectra(
+                    ds_t_m,
+                    ds_p_m,
+                    str(var),
+                    None,
+                    section_output / "_anchor.png",
+                    dpi=dpi,
+                    save_plot_data=True,
+                    save_figure=False,
+                    override_ensemble_token=token,
+                )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
     do_spec = bool((plotting_cfg or {}).get("energy_spectra_spectrogram", False))
@@ -1035,7 +1075,7 @@ def run(
                 lead_hours=x_hours,
                 wavenumber=kvals,
                 energy_target=Zt,
-                energy_model=Zp,
+                energy_prediction=Zp,
                 log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
                 variable=str(var),
             )

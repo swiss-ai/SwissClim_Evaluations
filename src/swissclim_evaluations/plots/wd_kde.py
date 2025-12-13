@@ -50,8 +50,8 @@ def run(
     section_output.mkdir(parents=True, exist_ok=True)
 
     wasserstein_rows: list[dict[str, Any]] = []
-    n_bands = 8
-    lat_bins = np.linspace(-90, 90, n_bands + 1)
+    lat_bins = np.arange(-90, 91, 10)
+    n_bands = len(lat_bins) - 1
     n_rows = n_bands // 2
 
     process_3d = bool(plotting_cfg.get("wd_kde_include_3d", True))
@@ -239,7 +239,9 @@ def run(
         ax.set_yticks(yticks)
         ax.set_yticklabels(yticklabels)
         ax.set_xlabel(f"{variable_name} (standardized)")
-        ax.set_title(f"KDE Evolution by Lead Time — {format_variable_name(variable_name)}")
+        ax.set_title(
+            f"KDE Evolution by Lead Time — {format_variable_name(variable_name)}", fontsize=16
+        )
 
         # Add legend manually
         from matplotlib.lines import Line2D
@@ -248,7 +250,7 @@ def run(
             Line2D([0], [0], color=COLOR_GROUND_TRUTH, lw=2),
             Line2D([0], [0], color=COLOR_MODEL_PREDICTION, lw=2),
         ]
-        ax.legend(custom_lines, ["Target", "Prediction"], loc="upper right")
+        ax.legend(custom_lines, ["Target", "Prediction"], loc="upper right", fontsize=10)
 
         if save_fig:
             out_png = section_output / build_output_filename(
@@ -341,32 +343,40 @@ def run(
         # --- Process Global KDE ---
         global_job = jobs[0]
         ds_flat_g = cast(np.ndarray, global_job["val_t"])
-        ml_flat_g = cast(np.ndarray, global_job["val_p"])
+        prediction_flat_g = cast(np.ndarray, global_job["val_p"])
         units = get_variable_units(ds_target, var_name)
 
-        if ds_flat_g.size > 0 and ml_flat_g.size > 0:
-            w_g = wasserstein_distance(ds_flat_g, ml_flat_g)
+        if ds_flat_g.size > 0 and prediction_flat_g.size > 0:
+            w_g = wasserstein_distance(ds_flat_g, prediction_flat_g)
             kde_ds_g = gaussian_kde(ds_flat_g)
-            kde_ml_g = gaussian_kde(ml_flat_g)
+            kde_prediction_g = gaussian_kde(prediction_flat_g)
 
             # Plot Global
             fig_g, ax_g = plt.subplots(figsize=(10, 6), dpi=dpi)
             x_eval_g = np.linspace(
-                min(ds_flat_g.min(), ml_flat_g.min()),
-                max(ds_flat_g.max(), ml_flat_g.max()),
+                min(ds_flat_g.min(), prediction_flat_g.min()),
+                max(ds_flat_g.max(), prediction_flat_g.max()),
                 100,
             )
             ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
             ax_g.plot(
-                x_eval_g, kde_ml_g(x_eval_g), color=COLOR_MODEL_PREDICTION, label="Prediction"
+                x_eval_g,
+                kde_prediction_g(x_eval_g),
+                color=COLOR_MODEL_PREDICTION,
+                label="Prediction",
             )
 
             # Check for single date
             date_str = extract_date_from_dataset(da_t_std)
             lev_part = format_level_label(level_val if level_val is not None else level_token)
 
+            if units:
+                ax_g.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
+            else:
+                ax_g.set_xlabel(f"{format_variable_name(var_name)}")
+
             ax_g.set_title(
-                f"Global Normalized KDE — {format_variable_name(var_name)}"
+                f"Global Normalized KDE — {format_variable_name(variable_name)}"
                 f"{lev_part}{date_str}\nW-dist: {w_g:.3f}"
             )
             ax_g.legend()
@@ -401,7 +411,7 @@ def run(
                     w_dist=w_g,
                     x=x_eval_g,
                     kde_ds=kde_ds_g(x_eval_g),
-                    kde_ml=kde_ml_g(x_eval_g),
+                    kde_prediction=kde_prediction_g(x_eval_g),
                     units=units,
                     allow_pickle=True,
                 )
@@ -430,12 +440,12 @@ def run(
         combined: dict[str, list[np.ndarray | float]] = {
             "neg_x": [],
             "neg_kde_ds": [],
-            "neg_kde_ml": [],
+            "neg_kde_prediction": [],
             "neg_lat_min": [],
             "neg_lat_max": [],
             "pos_x": [],
             "pos_kde_ds": [],
-            "pos_kde_ml": [],
+            "pos_kde_prediction": [],
             "pos_lat_min": [],
             "pos_lat_max": [],
         }
@@ -443,7 +453,7 @@ def run(
         # Process lat band results
         for job in jobs[1:]:
             ds_flat = job["val_t"]
-            ml_flat = job["val_p"]
+            prediction_flat = job["val_p"]
             lat_min = job["lat_min"]
             lat_max = job["lat_max"]
             j = job["j"]
@@ -455,11 +465,11 @@ def run(
                 ax = axs[j, 0]
                 key_prefix = "pos"
 
-            if ds_flat.size == 0 or ml_flat.size == 0:
+            if ds_flat.size == 0 or prediction_flat.size == 0:
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
 
-            w = wasserstein_distance(ds_flat, ml_flat)
+            w = wasserstein_distance(ds_flat, prediction_flat)
             w_distances.append(w)
             wasserstein_rows.append(
                 {
@@ -471,20 +481,26 @@ def run(
                 }
             )
             kde_ds = gaussian_kde(ds_flat)
-            kde_ml = gaussian_kde(ml_flat)
+            kde_prediction = gaussian_kde(prediction_flat)
             x_eval = np.linspace(
-                min(ds_flat.min(), ml_flat.min()),
-                max(ds_flat.max(), ml_flat.max()),
+                min(ds_flat.min(), prediction_flat.min()),
+                max(ds_flat.max(), prediction_flat.max()),
                 100,
             )
             ax.plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
-            ax.plot(x_eval, kde_ml(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction")
+            ax.plot(
+                x_eval, kde_prediction(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction"
+            )
+            if units:
+                ax.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
+            else:
+                ax.set_xlabel(f"{format_variable_name(var_name)}")
             ax.set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
             ax.legend()
             if save_npz:
                 combined[f"{key_prefix}_x"].append(x_eval)
                 combined[f"{key_prefix}_kde_ds"].append(kde_ds(x_eval))
-                combined[f"{key_prefix}_kde_ml"].append(kde_ml(x_eval))
+                combined[f"{key_prefix}_kde_prediction"].append(kde_prediction(x_eval))
                 combined[f"{key_prefix}_lat_min"].append(float(lat_min))
                 combined[f"{key_prefix}_lat_max"].append(float(lat_max))
 
@@ -495,8 +511,8 @@ def run(
 
         plt.suptitle(
             "Normalized Distribution of "
-            f"{var_name} ({level_token}) by latitude bands{date_str}\nMean Wasserstein distance: "
-            f"{mean_w:.3f}",
+            f"{format_variable_name(var_name)} ({level_token}) by Latitude Bands{date_str}\n"
+            f"Mean Wasserstein distance: {mean_w:.3f}",
             y=1.02,
         )
         plt.tight_layout()
@@ -529,12 +545,12 @@ def run(
                 mean_w=mean_w,
                 neg_x=np.array(combined["neg_x"], dtype=object),
                 neg_kde_ds=np.array(combined["neg_kde_ds"], dtype=object),
-                neg_kde_ml=np.array(combined["neg_kde_ml"], dtype=object),
+                neg_kde_prediction=np.array(combined["neg_kde_prediction"], dtype=object),
                 neg_lat_min=np.array(combined["neg_lat_min"]),
                 neg_lat_max=np.array(combined["neg_lat_max"]),
                 pos_x=np.array(combined["pos_x"], dtype=object),
                 pos_kde_ds=np.array(combined["pos_kde_ds"], dtype=object),
-                pos_kde_ml=np.array(combined["pos_kde_ml"], dtype=object),
+                pos_kde_prediction=np.array(combined["pos_kde_prediction"], dtype=object),
                 pos_lat_min=np.array(combined["pos_lat_min"]),
                 pos_lat_max=np.array(combined["pos_lat_max"]),
                 allow_pickle=True,
@@ -603,56 +619,79 @@ def run(
     # Optional: Global KDE evolution over lead_time (3D perspective)
     evolve_flag = bool((plotting_cfg or {}).get("wd_kde_global_evolution", False))
     if evolve_flag and ("lead_time" in ds_prediction_std_eff.dims):
-        # Choose a representative 2D standardized variable (no level dim)
+        # Choose all eligible variables (2D and 3D)
         cand_vars = [
             v
             for v in ds_prediction_std_eff.data_vars
             if "level" not in ds_prediction_std_eff[v].dims
         ]
-        if cand_vars:
-            base_var = str(cand_vars[0])
-            # Common evaluation axis from combined sample across all leads (paired with targets)
-            # Draw a coarse subsample to set robust evaluation range
-            da_t_all = ds_target_std_eff[base_var]
-            da_p_all = ds_prediction_std_eff[base_var]
+        if process_3d:
+            cand_vars.extend(
+                [
+                    v
+                    for v in ds_prediction_std_eff.data_vars
+                    if "level" in ds_prediction_std_eff[v].dims
+                ]
+            )
 
-            # Collapse spatial + time to estimate global min/max quickly
-            q_t_lazy = da_t_all.quantile([0.001, 0.999], skipna=True)
-            q_p_lazy = da_p_all.quantile([0.001, 0.999], skipna=True)
+        for base_var in cand_vars:
+            # Handle 3D variables by iterating over levels
+            levels = [None]
+            if "level" in ds_prediction_std_eff[base_var].dims:
+                levels = ds_prediction_std_eff[base_var].level.values
 
-            # Build densities per lead for target and model
-            leads = list(ds_prediction_std_eff["lead_time"].values)
-            lead_hours = []
+            for lvl in levels:
+                # Common evaluation axis from combined sample across all leads (paired with targets)
+                # Draw a coarse subsample to set robust evaluation range
+                da_t_all = ds_target_std_eff[base_var]
+                da_p_all = ds_prediction_std_eff[base_var]
 
-            jobs = []
+                if lvl is not None:
+                    da_t_all = da_t_all.sel(level=lvl)
+                    da_p_all = da_p_all.sel(level=lvl)
 
-            # Quantile job
-            jobs.append({"type": "quantile", "q_t_lazy": q_t_lazy, "q_p_lazy": q_p_lazy})
+                # Collapse spatial + time to estimate global min/max quickly
+                q_t_lazy = da_t_all.quantile([0.001, 0.999], skipna=True)
+                q_p_lazy = da_p_all.quantile([0.001, 0.999], skipna=True)
 
-            for i, lt in enumerate(leads):
-                # Convert timedelta leads to hours; fall back to index
-                lt_arr = np.asarray(lt)
-                if np.issubdtype(lt_arr.dtype, np.timedelta64):
-                    hours = int(lt_arr / np.timedelta64(1, "h"))
-                else:
-                    hours = int(i)
-                lead_hours.append(hours)
-                da_t = ds_target_std_eff[base_var]
-                da_p = ds_prediction_std_eff[base_var]
-                # Select single lead slice (drop=False to keep dim for metadata if present)
-                if "lead_time" in da_t.dims:
-                    da_t = da_t.isel(lead_time=i, drop=True)
-                if "lead_time" in da_p.dims:
-                    da_p = da_p.isel(lead_time=i, drop=True)
-                # Average over remaining time/init dims for stability
-                reduce_dims = [d for d in ["time", "init_time", "ensemble"] if d in da_t.dims]
-                if reduce_dims:
-                    da_t = da_t.mean(dim=reduce_dims, skipna=True)
-                reduce_dims_p = [d for d in ["time", "init_time", "ensemble"] if d in da_p.dims]
-                if reduce_dims_p:
-                    da_p = da_p.mean(dim=reduce_dims_p, skipna=True)
+                # Build densities per lead for target and model
+                leads = list(ds_prediction_std_eff["lead_time"].values)
+                lead_hours = []
 
-                jobs.append({"type": "lead", "i": i, "da_t_lazy": da_t, "da_p_lazy": da_p})
+                jobs = []
+
+                # Quantile job
+                jobs.append({"type": "quantile", "q_t_lazy": q_t_lazy, "q_p_lazy": q_p_lazy})
+
+                for i, lt in enumerate(leads):
+                    # Convert timedelta leads to hours; fall back to index
+                    lt_arr = np.asarray(lt)
+                    if np.issubdtype(lt_arr.dtype, np.timedelta64):
+                        hours = int(lt_arr / np.timedelta64(1, "h"))
+                    else:
+                        hours = int(i)
+                    lead_hours.append(hours)
+                    da_t = ds_target_std_eff[base_var]
+                    da_p = ds_prediction_std_eff[base_var]
+
+                    if lvl is not None:
+                        da_t = da_t.sel(level=lvl)
+                        da_p = da_p.sel(level=lvl)
+
+                    # Select single lead slice (drop=False to keep dim for metadata if present)
+                    if "lead_time" in da_t.dims:
+                        da_t = da_t.isel(lead_time=i, drop=True)
+                    if "lead_time" in da_p.dims:
+                        da_p = da_p.isel(lead_time=i, drop=True)
+                    # Average over remaining time/init dims for stability
+                    reduce_dims = [d for d in ["time", "init_time", "ensemble"] if d in da_t.dims]
+                    if reduce_dims:
+                        da_t = da_t.mean(dim=reduce_dims, skipna=True)
+                    reduce_dims_p = [d for d in ["time", "init_time", "ensemble"] if d in da_p.dims]
+                    if reduce_dims_p:
+                        da_p = da_p.mean(dim=reduce_dims_p, skipna=True)
+
+                    jobs.append({"type": "lead", "i": i, "da_t_lazy": da_t, "da_p_lazy": da_p})
 
             # Compute all
             compute_jobs(
@@ -678,21 +717,21 @@ def run(
             Z_t = []
             Z_p = []
 
-            def _eval_kde_from_array(arr: np.ndarray) -> np.ndarray:
+            def _eval_kde_from_array(arr: np.ndarray, y_eval_local: np.ndarray) -> np.ndarray:
                 arr = arr.ravel()
                 arr = arr[np.isfinite(arr)]
                 if arr.size < 10:
-                    return np.zeros_like(y_eval)
+                    return np.zeros_like(y_eval_local)
                 kde = gaussian_kde(arr)
-                return kde(y_eval)
+                return kde(y_eval_local)
 
             # Process leads
             for job in jobs[1:]:
                 arr_t = np.asarray(job["da_t"])
                 arr_p = np.asarray(job["da_p"])
 
-                Z_t.append(_eval_kde_from_array(arr_t))
-                Z_p.append(_eval_kde_from_array(arr_p))
+                Z_t.append(_eval_kde_from_array(arr_t, y_eval))
+                Z_p.append(_eval_kde_from_array(arr_p, y_eval))
 
             X = np.asarray(lead_hours, dtype=float)
             Y = y_eval
@@ -724,21 +763,25 @@ def run(
                 ax_r.text(Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8)
                 if hasattr(ax_r, "set_yticks"):
                     ax_r.set_yticks([])
+
+            # Add level info to title if applicable
+            level_str = f" (level {lvl})" if lvl is not None else ""
             ax_r.set_xlabel(f"{base_var} (standardized)")
-            ax_r.set_title("Global KDE evolution — ridgeline (filled=model, line=target)")
-            out_png_r = section_output / build_output_filename(
-                metric="wd_kde_evolve",
-                variable=base_var,
-                level=None,
-                qualifier="ridgeline",
-                init_time_range=None,
-                lead_time_range=None,
-                ensemble=ens_token_base,
-                ext="png",
-            )
+            ax_r.set_title(f"KDE Evolution (Ridgeline): {base_var}{level_str}")
+
             if save_fig:
-                save_figure(fig_r, out_png_r)
-            plt.close(fig_r)
+                qual = f"ridgeline{'_level' + str(lvl) if lvl is not None else ''}"
+                out_png = section_output / build_output_filename(
+                    metric="wd_kde_evolve",
+                    variable=base_var,
+                    level="surface",
+                    qualifier=qual,
+                    ensemble=ensemble_mode_to_token(ensemble_mode),
+                    ext="png",
+                )
+                save_figure(fig_r, out_png)
+            else:
+                plt.close(fig_r)
             if save_npz:
                 out_npz = section_output / build_output_filename(
                     metric="wd_kde_evolve",

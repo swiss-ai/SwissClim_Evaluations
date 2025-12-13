@@ -60,7 +60,11 @@ def test_bivariate_workflow(monkeypatch, tmp_path: Path):
 
     # 3. Create CLI config for Model A
     cli_cfg_a = {
-        "paths": {"nwp": "dummy.zarr", "ml": "dummy.zarr", "output_root": str(model_dir_a)},
+        "paths": {
+            "target": "dummy.zarr",
+            "prediction": "dummy.zarr",
+            "output_root": str(model_dir_a),
+        },
         "modules": {"multivariate": True},
         "metrics": {
             "multivariate": {
