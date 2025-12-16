@@ -26,7 +26,9 @@ selection:
   check_missing: false
   lead_time:
     mode: "stride"
-    max_hour: 24
+    stride: 24
+    max_hour: 120
+
 
 plotting:
   random_seed: 42

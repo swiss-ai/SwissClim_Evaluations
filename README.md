@@ -15,6 +15,19 @@ We recommend the container workflow for fastest, reproducible setup.
     python -m swissclim_evaluations.cli --config config/my_run.yaml
     ```
 
+    Or if installed via pip/uv:
+
+    ```bash
+    swissclim-evaluations --config config/my_run.yaml
+    ```
+
+5.  **(Optional) Render Notebooks**:
+    You can also run the provided notebooks from the command line to generate reports with your specific configuration:
+
+    ```bash
+    papermill notebooks/deterministic_verification.ipynb output/my_run_report.ipynb -p config_path_str config/my_run.yaml
+    ```
+
 For detailed installation instructions, including Podman, uenv, and conda setups, see [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Configuration
@@ -86,6 +99,12 @@ You can combine plots and CSVs from multiple model runs using the intercompariso
 python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
 ```
 
+Or:
+
+```bash
+swissclim-evaluations-compare --config config/intercomparison.yaml
+```
+
 See [docs/INTERCOMPARISON.md](docs/INTERCOMPARISON.md) for details.
 
 ## Notebooks
@@ -108,6 +127,12 @@ Run the intercomparison:
 
 ```bash
 python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
+```
+
+Or if installed via pip/uv:
+
+```bash
+swissclim-evaluations-compare --config config/intercomparison.yaml
 ```
 
 Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.

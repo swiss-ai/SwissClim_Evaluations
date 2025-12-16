@@ -1,7 +1,7 @@
 # Development
 
 ```text
-- Python: 3.11
+- Python: >=3.11
 - Key libs: xarray, numpy, scipy, pandas, matplotlib, cartopy, scores, weatherbenchX
 ```
 

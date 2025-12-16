@@ -8,6 +8,12 @@ Run the intercomparison:
 python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
 ```
 
+Or if installed:
+
+```bash
+swissclim-evaluations-compare --config config/intercomparison.yaml
+```
+
 Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
 
 What gets combined:

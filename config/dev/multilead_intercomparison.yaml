@@ -1,0 +1,14 @@
+models:
+  - output/test_multilead
+  - output/test_multilead_2
+
+labels:
+  - Test Run 1
+  - Test Run 2
+
+output_root: output/intercomparison_multilead
+
+modules: [spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim]
+
+max_map_panels: 4
+max_crps_map_panels: 4

@@ -129,7 +129,7 @@ modules:
   energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
   vertical_profiles: false    # Relative error vertical profiles per latitude band (3D)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
-  ets: false                  # Equitable Threat Score across quantile thresholds
+  ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: false       # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
 
 metrics:
