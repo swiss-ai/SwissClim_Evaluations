@@ -514,7 +514,11 @@ def display_outputs(
     if pattern_img:
         images = sorted(path.glob(pattern_img), key=natural_key)
         if exclude_pattern:
-            images = [img for img in images if exclude_pattern not in img.name]
+            if isinstance(exclude_pattern, str):
+                exclude_patterns = [exclude_pattern]
+            else:
+                exclude_patterns = exclude_pattern
+            images = [img for img in images if not any(pat in img.name for pat in exclude_patterns)]
 
         if images:
             to_show = images if limit is None else list(islice(images, 0, limit))
@@ -530,7 +534,11 @@ def display_outputs(
     if pattern_csv:
         tables = sorted(path.glob(pattern_csv), key=natural_key)
         if exclude_pattern:
-            tables = [tbl for tbl in tables if exclude_pattern not in tbl.name]
+            if isinstance(exclude_pattern, str):
+                exclude_patterns = [exclude_pattern]
+            else:
+                exclude_patterns = exclude_pattern
+            tables = [tbl for tbl in tables if not any(pat in tbl.name for pat in exclude_patterns)]
 
         if tables:
             print(f"--- Tables in {path.name} ---")

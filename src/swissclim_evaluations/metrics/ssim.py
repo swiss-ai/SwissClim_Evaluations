@@ -15,6 +15,7 @@ from swissclim_evaluations.helpers import (
     ensemble_mode_to_token,
     format_variable_name,
     resolve_ensemble_mode,
+    save_data,
     save_dataframe,
     save_figure,
 )
@@ -189,6 +190,20 @@ def _plot_ssim_evolution(df: pd.DataFrame, out_root: Path, ens_token: str | None
         )
         save_figure(fig, section_output / filename)
         plt.close(fig)
+
+        # Save NPZ for intercomparison
+        filename_npz = build_output_filename(
+            metric="ssim_evolution",
+            variable=var,
+            qualifier="lead_time",
+            ensemble=ens_token,
+            ext="npz",
+        )
+        save_data(
+            section_output / filename_npz,
+            lead_time=subset["lead_time"].values,
+            ssim=subset["SSIM"].values,
+        )
 
 
 def run(

@@ -473,7 +473,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         "energy_spectra/*_spectrum*.npz",
         "energy_spectra/lsd_*.csv",
         "energy_spectra/energy_ratios_*.csv",
-        "energy_spectra/energy_spectrogram_*_bundle*.npz",
+        "energy_spectra/energy_spectra_per_lead_*_bundle*.npz",
     ]
     total_per_model: list[set[str]] = [set() for _ in models]
     total_union = set()
@@ -489,7 +489,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results = {}
     # Spectra: 1-to-1 mapping (each file -> one plot)
     spectra_files = _common_files(models, "energy_spectra/*_spectrum*.npz")
-    bundles = _common_files(models, "energy_spectra/energy_spectrogram_*_bundle*.npz")
+    bundles = _common_files(models, "energy_spectra/energy_spectra_per_lead_*_bundle*.npz")
 
     # We generate 2 plots per file (standard + ratio) for spectra, and 1 per lead for bundles
     # But for the checklist, we just count the files found
@@ -926,8 +926,8 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         _plot_group(spectra_files)
 
     # 4) Plot Energy Spectra per Lead Time (from bundle NPZ)
-    # Look for energy_spectrogram_*_bundle.npz
-    bundles = _common_files(models, str(src_rel / "energy_spectrogram_*_bundle*.npz"))
+    # Look for energy_spectra_per_lead_*_bundle.npz
+    bundles = _common_files(models, str(src_rel / "energy_spectra_per_lead_*_bundle*.npz"))
     if bundles:
         _print_file_list(f"Found {len(bundles)} common energy spectra bundles", bundles)
 
@@ -1731,100 +1731,211 @@ def intercompare_maps(
         def _is_3d(arr: np.ndarray) -> bool:
             return isinstance(arr, np.ndarray) and arr.ndim == 3
 
-        n_levels = target.shape[0] if _is_3d(target) else 1
-        if any(
-            (_is_3d(target) and (not isinstance(m, np.ndarray) or m.ndim != 3))
-            or ((not _is_3d(target)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
-            for m in predictions
+        # Check for lead_time dimension
+        lead_times: np.ndarray = payloads[0].get("lead_time")
+        is_lead_time_dim = False
+        if (
+            lead_times is not None
+            and lead_times.size > 1
+            and _is_3d(target)
+            and target.shape[0] == lead_times.size
         ):
-            c.warn(f"maps: shape mismatch for {key}; skipping")
-            continue
-        level_vals = payloads[0].get("level")
-        for lvl in range(n_levels):
-            target_slice = target[lvl] if n_levels > 1 else target
-            pred_slices = [
-                m[lvl] if n_levels > 1 else m for m in predictions if isinstance(m, np.ndarray)
-            ]
-            try:
-                vmin = float(
-                    np.nanmin([np.nanmin(target_slice)] + [np.nanmin(x) for x in pred_slices])
-                )
-                vmax = float(
-                    np.nanmax([np.nanmax(target_slice)] + [np.nanmax(x) for x in pred_slices])
-                )
-            except ValueError:
-                c.warn(f"maps: all-NaN data for {key} level {lvl}; skipping")
-                continue
+            is_lead_time_dim = True
+
+        if is_lead_time_dim:
+            # Plot all lead times in one figure (rows)
+            n_leads = lead_times.size
             ncols = 1 + len(models)
+            nrows = n_leads
+
+            # Compute global vmin/vmax
+            try:
+                all_data = [target] + [p for p in predictions if p is not None]
+                vmin = float(np.nanmin([np.nanmin(x) for x in all_data]))
+                vmax = float(np.nanmax([np.nanmax(x) for x in all_data]))
+            except ValueError:
+                c.warn(f"maps: all-NaN data for {key}; skipping")
+                continue
+
             fig, axes = plt.subplots(
-                1,
+                nrows,
                 ncols,
-                figsize=(6 * ncols, 4),
+                figsize=(6 * ncols, 4 * nrows),
                 dpi=160,
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 constrained_layout=True,
             )
-            if ncols == 1:
-                axes = [axes]
-            im0 = axes[0].pcolormesh(
-                lons,
-                lats,
-                target_slice,
-                cmap="viridis",
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-            )
-            axes[0].coastlines(linewidth=0.5)
-            # Extract date info from filename if possible
+            # Ensure axes is 2D array (nrows, ncols)
+            if nrows == 1 and ncols == 1:
+                axes = np.array([[axes]])
+            elif nrows == 1:
+                axes = axes.reshape(1, ncols)
+            elif ncols == 1:
+                axes = axes.reshape(nrows, 1)
+
+            im0 = None
             date_suffix = extract_date_from_filename(key)
 
-            title_base = "Target"
-            if var_name:
-                title_base = f"{format_variable_name(str(var_name))} — {title_base}{date_suffix}"
-            if n_levels > 1:
-                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
-                    level_token = format_level_token(level_vals[lvl])
-                    title_base += f" (level {level_token})"
+            for i in range(n_leads):
+                target_slice = target[i]
+                pred_slices = [m[i] for m in predictions if m is not None]
+
+                # Format lead time
+                lt = lead_times[i]
+                if isinstance(lt, np.timedelta64):
+                    lt_h = lt.astype("timedelta64[h]").astype(int)
+                    lead_str = f"+{lt_h}h"
                 else:
-                    title_token = format_level_token(lvl)
-                    title_base += f" (level {title_token})"
-            axes[0].set_title(title_base)
-            for ax, lab, pred_slice in zip(axes[1:], labels, pred_slices, strict=False):
-                ax.pcolormesh(
+                    lead_str = f"+{int(lt)}h" if isinstance(lt, (int | float)) else str(lt)
+
+                # Plot Target
+                ax_tgt = axes[i, 0]
+                im0 = ax_tgt.pcolormesh(
                     lons,
                     lats,
-                    pred_slice,
+                    target_slice,
                     cmap="viridis",
                     vmin=vmin,
                     vmax=vmax,
                     transform=ccrs.PlateCarree(),
                 )
-                ax.coastlines(linewidth=0.5)
-                # Prediction columns should not have lead time in title
-                ax.set_title(lab if n_levels == 1 else f"{lab}")
-            # Use a constrained-layout-friendly colorbar spanning all axes
+                ax_tgt.coastlines(linewidth=0.5)
+
+                if i == 0:
+                    title = f"{format_variable_name(str(var_name))} — Target{date_suffix}"
+                else:
+                    title = f"Target ({lead_str})"
+                ax_tgt.set_title(title)
+
+                # Plot Models
+                for j, (lab, pred_slice) in enumerate(zip(labels, pred_slices, strict=False)):
+                    ax = axes[i, j + 1]
+                    ax.pcolormesh(
+                        lons,
+                        lats,
+                        pred_slice,
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                    )
+                    ax.coastlines(linewidth=0.5)
+                    if i == 0:
+                        ax.set_title(lab)
+
             cbar = fig.colorbar(
                 im0,
-                ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                ax=axes,
                 orientation="horizontal",
                 fraction=0.05,
-                pad=0.08,
+                pad=0.05,
                 aspect=35,
             )
             with contextlib.suppress(Exception):
                 cbar.set_label(str(units) if units else "Value")
-            # No tight_layout here; constrained_layout handles spacing
-            suffix = ""
-            if n_levels > 1:
-                if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
-                    suffix = f"_level{format_level_token(level_vals[lvl])}"
-                else:
-                    suffix = f"_level{format_level_token(lvl)}"
-            out_png = dst / (key + suffix + "_compare.png")
+
+            out_png = dst / (key + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+
+        else:
+            n_levels = target.shape[0] if _is_3d(target) else 1
+            if any(
+                (_is_3d(target) and (not isinstance(m, np.ndarray) or m.ndim != 3))
+                or ((not _is_3d(target)) and (not isinstance(m, np.ndarray) or m.ndim != 2))
+                for m in predictions
+            ):
+                c.warn(f"maps: shape mismatch for {key}; skipping")
+                continue
+            level_vals = payloads[0].get("level")
+            for lvl in range(n_levels):
+                target_slice = target[lvl] if n_levels > 1 else target
+                pred_slices = [
+                    m[lvl] if n_levels > 1 else m for m in predictions if isinstance(m, np.ndarray)
+                ]
+                try:
+                    vmin = float(
+                        np.nanmin([np.nanmin(target_slice)] + [np.nanmin(x) for x in pred_slices])
+                    )
+                    vmax = float(
+                        np.nanmax([np.nanmax(target_slice)] + [np.nanmax(x) for x in pred_slices])
+                    )
+                except ValueError:
+                    c.warn(f"maps: all-NaN data for {key} level {lvl}; skipping")
+                    continue
+                ncols = 1 + len(models)
+                fig, axes = plt.subplots(
+                    1,
+                    ncols,
+                    figsize=(6 * ncols, 4),
+                    dpi=160,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
+                )
+                if ncols == 1:
+                    axes = [axes]
+                im0 = axes[0].pcolormesh(
+                    lons,
+                    lats,
+                    target_slice,
+                    cmap="viridis",
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                )
+                axes[0].coastlines(linewidth=0.5)
+                # Extract date info from filename if possible
+                date_suffix = extract_date_from_filename(key)
+
+                title_base = "Target"
+                if var_name:
+                    title_base = (
+                        f"{format_variable_name(str(var_name))} — {title_base}{date_suffix}"
+                    )
+                if n_levels > 1:
+                    if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
+                        level_token = format_level_token(level_vals[lvl])
+                        title_base += f" (level {level_token})"
+                    else:
+                        title_token = format_level_token(lvl)
+                        title_base += f" (level {title_token})"
+                axes[0].set_title(title_base)
+                for ax, lab, pred_slice in zip(axes[1:], labels, pred_slices, strict=False):
+                    ax.pcolormesh(
+                        lons,
+                        lats,
+                        pred_slice,
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                    )
+                    ax.coastlines(linewidth=0.5)
+                    # Prediction columns should not have lead time in title
+                    ax.set_title(lab if n_levels == 1 else f"{lab}")
+                # Use a constrained-layout-friendly colorbar spanning all axes
+                cbar = fig.colorbar(
+                    im0,
+                    ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                    orientation="horizontal",
+                    fraction=0.05,
+                    pad=0.08,
+                    aspect=35,
+                )
+                with contextlib.suppress(Exception):
+                    cbar.set_label(str(units) if units else "Value")
+                # No tight_layout here; constrained_layout handles spacing
+                suffix = ""
+                if n_levels > 1:
+                    if isinstance(level_vals, np.ndarray) and len(level_vals) == n_levels:
+                        suffix = f"_level{format_level_token(level_vals[lvl])}"
+                    else:
+                        suffix = f"_level{format_level_token(lvl)}"
+                out_png = dst / (key + suffix + "_compare.png")
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_png.relative_to(out_root)}")
+                plt.close(fig)
 
 
 def intercompare_deterministic_metrics(
@@ -2576,6 +2687,56 @@ def intercompare_probabilistic(
             c.success(f"Saved {out_csv.relative_to(out_root)}")
             results["Spread Skill Ratio"] = 1
 
+    # --- 5b. SSR Line Plots (Multi-Lead) ---
+    # Look for ssr_line_<var>_by_lead_*.csv
+    ssr_line_files = _common_files(models, "probabilistic/ssr_line_*.csv")
+    if ssr_line_files:
+        _print_file_list(f"Found {len(ssr_line_files)} common SSR line files", ssr_line_files)
+        colors = sns.color_palette("tab10", n_colors=len(models))
+
+        for base in ssr_line_files:
+            # Extract variable name from filename: ssr_line_<var>_by_lead...
+            # We can use the helper but need to be careful with the prefix
+            var_name = base.replace("ssr_line_", "").split("_by_lead")[0]
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            has_data = False
+
+            for idx, (lab, m) in enumerate(zip(labels, models, strict=False)):
+                f = m / "probabilistic" / base
+                if f.exists():
+                    try:
+                        df = pd.read_csv(f)
+                        if "lead_time_hours" in df.columns and "SSR" in df.columns:
+                            df = df.sort_values("lead_time_hours")
+                            ax.plot(
+                                df["lead_time_hours"],
+                                df["SSR"],
+                                label=lab,
+                                color=colors[idx],
+                                marker="o",
+                            )
+                            has_data = True
+                    except Exception:
+                        pass
+
+            if has_data:
+                ax.set_xlabel("Lead Time [h]")
+                ax.set_ylabel("SSR")
+                ax.set_title(f"SSR Evolution — {format_variable_name(var_name)}")
+                ax.legend()
+                ax.grid(True, linestyle=":", alpha=0.6)
+
+                # Add ideal line
+                ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal")
+
+                out_png = dst_prob / base.replace(".csv", "_compare.png")
+                fig.savefig(out_png, dpi=150)
+                plt.close(fig)
+                c.success(f"Saved {out_png.relative_to(out_root)}")
+            else:
+                plt.close(fig)
+
     # --- 6. CRPS Ensemble ---
     frames_ens: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
@@ -2737,6 +2898,58 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
                 fig.savefig(out_png, dpi=150)
                 plt.close(fig)
                 c.success(f"[SSIM] Saved comparison plot to {out_png}")
+
+    # SSIM Evolution (Lead Time)
+    evolution_files = _common_files(models, "ssim/ssim_evolution_*_lead_time*.npz")
+    if evolution_files:
+        _print_file_list(
+            f"Found {len(evolution_files)} common SSIM evolution files", evolution_files
+        )
+        colors = sns.color_palette("tab10", n_colors=len(models))
+
+        for base in evolution_files:
+            payloads = []
+            for m in models:
+                try:
+                    payloads.append(_load_npz(m / "ssim" / base))
+                except Exception:
+                    payloads.append({})
+
+            # Check validity (need at least 2 models with data)
+            valid_models = [
+                p for p in payloads if p.get("lead_time") is not None and p.get("ssim") is not None
+            ]
+            if len(valid_models) < 2:
+                continue
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                lt = pay.get("lead_time")
+                ssim_val = pay.get("ssim")
+                if lt is None or ssim_val is None:
+                    continue
+
+                # Ensure sorted by lead time
+                sort_idx = np.argsort(lt)
+                lt = lt[sort_idx]
+                ssim_val = ssim_val[sort_idx]
+
+                ax.plot(lt, ssim_val, label=lab, color=colors[idx], marker="o")
+
+            # Extract variable name
+            # ssim_evolution_<var>_lead_time...
+            var_name = base.replace("ssim_evolution_", "").split("_lead_time")[0]
+
+            ax.set_xlabel("Lead Time [h]")
+            ax.set_ylabel("SSIM")
+            ax.set_title(f"SSIM Evolution Comparison — {format_variable_name(var_name)}")
+            ax.legend()
+            ax.grid(True, linestyle=":", alpha=0.6)
+
+            out_png = dst_multi / base.replace(".npz", "_compare.png")
+            fig.savefig(out_png, dpi=150)
+            plt.close(fig)
+            c.success(f"[SSIM] Saved evolution comparison to {out_png}")
 
 
 def build_parser() -> argparse.ArgumentParser:

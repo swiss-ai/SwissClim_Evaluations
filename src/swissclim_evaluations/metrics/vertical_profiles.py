@@ -527,7 +527,7 @@ def run(
                     da_t = da_t.isel(lead_time=li)
                 if "lead_time" in da_p.dims:
                     da_p = da_p.isel(lead_time=li)
-                prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                prof = _compute_nmae(da_t, da_p, _lat_slice(-90.0, 90.0), level_values)
                 evolve_profiles_lazy.append(prof)
             job["evolve_profiles_lazy"] = evolve_profiles_lazy
 
@@ -550,7 +550,7 @@ def run(
                         da_t = da_t.isel(lead_time=li)
                     if "lead_time" in da_p.dims:
                         da_p = da_p.isel(lead_time=li)
-                    prof = _compute_nmae(da_t, da_p, slice(-90.0, 90.0), level_values)
+                    prof = _compute_nmae(da_t, da_p, _lat_slice(-90.0, 90.0), level_values)
                     heatmap_profiles_lazy.append(prof)
                 job["heatmap_profiles_lazy"] = heatmap_profiles_lazy
 
@@ -564,7 +564,7 @@ def run(
         global_profile = _compute_nmae(
             ds_target[var],
             ds_prediction[var],
-            slice(-90, 90),
+            _lat_slice(-90, 90),
             level_values,
             weights=weights,
         )
@@ -923,16 +923,4 @@ def run(
                 out_root=out_root,
                 dpi=dpi,
                 save_fig=save_fig,
-            )
-
-            # Plot global vertical profile
-            _plot_global_profile(
-                nmae_lead,
-                variable_name=var,
-                ens_token=ens_token,
-                out_root=out_root,
-                dpi=dpi,
-                save_fig=save_fig,
-                init_range=init_range,
-                lead_range=lead_range,
             )
