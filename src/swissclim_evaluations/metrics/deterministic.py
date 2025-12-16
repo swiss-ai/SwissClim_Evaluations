@@ -221,7 +221,6 @@ def _calculate_all_metrics(
     weights = None
     if "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
-        weights = weights / weights.mean()
 
     # Store lazy objects to compute in one go
     # List of (variable_name, metric_name, lazy_object)

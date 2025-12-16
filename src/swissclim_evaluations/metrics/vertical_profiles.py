@@ -212,7 +212,6 @@ def run(
         raise ValueError("Latitude dimension required for vertical profiles metrics.")
 
     weights = create_latitude_weights(ds_target.latitude)
-    weights = weights / weights.mean()
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):

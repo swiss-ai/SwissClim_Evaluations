@@ -134,6 +134,8 @@ def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
 
     save_data(path, data=da.values, **coords)
 
+    np.savez(path, data=da.values, **coords)
+
 
 def _pit(da_target, da_prediction):
     return np.mean(da_prediction < da_target[..., None], axis=-1)

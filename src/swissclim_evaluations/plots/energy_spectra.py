@@ -128,7 +128,6 @@ def calculate_energy_spectra(
             "calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray."
         )
     weights = create_latitude_weights(da_power["latitude"])
-    weights = weights / weights.mean()
     da_power = da_power.weighted(weights).mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
@@ -659,41 +658,6 @@ def run(
     # Prepare plotting subset (single init_time) to avoid figure explosion
     tgt_plot = tgt
     pred_plot = pred
-    plot_dt_str = (plotting_cfg or {}).get("plot_datetime")
-
-    if plot_dt_str and "init_time" in pred.dims:
-        try:
-            plot_dt = np.datetime64(plot_dt_str).astype("datetime64[ns]")
-            if plot_dt in pred["init_time"].values:
-                pred_plot = pred.sel(init_time=[plot_dt])
-                if "init_time" in tgt.dims and plot_dt in tgt["init_time"].values:
-                    tgt_plot = tgt.sel(init_time=[plot_dt])
-                print(f"[energy_spectra] Plot subset init_time={plot_dt_str}")
-        except Exception as e:
-            print(
-                f"[energy_spectra] Warning: plot_datetime failed ({e}); "
-                "using full dataset for plots."
-            )
-
-    elif (not plot_dt_str) and ("init_time" in pred.dims):
-        # Default: plot only first init_time
-        try:
-            first_dt = pred["init_time"].values[0]
-            pred_plot = pred.sel(init_time=[first_dt])
-            if "init_time" in tgt.dims and first_dt in tgt["init_time"].values:
-                tgt_plot = tgt.sel(init_time=[first_dt])
-            dt_str = str(first_dt)
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                dt_str = np.datetime_as_string(first_dt, unit="h").replace(":", "")
-            print(
-                f"[energy_spectra] Plotting only first init_time: {dt_str} "
-                "(metrics cover full range)"
-            )
-        except Exception:
-            pass
-
     # Basic schema validation: require longitude for spectra
     has_lon_any = ("longitude" in tgt.dims) or any(
         ("longitude" in tgt[v].dims) for v in variables_2d
