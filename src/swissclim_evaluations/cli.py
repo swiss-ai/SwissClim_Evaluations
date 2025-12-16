@@ -115,7 +115,7 @@ def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
     return ranges
 
 
-def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
+def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0) -> xr.Dataset:
     sel = cfg.get("selection", {})
     levels: list[int] | None = sel.get("levels")
     latitudes: list[float] | None = sel.get("latitudes")
@@ -240,13 +240,18 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 # valid_time = init+lead remains covered by the ground-truth window.
                 end = datetimes[1]
                 try:
-                    lt_cfg = (cfg or {}).get("lead_time", {})
-                    mode = str(lt_cfg.get("mode", "first")).lower()
-                    max_h = lt_cfg.get("max_hour")
-                    if dim_name == "time" and mode != "first" and max_h is not None:
+                    if dim_name == "time" and extend_end_hours > 0:
                         end_dt = np.datetime64(end).astype("datetime64[ns]")
-                        end_ext = end_dt + np.timedelta64(int(max_h), "h")
+                        end_ext = end_dt + np.timedelta64(int(extend_end_hours), "h")
                         end = str(end_ext)
+                    else:
+                        lt_cfg = (cfg or {}).get("lead_time", {})
+                        mode = str(lt_cfg.get("mode", "first")).lower()
+                        max_h = lt_cfg.get("max_hour")
+                        if dim_name == "time" and mode != "first" and max_h is not None:
+                            end_dt = np.datetime64(end).astype("datetime64[ns]")
+                            end_ext = end_dt + np.timedelta64(int(max_h), "h")
+                            end = str(end_ext)
                 except Exception:
                     # If any error occurs while extending the end bound, fall back to the original
                     # end value.
@@ -267,11 +272,14 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any]) -> xr.Dataset:
                 end = vals.max()
             # Extend end bound for ERA5 targets when multi-lead horizon is requested
             try:
-                lt_cfg = (cfg or {}).get("lead_time", {})
-                mode = str(lt_cfg.get("mode", "first")).lower()
-                max_h = lt_cfg.get("max_hour")
-                if dim_name == "time" and mode != "first" and max_h is not None:
-                    end = end + np.timedelta64(int(max_h), "h")
+                if dim_name == "time" and extend_end_hours > 0:
+                    end = end + np.timedelta64(int(extend_end_hours), "h")
+                else:
+                    lt_cfg = (cfg or {}).get("lead_time", {})
+                    mode = str(lt_cfg.get("mode", "first")).lower()
+                    max_h = lt_cfg.get("max_hour")
+                    if dim_name == "time" and mode != "first" and max_h is not None:
+                        end = end + np.timedelta64(int(max_h), "h")
             except Exception:
                 # If any error occurs while extending the end bound,
                 # fall back to the original end value.
@@ -658,8 +666,27 @@ def prepare_datasets(
     _audit("after open", ds_prediction, ds_target)
 
     # Align dims to match config expectations
-    ds_target = _slice_common(ds_target, cfg)
     ds_prediction = _slice_common(ds_prediction, cfg)
+
+    # Determine required target extension based on prediction lead times
+    extend_hours = 0
+    if "lead_time" in ds_prediction.coords:
+        try:
+            # Parse policy early to determine if we need first lead or max lead
+            lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
+            if lt_cfg is None and isinstance(cfg, dict):
+                lt_cfg = cfg.get("selection", {}).get("lead_time")
+            mode = (lt_cfg or {}).get("mode", "first")
+
+            leads = ds_prediction["lead_time"].values
+            leads_h = (leads // np.timedelta64(1, "h")).astype(int)
+            if len(leads_h) > 0:
+                # If mode is first, we need init + first_lead; otherwise use max_lead
+                extend_hours = int(leads_h[0]) if mode == "first" else int(leads_h.max())
+        except Exception:
+            pass
+
+    ds_target = _slice_common(ds_target, cfg, extend_end_hours=extend_hours)
     # Guard: empty init_time at this stage leads to cryptic errors later.
     # Check predictions primarily, as they drive alignment.
     if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
@@ -1225,8 +1252,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         lines.append(s5)
                     for ln in lines:
                         c.info(ln)
-                except Exception as exc:
-                    c.warn(f"Exception occurred while formatting lead time audit: {exc}")
+                except Exception:
+                    pass
                 # Extra visibility: warn if multi-lead requested but only a single lead remains
                 try:
                     if isinstance(lead_policy, LeadTimePolicy):

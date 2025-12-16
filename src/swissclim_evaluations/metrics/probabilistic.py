@@ -342,13 +342,18 @@ def run_probabilistic(
 
     # --- Optimization: Collect all lazy computations ---
     jobs = []
+    is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
+
     for var in variables:
         job: dict[str, Any] = {"var": var}
         crps_da = ds_crps[var]
         pit_da = ds_pit[var]
 
         # 1. CRPS Mean
-        job["crps_mean_lazy"] = _reduce_mean_all(crps_da)
+        if not is_multi_lead:
+            job["crps_mean_lazy"] = _reduce_mean_all(crps_da)
+        else:
+            job["crps_mean_lazy"] = None
 
         # 2. CRPS Per Lead
         if "lead_time" in crps_da.dims and crps_da.sizes["lead_time"] > 1:
@@ -365,9 +370,13 @@ def run_probabilistic(
             job["crps_per_level_lazy"] = None
 
         # 4. PIT Global Histogram
-        counts_lazy, edges = _pit_histogram_dask_lazy(pit_da, bins=50)
-        job["pit_counts_lazy"] = counts_lazy
-        job["pit_edges"] = edges
+        if not is_multi_lead:
+            counts_lazy, edges = _pit_histogram_dask_lazy(pit_da, bins=50)
+            job["pit_counts_lazy"] = counts_lazy
+            job["pit_edges"] = edges
+        else:
+            job["pit_counts_lazy"] = None
+            job["pit_edges"] = None
 
         # 5. PIT Per Lead Histogram
         job["pit_per_lead_lazy"] = []
@@ -414,11 +423,12 @@ def run_probabilistic(
         var = job["var"]
 
         # 1. CRPS Mean
-        try:
-            crps_mean = float(job["crps_mean_res"].item())
-        except Exception:
-            crps_mean = float(job["crps_mean_res"])
-        crps_rows.append({"variable": var, "CRPS": crps_mean})
+        if job["crps_mean_lazy"] is not None:
+            try:
+                crps_mean = float(job["crps_mean_res"].item())
+            except Exception:
+                crps_mean = float(job["crps_mean_res"])
+            crps_rows.append({"variable": var, "CRPS": crps_mean})
 
         # 2. Per Lead Time CRPS
         if job["crps_per_lead_lazy"] is not None:
@@ -485,29 +495,33 @@ def run_probabilistic(
                 )
 
         # 4. PIT Global Histogram
-        counts = job["pit_counts_res"].astype(np.float64)
-        edges = job["pit_edges"]
-        # Density normalization
-        width = np.diff(edges)
-        bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
-        counts = counts / bin_area
+        if job["pit_counts_lazy"] is None:
+            if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
+                print("[probabilistic] Skipping average PIT histogram (lead_time > 1 present).")
+        else:
+            counts = job["pit_counts_res"].astype(np.float64)
+            edges = job["pit_edges"]
+            # Density normalization
+            width = np.diff(edges)
+            bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
+            counts = counts / bin_area
 
-        pit_npz = section_output / build_output_filename(
-            metric="pit_hist",
-            variable=str(var),
-            level=None,
-            qualifier=None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token,
-            ext="npz",
-        )
-        np.savez(
-            pit_npz,
-            counts=counts,
-            edges=edges,
-        )
-        print(f"[probabilistic] saved {pit_npz}")
+            pit_npz = section_output / build_output_filename(
+                metric="pit_hist",
+                variable=str(var),
+                level=None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="npz",
+            )
+            np.savez(
+                pit_npz,
+                counts=counts,
+                edges=edges,
+            )
+            print(f"[probabilistic] saved {pit_npz}")
 
         # 5. PIT Evolution (Heatmap)
         if job["pit_per_lead_lazy"]:
@@ -540,7 +554,12 @@ def run_probabilistic(
 
             X, Y = np.meshgrid(edges_ev, y_edges)
 
-            im = ax.pcolormesh(X, Y, counts_matrix, cmap="RdBu_r", shading="flat", vmin=0, vmax=2.0)
+            # Custom colormap: White -> Red
+            from matplotlib.colors import LinearSegmentedColormap
+
+            cmap_pit = LinearSegmentedColormap.from_list("white_red", ["white", "#D55E00"])
+
+            im = ax.pcolormesh(X, Y, counts_matrix, cmap=cmap_pit, shading="flat", vmin=0, vmax=2.0)
 
             fig.colorbar(im, ax=ax, label="PIT Density")
             ax.set_xlabel("PIT Quantile")
@@ -607,21 +626,24 @@ def run_probabilistic(
         print(f"[probabilistic] saved {out_npz_pit}")
 
     if crps_rows:
-        df = pd.DataFrame(crps_rows).groupby("variable").mean()
-        out_csv = section_output / build_output_filename(
-            metric="crps_summary",
-            variable=None,
-            level=None,
-            qualifier="averaged" if (init_range or lead_range) else None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token,
-            ext="csv",
-        )
-        df.to_csv(out_csv)
-        print("CRPS summary (per variable):")
-        print(df.head())
-        print(f"[probabilistic] saved {out_csv}")
+        if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
+            print("[probabilistic] Skipping CRPS summary table (lead_time > 1 present).")
+        else:
+            df = pd.DataFrame(crps_rows).groupby("variable").mean()
+            out_csv = section_output / build_output_filename(
+                metric="crps_summary",
+                variable=None,
+                level=None,
+                qualifier="averaged" if (init_range or lead_range) else None,
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df.to_csv(out_csv)
+            print("CRPS summary (per variable):")
+            print(df.head())
+            print(f"[probabilistic] saved {out_csv}")
         # Backward-compatible copy for tests expecting ensnone naming
 
     if crps_rows_per_level:
@@ -739,37 +761,6 @@ def plot_probabilistic(
                 {lon_name: (lon_name, new[order])}
             )
 
-    # Plot CRPS map (simple original style, no percentile scaling / fallback)
-    fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    if hasattr(ax, "add_feature"):
-        ax.add_feature(cfeature.COASTLINE, lw=0.5)
-        ax.add_feature(cfeature.BORDERS, lw=0.3)
-    Z = crps_map.values
-    # Basic color limits
-    vmin = 0.0
-    vmax = float(np.nanmax(Z)) if np.isfinite(Z).any() else 1.0
-    if not np.isfinite(vmax) or vmax <= vmin:
-        vmax = 1.0
-    mesh = ax.pcolormesh(
-        crps_map[lon_name],
-        crps_map[lat_name],
-        Z,
-        cmap="viridis",
-        shading="auto",
-        transform=ccrs.PlateCarree(),
-        vmin=vmin,
-        vmax=vmax,
-    )
-    cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
-    cbar.set_label("CRPS")
-
-    # Check for single date
-    date_str = extract_date_from_dataset(ds_target)
-
-    ax.set_title(f"CRPS Map (Mean) — {format_variable_name(base_var)}", loc="left", fontsize=10)
-    ax.set_title(date_str, loc="right", fontsize=10)
-
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
         if "init_time" not in ds:
@@ -810,50 +801,81 @@ def plot_probabilistic(
 
     init_range_plot = _extract_init_range_plot(ds_prediction)
     lead_range_plot = _extract_lead_range_plot(ds_prediction)
-    if save_fig:
-        from ..helpers import build_output_filename, ensemble_mode_to_token
 
-        ens_token_plot = ensemble_mode_to_token("prob")
-        # Title set above
-        out_png = section / build_output_filename(
-            metric="crps_map",
-            variable=base_var,
-            level=None,
-            qualifier=None,
-            init_time_range=init_range_plot,
-            lead_time_range=lead_range_plot,
-            ensemble=ens_token_plot,
-            ext="png",
-        )
-        save_figure(fig, out_png)
+    # Check for single date
+    date_str = extract_date_from_dataset(ds_target)
+
+    # Plot CRPS map (simple original style, no percentile scaling / fallback)
+    if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
+        print("[probabilistic] Skipping average CRPS map (lead_time > 1 present).")
     else:
-        plt.close(fig)
-
-    if save_npz:
-        from ..helpers import build_output_filename, ensemble_mode_to_token
-
-        ens_token_plot = ensemble_mode_to_token("prob")
-        out_npz = section / build_output_filename(
-            metric="crps_map",
-            variable=base_var,
-            level=None,
-            qualifier=None,
-            init_time_range=init_range_plot,
-            lead_time_range=lead_range_plot,
-            ensemble=ens_token_plot,
-            ext="npz",
+        fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        if hasattr(ax, "add_feature"):
+            ax.add_feature(cfeature.COASTLINE, lw=0.5)
+            ax.add_feature(cfeature.BORDERS, lw=0.3)
+        Z = crps_map.values
+        # Basic color limits
+        vmin = 0.0
+        vmax = float(np.nanmax(Z)) if np.isfinite(Z).any() else 1.0
+        if not np.isfinite(vmax) or vmax <= vmin:
+            vmax = 1.0
+        mesh = ax.pcolormesh(
+            crps_map[lon_name],
+            crps_map[lat_name],
+            Z,
+            cmap="viridis",
+            shading="auto",
+            transform=ccrs.PlateCarree(),
+            vmin=vmin,
+            vmax=vmax,
         )
-        save_data(
-            out_npz,
-            crps=crps_map.values,
-            latitude=crps_map[lat_name].values,
-            longitude=crps_map[lon_name].values,
-            variable=base_var,
-            metric="CRPS",
-        )
+        cbar = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.05, shrink=0.8)
+        cbar.set_label("CRPS")
+
+        ax.set_title(f"CRPS Map (Mean) — {format_variable_name(base_var)}", loc="left", fontsize=10)
+        ax.set_title(date_str, loc="right", fontsize=10)
+
+        if save_fig:
+            ens_token_plot = ensemble_mode_to_token("prob")
+            # Title set above
+            out_png = section / build_output_filename(
+                metric="crps_map",
+                variable=base_var,
+                level=None,
+                qualifier=None,
+                init_time_range=init_range_plot,
+                lead_time_range=lead_range_plot,
+                ensemble=ens_token_plot,
+                ext="png",
+            )
+            save_figure(fig, out_png)
+        else:
+            plt.close(fig)
+
+        if save_npz:
+            ens_token_plot = ensemble_mode_to_token("prob")
+            out_npz = section / build_output_filename(
+                metric="crps_map",
+                variable=base_var,
+                level=None,
+                qualifier=None,
+                init_time_range=init_range_plot,
+                lead_time_range=lead_range_plot,
+                ensemble=ens_token_plot,
+                ext="npz",
+            )
+            save_data(
+                out_npz,
+                crps=crps_map.values,
+                latitude=crps_map[lat_name].values,
+                longitude=crps_map[lon_name].values,
+                variable=base_var,
+                metric="CRPS",
+            )
 
     # Panel: CRPS maps by lead_time across all retained hours (panel concept removed)
-    if "lead_time" in crps.dims and int(crps.sizes.get("lead_time", 0)) >= 1 and save_fig:
+    if "lead_time" in crps.dims and int(crps.sizes.get("lead_time", 0)) > 1 and save_fig:
 
         def _to_hour(val, fallback: int) -> int:
             arr = np.asarray(val)
@@ -977,8 +999,6 @@ def plot_probabilistic(
                         pad=0.02,
                     )
                     cb.set_label("CRPS")
-                from ..helpers import ensemble_mode_to_token
-
                 ens_token_grid = ensemble_mode_to_token("prob")
                 plt.suptitle(
                     f"CRPS Grid by Lead Time — {format_variable_name(base_var)}{date_str}",
@@ -1043,66 +1063,70 @@ def plot_probabilistic(
     )
 
     if pit.size > 0:
-        counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
-        fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
-        widths = np.diff(edges)
-        ax.bar(
-            edges[:-1],
-            counts,
-            width=widths,
-            align="edge",
-            color=COLOR_DIAGNOSTIC,
-            edgecolor="white",
-        )
-        # Check for single date
-        date_str = extract_date_from_dataset(ds_target)
-
-        ax.set_title(f"PIT Histogram — {format_variable_name(base_var)}", loc="left", fontsize=10)
-        ax.set_title(date_str, loc="right", fontsize=10)
-        ax.set_xlabel("PIT value")
-        ax.set_ylabel("Density")
-        ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
-        ax.legend()
-        if save_npz:
-            # Use standardized filename builder for NPZ (with ensprob token)
-            from ..helpers import build_output_filename, ensemble_mode_to_token
-
-            ens_token_plot = ensemble_mode_to_token("prob")
-            out_npz = section / build_output_filename(
-                metric="pit_hist",
-                variable=base_var,
-                level=None,
-                qualifier=None,
-                init_time_range=None,
-                lead_time_range=None,
-                ensemble=ens_token_plot,
-                ext="npz",
-            )
-            save_data(out_npz, counts=counts, edges=edges, variable=base_var)
-
-        if save_fig:
-            from ..helpers import build_output_filename, ensemble_mode_to_token
-
-            ens_token_plot = ensemble_mode_to_token("prob")
-            out_png = section / build_output_filename(
-                metric="pit_hist",
-                variable=base_var,
-                level=None,
-                qualifier=None,
-                init_time_range=init_range_plot,
-                lead_time_range=lead_range_plot,
-                ensemble=ens_token_plot,
-                ext="png",
-            )
-            save_figure(fig, out_png)
+        if "lead_time" in pit.dims and pit.sizes["lead_time"] > 1:
+            print("[probabilistic] Skipping average PIT histogram (lead_time > 1 present).")
+            # Define edges for per-lead plots even if global histogram is skipped
+            edges = np.linspace(0.0, 1.0, 21)
         else:
-            plt.close(fig)
+            counts, edges = _pit_histogram_dask(pit, bins=20, density=True)
+            fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
+            widths = np.diff(edges)
+            ax.bar(
+                edges[:-1],
+                counts,
+                width=widths,
+                align="edge",
+                color=COLOR_DIAGNOSTIC,
+                edgecolor="white",
+            )
+            # Check for single date
+            date_str = extract_date_from_dataset(ds_target)
+
+            ax.set_title(
+                f"PIT Histogram — {format_variable_name(base_var)}", loc="left", fontsize=10
+            )
+            ax.set_title(date_str, loc="right", fontsize=10)
+            ax.set_xlabel("PIT value")
+            ax.set_ylabel("Density")
+            ax.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
+            ax.legend()
+            if save_npz:
+                # Use standardized filename builder for NPZ (with ensprob token)
+
+                ens_token_plot = ensemble_mode_to_token("prob")
+                out_npz = section / build_output_filename(
+                    metric="pit_hist",
+                    variable=base_var,
+                    level=None,
+                    qualifier=None,
+                    init_time_range=None,
+                    lead_time_range=None,
+                    ensemble=ens_token_plot,
+                    ext="npz",
+                )
+                save_data(out_npz, counts=counts, edges=edges, variable=base_var)
+
+            if save_fig:
+                ens_token_plot = ensemble_mode_to_token("prob")
+                out_png = section / build_output_filename(
+                    metric="pit_hist",
+                    variable=base_var,
+                    level=None,
+                    qualifier=None,
+                    init_time_range=init_range_plot,
+                    lead_time_range=lead_range_plot,
+                    ensemble=ens_token_plot,
+                    ext="png",
+                )
+                save_figure(fig, out_png)
+            else:
+                plt.close(fig)
 
     # PIT per-lead panel plot (multi-row grid) over all retained hours
     if (
         pit.size > 0
         and "lead_time" in pit.dims
-        and int(pit.sizes.get("lead_time", 0)) >= 1
+        and int(pit.sizes.get("lead_time", 0)) > 1
         and save_fig
     ):
         full_hours = [_to_hour(x, idx) for idx, x in enumerate(pit["lead_time"].values)]
@@ -1117,7 +1141,6 @@ def plot_probabilistic(
                     hour_index_pairs.append((int(h), idx))
                 except Exception:
                     continue
-            pit_line_rows: list[dict[str, float]] = []
             if hour_index_pairs:
                 n = len(hour_index_pairs)
                 ncols = int((plotting_cfg or {}).get("panel_cols", 2))
@@ -1128,7 +1151,9 @@ def plot_probabilistic(
                     figsize=(5.4 * ncols, 3.0 * nrows),
                     dpi=dpi * 2,
                     squeeze=False,
+                    constrained_layout=True,
                 )
+                axes_flat = axes.flatten()
                 for i, (h, li) in enumerate(hour_index_pairs):
                     r, c = divmod(i, ncols)
                     sub = pit.isel(lead_time=li)
@@ -1138,7 +1163,7 @@ def plot_probabilistic(
                     width = np.diff(edges)
                     total = counts_local.sum()
                     dens = counts_local / (total * width.mean()) if total > 0 else counts_local
-                    ax = axes[r][c]
+                    ax = axes_flat[i]
                     ax.bar(
                         edges[:-1],
                         dens,
@@ -1149,24 +1174,21 @@ def plot_probabilistic(
                     )
                     ax.axhline(1.0, color="brown", linestyle="--", linewidth=1)
                     ax.set_title(f"PIT (+{int(h)}h)", fontsize=10)
-                    pit_line_rows.append(
-                        {
-                            "lead_time_hours": float(h),
-                            "uniform_diff": float(np.nanmean(np.abs(dens - 1.0))),
-                        }
-                    )
                     if r == nrows - 1:
                         ax.set_xlabel("PIT value")
                     if c == 0:
                         ax.set_ylabel("Density")
 
+                # Hide unused axes if n not multiple of ncols
+                for j in range(n, nrows * ncols):
+                    axes_flat[j].axis("off")
+
                 date_str = extract_date_from_dataset(ds_target)
                 plt.suptitle(
                     f"PIT Histograms by Lead Time — {format_variable_name(base_var)}{date_str}",
                     fontsize=16,
-                    y=1.05,
+                    y=1.02,
                 )
-                from ..helpers import ensemble_mode_to_token
 
                 out_png = section / build_output_filename(
                     metric="pit_hist",
@@ -1181,38 +1203,6 @@ def plot_probabilistic(
                 save_figure(fig, out_png)
             else:
                 plt.close(fig)
-
-            if pit_line_rows:
-                df_pit = pd.DataFrame(pit_line_rows).sort_values("lead_time_hours")
-                out_csv_pit = section / build_output_filename(
-                    metric="pit_hist",
-                    variable=base_var,
-                    level=None,
-                    qualifier="uniform_diff_by_lead",
-                    init_time_range=init_range_plot,
-                    lead_time_range=lead_range_plot,
-                    ensemble=ensemble_mode_to_token("prob"),
-                    ext="csv",
-                )
-                df_pit.to_csv(out_csv_pit, index=False)
-                print(f"[probabilistic] saved {out_csv_pit}")
-                if save_npz:
-                    out_npz_pit = section / build_output_filename(
-                        metric="pit_hist",
-                        variable=base_var,
-                        level=None,
-                        qualifier="uniform_diff_by_lead_data",
-                        init_time_range=init_range_plot,
-                        lead_time_range=lead_range_plot,
-                        ensemble=ensemble_mode_to_token("prob"),
-                        ext="npz",
-                    )
-                    save_data(
-                        out_npz_pit,
-                        lead_hours=df_pit["lead_time_hours"].values.astype(float),
-                        uniform_diff=df_pit["uniform_diff"].values.astype(float),
-                        variable=base_var,
-                    )
 
     # CRPS line plots across all retained lead_time hours
     if ("lead_time" in ds_prediction.dims) and int(ds_prediction.sizes.get("lead_time", 0)) > 1:
@@ -1255,10 +1245,10 @@ def plot_probabilistic(
                     hours_plot = [h for h, _ in hour_index_pairs]
                     fig, ax = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
                     ax.plot(hours_plot, vals, marker="o")
-                    ax.set_xlabel("lead_time (h)")
+                    ax.set_xlabel("Lead Time [h]")
                     ax.set_ylabel("CRPS")
                     ax.set_title(
-                        f"CRPS vs lead_time — {format_variable_name(var)}", loc="left", fontsize=10
+                        f"CRPS Evolution — {format_variable_name(var)}", loc="left", fontsize=10
                     )
                     ax.set_title(date_str, loc="right", fontsize=10)
                     out_png = section / build_output_filename(
@@ -1377,24 +1367,31 @@ def run_probabilistic_wbx(
     # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
+    is_multi_lead = "lead_time" in ds_pred.dims and ds_pred.sizes["lead_time"] > 1
+
     if m_ens < 2:
         raise RuntimeError(
             "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-    ssr_metric = RobustUnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
-    try:
-        ssr_df = _wbx_metric_to_df(
-            ssr_metric,
-            ds_prediction=ds_pred,
-            ds_target=ds_targ,
-            value_col="SSR",
-        )
-    except Exception as e:  # pragma: no cover - defensive clarity wrapper
-        raise RuntimeError(
-            "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
-            "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
-        ) from e
+
+    if not is_multi_lead:
+        ssr_metric = RobustUnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
+        try:
+            ssr_df = _wbx_metric_to_df(
+                ssr_metric,
+                ds_prediction=ds_pred,
+                ds_target=ds_targ,
+                value_col="SSR",
+            )
+        except Exception as e:  # pragma: no cover - defensive clarity wrapper
+            raise RuntimeError(
+                "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
+                "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
+            ) from e
+    else:
+        print("[probabilistic] Skipping average SSR summary (lead_time > 1 present).")
+        ssr_df = pd.DataFrame()
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):
@@ -1431,18 +1428,19 @@ def run_probabilistic_wbx(
 
     ens_token_prob = ensemble_mode_to_token("prob")
 
-    ssr_csv = section / build_output_filename(
-        metric="spread_skill_ratio",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="csv",
-    )
-    ssr_df.to_csv(ssr_csv)
-    print(f"[probabilistic] saved {ssr_csv}")
+    if not ssr_df.empty:
+        ssr_csv = section / build_output_filename(
+            metric="spread_skill_ratio",
+            variable=None,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="csv",
+        )
+        ssr_df.to_csv(ssr_csv)
+        print(f"[probabilistic] saved {ssr_csv}")
 
     def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
         return {
@@ -1541,6 +1539,8 @@ def run_probabilistic_wbx(
     save_fig = mode in ("plot", "both")
 
     if save_fig:
+        date_str = extract_date_from_dataset(ds_target)
+
         # Plot Temporal (Time Series)
         # We use results_temporal because it preserves the time dimension
         for var_name in results_temporal.data_vars:
@@ -1549,6 +1549,10 @@ def run_probabilistic_wbx(
 
             da = results_temporal[var_name]
             # da is (Region, Time)
+
+            # Skip if lead_time dimension is size <= 1
+            if "lead_time" in da.dims and da.sizes["lead_time"] <= 1:
+                continue
 
             # Select global region if present, else average over regions
             if "region" in da.dims:
@@ -1577,7 +1581,6 @@ def run_probabilistic_wbx(
             # Plot bar
             ax.bar(df[x_col].astype(str), df["SSR"])
 
-            date_str = extract_date_from_dataset(ds_target)
             display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
 
             ax.set_title(
@@ -1637,7 +1640,19 @@ def run_probabilistic_wbx(
                     ax.set_ylabel("SSR")
                     ax.set_xlabel("")  # Remove Region label
                     ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal (1.0)")
-                    ax.legend(fontsize=10)
+
+                    # Clean up legend labels
+                    handles, labels = ax.get_legend_handles_labels()
+                    new_labels = []
+                    for lbl in labels:
+                        if lbl == "Ideal (1.0)":
+                            new_labels.append(lbl)
+                        else:
+                            # Remove SSR. prefix and format variable
+                            clean_lbl = lbl.split(".", 1)[1] if "." in lbl else lbl
+                            new_labels.append(format_variable_name(clean_lbl))
+                    ax.legend(handles, new_labels, fontsize=10)
+
                     plt.xticks(rotation=45, ha="right")
                     plt.tight_layout()
 

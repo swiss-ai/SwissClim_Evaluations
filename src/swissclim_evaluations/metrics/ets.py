@@ -131,6 +131,7 @@ def run(
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
     from ..helpers import (
         ensemble_mode_to_token,
+        get_colormap_for_variable,
         resolve_ensemble_mode,
         save_dataframe,
     )
@@ -252,9 +253,22 @@ def run(
                         for v, pairs in by_var.items():
                             fig, ax = plt.subplots(figsize=(10, 6))
                             pairs_sorted = sorted(pairs, key=lambda kv: int(kv[1].rstrip("%")))
-                            for col, tlabel in pairs_sorted:
+
+                            # Use variable-specific colormap to distinguish thresholds
+                            cmap_res = get_colormap_for_variable(v)
+                            cmap = plt.get_cmap(cmap_res) if isinstance(cmap_res, str) else cmap_res
+
+                            # Sample colors (avoiding very light start for sequential maps)
+                            n_thresh = len(pairs_sorted)
+                            colors = [cmap(i) for i in np.linspace(0.4, 1.0, n_thresh)]
+
+                            for i, (col, tlabel) in enumerate(pairs_sorted):
                                 ax.plot(
-                                    hours, wide_df[col].values, marker="o", label=f"ETS {tlabel}"
+                                    hours,
+                                    wide_df[col].values,
+                                    marker="o",
+                                    label=f"ETS {tlabel}",
+                                    color=colors[i],
                                 )
                             ax.set_xlabel("Lead Time [h]")
                             ax.set_ylabel("ETS")

@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -82,219 +81,6 @@ def run(
 
     init_range = _extract_init_range(ds_prediction)
     lead_range = _extract_lead_range(ds_prediction)
-
-    def _plot_maps_grid(
-        da_target: xr.DataArray,
-        da_pred: xr.DataArray,
-        variable_name: str,
-        ens_token: str | None,
-        init_time_idx: int,
-        ens_member: int | None = None,
-    ) -> None:
-        if "lead_time" not in da_pred.dims:
-            return
-        leads = da_pred["lead_time"].values
-        if len(leads) < 2:
-            return
-
-        # Select a subset of leads to plot (max 6 leads -> 12 panels)
-        n_leads = len(leads)
-        if n_leads > 6:
-            indices = np.linspace(0, n_leads - 1, 6, dtype=int)
-            selected_leads = leads[indices]
-        else:
-            selected_leads = leads
-
-        n_sel = len(selected_leads)
-        rows = n_sel
-        cols = 2  # Target, Prediction
-
-        fig, axes = plt.subplots(
-            rows,
-            cols,
-            figsize=(12, 4 * rows),
-            dpi=dpi,
-            subplot_kw={"projection": ccrs.PlateCarree()},
-            constrained_layout=True,
-        )
-        axes = np.atleast_2d(axes)
-
-        # Helper: unwrap wrapped longitudes for plotting
-        def _unwrap_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
-            if "longitude" not in da.coords:
-                return da
-            lons = np.asarray(da.longitude.values)
-            if lons.size == 0:
-                return da
-            lmin, lmax = float(np.min(lons)), float(np.max(lons))
-            if (lmax - lmin) > 180 and np.any(lons < 90) and np.any(lons > 270):
-                new = lons.copy()
-                new[new > 180] -= 360
-                order = np.argsort(new)
-                da = da.isel(longitude=order).assign_coords(longitude=("longitude", new[order]))
-            return da
-
-        # Collect jobs for min/max and data
-        jobs = []
-
-        # Min/Max jobs
-        # We check first and last selected lead
-        for lt in [selected_leads[0], selected_leads[-1]]:
-            lt_sel = lt
-
-            if "lead_time" in da_target.dims:
-                da = da_target.sel(lead_time=lt_sel)
-                jobs.append(
-                    {
-                        "type": "minmax",
-                        "da_lazy": da,
-                        "min_lazy": da.min(),
-                        "max_lazy": da.max(),
-                    }
-                )
-            da = da_pred.sel(lead_time=lt_sel)
-            jobs.append(
-                {
-                    "type": "minmax",
-                    "da_lazy": da,
-                    "min_lazy": da.min(),
-                    "max_lazy": da.max(),
-                }
-            )
-
-        # Data jobs
-        for i, lt in enumerate(selected_leads):
-            if np.issubdtype(type(lt), np.timedelta64):
-                lt_sel = lt
-                hours = int(lt / np.timedelta64(1, "h"))
-                label = f" (+{hours}h)"
-            else:
-                lt_sel = lt
-                label = f" (lead={lt})"
-
-            ds_var = da_target.sel(lead_time=lt_sel) if "lead_time" in da_target.dims else da_target
-            ds_prediction_var = da_pred.sel(lead_time=lt_sel)
-
-            # Handle init_time selection
-            if "init_time" in ds_var.dims:
-                ds_var = ds_var.isel(init_time=init_time_idx)
-            if "init_time" in ds_prediction_var.dims:
-                ds_prediction_var = ds_prediction_var.isel(init_time=init_time_idx)
-
-            ds_var = ds_var.squeeze()
-            ds_prediction_var = ds_prediction_var.squeeze()
-            ds_var = _unwrap_lon_for_plot(ds_var)
-            ds_prediction_var = _unwrap_lon_for_plot(ds_prediction_var)
-
-            jobs.append(
-                {
-                    "type": "plot",
-                    "i": i,
-                    "label": label,
-                    "ds_var": ds_var,  # Keep xarray object for coords
-                    "ds_prediction_var": ds_prediction_var,
-                    "var_lazy": ds_var,
-                    "prediction_lazy": ds_prediction_var,
-                }
-            )
-
-        # Compute all
-        compute_jobs(
-            jobs,
-            key_map={
-                "min_lazy": "min_val",
-                "max_lazy": "max_val",
-                "var_lazy": "var_arr",
-                "prediction_lazy": "prediction_arr",
-            },
-        )
-
-        # Process results
-        vmin, vmax = float("inf"), float("-inf")
-
-        # Process minmax
-        for job in jobs:
-            if job["type"] == "minmax":
-                mn = float(job["min_val"])
-                mx = float(job["max_val"])
-                vmin = min(vmin, mn)
-                vmax = max(vmax, mx)
-
-        # Process plots
-        im = None
-        for job in jobs:
-            if job["type"] == "plot":
-                arr_var = job["var_arr"]
-                arr_prediction = job["prediction_arr"]
-
-                i = job["i"]
-                label = job["label"]
-                ds_var = job["ds_var"]
-                ds_prediction_var = job["ds_prediction_var"]
-
-                lon = ds_var.coords.get("longitude", None)
-                lat = ds_var.coords.get("latitude", None)
-
-                # Target
-                im = axes[i, 0].pcolormesh(
-                    lon if lon is not None else ds_var.longitude,
-                    lat if lat is not None else ds_var.latitude,
-                    arr_var,
-                    cmap=get_colormap_for_variable(variable_name),
-                    vmin=vmin,
-                    vmax=vmax,
-                    transform=ccrs.PlateCarree(),
-                    shading="auto",
-                )
-                axes[i, 0].coastlines(linewidth=0.5)
-                axes[i, 0].set_title(f"Target{label}")
-
-                # Prediction
-                lon_prediction = ds_prediction_var.coords.get("longitude", None)
-                lat_prediction = ds_prediction_var.coords.get("latitude", None)
-                axes[i, 1].pcolormesh(
-                    lon_prediction if lon_prediction is not None else ds_prediction_var.longitude,
-                    lat_prediction if lat_prediction is not None else ds_prediction_var.latitude,
-                    arr_prediction,
-                    cmap=get_colormap_for_variable(variable_name),
-                    vmin=vmin,
-                    vmax=vmax,
-                    transform=ccrs.PlateCarree(),
-                    shading="auto",
-                )
-                axes[i, 1].coastlines(linewidth=0.5)
-                ens_str = f" (member {ens_member})" if ens_member is not None else ""
-                if not ens_str and ens_token:
-                    ens_str = f" ({ens_token})"
-                # Remove level info from prediction title if present in label
-                pred_label = label
-                if "(level" in pred_label:
-                    pred_label = pred_label.split("(level")[0].strip()
-                axes[i, 1].set_title(f"Prediction{pred_label}{ens_str}", fontsize=10)
-
-        # Colorbar
-        cb = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.025, pad=0.02)
-        try:
-            if cb is not None:
-                cb.set_label(get_variable_units(ds_target, variable_name))
-        except Exception:
-            pass
-
-        if save_fig:
-            section_output.mkdir(parents=True, exist_ok=True)
-            out_png = section_output / build_output_filename(
-                metric="map_grid",
-                variable=variable_name,
-                level="surface",
-                qualifier=None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            save_figure(fig, out_png)
-        else:
-            plt.close(fig)
 
     # Determine variables
     if "level" in ds_target.dims and int(ds_target.level.size) > 1:
@@ -390,7 +176,7 @@ def run(
             fig, axes = plt.subplots(
                 n_leads,
                 2,
-                figsize=(14, 6 * n_leads),
+                figsize=(14, 4 * n_leads),
                 dpi=dpi * 2,
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 constrained_layout=True,
@@ -469,7 +255,10 @@ def run(
                         lead_str = f" (lead={val})"
 
                 date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
-                ax_tgt.set_title(f"{format_variable_name(str(var))} — Target{date_str}{lead_str}")
+                if i == 0:
+                    ax_tgt.set_title(f"{format_variable_name(str(var))} — Target{date_str}")
+                else:
+                    ax_tgt.set_title(f"Target{lead_str}")
 
                 ens_str = f" (member {ens})" if ens is not None else ""
                 lon_prediction = ds_prediction_var.coords.get("longitude", None)
@@ -505,15 +294,17 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                ax_pred.set_title(f"Prediction{lead_str}{ens_str}")
+                # Only show lead time on prediction if not already in target title (via date_str)
+                # date_str includes lead time (with '+') if target has it.
+                ax_pred.set_title(f"Prediction{ens_str}")
 
             # Colorbar spanning both axes — vertical to save vertical space
             cb = fig.colorbar(
                 im0,
                 ax=axes,
-                orientation="vertical",
-                fraction=0.025,
-                pad=0.02,
+                orientation="horizontal",
+                fraction=0.05,
+                pad=0.08,
             )
             # In test mode, colorbar may be a dummy (None); guard the label call
             try:
@@ -568,27 +359,6 @@ def run(
                     units=get_variable_units(ds_target, str(var)),
                 )
             plt.close(fig)
-
-            # Optional grid of subplots for multiple lead_times PER ENSEMBLE MEMBER
-            # Force grid generation whenever lead_time is present (>=1)
-            do_grid = ("lead_time" in ds_prediction.dims) and int(ds_prediction.lead_time.size) > 1
-            if do_grid:
-                ds_var_full = ds_target[var]
-                ds_prediction_var_full = ds_prediction[var]
-                if ens is not None:
-                    if "ensemble" in ds_var_full.dims:
-                        ds_var_full = ds_var_full.isel(ensemble=ens)
-                    if "ensemble" in ds_prediction_var_full.dims:
-                        ds_prediction_var_full = ds_prediction_var_full.isel(ensemble=ens)
-
-                _plot_maps_grid(
-                    ds_var_full,
-                    ds_prediction_var_full,
-                    str(var),
-                    ens_token,
-                    time_index,
-                    ens_member=ens,
-                )
 
     # 3D maps per level (one figure with rows per level)
     for _i, var in enumerate(variables_3d):
@@ -747,7 +517,7 @@ def run(
                         crs=ccrs.PlateCarree(),
                     )
 
-                ax_pred.set_title(f"Prediction{format_level_label(level_val)}{lead_str}{ens_str}")
+                ax_pred.set_title(f"Prediction{format_level_label(level_val)}{ens_str}")
 
                 fig.colorbar(
                     im_ds,

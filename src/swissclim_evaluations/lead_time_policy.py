@@ -68,11 +68,24 @@ def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
         return LeadTimePolicy(mode="first")
     mode = str(cfg.get("mode", "first")).lower()
     # Accept both flat 'subset_hours' and nested 'subset: { hours: [...] }'
-    subset_cfg = cfg.get("subset") or {}
-    subset_hours = cfg.get("subset_hours", subset_cfg.get("hours"))
+    subset_val = cfg.get("subset")
+    if isinstance(subset_val, dict):
+        subset_hours_nested = subset_val.get("hours")
+    elif isinstance(subset_val, list):
+        subset_hours_nested = subset_val
+    else:
+        subset_hours_nested = None
+    subset_hours = cfg.get("subset_hours", subset_hours_nested)
+
     # Accept both flat 'stride_hours' and nested 'stride: { hours: N }'
-    stride_cfg = cfg.get("stride") or {}
-    stride_hours = cfg.get("stride_hours", stride_cfg.get("hours"))
+    stride_val = cfg.get("stride")
+    if isinstance(stride_val, dict):
+        stride_hours_nested = stride_val.get("hours")
+    elif isinstance(stride_val, int):
+        stride_hours_nested = stride_val
+    else:
+        stride_hours_nested = None
+    stride_hours = cfg.get("stride_hours", stride_hours_nested)
     max_hour = cfg.get("max_hour")
     # 'bins' mode has been removed; ignore any provided 'bins' config if present.
     if mode == "bins":

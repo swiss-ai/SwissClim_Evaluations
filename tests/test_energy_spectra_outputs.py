@@ -23,5 +23,5 @@ def test_energy_spectra_creates_suffixed_csvs(tmp_path: Path):
     spec_dir = out_root / "energy_spectra"
     assert spec_dir.exists()
     # New standardized naming: expect a single averaged file using helper naming
-    summary = list(spec_dir.glob("lsd_2d_metrics_averaged_*.csv"))
+    summary = list(spec_dir.glob("energy_ratios_averaged_*.csv"))
     assert summary, "Expected simplified averaged LSD CSV not found"

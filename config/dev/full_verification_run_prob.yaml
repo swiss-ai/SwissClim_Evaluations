@@ -43,8 +43,8 @@ modules:
   vertical_profiles: false
   deterministic: false
   ets: false
-  probabilistic: true
   ssim: false
+  probabilistic: true
 
 metrics:
   deterministic:

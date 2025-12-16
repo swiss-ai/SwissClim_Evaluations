@@ -18,16 +18,9 @@ Outputs are written under `output/intercomparison/` mirroring the module folders
 
 What gets combined:
 
-*   **Energy Spectra**
+*   **Maps**
     *   **Plots**:
-        *   `*_compare.png`: Overlays of DS baseline + model spectra per variable (and per level).
-        *   `*_compare_ratio.png`: Ratio of Model/Target energy density vs wavenumber.
-        *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
-    *   **CSVs**:
-        *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
-        *   `lsd_metrics_banded_averaged_combined.csv`: Banded averaged LSD metrics.
-        *   `lsd_metrics_per_level_combined.csv`: Per-level LSD metrics.
-        *   `lsd_metrics_banded_per_level_combined.csv`: Banded per-level LSD metrics.
+        *   `map_<var>[_level<lvl>]_compare.png`: Panel maps with DS in the first column and each model as subsequent columns.
 
 *   **Histograms**
     *   **Plots**:
@@ -41,9 +34,23 @@ What gets combined:
     *   **CSVs**:
         *   `wd_kde_wasserstein_averaged_combined.csv`: Averaged Wasserstein distance metrics.
 
-*   **Maps**
+*   **Energy Spectra**
     *   **Plots**:
-        *   `map_<var>[_level<lvl>]_compare.png`: Panel maps with DS in the first column and each model as subsequent columns.
+        *   `*_compare.png`: Overlays of DS baseline + model spectra per variable (and per level).
+        *   `*_compare_ratio.png`: Ratio of Model/Target energy density vs wavenumber.
+        *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
+    *   **CSVs**:
+        *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
+        *   `lsd_metrics_banded_averaged_combined.csv`: Banded averaged LSD metrics.
+        *   `lsd_metrics_per_level_combined.csv`: Per-level LSD metrics.
+        *   `lsd_metrics_banded_per_level_combined.csv`: Banded per-level LSD metrics.
+
+*   **Vertical Profiles**
+    *   **Plots**:
+        *   `vertical_profiles_nmae_<var>_compare.png`: Overlay plots per variable of latitude-band vertical NMAE across models.
+    *   **CSVs**:
+        *   `vertical_profiles_nmae_<var>_summary.csv`: Per-variable summary tables listing mean metric by band, hemisphere, and model.
+    *   *Note: Legacy `*_pl_nmae_combined*` files are still supported.*
 
 *   **Deterministic Metrics**
     *   **CSVs**:
@@ -79,10 +86,3 @@ What gets combined:
         *   `temporal_<metric>_<variable>_compare.png`: Line plots of probabilistic metrics vs lead time.
         *   `crps_map_<var>_compare.png`: CRPS map panels.
         *   `pit_hist_<var>_compare.png`: PIT histogram comparison.
-
-*   **Vertical Profiles**
-    *   **Plots**:
-        *   `vertical_profiles_nmae_<var>_compare.png`: Overlay plots per variable of latitude-band vertical NMAE across models.
-    *   **CSVs**:
-        *   `vertical_profiles_nmae_<var>_summary.csv`: Per-variable summary tables listing mean metric by band, hemisphere, and model.
-    *   *Note: Legacy `*_pl_nmae_combined*` files are still supported.*

@@ -82,11 +82,14 @@ The evaluation generates organized results for each enabled module under `paths.
 
 Modules include:
 *   **Maps**: Global and per-level maps.
-*   **Histograms & KDE**: Distributions by latitude bands.
+*   **Histograms**: Distributions by latitude bands.
+*   **Wasserstein Distance & KDE**: KDE by latitude band on standardized fields.
 *   **Energy Spectra**: Zonal energy spectra + LSD table.
 *   **Vertical Profiles**: NMAE vertical profiles.
-*   **Deterministic Metrics**: MAE, RMSE, FSS, SSIM, etc.
+*   **Deterministic Metrics**: MAE, RMSE, FSS, etc.
 *   **ETS**: Equitable Threat Score.
+*   **SSIM**: Structural Similarity Index.
+*   **Multivariate**: Bivariate histograms.
 *   **Probabilistic**: CRPS, PIT, Spread-Skill Ratio.
 
 For a detailed overview of outputs, file naming conventions, and ensemble handling, see [docs/OUTPUTS.md](docs/OUTPUTS.md).

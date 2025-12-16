@@ -17,7 +17,13 @@ from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d_single_field
 from skimage.metrics import structural_similarity as ssim
 
-from ..helpers import save_data, save_dataframe, save_figure
+from ..helpers import (
+    format_variable_name,
+    get_variable_units,
+    save_data,
+    save_dataframe,
+    save_figure,
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -600,34 +606,38 @@ def run(
             multi_lead = False
 
         # 1. Regular metrics
-        reg_dict, reg_lazy = _calculate_all_metrics(
-            ds_target,
-            ds_prediction,
-            calc_relative=True,
-            n_points=n_points,
-            include=include,
-            fss_cfg=fss_cfg,
-            seeps_climatology_path=seeps_climatology_path,
-            compute=False,
-        )
+        reg_dict, reg_lazy = ({}, [])
+        if not multi_lead:
+            reg_dict, reg_lazy = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                n_points=n_points,
+                include=include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+            )
 
         # 2. Standardized metrics
-        std_dict, std_lazy = _calculate_all_metrics(
-            ds_target_std,
-            ds_prediction_std,
-            calc_relative=False,
-            n_points=n_points,
-            include=std_include,
-            fss_cfg=fss_cfg,
-            seeps_climatology_path=seeps_climatology_path,
-            compute=False,
-        )
+        std_dict, std_lazy = ({}, [])
+        if not multi_lead:
+            std_dict, std_lazy = _calculate_all_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                n_points=n_points,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+            )
 
         # 3. Per-level metrics
         lvl_dict, lvl_lazy = ({}, [])
         lvl_std_dict, lvl_std_lazy = ({}, [])
 
-        if report_per_level:
+        if report_per_level and not multi_lead:
             res = _calculate_per_level_metrics(
                 ds_target,
                 ds_prediction,
@@ -739,10 +749,12 @@ def run(
             ensemble=ens_token,
             ext="csv",
         )
-        save_dataframe(regular_metrics, out_csv, index_label="variable")
-        save_dataframe(standardized_metrics, out_csv_std, index_label="variable")
+        if not regular_metrics.empty:
+            save_dataframe(regular_metrics, out_csv, index_label="variable")
+        if not standardized_metrics.empty:
+            save_dataframe(standardized_metrics, out_csv_std, index_label="variable")
 
-        if per_level_metrics is not None:
+        if per_level_metrics is not None and not per_level_metrics.empty:
             out_csv_lvl = section_output / build_output_filename(
                 metric="deterministic_metrics",
                 variable=None,
@@ -755,7 +767,7 @@ def run(
             )
             save_dataframe(per_level_metrics, out_csv_lvl, index=False)
 
-        if per_level_std is not None:
+        if per_level_std is not None and not per_level_std.empty:
             out_csv_lvl_std = section_output / build_output_filename(
                 metric="deterministic_metrics",
                 variable=None,
@@ -1049,8 +1061,21 @@ def run(
                         y = wide_df[col].values
                         ax.plot(x, y, marker="o")
                         ax.set_xlabel("Lead Time [h]")
-                        ax.set_ylabel(m)
-                        ax.set_title(f"{v} — {m} vs Lead Time", fontsize=10)
+
+                        # Format y-label with units if applicable
+                        units = get_variable_units(ds_target, str(v))
+                        ylabel = m
+                        if units:
+                            if m in ["MAE", "RMSE", "Bias"]:
+                                ylabel += f" [{units}]"
+                            elif m == "MSE":
+                                ylabel += f" [{units}$^2$]"
+
+                        ax.set_ylabel(ylabel)
+                        display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
+                        ax.set_title(
+                            f"{format_variable_name(display_var)} — {m} vs Lead Time", fontsize=10
+                        )
                         out_png = section_output / build_output_filename(
                             metric="det_line",
                             variable=str(v),

@@ -8,7 +8,7 @@ labels:
 
 output_root: output/intercomparison_full
 
-modules: [spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim]
+modules: [maps, hist, kde, spectra, vprof, metrics, ets, ssim, prob]
 
 max_map_panels: 4
 max_crps_map_panels: 4

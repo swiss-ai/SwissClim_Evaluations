@@ -292,7 +292,13 @@ def _plot_single_spectrum(
 
     lev_part = format_level_label(level)
     # Simplify title to just show init date if available, matching other plots
-    date_suffix = f" ({init_label})" if init_label and init_label != "noInit" else ""
+    date_suffix = ""
+    if init_label and init_label != "noInit":
+        date_suffix = f" ({init_label}"
+        if lead_label and lead_label != "noLead":
+            date_suffix += f" +{lead_label}"
+        date_suffix += ")"
+
     ax.set_title(
         f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
         pad=24,
@@ -303,6 +309,38 @@ def _plot_single_spectrum(
     plt.tight_layout()
     if save_figure and out_path is not None:
         save_fig_helper(fig, out_path)
+
+        # Generate Ratio Plot
+        # We derive the filename by replacing the metric name
+        if "energy_spectrum" in out_path.name:
+            ratio_name = out_path.name.replace("energy_spectrum", "energy_ratio")
+            ratio_path = out_path.parent / ratio_name
+
+            fig_r, ax_r = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = arr_pred / arr_target
+
+            ax_r.semilogx(wavenumber, ratio, color="black", lw=1.5)
+            ax_r.axhline(1.0, color="gray", linestyle="--", alpha=0.7)
+
+            ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
+            ax_r.set_ylabel("Ratio (Prediction / Target)")
+            ax_r.set_xlim(k_min, k_max)
+            # Auto-scale y but keep 1.0 centered or visible
+            # ax_r.set_ylim(0.5, 2.0) # Optional: fixed range
+
+            add_wavelength_axis(ax_r, k_min, k_max)
+
+            ax_r.set_title(
+                f"Energy Ratio — {format_variable_name(var)}{lev_part}{date_suffix}",
+                pad=24,
+                fontsize=10,
+            )
+            ax_r.grid(True, which="both", ls="--", alpha=0.5)
+            plt.tight_layout()
+            save_fig_helper(fig_r, ratio_path)
+            plt.close(fig_r)
+
     if save_plot_data and out_path is not None:
         np_path = out_path.with_suffix(".npz")
         save_data(
@@ -362,10 +400,10 @@ def _plot_energy_spectra(
         lead_label = "none"
         base_dir = out_path.parent if out_path else Path(".")  # fallback
         fname = build_output_filename(
-            metric="lsd",
+            metric="energy_spectrum",
             variable=var,
             level=f"{level}hPa" if level is not None else "surface",
-            qualifier="single_spectrum",
+            qualifier=None,
             init_time_range=None,
             lead_time_range=None,
             ensemble=ens_token,
@@ -434,15 +472,21 @@ def _plot_energy_spectra(
                     hours = int(lt_raw)
                 except Exception:
                     hours = 0
+
+            # Skip generation if multiple lead times are present (except spectrograms which are
+            # handled separately)
+            if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
+                continue
+
             lead_label = f"{hours:03d}h"
         else:
             lead_label = "noLead"
 
         fname = build_output_filename(
-            metric="lsd",
+            metric="energy_spectrum",
             variable=var,
             level=f"{level}hPa" if level is not None else None,
-            qualifier="spectrum",
+            qualifier=None,
             init_time_range=(init_label, init_label),
             lead_time_range=(lead_label, lead_label),
             ensemble=ens_token,
@@ -669,6 +713,7 @@ def run(
 
     if not is_multi_lead:
         summary_rows: list[dict[str, Any]] = []
+        lsd_init_time_rows: list[dict[str, Any]] = []
         # Collect LSD-by-lead for optional line plots/CSVs
         for var in variables_2d:
             # Preserve ensemble for pooled/members modes
@@ -680,10 +725,28 @@ def run(
             lsd_mean = float(lsd_da.mean().values)
             summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
 
+            if "init_time" in lsd_da.dims:
+                red_dims = [d for d in lsd_da.dims if d != "init_time"]
+                lsd_init = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
+                for t in lsd_init["init_time"].values:
+                    val = float(lsd_init.sel(init_time=t).values)
+                    t_str = str(t)
+                    import contextlib
+
+                    with contextlib.suppress(Exception):
+                        t_str = np.datetime_as_string(t, unit="h")
+                    lsd_init_time_rows.append(
+                        {
+                            "variable": str(var),
+                            "init_time": t_str,
+                            "lsd_mean": val,
+                        }
+                    )
+
         if summary_rows:
             df_summary = pd.DataFrame(summary_rows).set_index("variable")
             out_csv = section_output / build_output_filename(
-                metric="lsd_2d_metrics",
+                metric="energy_ratios",
                 variable=None,
                 level=None,
                 qualifier="averaged",
@@ -694,6 +757,21 @@ def run(
             )
             df_summary.to_csv(out_csv)
             print(f"[energy_spectra] saved {out_csv}")
+
+            if lsd_init_time_rows:
+                df_init = pd.DataFrame(lsd_init_time_rows)
+                out_csv_init = section_output / build_output_filename(
+                    metric="energy_ratios",
+                    variable=None,
+                    level=None,
+                    qualifier="init_time",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                df_init.to_csv(out_csv_init, index=False)
+                print(f"[energy_spectra] saved {out_csv_init}")
 
             # Compute and save banded LSD metrics (2D)
             lsd_banded_rows: list[dict[str, Any]] = []
@@ -719,7 +797,7 @@ def run(
             if lsd_banded_rows:
                 df_banded = pd.DataFrame(lsd_banded_rows)
                 out_csv_banded = section_output / build_output_filename(
-                    metric="lsd_bands_2d_metrics",
+                    metric="energy_ratios_bands",
                     variable=None,
                     level=None,
                     qualifier="averaged",
@@ -731,20 +809,20 @@ def run(
                 df_banded.to_csv(out_csv_banded, index=False)
                 print(f"[energy_spectra] saved {out_csv_banded}")
 
-            # Generate plots and NPZ for 2D variables
-            if save_plot or save_npz:
-                for var in variables_2d:
-                    _plot_energy_spectra(
-                        tgt_plot,
-                        pred_plot,
-                        str(var),
-                        None,
-                        section_output / "placeholder",
-                        dpi=dpi,
-                        save_plot_data=save_npz,
-                        save_figure=save_plot,
-                        override_ensemble_token=ens_token,
-                    )
+    # Generate plots and NPZ for 2D variables
+    if save_plot or save_npz:
+        for var in variables_2d:
+            _plot_energy_spectra(
+                tgt_plot,
+                pred_plot,
+                str(var),
+                None,
+                section_output / "placeholder",
+                dpi=dpi,
+                save_plot_data=save_npz,
+                save_figure=save_plot,
+                override_ensemble_token=ens_token,
+            )
 
     # 3D variables (per-level)
     variables_3d = []
@@ -755,6 +833,7 @@ def run(
         lsd_3d_rows: list[dict[str, Any]] = []
         lsd_banded_3d_rows: list[dict[str, Any]] = []
         lsd_3d_averaged_rows: list[dict[str, Any]] = []  # New for averaged
+        lsd_3d_init_time_rows: list[dict[str, Any]] = []
 
         levels = tgt["level"].values
         for var in variables_3d:
@@ -769,46 +848,62 @@ def run(
             red_dims = [d for d in lsd_da.dims if d != "level"]
             lsd_means_per_level = lsd_da.mean(dim=red_dims).compute()
 
+            # 2. Banded LSD per level
+            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+            red_dims_band = [d for d in lsd_bands_da.dims if d not in ["level", "band"]]
+            lsd_bands_mean_per_level = (
+                lsd_bands_da.mean(dim=red_dims_band).compute() if red_dims_band else lsd_bands_da
+            )
+
             var_lsd_values = []
             for lvl in levels:
                 val = float(lsd_means_per_level.sel(level=lvl).item())
                 lsd_3d_rows.append({"variable": str(var), "level": int(lvl), "lsd_mean": val})
                 var_lsd_values.append(val)
 
-            # 2. Banded LSD per level
-            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
-            # Average over all dims except level and band
-            red_dims = [d for d in lsd_bands_da.dims if d not in ("level", "band")]
-            # This compute results only in a small DataArray – safe to compute here
-            lsd_bands_mean = lsd_bands_da.mean(dim=red_dims).compute()
-
-            for lvl in levels:
-                for bname in lsd_bands_mean["band"].values:
-                    val = float(lsd_bands_mean.sel(level=lvl, band=bname).item())
+                for bname in lsd_bands_mean_per_level["band"].values:
+                    val_band = float(lsd_bands_mean_per_level.sel(level=lvl, band=bname).item())
                     lsd_banded_3d_rows.append(
                         {
                             "variable": str(var),
                             "level": int(lvl),
                             "band": str(bname),
-                            "lsd_mean": val,
+                            "lsd_mean": val_band,
                         }
                     )
 
-            # Compute average over levels
-            if var_lsd_values:
-                lsd_3d_averaged_rows.append(
-                    {
-                        "variable": str(var),
-                        "lsd_mean": float(np.mean(var_lsd_values)),
-                    }
-                )
+            # Average over levels for the "averaged" summary
+            lsd_3d_averaged_rows.append(
+                {
+                    "variable": str(var),
+                    "lsd_mean": float(np.mean(var_lsd_values)),
+                }
+            )
+
+            if "init_time" in lsd_da.dims:
+                red_dims = [d for d in lsd_da.dims if d != "init_time"]
+                lsd_init = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
+                for t in lsd_init["init_time"].values:
+                    val = float(lsd_init.sel(init_time=t).values)
+                    t_str = str(t)
+                    import contextlib
+
+                    with contextlib.suppress(Exception):
+                        t_str = np.datetime_as_string(t, unit="h")
+                    lsd_3d_init_time_rows.append(
+                        {
+                            "variable": str(var),
+                            "init_time": t_str,
+                            "lsd_mean": val,
+                        }
+                    )
 
         if report_per_level and lsd_3d_rows:
             import pandas as _pd
 
             df_3d = _pd.DataFrame(lsd_3d_rows)
             out_csv_3d = section_output / build_output_filename(
-                metric="lsd_3d_metrics",
+                metric="energy_ratios_3d",
                 variable=None,
                 level=None,
                 qualifier="per_level",
@@ -825,7 +920,7 @@ def run(
 
             df_banded_3d = _pd.DataFrame(lsd_banded_3d_rows)
             out_csv_banded_3d = section_output / build_output_filename(
-                metric="lsd_bands_3d_metrics",
+                metric="energy_ratios_bands_3d",
                 variable=None,
                 level=None,
                 qualifier="per_level",
@@ -843,7 +938,7 @@ def run(
 
             df_3d_avg = _pd.DataFrame(lsd_3d_averaged_rows)
             out_csv_3d_avg = section_output / build_output_filename(
-                metric="lsd_3d_metrics",
+                metric="energy_ratios_3d",
                 variable=None,
                 level=None,
                 qualifier="averaged",
@@ -855,8 +950,25 @@ def run(
             df_3d_avg.to_csv(out_csv_3d_avg, index=False)
             print(f"[energy_spectra] saved {out_csv_3d_avg}")
 
+        if lsd_3d_init_time_rows:
+            import pandas as _pd
+
+            df_3d_init = _pd.DataFrame(lsd_3d_init_time_rows)
+            out_csv_3d_init = section_output / build_output_filename(
+                metric="energy_ratios_3d",
+                variable=None,
+                level=None,
+                qualifier="init_time",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_3d_init.to_csv(out_csv_3d_init, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d_init}")
+
         # Generate plots and NPZ for 3D variables per level
-        if (save_plot or save_npz) and not is_multi_lead:
+        if save_plot or save_npz:
             for var in variables_3d:
                 for lvl in levels:
                     _plot_energy_spectra(
@@ -974,7 +1086,7 @@ def run(
                 cb = fig.colorbar(im, ax=ax, orientation="vertical")
                 cb.set_label("log10 energy")
                 out_png = section_output / build_output_filename(
-                    metric="energy_spectrogram",
+                    metric="energy_spectra_per_lead",
                     variable=_var,
                     level=None,
                     qualifier=qualifier,
@@ -1012,7 +1124,7 @@ def run(
             cb = fig.colorbar(im, ax=ax, orientation="vertical")
             cb.set_label("Δ log10 energy (model - target)")
             out_png = section_output / build_output_filename(
-                metric="energy_spectrogram",
+                metric="energy_spectra_per_lead",
                 variable=str(var),
                 level=None,
                 qualifier="difference",
@@ -1046,7 +1158,7 @@ def run(
             ax.set_ylabel("LSD")
             ax.set_title(f"LSD vs lead_time — {var}")
             out_png = section_output / build_output_filename(
-                metric="lsd_line",
+                metric="energy_ratios_line_per_lead",
                 variable=str(var),
                 level=None,
                 qualifier=None,
@@ -1061,7 +1173,7 @@ def run(
 
             # Save bundle NPZ for programmatic use
             out_npz = section_output / build_output_filename(
-                metric="energy_spectrogram",
+                metric="energy_spectra_per_lead",
                 variable=str(var),
                 level=None,
                 qualifier="bundle",
@@ -1172,8 +1284,19 @@ def run(
                     alpha=0.8,
                 )
             )
+
+            # Add suptitle
+            t_str = f"Energy Spectrogram — {format_variable_name(var)}"
+            if init_range:
+                start_t, end_t = init_range
+                if start_t == end_t:
+                    t_str += f" ({start_t})"
+                else:
+                    t_str += f" ({start_t} — {end_t})"
+            fig.suptitle(t_str, fontsize=13)
+
             out_tripanel = section_output / build_output_filename(
-                metric="energy_spectrogram",
+                metric="energy_spectra_per_lead",
                 variable=str(var),
                 level=None,
                 qualifier="tripanel",
@@ -1191,7 +1314,7 @@ def run(
 
             ldf = _pd.DataFrame(lsd_long_rows)
             out_long = section_output / build_output_filename(
-                metric="lsd_2d_metrics",
+                metric="energy_ratios_per_lead",
                 variable=None,
                 level=None,
                 qualifier="by_lead_long",
@@ -1204,7 +1327,7 @@ def run(
             wdf = ldf.pivot_table(index="lead_time_hours", columns="variable", values="LSD")
             wdf = wdf.reset_index()
             out_wide = section_output / build_output_filename(
-                metric="lsd_2d_metrics",
+                metric="energy_ratios_per_lead",
                 variable=None,
                 level=None,
                 qualifier="by_lead_wide",
@@ -1218,7 +1341,7 @@ def run(
         if lsd_banded_long_rows:
             bdf = _pd.DataFrame(lsd_banded_long_rows)
             out_banded = section_output / build_output_filename(
-                metric="lsd_bands_2d_metrics",
+                metric="energy_ratios_bands_per_lead",
                 variable=None,
                 level=None,
                 qualifier="per_lead_time",
@@ -1232,7 +1355,7 @@ def run(
 
     # Completion message
     if is_multi_lead:
-        print("[energy_spectra] Completed multi-lead spectrograms only.")
+        print("[energy_spectra] Completed per-lead spectrograms only.")
     else:
         print("[energy_spectra] Completed energy spectra metrics & plots.")
 

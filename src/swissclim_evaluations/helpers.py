@@ -514,6 +514,9 @@ def display_outputs(
     # Tables
     if pattern_csv:
         tables = sorted(path.glob(pattern_csv), key=natural_key)
+        if exclude_pattern:
+            tables = [tbl for tbl in tables if exclude_pattern not in tbl.name]
+
         if tables:
             print(f"--- Tables in {path.name} ---")
             for tbl in tables:
@@ -537,18 +540,29 @@ def extract_date_from_filename(filename: str) -> str:
     """Extract date suffix from filename if it contains a single init time.
 
     Looks for pattern 'init<YYYY-MM-DDTHHstart>-<YYYY-MM-DDTHHend>'. If start == end, returns
-    ' (<start>)'. Otherwise returns empty string.
+    ' (<start>)'. Also checks for 'lead<start>-<end>' and if start == end, appends ' +<start>h'.
+    Otherwise returns empty string.
     """
-    match = re.search(r"init(\d{4}-?\d{2}-?\d{2}T\d{2})-(\d{4}-?\d{2}-?\d{2}T\d{2})", filename)
-    if match:
-        start, end = match.groups()
+    suffix = ""
+    match_init = re.search(r"init(\d{4}-?\d{2}-?\d{2}T\d{2})-(\d{4}-?\d{2}-?\d{2}T\d{2})", filename)
+    if match_init:
+        start, end = match_init.groups()
         if start == end:
             # Normalize to YYYY-MM-DDTHH
             if len(start) == 10 and "T" not in start:
                 start = start[:8] + "T" + start[8:]
             if len(start) == 11 and "T" in start and "-" not in start:
                 start = f"{start[:4]}-{start[4:6]}-{start[6:8]}{start[8:]}"
-            return f" ({start})"
+            suffix = f" ({start}"
+
+    if suffix:
+        match_lead = re.search(r"lead(\d+)h?-(\d+)h?", filename)
+        if match_lead:
+            start_lead, end_lead = match_lead.groups()
+            if start_lead == end_lead:
+                suffix += f" +{start_lead}h"
+        suffix += ")"
+        return suffix
     return ""
 
 
@@ -556,6 +570,7 @@ def extract_date_from_dataset(ds: Any) -> str:
     """Extract date suffix from dataset if it contains a single init time.
 
     Checks 'init_time' coordinate. If size is 1, formats as ' (YYYY-MM-DDTHH)'.
+    Also checks 'lead_time' coordinate. If size is 1, appends ' +Xh'.
     Otherwise returns empty string.
     """
     if not hasattr(ds, "coords") or "init_time" not in ds.coords:
@@ -568,7 +583,21 @@ def extract_date_from_dataset(ds: Any) -> str:
             # Handle both scalar (0-d) and 1-d arrays
             ts_val = its.values if its.ndim == 0 else its.values.flatten()[0]
             ts = np.datetime64(ts_val).astype("datetime64[h]")
-            return f" ({np.datetime_as_string(ts, unit='h').replace(':', '')})"
+            suffix = f" ({np.datetime_as_string(ts, unit='h').replace(':', '')}"
+
+            if "lead_time" in ds.coords:
+                lts = ds.coords["lead_time"]
+                if lts.size == 1:
+                    lt_val = lts.values if lts.ndim == 0 else lts.values.flatten()[0]
+                    if np.issubdtype(type(lt_val), np.timedelta64):
+                        h = int(lt_val / np.timedelta64(1, "h"))
+                        suffix += f" +{h}h"
+                    else:
+                        # Fallback if lead_time is not timedelta (e.g. int hours)
+                        suffix += f" +{int(lt_val)}h"
+
+            suffix += ")"
+            return suffix
     except Exception:
         # If extraction or formatting fails, return empty string as fallback.
         pass
@@ -616,13 +645,14 @@ VARIABLE_UNITS = {
 }
 
 
-def get_variable_units(ds: xr.Dataset | xr.DataArray, var_name: str) -> str:
+def get_variable_units(ds: xr.Dataset | xr.DataArray | None, var_name: str) -> str:
     """Get units for a variable, falling back to a default mapping if missing."""
-    if isinstance(ds, xr.DataArray):
-        if "units" in ds.attrs:
-            return str(ds.attrs["units"])
-    elif var_name in ds and "units" in ds[var_name].attrs:
-        return str(ds[var_name].attrs["units"])
+    if ds is not None:
+        if isinstance(ds, xr.DataArray):
+            if "units" in ds.attrs:
+                return str(ds.attrs["units"])
+        elif var_name in ds and "units" in ds[var_name].attrs:
+            return str(ds[var_name].attrs["units"])
     return VARIABLE_UNITS.get(var_name, "")
 
 

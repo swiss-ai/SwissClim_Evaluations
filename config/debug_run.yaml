@@ -48,8 +48,8 @@ modules:
   energy_spectra: true
   vertical_profiles: true
   deterministic: true
-  ssim: true
   ets: true
+  ssim: true
   multivariate: true
   probabilistic: false
 

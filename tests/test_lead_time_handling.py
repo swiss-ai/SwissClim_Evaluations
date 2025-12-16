@@ -87,12 +87,14 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
     # Verify outputs exist
     prob_dir = out_root / "probabilistic"
     # Must have CRPS summary with init/lead time ranges (simplified schema)
+    # For multi-lead, we expect temporal metrics per lead time instead of a global summary
     assert any(
-        f.name.startswith("crps_summary_averaged_init")
+        f.name.startswith("temporal_probabilistic_metrics")
         and "lead" in f.name
         and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("crps_summary_*.csv")
-    ), "Expected CRPS summary file with init/lead time tokens (ensprob) under new schema"
+        for f in prob_dir.glob("temporal_probabilistic_metrics_*.csv")
+    ), "Expected temporal probabilistic metrics file with init/lead time "
+    "tokens (ensprob) under new schema"
 
     # Load suffixed PIT/CRPS NPZ files (pick first match)
     # Updated to NPZ format for memory efficiency (no OOM during write)

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import dask
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -12,8 +13,10 @@ from skimage.metrics import structural_similarity as ssim
 from swissclim_evaluations.helpers import (
     build_output_filename,
     ensemble_mode_to_token,
+    format_variable_name,
     resolve_ensemble_mode,
     save_dataframe,
+    save_figure,
 )
 
 
@@ -152,6 +155,42 @@ def calculate_ssim(
     return df_global, df_per_level, df_per_lead_time
 
 
+def _plot_ssim_evolution(df: pd.DataFrame, out_root: Path, ens_token: str | None) -> None:
+    """Plot SSIM vs lead time for each variable."""
+    if df.empty or "lead_time" not in df.columns:
+        return
+
+    if df["lead_time"].nunique() <= 1:
+        return
+
+    variables = df["variable"].unique()
+    section_output = out_root / "ssim"
+    section_output.mkdir(parents=True, exist_ok=True)
+
+    for var in variables:
+        subset = df[df["variable"] == var].sort_values("lead_time")
+        if subset.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(subset["lead_time"], subset["SSIM"], marker="o", linestyle="-")
+        ax.set_title(f"SSIM Evolution — {format_variable_name(var)}")
+        ax.set_xlabel("Lead Time [h]")
+        ax.set_ylabel("SSIM")
+        ax.grid(True, which="both", ls="--", alpha=0.5)
+        plt.tight_layout()
+
+        filename = build_output_filename(
+            metric="ssim_evolution",
+            variable=var,
+            qualifier="lead_time",
+            ensemble=ens_token,
+            ext="png",
+        )
+        save_figure(fig, section_output / filename)
+        plt.close(fig)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -176,9 +215,14 @@ def run(
     # Resolve ensemble mode
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
 
+    is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
+
     # Helper to save output
     def _save_output(df: pd.DataFrame, ens_token: str, qualifier: str | None = None):
         if df.empty:
+            return
+
+        if is_multi_lead and qualifier is None:
             return
 
         # Calculate average SSIM across variables if it's the main table
@@ -232,6 +276,7 @@ def run(
                 _save_output(df_lvl, ens_token, qualifier="per_level")
             if df_lead is not None:
                 _save_output(df_lead, ens_token, qualifier="per_lead_time")
+                _plot_ssim_evolution(df_lead, out_root, ens_token)
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
         # Stack ensemble into the sample dimension (e.g., "time")
@@ -266,6 +311,7 @@ def run(
             _save_output(df_lvl, ens_token, qualifier="per_level")
         if df_lead is not None:
             _save_output(df_lead, ens_token, qualifier="per_lead_time")
+            _plot_ssim_evolution(df_lead, out_root, ens_token)
 
     else:
         # Single output (mean, none, or pooled if supported)
@@ -286,3 +332,4 @@ def run(
             _save_output(df_lvl, ens_token, qualifier="per_level")
         if df_lead is not None:
             _save_output(df_lead, ens_token, qualifier="per_lead_time")
+            _plot_ssim_evolution(df_lead, out_root, ens_token)

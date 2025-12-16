@@ -598,7 +598,7 @@ def run(
             color=COLOR_MODEL_PREDICTION,
             label="Prediction",
         )
-        units = da_target_var.attrs.get("units", "")
+        units = get_variable_units(da_target_var, variable_name)
         title_lt = f" — lead {lead_time_range[0]}" if lead_time_range else ""
         level_str = format_level_label(level_val if level_val is not None else level_token)
         ax.set_title(

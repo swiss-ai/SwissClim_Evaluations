@@ -41,6 +41,19 @@ def run(
     """
     cfg = (metrics_cfg or {}).get("multivariate", {})
 
+    # Check if lead_time > 1 is present
+    if "lead_time" in ds_prediction.coords or "lead_time" in ds_prediction.dims:
+        try:
+            lts = ds_prediction["lead_time"]
+            if lts.size > 1:
+                print(
+                    "[multivariate] Skipping bivariate histograms "
+                    "because multiple lead times are present."
+                )
+                return
+        except Exception as e:
+            print(f"[multivariate] Warning: Could not check lead_time: {e}")
+
     # Resolve ensemble mode
     # Default for multivariate is usually 'mean' (compare ensemble mean to target)
     # But we support 'members' too.

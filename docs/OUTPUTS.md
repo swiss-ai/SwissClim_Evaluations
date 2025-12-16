@@ -21,13 +21,14 @@ Modes → tokens:
 If the dataset contains multiple ensembles, metrics can be computed on the mean of all ensembles (mean setting below), individually per ensemble (members setting below), or pooled across all members (pooled setting below).
 
 - **maps**: mean, members
-- **vertical_profiles**: mean, pooled, members
 - **histograms**: mean, pooled, members
 - **wd_kde**: mean, pooled, members
 - **energy_spectra**: mean, pooled, members
+- **vertical_profiles**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
 - **ssim**: mean, pooled, members
+- **multivariate**: mean, pooled, members
 - **probabilistic**: prob only
 
 The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
@@ -109,17 +110,24 @@ ssim_ssim_ens0.csv   # members mode per-member file
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
-is exported per init_time/lead_time and summarized. Outputs:
+is exported per init_time/lead_time and summarized. Outputs are split into single-lead (standard) and per-lead variants.
 
-- Figures / NPZ (subset init_time for plotting) : `energy_spectra/lsd_<variable>[_<level>]_spectrum[_init...][_lead...]_ens*.{png|npz}`
-- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_init_time_<range>.csv` or `per_lead_time` depending on dims
-- LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
-- LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
-- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
-- LSD averaged (3D): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (scalar mean over levels and time)
-- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv` (only if `report_per_level=true`)
-- LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
-- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged (scalar), per-level, and init_time summaries.
+**Standard (Single Lead or averaged):**
+
+- Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>]...`
+- LSD averaged (2D): `energy_spectra/energy_ratios_averaged_<range>.csv`
+- LSD init_time (2D): `energy_spectra/energy_ratios_init_time_<range>.csv`
+- LSD averaged (3D): `energy_spectra/energy_ratios_3d_averaged_<range>.csv`
+- LSD per-level (3D): `energy_spectra/energy_ratios_3d_per_level_<range>.csv`
+- LSD init_time (3D): `energy_spectra/energy_ratios_3d_init_time_<range>.csv`
+- LSD Banded: `energy_spectra/energy_ratios_bands_averaged_<range>.csv` (and 3D variants)
+
+**Per Lead (Multi Lead):**
+
+- Spectrograms: `energy_spectra/energy_spectra_per_lead_<variable>...`
+- LSD per-lead (2D): `energy_spectra/energy_ratios_per_lead_by_lead_long_<range>.csv` (and wide format)
+- LSD Banded per-lead: `energy_spectra/energy_ratios_bands_per_lead_per_lead_time_<range>.csv`
+- LSD Line Plot: `energy_spectra/energy_ratios_line_per_lead_<variable>...`
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 

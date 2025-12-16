@@ -114,158 +114,6 @@ def run(
         ds_prediction_std_eff = ds_prediction_std
         ens_token_base = None  # per-member inside loop
 
-    def _plot_joyplot_kde(
-        da_target: xr.DataArray,
-        da_pred: xr.DataArray,
-        variable_name: str,
-        level_token: str,
-        ens_token: str | None,
-    ) -> None:
-        if "lead_time" not in da_pred.dims:
-            return
-        leads = da_pred["lead_time"].values
-        if len(leads) < 2:
-            return
-
-        # Setup figure
-        # Adjust height based on number of leads
-        fig, ax = plt.subplots(figsize=(10, max(6, len(leads) * 0.5)), dpi=dpi)
-
-        # Collect all lazy jobs
-        jobs = []
-
-        # 1. Global subsample for range determination
-        range_job = {
-            "type": "range",
-            "sub_t_lazy": subsample_values(da_target, max_samples, base_seed, lazy=True),
-            "sub_p_lazy": subsample_values(da_pred, max_samples, base_seed, lazy=True),
-        }
-        jobs.append(range_job)
-
-        # 2. Per-lead subsamples
-        for i, lt in enumerate(leads):
-            # Handle lead time selection
-            if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
-                lt_sel = lt
-                hours = int(lt / np.timedelta64(1, "h"))
-                label = f"{hours}h"
-            else:
-                lt_sel = lt
-                label = str(lt)
-
-            da_t_l = da_target.sel(lead_time=lt_sel) if "lead_time" in da_target.dims else da_target
-            da_p_l = da_pred.sel(lead_time=lt_sel)
-
-            # Subsample
-            seed = base_seed + i * 100
-
-            job = {
-                "type": "lead",
-                "label": label,
-                "sub_t_lazy": subsample_values(da_t_l, max_samples // len(leads), seed, lazy=True),
-                "sub_p_lazy": subsample_values(da_p_l, max_samples // len(leads), seed, lazy=True),
-            }
-            jobs.append(job)
-
-        # Compute all
-        compute_jobs(
-            jobs,
-            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
-            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-        )
-
-        # Process range
-        range_job = jobs[0]
-        s_t = cast(np.ndarray, range_job["val_t"])
-        s_p = cast(np.ndarray, range_job["val_p"])
-
-        if s_t.size == 0 or s_p.size == 0:
-            plt.close(fig)
-            return
-
-        combined = np.concatenate([s_t, s_p])
-        vmin = float(np.nanquantile(combined, 0.001))
-        vmax = float(np.nanquantile(combined, 0.999))
-        x_eval = np.linspace(vmin, vmax, 200)
-
-        # Process leads
-        kdes = []
-        max_dens = 0.0
-
-        for job in jobs[1:]:
-            val_t = cast(np.ndarray, job["val_t"])
-            val_p = cast(np.ndarray, job["val_p"])
-            label = cast(str, job["label"])
-
-            if val_t.size < 10 or val_p.size < 10:
-                continue
-
-            try:
-                kde_t = gaussian_kde(val_t)
-                kde_p = gaussian_kde(val_p)
-                y_t = kde_t(x_eval)
-                y_p = kde_p(x_eval)
-                max_dens = max(max_dens, y_t.max(), y_p.max())
-                kdes.append((label, y_t, y_p))
-            except Exception:
-                continue
-
-        if not kdes:
-            plt.close(fig)
-            return
-
-        # Plotting
-        # Overlap factor
-        overlap = 1.5
-        step = max_dens / overlap if max_dens > 0 else 1.0
-
-        yticks = []
-        yticklabels = []
-
-        for i, (label, y_t, y_p) in enumerate(kdes):
-            base_y = i * step
-
-            # Target
-            ax.fill_between(x_eval, base_y, base_y + y_t, color=COLOR_GROUND_TRUTH, alpha=0.3)
-            ax.plot(x_eval, base_y + y_t, color=COLOR_GROUND_TRUTH, lw=1)
-
-            # Prediction
-            ax.fill_between(x_eval, base_y, base_y + y_p, color=COLOR_MODEL_PREDICTION, alpha=0.3)
-            ax.plot(x_eval, base_y + y_p, color=COLOR_MODEL_PREDICTION, lw=1)
-
-            yticks.append(base_y)
-            yticklabels.append(label)
-
-        ax.set_yticks(yticks)
-        ax.set_yticklabels(yticklabels)
-        ax.set_xlabel(f"{variable_name} (standardized)")
-        ax.set_title(
-            f"KDE Evolution by Lead Time — {format_variable_name(variable_name)}", fontsize=16
-        )
-
-        # Add legend manually
-        from matplotlib.lines import Line2D
-
-        custom_lines = [
-            Line2D([0], [0], color=COLOR_GROUND_TRUTH, lw=2),
-            Line2D([0], [0], color=COLOR_MODEL_PREDICTION, lw=2),
-        ]
-        ax.legend(custom_lines, ["Target", "Prediction"], loc="upper right", fontsize=10)
-
-        if save_fig:
-            out_png = section_output / build_output_filename(
-                metric="wd_kde_joyplot",
-                variable=variable_name,
-                level=level_token,
-                qualifier=None,
-                init_time_range=None,
-                lead_time_range=None,
-                ensemble=ens_token,
-                ext="png",
-            )
-            save_figure(fig, out_png)
-        plt.close(fig)
-
     def _process_variable(
         var_name: str,
         da_t_std: xr.DataArray,
@@ -428,10 +276,6 @@ def run(
                 }
             )
 
-        # --- Joyplot KDE (Multi-Lead) ---
-        if "lead_time" in da_p_std.dims and da_p_std.sizes["lead_time"] > 1:
-            _plot_joyplot_kde(da_t_std, da_p_std, var_name, level_token, ens_token)
-
         if not per_lat_band:
             return
 
@@ -558,29 +402,34 @@ def run(
         plt.close(fig)
 
     # 2D standardized variables (run once per variable; avoid prior recursion issue)
-    if resolved_mode == "members" and has_ens:
-        for member_index, tgt_m, pred_m in _iter_members():
-            token_m = ensemble_mode_to_token("members", member_index)
+    has_multi_lead = (
+        "lead_time" in ds_prediction_std_eff.dims and ds_prediction_std_eff.sizes["lead_time"] > 1
+    )
+
+    if not has_multi_lead:
+        if resolved_mode == "members" and has_ens:
+            for member_index, tgt_m, pred_m in _iter_members():
+                token_m = ensemble_mode_to_token("members", member_index)
+                for variable_name in variables_2d:
+                    _process_variable(
+                        str(variable_name),
+                        tgt_m[variable_name],
+                        pred_m[variable_name],
+                        level_token="surface",
+                        ens_token=token_m,
+                    )
+        else:
             for variable_name in variables_2d:
                 _process_variable(
                     str(variable_name),
-                    tgt_m[variable_name],
-                    pred_m[variable_name],
+                    ds_target_std_eff[variable_name],
+                    ds_prediction_std_eff[variable_name],
                     level_token="surface",
-                    ens_token=token_m,
+                    ens_token=ens_token_base,
                 )
-    else:
-        for variable_name in variables_2d:
-            _process_variable(
-                str(variable_name),
-                ds_target_std_eff[variable_name],
-                ds_prediction_std_eff[variable_name],
-                level_token="surface",
-                ens_token=ens_token_base,
-            )
 
     # 3D standardized variables per level
-    if process_3d:
+    if process_3d and not has_multi_lead:
         for variable_name in variables_3d:
             da_t_std = ds_target_std_eff[variable_name]
             da_p_std = ds_prediction_std_eff[variable_name]
@@ -617,8 +466,7 @@ def run(
                     )
 
     # Optional: Global KDE evolution over lead_time (3D perspective)
-    evolve_flag = bool((plotting_cfg or {}).get("wd_kde_global_evolution", False))
-    if evolve_flag and ("lead_time" in ds_prediction_std_eff.dims):
+    if has_multi_lead:
         # Choose all eligible variables (2D and 3D)
         cand_vars = [
             v
@@ -766,8 +614,10 @@ def run(
 
             # Add level info to title if applicable
             level_str = f" (level {lvl})" if lvl is not None else ""
-            ax_r.set_xlabel(f"{base_var} (standardized)")
-            ax_r.set_title(f"KDE Evolution (Ridgeline): {base_var}{level_str}")
+            ax_r.set_xlabel(f"{format_variable_name(base_var)} (standardized)")
+            ax_r.set_title(
+                f"KDE Evolution (Ridgeline): {format_variable_name(base_var)}{level_str}"
+            )
 
             if save_fig:
                 qual = f"ridgeline{'_level' + str(lvl) if lvl is not None else ''}"
@@ -813,7 +663,7 @@ def run(
             metric="wd_kde",
             variable=None,
             level=None,
-            qualifier="wasserstein",
+            qualifier="wasserstein_averaged",
             init_time_range=None,
             lead_time_range=None,
             ensemble=ens_token_base,

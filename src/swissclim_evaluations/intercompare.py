@@ -21,6 +21,7 @@ from .helpers import (
     format_level_label,
     format_level_token,
     format_variable_name,
+    get_variable_units,
 )
 
 # Global flag for quiet mode (can be overridden if needed)
@@ -100,6 +101,7 @@ def _report_missing(
 
     rows.append("")
     rows.append("(Missing counts are relative to the union of files found across all models)")
+    rows.append("(Counts refer to files, not necessarily unique atmospheric variables)")
 
     c.panel(
         "\n".join(rows),
@@ -120,6 +122,9 @@ def _report_checklist(module: str, results: dict[str, int]) -> None:
         else:
             clean_label = label.replace(" (Ignored)", "")
             lines.append(f"❌ {clean_label} (Missing)")
+
+    lines.append("")
+    lines.append("(Counts refer to files, not necessarily unique atmospheric variables)")
 
     c.panel(
         "\n".join(lines),
@@ -397,7 +402,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     patterns = [
         "energy_spectra/*_spectrum*.npz",
         "energy_spectra/lsd_*.csv",
-        "energy_spectra/energy_spectrogram_*_bundle.npz",
+        "energy_spectra/energy_spectrogram_*_bundle*.npz",
     ]
     total_per_model: list[set[str]] = [set() for _ in models]
     total_union = set()
@@ -413,8 +418,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results = {}
     # Spectra: 1-to-1 mapping (each file -> one plot)
     spectra_files = _common_files(models, "energy_spectra/*_spectrum*.npz")
-    # We generate 2 plots per file (standard + ratio)
-    results["Energy Spectra Plots"] = len(spectra_files) * 2
+    bundles = _common_files(models, "energy_spectra/energy_spectrogram_*_bundle*.npz")
+
+    # We generate 2 plots per file (standard + ratio) for spectra, and 1 per lead for bundles
+    # But for the checklist, we just count the files found
+    results["Energy Spectra Plots"] = len(spectra_files) * 2 + len(bundles)
 
     # LSD: Many-to-1 mapping (Combined CSVs)
     # We check for presence of inputs to determine if the Combined output
@@ -428,7 +436,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
     # Ignored files (present but not currently processed)
     init_time = [f for f in all_lsd if "init_time" in f]
-    lead_time = [f for f in all_lsd if "per_lead_time" in f]
+    lead_time = [f for f in all_lsd if "per_lead_time" in f or "by_lead" in f]
 
     def _count_2d_3d(files: list[str]) -> int:
         has_2d = any("2d" in f for f in files)
@@ -444,7 +452,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results["LSD Banded Per-Level Metrics"] = _count_2d_3d(lvl_bands)
 
     results["LSD Init Time Metrics (Ignored)"] = len(init_time)
-    results["LSD Per Lead Time Metrics (Ignored)"] = len(lead_time)
+    results["LSD Per Lead Time Metrics"] = _count_2d_3d(lead_time)
 
     _report_checklist("energy_spectra", results)
 
@@ -536,11 +544,37 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
+    # 5. Per Lead Time
+    frames_lead: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        # Match both "per_lead_time" and "by_lead"
+        cands = [
+            f
+            for f in (m / "energy_spectra").glob("lsd_*.csv")
+            if "per_lead_time" in f.name or "by_lead" in f.name
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_lead.append(df)
+            except Exception:
+                pass
+
+    if frames_lead:
+        combined = pd.concat(frames_lead, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_per_lead_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
     # Helper to plot a group of NPZ with baseline
     def _plot_group(basenames: list[str]) -> None:
         _print_file_list(f"Found {len(basenames)} common energy spectra files", basenames)
         for base in basenames:
             datas = [_load_npz(m / src_rel / base) for m in models]
+
             # Use explicit fallback logic to avoid ambiguous truth-value evaluation on numpy arrays
             wn = datas[0].get("wavenumber")
             if wn is None:
@@ -730,7 +764,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
 
     # 4) Plot Energy Spectra per Lead Time (from bundle NPZ)
     # Look for energy_spectrogram_*_bundle.npz
-    bundles = _common_files(models, str(src_rel / "energy_spectrogram_*_bundle.npz"))
+    bundles = _common_files(models, str(src_rel / "energy_spectrogram_*_bundle*.npz"))
     if bundles:
         _print_file_list(f"Found {len(bundles)} common energy spectra bundles", bundles)
 
@@ -866,6 +900,94 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
         combined.to_csv(out_csv, index=False)
         c.success(f"Saved {out_csv.relative_to(out_root)}")
 
+        # Generate bar plots for ETS metrics
+        # We expect columns like 'threshold', 'ETS', 'model', 'variable'
+        # If 'threshold' is present, we can plot ETS vs threshold for each model
+        if "threshold" in combined.columns and "ETS" in combined.columns:
+            # Group by variable
+            for var, group in combined.groupby("variable"):
+                # Check if we have multiple thresholds
+                if group["threshold"].nunique() > 1:
+                    # Pivot to get models side-by-side for each threshold
+                    pivot = group.pivot(index="threshold", columns="model", values="ETS")
+                    if not pivot.empty:
+                        fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+                        pivot.plot(kind="bar", ax=ax, width=0.8)
+                        ax.set_title(f"ETS by Threshold — {format_variable_name(str(var))}")
+                        ax.set_ylabel("ETS")
+                        ax.set_xlabel("Threshold")
+                        plt.xticks(rotation=45)
+                        ax.grid(True, axis="y", linestyle="--", alpha=0.7)
+                        plt.tight_layout()
+                        out_png = dst_ets / f"ets_barplot_{var}_compare.png"
+                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                        c.success(f"Saved {out_png.relative_to(out_root)}")
+                        plt.close(fig)
+
+        # Also handle wide format where thresholds are in column names (e.g. "tp_ETS 1mm")
+        # We want to generate a barplot with thresholds on x-axis for these too.
+        # Identify variable-threshold pairs
+        wide_metrics: dict[str, list[tuple[str, str]]] = {}  # (variable, threshold) -> col_name
+        for col in combined.columns:
+            if "_ETS " in col:
+                try:
+                    var_part, thresh_part = col.split("_ETS ", 1)
+                    wide_metrics.setdefault(var_part, []).append((thresh_part, col))
+                except ValueError:
+                    pass
+
+        for var, items in wide_metrics.items():
+            if len(items) > 1:
+                # We have multiple thresholds for this variable
+                # We need to aggregate over lead_time (e.g. mean) or pick one?
+                # Usually ETS barplots are aggregated over lead time or for a specific lead time.
+                # Here we aggregate (mean) over lead times to show overall performance per threshold
+
+                # Prepare data for plotting
+                # We want a DataFrame with index=threshold, columns=models, values=ETS (mean)
+                plot_data: dict[str, dict[str, float]] = {}
+                thresholds = []
+
+                for thresh, col in items:
+                    thresholds.append(thresh)
+                    # Group by model and take mean of this column
+                    means = combined.groupby("model")[col].mean()
+                    for model, val in means.items():
+                        if model not in plot_data:
+                            plot_data[model] = {}
+                        plot_data[model][thresh] = val
+
+                if plot_data:
+                    df_plot = pd.DataFrame(plot_data).T  # models as index, thresholds as columns
+                    # We want thresholds as index for bar plot
+                    df_plot = df_plot.T
+
+                    # Sort thresholds if they are numeric-like
+                    try:
+                        # Try to parse "1mm", "5mm" etc.
+                        def parse_thresh(t):
+                            return float(re.sub(r"[^\d\.]", "", t))
+
+                        sorted_thresh = sorted(df_plot.index, key=parse_thresh)
+                        df_plot = df_plot.reindex(sorted_thresh)
+                    except Exception:
+                        pass
+
+                    fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+                    df_plot.plot(kind="bar", ax=ax, width=0.8)
+                    ax.set_title(
+                        f"ETS by Threshold (Mean over Leads) — {format_variable_name(str(var))}"
+                    )
+                    ax.set_ylabel("ETS")
+                    ax.set_xlabel("Threshold")
+                    plt.xticks(rotation=45)
+                    ax.grid(True, axis="y", linestyle="--", alpha=0.7)
+                    plt.tight_layout()
+                    out_png = dst_ets / f"ets_barplot_{var}_wide_compare.png"
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png.relative_to(out_root)}")
+                    plt.close(fig)
+
         # Plot ETS vs Lead Time per (Variable, Threshold)
         # Columns are: model, lead_time_hours, <var>_ETS <thresh>%
         # We need to identify metric columns
@@ -912,7 +1034,7 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                 plt.close(fig)
 
 
-def _clean_var_from_filename(filename: str, prefix: str = "") -> str:
+def _clean_var_from_filename(filename: str, prefix: str = "", format: bool = True) -> str:
     """Clean variable name from filename for plot titles."""
     stem = filename[:-4] if filename.endswith(".npz") else filename
     if prefix and stem.startswith(prefix):
@@ -932,10 +1054,12 @@ def _clean_var_from_filename(filename: str, prefix: str = "") -> str:
     # leadXXXh-YYYh
     stem = re.sub(r"_lead\d+h-\d+h", "", stem)
 
-    return format_variable_name(stem)
+    if format:
+        return format_variable_name(stem)
+    return stem
 
 
-def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str, color: str):
+def _plot_hist_counts(ax, edges: np.ndarray, counts: np.ndarray, label: str | None, color: str):
     # Draw as stairs to avoid bar clutter across models and ensure proper alignment
     counts = np.asarray(counts, dtype=float)
     edges = np.asarray(edges, dtype=float)
@@ -973,7 +1097,7 @@ def intercompare_histograms(
 
     # Check for ignored
     all_hist = _common_files(models, "histograms/hist_*.npz")
-    ignored = [f for f in all_hist if "latbands_combined" not in f and "global" not in f]
+    ignored = [f for f in all_hist if "latbands" not in f and "global" not in f]
     if ignored:
         results["Other Histograms (Ignored)"] = len(ignored)
 
@@ -1011,16 +1135,23 @@ def intercompare_histograms(
 
             if counts_target is not None:
                 counts_target = np.asarray(counts_target)
-                if counts_target.ndim > 1:
-                    counts_target = counts_target.flatten()
             if bins_target is not None:
                 bins_target = np.asarray(bins_target)
-                if bins_target.ndim > 1:
-                    bins_target = bins_target.flatten()
 
-            _plot_hist_counts(
-                ax, bins_target, counts_target, label="Target", color=COLOR_GROUND_TRUTH
-            )
+            if counts_target is not None and bins_target is not None:
+                if counts_target.ndim > 1:
+                    for idx in range(len(counts_target)):
+                        _plot_hist_counts(
+                            ax,
+                            bins_target[idx],
+                            counts_target[idx],
+                            label="Target" if idx == 0 else None,
+                            color=COLOR_GROUND_TRUTH,
+                        )
+                else:
+                    _plot_hist_counts(
+                        ax, bins_target, counts_target, label="Target", color=COLOR_GROUND_TRUTH
+                    )
 
             # Models
             for i, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
@@ -1032,24 +1163,43 @@ def intercompare_histograms(
 
                 if counts_prediction is not None:
                     counts_prediction = np.asarray(counts_prediction)
-                    if counts_prediction.ndim > 1:
-                        counts_prediction = counts_prediction.flatten()
                 if bins_prediction is not None:
                     bins_prediction = np.asarray(bins_prediction)
-                    if bins_prediction.ndim > 1:
-                        bins_prediction = bins_prediction.flatten()
 
-                _plot_hist_counts(
-                    ax, bins_prediction, counts_prediction, label=lab, color=colors[i]
-                )
+                if counts_prediction is not None and bins_prediction is not None:
+                    if counts_prediction.ndim > 1:
+                        for idx in range(len(counts_prediction)):
+                            _plot_hist_counts(
+                                ax,
+                                bins_prediction[idx],
+                                counts_prediction[idx],
+                                label=lab if idx == 0 else None,
+                                color=colors[i],
+                            )
+                    else:
+                        _plot_hist_counts(
+                            ax,
+                            bins_prediction,
+                            counts_prediction,
+                            label=lab,
+                            color=colors[i],
+                        )
 
-            var = _clean_var_from_filename(base, prefix="hist_")
+            raw_var = _clean_var_from_filename(base, prefix="hist_", format=False)
+            var = format_variable_name(raw_var)
             date_suffix = extract_date_from_filename(base)
             ax.set_title(f"Global Histogram — {var}{date_suffix}", fontsize=16)
             ax.set_ylabel("Frequency (log)")
             ax.set_yscale("log")
-            if units := payloads[0].get("units"):
-                ax.set_xlabel(str(units))
+
+            units_val = payloads[0].get("units")
+            if not units_val:
+                units_val = get_variable_units(None, raw_var)
+
+            label = var
+            if units_val:
+                label += f" [{units_val}]"
+            ax.set_xlabel(label)
             ax.legend(frameon=False)
             ax.grid(True, which="both", ls="--", alpha=0.4)
 
@@ -1065,7 +1215,18 @@ def intercompare_histograms(
 
         for base in common:
             payloads = [_load_npz(m / src_rel / base) for m in models]
+
+            raw_var = _clean_var_from_filename(base, prefix="hist_", format=False)
+            var_fmt = format_variable_name(raw_var)
+
             units = payloads[0].get("units")
+            if not units:
+                units = get_variable_units(None, raw_var)
+
+            xlabel = var_fmt
+            if units:
+                xlabel += f" [{units}]"
+
             # Layout: 9 rows x 2 columns (same as original)
             lat_neg_min = payloads[0].get("neg_lat_min")
             lat_neg_max = payloads[0].get("neg_lat_max")
@@ -1103,8 +1264,7 @@ def intercompare_histograms(
                     else float("nan")
                 )
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (South)")
-                if units:
-                    ax.set_xlabel(str(units))
+                ax.set_xlabel(xlabel)
 
             # Left column: northern hemisphere bands
             for j in range(n_rows):
@@ -1132,8 +1292,7 @@ def intercompare_histograms(
                     else float("nan")
                 )
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
-                if units:
-                    ax.set_xlabel(str(units))
+                ax.set_xlabel(xlabel)
 
             # Legends: add a single shared legend
             handles, labels_leg = axs[0, 0].get_legend_handles_labels()
@@ -1143,8 +1302,9 @@ def intercompare_histograms(
                     labels_leg[: 1 + len(models)],
                     loc="lower center",
                     ncol=min(6, 1 + len(models)),
+                    bbox_to_anchor=(0.5, 0.02),
                 )
-            plt.tight_layout(rect=(0, 0.05, 1, 1))
+            plt.tight_layout(rect=(0, 0.08, 1, 1))
             # Derive a variable/level label for the figure title.
             var = _clean_var_from_filename(base, prefix="hist_")
             date_suffix = extract_date_from_filename(base)
@@ -1220,7 +1380,9 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
 
             var = _clean_var_from_filename(base, prefix="wd_kde_")
             date_suffix = extract_date_from_filename(base)
-            ax.set_title(f"Global Normalized KDE — {var}{date_suffix}", fontsize=16)
+            ax.set_title(
+                f"Global Normalized KDE — {format_variable_name(var)}{date_suffix}", fontsize=16
+            )
             # if units := payloads[0].get("units"):
             #     ax.set_xlabel(str(units))
             ax.legend()
@@ -1288,14 +1450,17 @@ def intercompare_wd_kde(models: list[Path], labels: list[str], out_root: Path) -
                     labels_leg[: 1 + len(models)],
                     loc="lower center",
                     ncol=min(6, 1 + len(models)),
+                    bbox_to_anchor=(0.5, 0.02),
                 )
-            plt.tight_layout(rect=(0, 0.05, 1, 1))
+            plt.tight_layout(rect=(0, 0.08, 1, 1))
             # Extract variable/level part.
             var = _clean_var_from_filename(base, prefix="wd_kde_")
             date_suffix = extract_date_from_filename(base)
 
             fig.suptitle(
-                f"Normalized KDE by Latitude Bands — {var}{date_suffix}", y=1.02, fontsize=20
+                f"Normalized KDE by Latitude Bands — {format_variable_name(var)}{date_suffix}",
+                y=1.02,
+                fontsize=20,
             )
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
@@ -1473,6 +1638,7 @@ def intercompare_maps(
                     transform=ccrs.PlateCarree(),
                 )
                 ax.coastlines(linewidth=0.5)
+                # Prediction columns should not have lead time in title
                 ax.set_title(lab if n_levels == 1 else f"{lab}")
             # Use a constrained-layout-friendly colorbar spanning all axes
             cbar = fig.colorbar(
@@ -1481,6 +1647,7 @@ def intercompare_maps(
                 orientation="horizontal",
                 fraction=0.05,
                 pad=0.08,
+                aspect=35,
             )
             with contextlib.suppress(Exception):
                 cbar.set_label(str(units) if units else "Value")
@@ -1724,6 +1891,7 @@ def intercompare_deterministic_metrics(
             "model",
             "level",
             "lead_time",
+            "lead_time_hours",
             "init_time",
             "valid_time",
             "Unnamed: 0",
@@ -1738,6 +1906,10 @@ def intercompare_deterministic_metrics(
             if metric in comb.columns:
                 tmp = comb.copy()
                 tmp[metric] = pd.to_numeric(tmp[metric], errors="coerce")
+                # If we have multiple entries per variable/model (e.g. multiple lead times),
+                # average them to produce a summary scalar metric.
+                if tmp.duplicated(subset=["variable", "model"]).any():
+                    tmp = tmp.groupby(["variable", "model"], as_index=False)[metric].mean()
                 pivot = tmp.pivot(index="variable", columns="model", values=metric)
                 # Drop rows/columns that are entirely NaN
                 pivot = pivot.dropna(axis=0, how="all").dropna(axis=1, how="all")
@@ -1760,7 +1932,7 @@ def intercompare_deterministic_metrics(
                     c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
                 ax = pivot.plot(kind="bar", figsize=(12, 6))
-                ax.set_title(f"{metric} by variable and model")
+                ax.set_title(f"{metric} by variable and model".title())
                 ax.set_ylabel(metric)
                 ax.set_xlabel("")
                 plt.xticks(rotation=45, ha="right")
@@ -1861,8 +2033,8 @@ def intercompare_deterministic_metrics(
                     (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
                 ].copy()
 
-                pivot = subset.pivot(
-                    index="lead_time", columns="model", values="value"
+                pivot = subset.pivot_table(
+                    index="lead_time", columns="model", values="value", aggfunc="mean"
                 ).sort_index()
 
                 if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
@@ -1873,6 +2045,7 @@ def intercompare_deterministic_metrics(
                     ax.set_ylabel(metric)
                     ax.set_xlabel("Lead Time (h)")
                     ax.grid(True, linestyle="--", alpha=0.6)
+                    ax.legend(title=None)
                     plt.tight_layout()
 
                     out_png = dst_det / f"temporal_{metric}_{variable}_compare.png"
@@ -2092,7 +2265,6 @@ def intercompare_probabilistic(
             out_csv = dst_prob / "temporal_metrics_combined.csv"
             temporal_df.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
-            results["Temporal Metrics"] = 1
 
             # Plot: group by lead_time and model
             pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
@@ -2102,8 +2274,8 @@ def intercompare_probabilistic(
                     (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
                 ].copy()
 
-                pivot = subset.pivot(
-                    index="lead_time", columns="model", values="value"
+                pivot = subset.pivot_table(
+                    index="lead_time", columns="model", values="value", aggfunc="mean"
                 ).sort_index()
 
                 if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
@@ -2128,8 +2300,17 @@ def intercompare_probabilistic(
         _print_file_list(f"Found {len(common_maps)} common CRPS map files", common_maps)
 
         # Limit panels
-        for base in common_maps[:max_crps_map_panels]:
+        seen_vars: set[str] = set()
+        for base in common_maps:
+            if len(seen_vars) >= max_crps_map_panels:
+                break
+
             key = _parse_map_filename(base)
+            # Check if we already processed this variable (ignoring date/ens suffix)
+            var_part = _clean_var_from_filename(base, prefix="crps_map_")
+            if var_part in seen_vars:
+                continue
+
             payloads = [_load_npz(m / "probabilistic" / base) for m in models]
 
             # CRPS maps usually have 'crps' key
@@ -2148,6 +2329,8 @@ def intercompare_probabilistic(
 
             if lats is None or lons is None or map_var_name is None:
                 continue
+
+            seen_vars.add(var_part)
 
             # Plotting
             ncols = len(models)
@@ -2259,6 +2442,9 @@ def intercompare_probabilistic(
             # Also skip per-lead files to avoid duplicates
             if "grid" in base or "data" in base or "lead" in base:
                 continue
+
+            # Special check for geopotential which might be named differently or skipped
+            # If base contains 'geopotential', ensure we process it
 
             payloads = [_load_npz(m / "probabilistic" / base) for m in models]
 
@@ -2434,14 +2620,16 @@ def run_from_config(cfg: dict) -> None:
             print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
     mods = set(modules)
-    if "spectra" in mods:
-        intercompare_energy_spectra(models, labels, out_root)
+    if "maps" in mods:
+        intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "hist" in mods:
         intercompare_histograms(models, labels, out_root)
     if "kde" in mods:
         intercompare_wd_kde(models, labels, out_root)
-    if "maps" in mods:
-        intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
+    if "spectra" in mods:
+        intercompare_energy_spectra(models, labels, out_root)
+    if "vprof" in mods:
+        intercompare_vertical_profiles(models, labels, out_root)
     if "metrics" in mods:
         intercompare_deterministic_metrics(models, labels, out_root)
     if "ets" in mods:
@@ -2452,8 +2640,8 @@ def run_from_config(cfg: dict) -> None:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
-    if "vprof" in mods:
-        intercompare_vertical_profiles(models, labels, out_root)
+
+    c.success("Intercomparison finished.")
 
 
 def main(argv: list[str] | None = None) -> None:
