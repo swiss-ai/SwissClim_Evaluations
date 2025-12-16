@@ -95,8 +95,8 @@ To evaluate physical consistency, we recommend plotting pairs that capture funda
     *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
 
 Outputs:
-- `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
-- `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.
+- `bivariate_hist_<var1>_<var2>_<ensemble_token>.npz`: Saved histogram counts and bin edges.
+- `bivariate_<var1>_<var2>_<ensemble_token>.png`: The generated density plot comparing the current model (Prediction) against the reference.
 
 ### SSIM
 
