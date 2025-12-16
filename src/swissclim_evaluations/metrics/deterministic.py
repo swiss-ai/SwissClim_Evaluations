@@ -126,7 +126,6 @@ def _calculate_all_metrics(
     weights = None
     if "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
-        weights = weights / weights.mean()
 
     for var in variables:
         y_true = ds_target[var]

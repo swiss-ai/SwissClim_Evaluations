@@ -124,7 +124,6 @@ def calculate_energy_spectra(
             "calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray."
         )
     weights = create_latitude_weights(da_power["latitude"])
-    weights = weights / weights.mean()
     da_power = da_power.weighted(weights).mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
