@@ -10,7 +10,9 @@ from scores.categorical import BinaryContingencyManager
 
 
 def _calculate_ets_for_thresholds(
-    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
 ) -> pd.DataFrame:
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
@@ -33,7 +35,9 @@ def _calculate_ets_for_thresholds(
 
 
 def _calculate_ets_per_level(
-    ds_target: xr.Dataset, ds_prediction: xr.Dataset, thresholds: list[int]
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:

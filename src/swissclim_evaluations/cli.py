@@ -1101,6 +1101,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 plotting,
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("vertical_profiles"),
+                metrics_cfg=cfg.get("metrics", {}),
             )
             dt = time.time() - _t
             module_timings.append(("vertical_profiles", dt))
@@ -1227,7 +1228,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status(
             "probabilistic",
             "run",
-            "CRPS/PIT (xarray) + WBX SSR",
+            "PIT (xarray) + WBX SSR/CRPS",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))

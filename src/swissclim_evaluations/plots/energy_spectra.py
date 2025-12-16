@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from scores.functions import create_latitude_weights
 
 from ..helpers import (
     COLOR_GROUND_TRUTH,
@@ -118,12 +119,12 @@ def calculate_energy_spectra(
     da_power.attrs["long_name"] = "Latitude-weighted zonal power spectrum"
 
     # Latitude weighting (cos φ) – retains any non-latitude dims (e.g. ensemble)
-    if "latitude" in da_power.coords:
-        lat_vals = da_power["latitude"]
-        cosw = np.cos(np.deg2rad(lat_vals)).clip(1e-6)
-        da_power = da_power.weighted(cosw).mean(dim="latitude")
-    else:
-        raise ValueError("latitude coordinate required for weighting")
+    if "latitude" not in da_power.coords:
+        raise ValueError(
+            "calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray."
+        )
+    weights = create_latitude_weights(da_power["latitude"])
+    da_power = da_power.weighted(weights).mean(dim="latitude")
 
     # Post-spectrum averaging over requested dims (e.g., ensemble)
     if average_dims:
@@ -568,7 +569,10 @@ def run(
             token_ctx = ctx["token"]
             # Compute spectra once and reuse
             spec_t, spec_p = _compute_spectra_pair(
-                ctx["ds_target"], ctx["ds_prediction"], str(var), None
+                ctx["ds_target"],
+                ctx["ds_prediction"],
+                str(var),
+                None,
             )
             lsd_da_ctx = _compute_lsd_da(spec_t, spec_p)
             df_lsd_ctx = lsd_da_ctx.to_dataframe(name="lsd").reset_index()

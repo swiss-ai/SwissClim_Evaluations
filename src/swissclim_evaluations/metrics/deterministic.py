@@ -11,6 +11,7 @@ import xarray as xr
 from scores.categorical import seeps
 from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
+from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d
 
 
@@ -122,6 +123,10 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
+    weights = None
+    if "latitude" in ds_target.dims:
+        weights = create_latitude_weights(ds_target.latitude)
+
     for var in variables:
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
@@ -129,23 +134,23 @@ def _calculate_all_metrics(
 
         # Base error metrics
         if (include is None) or ("MAE" in metrics_to_compute):
-            mae_val = float(mae(y_pred, y_true))
+            mae_val = float(mae(y_pred, y_true, weights=weights))
             row["MAE"] = mae_val
         else:
             mae_val = np.nan
 
         if (include is None) or ("RMSE" in metrics_to_compute):
-            rmse_val = float(rmse(y_pred, y_true))
+            rmse_val = float(rmse(y_pred, y_true, weights=weights))
             row["RMSE"] = rmse_val
         else:
             rmse_val = np.nan
 
         if (include is None) or ("MSE" in metrics_to_compute):
-            mse_val = float(mse(y_pred, y_true))
+            mse_val = float(mse(y_pred, y_true, weights=weights))
             row["MSE"] = mse_val
 
         if (include is None) or ("Bias" in metrics_to_compute):
-            bias_val = float(additive_bias(y_pred, y_true))
+            bias_val = float(additive_bias(y_pred, y_true, weights=weights))
             row["Bias"] = bias_val
         else:
             bias_val = np.nan
@@ -225,7 +230,10 @@ def _calculate_all_metrics(
             # Denominator norms on the target
             l1_norm = float(np.abs(y_true).sum(skipna=True).compute())
             l2_norm = float(((y_true**2).sum(skipna=True).compute()) ** 0.5)
-            mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
+            if weights is not None:
+                mean_abs = float(np.abs(y_true).weighted(weights).mean(skipna=True).compute())
+            else:
+                mean_abs = float(np.abs(y_true).mean(skipna=True).compute())
 
             # Mean-based relative MAE (keep for continuity and interpretability)
             if (include is None) or ("Relative MAE" in metrics_to_compute):
@@ -272,7 +280,14 @@ def _calculate_per_level_metrics(
         ds_t_lvl = ds_target[variables_3d].sel(level=level)
         ds_p_lvl = ds_prediction[variables_3d].sel(level=level)
 
-        df = _calculate_all_metrics(ds_t_lvl, ds_p_lvl, calc_relative, n_points, include, fss_cfg)
+        df = _calculate_all_metrics(
+            ds_t_lvl,
+            ds_p_lvl,
+            calc_relative,
+            n_points,
+            include,
+            fss_cfg,
+        )
         df["level"] = int(level)
         df["variable"] = df.index
         dfs.append(df)
