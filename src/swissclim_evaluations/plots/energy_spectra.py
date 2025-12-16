@@ -656,8 +656,33 @@ def run(
         variables_2d = list(tgt.data_vars)
 
     # Prepare plotting subset (single init_time) to avoid figure explosion
-    tgt_plot = tgt
-    pred_plot = pred
+    time_index = 0
+    plot_dt = (plotting_cfg or {}).get("plot_datetime")
+
+    if "init_time" in tgt.dims and tgt.sizes["init_time"] > 0:
+        if plot_dt is not None:
+            try:
+                target_dt = np.datetime64(plot_dt)
+                matches = np.where(tgt.init_time.values == target_dt)[0]
+                if matches.size > 0:
+                    time_index = int(matches[0])
+                else:
+                    print(
+                        f"[energy_spectra] Warning: plot_datetime {plot_dt} not found. "
+                        "Using first init_time."
+                    )
+                    time_index = 0
+            except Exception as e:
+                print(
+                    f"[energy_spectra] Warning: Error selecting plot_datetime {plot_dt}: {e}. "
+                    "Using first init_time."
+                )
+                time_index = 0
+        else:
+            time_index = 0
+
+    tgt_plot = tgt.isel(init_time=time_index) if "init_time" in tgt.dims else tgt
+    pred_plot = pred.isel(init_time=time_index) if "init_time" in pred.dims else pred
     # Basic schema validation: require longitude for spectra
     has_lon_any = ("longitude" in tgt.dims) or any(
         ("longitude" in tgt[v].dims) for v in variables_2d

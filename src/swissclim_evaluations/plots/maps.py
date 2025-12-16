@@ -35,15 +35,35 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
-    seed = int(plotting_cfg.get("random_seed", 42))
 
     section_output = out_root / "maps"
 
-    rng = np.random.default_rng(seed)
+    # Determine time index to plot
     time_index = 0
-    lead_index = 0
+    plot_dt = plotting_cfg.get("plot_datetime")
+
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
-        time_index = int(rng.integers(0, ds_target.init_time.size))
+        if plot_dt is not None:
+            try:
+                target_dt = np.datetime64(plot_dt)
+                matches = np.where(ds_target.init_time.values == target_dt)[0]
+                if matches.size > 0:
+                    time_index = int(matches[0])
+                else:
+                    print(
+                        f"[maps] Warning: plot_datetime {plot_dt} not found. Using first init_time."
+                    )
+                    time_index = 0
+            except Exception as e:
+                print(
+                    f"[maps] Warning: Error selecting plot_datetime {plot_dt}: {e}. "
+                    "Using first init_time."
+                )
+                time_index = 0
+        else:
+            time_index = 0
+
+    lead_index = 0
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
     if "time" in ds_target.dims and ds_target.time.size > 0:
