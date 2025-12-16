@@ -64,11 +64,9 @@ def _compute_nmae(
     diff = (sub_pred - sub_true).astype("float32")
     abs_err = xr.ufuncs.abs(diff)
 
-    if weights is None:
-        raise ValueError("Weights must be provided for NMAE calculation.")
+
 
     mae = abs_err.weighted(weights).mean(dim=reduce_dims, skipna=True)
-
     # Range is computed from the truth across its own dims only
     t_max = sub_true.max(dim=reduce_dims_true, skipna=True)
     t_min = sub_true.min(dim=reduce_dims_true, skipna=True)
