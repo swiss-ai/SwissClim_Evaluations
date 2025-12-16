@@ -54,6 +54,22 @@ def compute_wbx_crps(
     return _add_metric_prefix(crps, "CRPS")
 
 
+def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
+    """Save DataArray to NPZ with coordinates, handling missing ones gracefully."""
+    coords = {}
+    # Standard coordinates we care about
+    for coord_name in ["latitude", "longitude", "init_time", "lead_time", "level", "region"]:
+        if coord_name in da.coords:
+            coords[coord_name] = da.coords[coord_name].values
+        else:
+            coords[coord_name] = np.array([])
+
+    # Add any extra kwargs
+    coords.update(kwargs)
+
+    np.savez(path, data=da.values, **coords)
+
+
 def _pit(da_target, da_prediction):
     return np.mean(da_prediction < da_target[..., None], axis=-1)
 
@@ -162,7 +178,10 @@ def run_probabilistic(
     Outputs:
     - crps_summary.csv (mean across common dims)
     - {var}_pit_hist.npz (counts, edges)
-    - Optional: {var}_pit.nc and {var}_crps.nc when plotting.output_mode is 'npz' or 'both'
+    - {var}_pit_field.npz (full PIT field with coordinates)
+    - {var}_crps_field.npz (full CRPS field with coordinates)
+
+    Note: All field outputs use NPZ format for memory efficiency (avoids OOM).
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
@@ -284,7 +303,8 @@ def run_probabilistic(
         )
         print(f"[probabilistic] saved {pit_npz}")
         # Always save PIT and CRPS fields for reproducibility
-        pit_nc = section_output / build_output_filename(
+        # Save PIT and CRPS fields as NPZ (memory-efficient, no OOM issues)
+        pit_npz_field = section_output / build_output_filename(
             metric="pit_field",
             variable=str(var),
             level=None,
@@ -292,9 +312,9 @@ def run_probabilistic(
             init_time_range=init_range,
             lead_time_range=lead_range,
             ensemble=ens_token,
-            ext="nc",
+            ext="npz",
         )
-        crps_nc = section_output / build_output_filename(
+        crps_npz_field = section_output / build_output_filename(
             metric="crps_field",
             variable=str(var),
             level=None,
@@ -302,12 +322,14 @@ def run_probabilistic(
             init_time_range=init_range,
             lead_time_range=lead_range,
             ensemble=ens_token,
-            ext="nc",
+            ext="npz",
         )
-        pit_da.to_netcdf(pit_nc)
-        crps_da.to_netcdf(crps_nc)
-        print(f"[probabilistic] saved {pit_nc}")
-        print(f"[probabilistic] saved {crps_nc}")
+        # Use NPZ format (same lightweight approach as maps.py)
+        # Saves essential arrays without full xarray overhead - memory efficient
+        _save_npz_with_coords(pit_npz_field, pit_da)
+        _save_npz_with_coords(crps_npz_field, crps_da)
+        print(f"[probabilistic] saved {pit_npz_field}")
+        print(f"[probabilistic] saved {crps_npz_field}")
 
     if crps_rows:
         df = pd.DataFrame(crps_rows).groupby("variable").mean()
@@ -587,8 +609,12 @@ def run_probabilistic_wbx(
 
     Outputs (under out_root/probabilistic):
     - spread_skill_ratio.csv
-    - probabilistic_metrics_temporal.nc
-    - probabilistic_metrics_spatial.nc
+    - crps_ensemble.csv
+    - prob_metrics_temporal.npz
+    - prob_metrics_spatial.npz
+    - Optional: crps_map_wbx_<var>.png if output_mode enables plotting
+
+    Note: All aggregated results use NPZ format for memory efficiency (avoids OOM).
     """
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
@@ -697,6 +723,7 @@ def run_probabilistic_wbx(
     regions_cfg = (plotting_cfg or {}).get("regions") if isinstance(plotting_cfg, dict) else None
     regions = regions_cfg or _default_regions()
 
+    # Aggregator that reduces spatial dimensions (lat/lon) -> Produces Temporal Results
     spatial_aggregator = aggregation.Aggregator(
         reduce_dims=["latitude", "longitude"],
         bin_by=[binning.Regions(regions=regions)],
@@ -708,6 +735,8 @@ def run_probabilistic_wbx(
         else False
     )
     temporal_bin_by = [binning.ByTimeUnit("season", "init_time")] if seasonal else None
+
+    # Aggregator that reduces temporal dimensions (time) -> Produces Spatial Results (Maps)
     temporal_aggregator = aggregation.Aggregator(
         reduce_dims=["init_time"],
         bin_by=temporal_bin_by,
@@ -720,104 +749,71 @@ def run_probabilistic_wbx(
     variables = list(ds_pred.data_vars)
     pred_map = {v: ds_pred[v] for v in variables}
     targ_map = {v: ds_targ[v] for v in variables}
-    # Temporal results: reduce spatial dims, keep time dims (and region)
-    # This contains (Region, Time)
-    region_time_results = aggregation.compute_metric_values_for_single_chunk(
+
+    # Compute metrics aggregated over space (Regions) -> Result has dimensions (Region, Time)
+    # This object contains the TEMPORAL evolution of the metrics (for each region)
+    results_temporal = aggregation.compute_metric_values_for_single_chunk(
         metrics, spatial_aggregator, pred_map, targ_map
     )
-    # Spatial results: reduce init_time (and optionally bin by season)
-    # This contains (Lat, Lon) - Map
-    map_results = aggregation.compute_metric_values_for_single_chunk(
+
+    # Compute metrics aggregated over time -> Result has dimensions (Lat, Lon) i.e. a Map
+    # This object contains the SPATIAL distribution of the metrics (averaged over time)
+    results_spatial = aggregation.compute_metric_values_for_single_chunk(
         metrics, temporal_aggregator, pred_map, targ_map
     )
 
-    # Derive "Spatial" (Region, averaged over time) from region_time_results
-    dims_to_reduce_time = [d for d in region_time_results.dims if "time" in d]
-    spatial_results = region_time_results.mean(dim=dims_to_reduce_time, skipna=True)
+    # Save individual metric/variable combinations (like other modules)
+    # results_temporal has vars like "CRPS.2m_temperature", "SSR.2m_temperature", etc.
+    for var_name, _da in results_temporal.data_vars.items():
+        metric_name, variable = var_name.split(".", 1)
+        npz_path = section / build_output_filename(
+            metric=f"{metric_name.lower()}_temporal_wbx",
+            variable=variable,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="npz",
+        )
+        _save_npz_with_coords(npz_path, results_temporal[var_name])
+        print("Wrote:", npz_path)
 
-    # Derive "Temporal" (Time, averaged over region/global) from region_time_results
-    if "region" in region_time_results.dims:
-        if "global" in region_time_results.region.values:
-            temporal_results = region_time_results.sel(region="global")
-        else:
-            temporal_results = region_time_results.mean(dim="region", skipna=True)
-    else:
-        temporal_results = region_time_results
-
-    def _build_time_encoding(ds: xr.Dataset) -> dict:
-        enc: dict = {}
-        names = list(ds.data_vars) + list(ds.coords)
-        for name in names:
-            try:
-                da = ds[name]
-            except Exception:
-                continue
-            if hasattr(da, "dtype"):
-                kind = getattr(da.dtype, "kind", "")
-                if kind == "M":  # datetime64
-                    enc[name] = {
-                        "units": "seconds since 1970-01-01",
-                        "dtype": "i4",
-                    }
-                elif kind == "m":  # timedelta64
-                    enc[name] = {"units": "seconds", "dtype": "i4"}
-        return enc
-
-    enc_t = _build_time_encoding(temporal_results)
-    enc_s = _build_time_encoding(spatial_results)
-    enc_m = _build_time_encoding(map_results)
-
-    temporal_fn = section / build_output_filename(
-        metric="prob_metrics_temporal",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="nc",
-    )
-    spatial_fn = section / build_output_filename(
-        metric="prob_metrics_spatial",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="nc",
-    )
-    map_fn = section / build_output_filename(
-        metric="prob_metrics_map",
-        variable=None,
-        level=None,
-        qualifier=None,
-        init_time_range=init_range,
-        lead_time_range=lead_range,
-        ensemble=ens_token_prob,
-        ext="nc",
-    )
-
-    temporal_results.to_netcdf(temporal_fn, engine="scipy", encoding=enc_t)
-    spatial_results.to_netcdf(spatial_fn, engine="scipy", encoding=enc_s)
-    map_results.to_netcdf(map_fn, engine="scipy", encoding=enc_m)
-
-    print("Wrote:", temporal_fn)
-    print("Wrote:", spatial_fn)
-    print("Wrote:", map_fn)
+    for var_name, _da in results_spatial.data_vars.items():
+        metric_name, variable = var_name.split(".", 1)
+        npz_path = section / build_output_filename(
+            metric=f"{metric_name.lower()}_spatial_wbx",
+            variable=variable,
+            level=None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="npz",
+        )
+        _save_npz_with_coords(npz_path, results_spatial[var_name])
+        print("Wrote:", npz_path)
 
     # --- Plotting SSR (Temporal and Spatial) ---
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
 
     if save_fig:
-        # Plot Temporal (Time)
-        for var_name in temporal_results.data_vars:
+        # Plot Temporal (Time Series)
+        # We use results_temporal because it preserves the time dimension
+        for var_name in results_temporal.data_vars:
             if not str(var_name).startswith("SSR"):
                 continue
 
-            da = temporal_results[var_name]
-            # da is (Time)
+            da = results_temporal[var_name]
+            # da is (Region, Time)
+
+            # Select global region if present, else average over regions
+            if "region" in da.dims:
+                if "global" in da["region"].values:
+                    da = da.sel(region="global")
+                else:
+                    da = da.mean(dim="region")
 
             # Average over lead_time if present
             if "lead_time" in da.dims:
@@ -854,17 +850,23 @@ def run_probabilistic_wbx(
             plt.close(fig)
             print(f"[probabilistic] saved {out_png_temp}")
 
-        # Plot Spatial (Region)
-        for var_name in spatial_results.data_vars:
+        # Plot Regional Comparison (Bar Chart of Regions)
+        # We use results_temporal because it preserves the region dimension
+        # (results_spatial has lat/lon, not regions)
+        for var_name in results_temporal.data_vars:
             if not str(var_name).startswith("SSR"):
                 continue
 
-            da = spatial_results[var_name]
-            # da is (Region)
+            da = results_temporal[var_name]
+            # da is (Region, Time)
 
             if "region" in da.dims:
+                # Average over time to get pure regional view
+                dims_to_mean = [d for d in da.dims if d != "region"]
+                da_spatial = da.mean(dim=dims_to_mean, skipna=True)
+
                 # Convert to series for plotting
-                s_spatial = da.to_series()
+                s_spatial = da_spatial.to_series()
 
                 # Filter NaNs (robust plotting)
                 s_spatial = pd.to_numeric(s_spatial, errors="coerce").dropna()

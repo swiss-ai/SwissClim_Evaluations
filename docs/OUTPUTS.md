@@ -85,18 +85,20 @@ Histogram and KDE outputs encode:
 
 - Prefix: `hist_` or `wd_kde_`
 - Variable + optional level token
-- Latitudinal aggregation token (`latbands` or `_latbands_combined` / `_latbands_kde_combined`)
+- Latitudinal aggregation token (`latbands` or `global`)
 - Optional time-range tokens
 - Ensemble token
+
+By default, histograms and KDEs are computed globally (`*_global.npz`). To also generate them per latitude band, set `plotting.histograms_per_lat_band: true` or `plotting.wd_kde_per_lat_band: true` in your config.
 
 Examples (pooled vs members):
 
 ```text
+hist_2m_temperature_global_enspooled.npz
 hist_2m_temperature_latbands_enspooled.npz
-hist_temperature_500_latbands_combined_enspooled.npz
-wd_kde_2m_temperature_combined_enspooled.npz
+wd_kde_2m_temperature_global_enspooled.npz
+wd_kde_2m_temperature_latbands_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
-wd_kde_2m_temperature_latbands_kde_combined_ens3.npz   # per-member (members mode)
 ```
 
 Time ranges (if present) appear just before the ensemble token: `..._init2023010200-2023010412_lead000h-036h_enspooled.npz`.
@@ -123,27 +125,30 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (o
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
 
-Per-variable artifacts:
+Per-variable artifacts (NPZ format):
 
 ```text
 pit_hist_2m_temperature_ensprob.npz
-pit_field_2m_temperature_ensprob.nc
-crps_field_2m_temperature_ensprob.nc
-crps_map_2m_temperature_ensprob.png
+pit_field_2m_temperature_ensprob.npz
+crps_field_2m_temperature_ensprob.npz
+crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
 ```
 
-WBX summary tables / fields:
+WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
+
+```text
+crps_temporal_wbx_2m_temperature_ensprob.npz
+crps_spatial_wbx_2m_temperature_ensprob.npz
+ssr_temporal_wbx_2m_temperature_ensprob.npz
+ssr_spatial_wbx_2m_temperature_ensprob.npz
+crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map (optional)
+```
+
+Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
-prob_metrics_temporal_ensprob.nc
-prob_metrics_spatial_ensprob.nc
-prob_metrics_map_ensprob.nc
-```
-
-Aggregated CRPS summaries (xarray based):
-
-```text
+crps_ensemble_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv
@@ -153,7 +158,7 @@ crps_summary_per_level_ensprob.csv
 
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
-- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NetCDF.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NPZ.
 
 All modules print concise progress like:
 
