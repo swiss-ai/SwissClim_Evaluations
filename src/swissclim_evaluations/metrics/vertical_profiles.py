@@ -190,6 +190,97 @@ def _plot_vertical_profile_evolution(
     plt.close(fig)
 
 
+def _plot_vertical_profile_lines(
+    nmae_da: xr.DataArray,
+    variable_name: str,
+    ens_token: str | None,
+    out_root: Path,
+    dpi: int,
+    save_fig: bool,
+) -> None:
+    if "lead_time" not in nmae_da.dims or nmae_da.sizes["lead_time"] < 2:
+        return
+
+    leads = nmae_da["lead_time"].values
+    levels = nmae_da["level"].values
+
+    # Convert leads to hours
+    if np.issubdtype(leads.dtype, np.timedelta64):
+        lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+    else:
+        lead_hours = leads
+
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=dpi)
+
+    # Use a colormap
+    colors = plt.get_cmap("viridis")(np.linspace(0.1, 0.9, len(lead_hours)))
+
+    for i, h in enumerate(lead_hours):
+        prof = nmae_da.isel(lead_time=i)
+        ax.plot(prof.values, levels, label=f"{int(h)}h", color=colors[i])
+
+    ax.set_xlabel("NMAE [%]")
+    ax.set_ylabel("Level")
+    ax.invert_yaxis()
+    ax.set_title(f"Vertical Profile NMAE — {format_variable_name(variable_name)}", fontsize=10)
+
+    # Legend
+    ax.legend(title="Lead Time", fontsize=8, ncols=1, loc="best")
+
+    if save_fig:
+        section_output = out_root / "vertical_profiles"
+        out_png = section_output / build_output_filename(
+            metric="vertical_profiles_nmae",
+            variable=variable_name,
+            level="multi",
+            qualifier="lines",
+            init_time_range=None,
+            lead_time_range=None,
+            ensemble=ens_token,
+            ext="png",
+        )
+        save_figure(fig, out_png)
+    plt.close(fig)
+
+
+def _plot_global_profile(
+    nmae_da: xr.DataArray,
+    variable_name: str,
+    ens_token: str | None,
+    out_root: Path,
+    dpi: int,
+    save_fig: bool,
+    init_range: tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+) -> None:
+    levels = nmae_da["level"].values
+    vals = nmae_da.values
+
+    fig, ax = plt.subplots(figsize=(6, 8), dpi=dpi)
+    ax.plot(vals, levels, color=COLOR_MODEL_PREDICTION, linewidth=2)
+
+    ax.set_xlabel("NMAE [%]")
+    ax.set_ylabel("Level")
+    ax.invert_yaxis()
+    ax.set_title(f"Global Vertical Profile — {format_variable_name(variable_name)}", fontsize=12)
+    ax.grid(True, linestyle=":", alpha=0.6)
+
+    if save_fig:
+        section_output = out_root / "vertical_profiles"
+        out_png = section_output / build_output_filename(
+            metric="vertical_profile_global",
+            variable=variable_name,
+            level="multi",
+            qualifier="plot",
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token,
+            ext="png",
+        )
+        save_figure(fig, out_png)
+    plt.close(fig)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -469,6 +560,16 @@ def run(
         )
         job["nmae_lead_lazy"] = nmae_lead
 
+        # Global profile (all latitudes, all times)
+        global_profile = _compute_nmae(
+            ds_target[var],
+            ds_prediction[var],
+            slice(-90, 90),
+            level_values,
+            weights=weights,
+        )
+        job["global_profile_lazy"] = global_profile
+
         jobs.append(job)
 
     # Batch compute
@@ -481,6 +582,7 @@ def run(
             "evolve_profiles_lazy": "evolve_profiles",
             "heatmap_profiles_lazy": "heatmap_profiles",
             "nmae_lead_lazy": "nmae_lead",
+            "global_profile_lazy": "global_profile",
         },
     )
 
@@ -515,7 +617,7 @@ def run(
 
         def _emit(
             ens_token_local: str | None,
-            member_index: int | None = None,
+            member_index: int | None,
             *,
             _combined=combined,
             _south_meta=south_meta,
@@ -638,7 +740,7 @@ def run(
                     _combined=combined_m,
                 )
         else:
-            _emit(ens_token_local)
+            _emit(ens_token_local, None)
         fig_count += 1
 
         # Optional: overlay vertical profiles for selected lead_time values (evolution)
@@ -749,6 +851,36 @@ def run(
                         nmae_grid=grid,
                     )
 
+        # Plot global profile
+        if "global_profile" in job:
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="vertical_profiles_nmae",
+                    variable=str(var),
+                    level="multi",
+                    qualifier="global_profile",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_dict = {
+                    "nmae": job["global_profile"].values,
+                    "level": np.asarray(level_values),
+                }
+                save_data(out_npz, **save_dict)
+
+            _plot_global_profile(
+                job["global_profile"],
+                variable_name=var,
+                ens_token=ens_token,
+                out_root=out_root,
+                dpi=dpi,
+                save_fig=save_fig,
+                init_range=init_range,
+                lead_range=lead_range,
+            )
+
         # Compute and plot per-lead NMAE vertical profiles
         nmae_lead = job["nmae_lead"]
         if nmae_lead.size > 0:
@@ -781,4 +913,26 @@ def run(
                 out_root=out_root,
                 dpi=dpi,
                 save_fig=save_fig,
+            )
+
+            # Plot evolution of vertical profile (lines plot)
+            _plot_vertical_profile_lines(
+                nmae_lead,
+                variable_name=var,
+                ens_token=ens_token,
+                out_root=out_root,
+                dpi=dpi,
+                save_fig=save_fig,
+            )
+
+            # Plot global vertical profile
+            _plot_global_profile(
+                nmae_lead,
+                variable_name=var,
+                ens_token=ens_token,
+                out_root=out_root,
+                dpi=dpi,
+                save_fig=save_fig,
+                init_range=init_range,
+                lead_range=lead_range,
             )

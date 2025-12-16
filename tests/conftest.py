@@ -196,6 +196,9 @@ class _DummyAxis:
     def set_yscale(self, *a, **k):
         return None
 
+    def set_aspect(self, *a, **k):
+        return None
+
     def set_xticks(self, *a, **k):
         return None
 

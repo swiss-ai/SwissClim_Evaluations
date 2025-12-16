@@ -8,7 +8,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from matplotlib.colors import Colormap
+from matplotlib.colors import Colormap, LinearSegmentedColormap
+
+
+def get_pit_evolution_colormap() -> Colormap:
+    """
+    Returns a diverging colormap for PIT evolution plots:
+    - COLOR_DIAGNOSTIC (blue) for under-population (density < 1)
+    - white for ideal calibration (density = 1)
+    - COLOR_MODEL_PREDICTION (vermillion) for over-population (density > 1)
+    """
+    return LinearSegmentedColormap.from_list(
+        "pit_evolution",
+        [COLOR_DIAGNOSTIC, "white", COLOR_MODEL_PREDICTION],
+        N=256,
+    )
+
 
 # Consistent colors for single-model evaluation plots
 COLOR_GROUND_TRUTH = "black"

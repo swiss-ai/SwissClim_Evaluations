@@ -1044,26 +1044,31 @@ def run(
         try:
             import matplotlib.pyplot as _plt
 
-            if not wide_df.empty:
-                var_cols = [c for c in wide_df.columns if c != "lead_time_hours"]
-                split = [c.split("_", 1) for c in var_cols if "_" in c]
-                by_var: dict[str, list[str]] = {}
-                for v, m in split:
-                    by_var.setdefault(v, []).append(m)
-                for v, metrics in by_var.items():
-                    for m in sorted(set(metrics)):
-                        col = f"{v}_{m}"
-                        if col not in wide_df:
+            if "long_df" in locals() and not long_df.empty:
+                # Melt to get (variable, metric, value) triplets
+                plot_df = long_df.melt(
+                    id_vars=["lead_time_hours", "variable"],
+                    var_name="metric",
+                    value_name="value",
+                )
+
+                for v in plot_df["variable"].unique():
+                    v_df = plot_df[plot_df["variable"] == v]
+                    for m in v_df["metric"].unique():
+                        subset = v_df[v_df["metric"] == m].sort_values("lead_time_hours")
+                        if subset.empty:
                             continue
+
                         fig, ax = _plt.subplots(figsize=(10, 6))
-                        x = wide_df["lead_time_hours"].values
-                        y = wide_df[col].values
+                        x = subset["lead_time_hours"].values
+                        y = subset["value"].values
                         ax.plot(x, y, marker="o")
                         ax.set_xlabel("Lead Time [h]")
 
                         # Format y-label with units if applicable
                         units = get_variable_units(ds_target, str(v))
-                        ylabel = m
+                        display_metric = str(m).replace("_", " ")
+                        ylabel = display_metric
                         if units:
                             if m in ["MAE", "RMSE", "Bias"]:
                                 ylabel += f" [{units}]"
@@ -1073,13 +1078,14 @@ def run(
                         ax.set_ylabel(ylabel)
                         display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
                         ax.set_title(
-                            f"{format_variable_name(display_var)} — {m} vs Lead Time", fontsize=10
+                            f"{format_variable_name(display_var)} — {display_metric} vs Lead Time",
+                            fontsize=10,
                         )
                         out_png = section_output / build_output_filename(
                             metric="det_line",
                             variable=str(v),
                             level=None,
-                            qualifier=m.replace(" ", "_"),
+                            qualifier=str(m).replace(" ", "_"),
                             init_time_range=init_range,
                             lead_time_range=_extract_lead_range(ds_prediction),
                             ensemble=ens_token,
@@ -1092,7 +1098,7 @@ def run(
                             metric="det_line",
                             variable=str(v),
                             level=None,
-                            qualifier=m.replace(" ", "_") + "_data",
+                            qualifier=str(m).replace(" ", "_") + "_data",
                             init_time_range=init_range,
                             lead_time_range=_extract_lead_range(ds_prediction),
                             ensemble=ens_token,
@@ -1102,14 +1108,14 @@ def run(
                             out_npz,
                             lead_hours=x.astype(float),
                             values=y.astype(float),
-                            metric=m,
+                            metric=str(m),
                             variable=str(v),
                         )
                         out_csv = section_output / build_output_filename(
                             metric="det_line",
                             variable=str(v),
                             level=None,
-                            qualifier=m.replace(" ", "_") + "_by_lead",
+                            qualifier=str(m).replace(" ", "_") + "_by_lead",
                             init_time_range=init_range,
                             lead_time_range=_extract_lead_range(ds_prediction),
                             ensemble=ens_token,

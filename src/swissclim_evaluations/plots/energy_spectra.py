@@ -17,6 +17,7 @@ from ..helpers import (
     COLOR_MODEL_PREDICTION,
     build_output_filename,
     ensemble_mode_to_token,
+    extract_date_from_dataset,
     format_level_label,
     format_variable_name,
     get_variable_units,
@@ -254,6 +255,7 @@ def _plot_single_spectrum(
     dpi: int,
     save_plot_data: bool,
     save_figure: bool,
+    date_str: str = "",
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
@@ -291,12 +293,15 @@ def _plot_single_spectrum(
 
     lev_part = format_level_label(level)
     # Simplify title to just show init date if available, matching other plots
-    date_suffix = ""
-    if init_label and init_label != "noInit":
-        date_suffix = f" ({init_label}"
-        if lead_label and lead_label != "noLead":
-            date_suffix += f" +{lead_label}"
-        date_suffix += ")"
+    if date_str:
+        date_suffix = date_str
+    else:
+        date_suffix = ""
+        if init_label and init_label != "noInit":
+            date_suffix = f" ({init_label}"
+            if lead_label and lead_label != "noLead":
+                date_suffix += f" +{lead_label}"
+            date_suffix += ")"
 
     ax.set_title(
         f"Energy Spectra — {format_variable_name(var)}{lev_part}{date_suffix}",
@@ -319,7 +324,15 @@ def _plot_single_spectrum(
             with np.errstate(divide="ignore", invalid="ignore"):
                 ratio = arr_pred / arr_target
 
-            ax_r.semilogx(wavenumber, ratio, color="black", lw=1.5)
+            # Apply 4dx cutoff (k_max / 2) similar to intercompare
+            k_max_model = np.nanmax(wavenumber)
+            if np.isfinite(k_max_model) and k_max_model > 0:
+                k_cutoff = k_max_model / 2.0
+                mask = wavenumber <= k_cutoff
+                ax_r.semilogx(wavenumber[mask], ratio[mask], color=COLOR_MODEL_PREDICTION, lw=1.5)
+            else:
+                ax_r.semilogx(wavenumber, ratio, color=COLOR_MODEL_PREDICTION, lw=1.5)
+
             ax_r.axhline(1.0, color="gray", linestyle="--", alpha=0.7)
 
             ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
@@ -396,7 +409,25 @@ def _plot_energy_spectra(
         arr_t = spectrum_target.values
         arr_p = spectrum_pred.values
         init_label = "none"
+        if "init_time" in spectrum_target.coords:
+            try:
+                val = spectrum_target["init_time"].values
+                init_np = np.datetime64(val).astype("datetime64[h]")
+                init_label = np.datetime_as_string(init_np, unit="h").replace(":", "")
+            except Exception:
+                pass
+
         lead_label = "none"
+        if "lead_time" in spectrum_target.coords:
+            try:
+                val = spectrum_target["lead_time"].values
+                hours = int(np.timedelta64(val) / np.timedelta64(1, "h"))
+                lead_label = f"{hours:03d}h"
+            except Exception:
+                pass
+
+        date_str = extract_date_from_dataset(spectrum_target)
+
         base_dir = out_path.parent if out_path else Path(".")  # fallback
         fname = build_output_filename(
             metric="energy_spectrum",
@@ -421,6 +452,7 @@ def _plot_energy_spectra(
             dpi,
             save_plot_data,
             save_figure,
+            date_str=date_str,
         )
         return lsd_da
 
@@ -440,17 +472,29 @@ def _plot_energy_spectra(
         sel_kwargs = {str(dim): key[i] for i, dim in enumerate(time_dims)}
 
         # Robust init_time formatting (ensure numpy datetime64)
+        init_raw = None
         if "init_time" in sel_kwargs:
             init_raw = sel_kwargs["init_time"]
+        elif "init_time" in spectrum_target.coords:
+            init_raw = spectrum_target["init_time"].values
+
+        if init_raw is not None:
             init_label = "noinit"
             try:
+                # Try direct conversion first (handles numpy scalars/arrays and Timestamps usually)
                 init_np = np.datetime64(init_raw).astype("datetime64[h]")
                 init_label = np.datetime_as_string(init_np, unit="h")
             except Exception:
                 try:
-                    # pandas Timestamp path
-                    init_np = np.datetime64(init_raw.to_datetime64())
-                    init_label = np.datetime_as_string(init_np.astype("datetime64[h]"), unit="h")
+                    # pandas Timestamp path or other objects
+                    val = init_raw.item() if hasattr(init_raw, "item") else init_raw
+                    if hasattr(val, "to_datetime64"):
+                        init_np = np.datetime64(val.to_datetime64())
+                        init_label = np.datetime_as_string(
+                            init_np.astype("datetime64[h]"), unit="h"
+                        )
+                    else:
+                        init_label = str(val)
                 except Exception:
                     init_label = str(init_raw)
             # sanitize for filename
@@ -494,15 +538,19 @@ def _plot_energy_spectra(
         # Provide a path if either figure OR plot data requested
         target_path = section_output / fname if (save_figure or save_plot_data) else None
 
+        t_slice = stacked_target.isel(__time__=idx)
+        date_str = extract_date_from_dataset(t_slice)
+
         jobs.append(
             {
                 "idx": idx,
                 "init_label": init_label,
                 "lead_label": lead_label,
                 "target_path": target_path,
-                "t_lazy": stacked_target.isel(__time__=idx),
+                "t_lazy": t_slice,
                 "p_lazy": stacked_pred.isel(__time__=idx),
                 "lsd_lazy": stacked_lsd.isel(__time__=idx),
+                "date_str": date_str,
             }
         )
 
@@ -533,6 +581,7 @@ def _plot_energy_spectra(
             dpi,
             save_plot_data,
             save_figure,
+            date_str=job.get("date_str", ""),
         )
 
     return lsd_da  # shape: time dims only (no wavenumber)
@@ -1143,9 +1192,12 @@ def run(
                 )
             fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
             ax.plot(x_hours, lsd_vals, marker="o")
-            ax.set_xlabel("lead_time (h)")
+            ax.set_xlabel("Lead Time [h]")
             ax.set_ylabel("LSD")
-            ax.set_title(f"LSD vs lead_time — {var}")
+            display_var = str(var).split(".", 1)[1] if "." in str(var) else str(var)
+            ax.set_title(
+                f"{format_variable_name(display_var)} — LSD (Global) vs Lead Time", fontsize=10
+            )
             out_png = section_output / build_output_filename(
                 metric="energy_ratios_line_per_lead",
                 variable=str(var),
@@ -1159,6 +1211,53 @@ def run(
             plt.tight_layout()
             save_fig_helper(fig, out_png)
             plt.close(fig)
+
+            # Compute Banded LSD versus lead_time
+            lsd_bands_da = _compute_banded_lsd_da(spec_t2, spec_p2)
+            # Reduce any non-lead/band dims if present
+            red_dims_band = [d for d in lsd_bands_da.dims if d not in ["lead_time", "band"]]
+            if red_dims_band:
+                lsd_bands_da = lsd_bands_da.mean(dim=red_dims_band, skipna=True)
+
+            for bname in lsd_bands_da["band"].values:
+                band_da = lsd_bands_da.sel(band=bname)
+                lsd_vals_band = np.asarray(band_da.values).ravel()
+
+                # Store in rows
+                for h, v in zip(x_hours.tolist(), lsd_vals_band.tolist(), strict=False):
+                    lsd_banded_long_rows.append(
+                        {
+                            "lead_time_hours": float(h),
+                            "variable": str(var),
+                            "band": str(bname),
+                            "LSD": float(v),
+                        }
+                    )
+
+                # Plot
+                fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+                ax.plot(x_hours, lsd_vals_band, marker="o")
+                ax.set_xlabel("Lead Time [h]")
+                ax.set_ylabel("LSD")
+                formatted_bname = str(bname).replace("_", " ").title()
+                ax.set_title(
+                    f"{format_variable_name(display_var)} — LSD ({formatted_bname}) vs Lead Time",
+                    fontsize=10,
+                )
+
+                out_png_band = section_output / build_output_filename(
+                    metric="energy_ratios_line_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier=f"band_{bname}",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                save_fig_helper(fig, out_png_band)
+                plt.close(fig)
 
             # Save bundle NPZ for programmatic use
             out_npz = section_output / build_output_filename(

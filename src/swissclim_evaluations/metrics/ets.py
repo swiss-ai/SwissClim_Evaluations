@@ -131,6 +131,7 @@ def run(
     had_ensemble_dim = ("ensemble" in ds_prediction.dims) or ("ensemble" in ds_target.dims)
     from ..helpers import (
         ensemble_mode_to_token,
+        format_variable_name,
         get_colormap_for_variable,
         resolve_ensemble_mode,
         save_dataframe,
@@ -272,7 +273,12 @@ def run(
                                 )
                             ax.set_xlabel("Lead Time [h]")
                             ax.set_ylabel("ETS")
-                            ax.set_title(f"ETS thresholds vs Lead Time — {v}", fontsize=10)
+                            display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
+                            ax.set_title(
+                                f"{format_variable_name(display_var)} — ETS thresholds vs "
+                                f"Lead Time",
+                                fontsize=10,
+                            )
                             ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=10)
                             out_png = section_output / build_output_filename(
                                 metric="ets_line",

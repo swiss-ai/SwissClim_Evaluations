@@ -130,12 +130,18 @@ def test_vertical_profiles_nmae_bounds(tmp_path: Path, monkeypatch):
         def set_xlim(self, *a, **k):
             return None
 
-    def _stub_subplots(ncols, half, *a, **k):
+        def grid(self, *a, **k):
+            return None
+
+    def _stub_subplots(nrows=1, ncols=1, *a, **k):
         import numpy as _np
 
-        arr = _np.empty((ncols, half), dtype=object)
-        for i in range(ncols):
-            for j in range(half):
+        if nrows == 1 and ncols == 1:
+            return object(), _AX()
+
+        arr = _np.empty((nrows, ncols), dtype=object)
+        for i in range(nrows):
+            for j in range(ncols):
                 arr[i, j] = _AX()
         return object(), arr
 

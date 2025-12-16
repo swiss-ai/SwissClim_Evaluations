@@ -201,6 +201,10 @@ def run(
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 constrained_layout=True,
             )
+            # Increase vertical spacing between rows
+            if n_leads > 1:
+                fig.get_layout_engine().set(h_pad=0.15)
+
             if n_leads == 1:
                 axes = np.array([axes])
 
@@ -324,7 +328,7 @@ def run(
                 ax=axes,
                 orientation="horizontal",
                 fraction=0.05,
-                pad=0.08,
+                pad=0.02,
             )
             # In test mode, colorbar may be a dummy (None); guard the label call
             try:
@@ -354,6 +358,46 @@ def run(
             else:
                 plt.close(fig)
             if save_npz:
+                # Prepare data for saving (full lead time stack)
+                ds_save_target = ds_var_full
+                ds_save_pred = ds_prediction_var_full
+
+                # Squeeze singleton dims (except lead_time if n_leads > 1)
+                for dim_drop in ("time", "init_time"):
+                    if dim_drop in ds_save_target.dims and ds_save_target.sizes[dim_drop] == 1:
+                        ds_save_target = ds_save_target.isel({dim_drop: 0})
+                    if dim_drop in ds_save_pred.dims and ds_save_pred.sizes[dim_drop] == 1:
+                        ds_save_pred = ds_save_pred.isel({dim_drop: 0})
+
+                # If lead_time is size 1, we might want to squeeze it to match previous behavior (2D
+                # map)
+                if "lead_time" in ds_save_target.dims and ds_save_target.sizes["lead_time"] == 1:
+                    ds_save_target = ds_save_target.isel(lead_time=0)
+                if "lead_time" in ds_save_pred.dims and ds_save_pred.sizes["lead_time"] == 1:
+                    ds_save_pred = ds_save_pred.isel(lead_time=0)
+
+                ds_save_target = _unwrap_lon_for_plot(ds_save_target)
+                ds_save_pred = _unwrap_lon_for_plot(ds_save_pred)
+
+                # Ensure consistent dimension order: (lead_time, latitude, longitude) or (latitude,
+                # longitude) This prevents issues where dimensions might be permuted (e.g.
+                # (longitude, lead_time)) which causes pcolormesh errors in intercompare.
+                if "latitude" in ds_save_target.dims and "longitude" in ds_save_target.dims:
+                    if "lead_time" in ds_save_target.dims:
+                        ds_save_target = ds_save_target.transpose(
+                            "lead_time", "latitude", "longitude", ...
+                        )
+                    else:
+                        ds_save_target = ds_save_target.transpose("latitude", "longitude", ...)
+
+                if "latitude" in ds_save_pred.dims and "longitude" in ds_save_pred.dims:
+                    if "lead_time" in ds_save_pred.dims:
+                        ds_save_pred = ds_save_pred.transpose(
+                            "lead_time", "latitude", "longitude", ...
+                        )
+                    else:
+                        ds_save_pred = ds_save_pred.transpose("latitude", "longitude", ...)
+
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -366,17 +410,22 @@ def run(
                 )
                 save_data(
                     npz_path,
-                    target=ds_var.values,
-                    prediction=ds_prediction_var.values,
+                    target=ds_save_target.values,
+                    prediction=ds_save_pred.values,
                     latitude=(
-                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
+                        ds_save_target.latitude.values
+                        if "latitude" in ds_save_target.coords
+                        else np.array([])
                     ),
                     longitude=(
-                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
+                        ds_save_target.longitude.values
+                        if "longitude" in ds_save_target.coords
+                        else np.array([])
                     ),
                     ensemble=int(ens) if ens is not None else -1,
                     variable=str(var),
                     units=get_variable_units(ds_target, str(var)),
+                    lead_time=lead_coords if n_leads > 1 else None,
                 )
             plt.close(fig)
 

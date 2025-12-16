@@ -206,6 +206,24 @@ def _find_vertical_profile_files(models: list[Path]) -> list[str]:
     return sorted(common)
 
 
+def _find_vertical_profile_global_files(models: list[Path]) -> list[str]:
+    """Return common global vertical profile NPZ basenames."""
+    vp_dir = Path("vertical_profiles")
+    patterns = [
+        "vertical_profiles_nmae_*_global_profile*.npz",
+    ]
+    sets: list[set[str]] = []
+    for m in models:
+        model_files: set[str] = set()
+        for pat in patterns:
+            model_files.update({f.name for f in (m / vp_dir).glob(pat) if f.is_file()})
+        sets.append(model_files)
+    if not sets:
+        return []
+    common = set.intersection(*sets) if len(sets) > 1 else sets[0]
+    return sorted(common)
+
+
 def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Overlay vertical profile NMAE (or legacy relative error) curves.
 
@@ -393,6 +411,58 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                 df.to_csv(out_csv, index=False)
                 c.success(f"Saved {out_csv.relative_to(out_root)}")
 
+    # Global Profiles
+    global_basenames = _find_vertical_profile_global_files(models)
+    if global_basenames:
+        _print_file_list(
+            f"Found {len(global_basenames)} common global vertical profile files", global_basenames
+        )
+        for base in global_basenames:
+            payloads = []
+            for m in models:
+                try:
+                    payloads.append(_load_npz(m / "vertical_profiles" / base))
+                except Exception:
+                    payloads.append({})
+
+            # Check validity
+            valid_models = [
+                p for p in payloads if p.get("nmae") is not None and p.get("level") is not None
+            ]
+            if len(valid_models) < 2:
+                continue
+
+            level_values = payloads[0]["level"]
+
+            fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
+            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                arr = np.asarray(pay.get("nmae"))
+                if arr is None:
+                    continue
+                ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
+
+            ax.set_xlabel("NMAE [%]")
+            ax.set_ylabel("Level")
+            ax.invert_yaxis()
+            ax.grid(True, linestyle=":", alpha=0.6)
+            ax.legend()
+
+            # Variable name extraction
+            var = base[:-4]
+            if "vertical_profiles_nmae_" in var:
+                with contextlib.suppress(IndexError):
+                    var = var.split("vertical_profiles_nmae_")[1].split("_multi_global_profile")[0]
+
+            date_suffix = extract_date_from_filename(base)
+            ax.set_title(
+                f"Global Vertical Profile — {format_variable_name(var)}{date_suffix}", fontsize=14
+            )
+
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+            plt.close(fig)
+
 
 def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root: Path) -> None:
     src_rel = Path("energy_spectra")
@@ -402,6 +472,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     patterns = [
         "energy_spectra/*_spectrum*.npz",
         "energy_spectra/lsd_*.csv",
+        "energy_spectra/energy_ratios_*.csv",
         "energy_spectra/energy_spectrogram_*_bundle*.npz",
     ]
     total_per_model: list[set[str]] = [set() for _ in models]
@@ -428,36 +499,43 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     # We check for presence of inputs to determine if the Combined output
     # will be generated (1) or not (0).
     all_lsd = _common_files(models, "energy_spectra/lsd_*.csv")
+    all_ratios = _common_files(models, "energy_spectra/energy_ratios_*.csv")
+    all_metrics = sorted(set(all_lsd + all_ratios))
 
-    avg_no_bands = [f for f in all_lsd if "averaged" in f and "bands" not in f]
-    lvl_no_bands = [f for f in all_lsd if "per_level" in f and "bands" not in f]
-    avg_bands = [f for f in all_lsd if "averaged" in f and "bands" in f]
-    lvl_bands = [f for f in all_lsd if "per_level" in f and "bands" in f]
+    avg_no_bands = [
+        f for f in all_metrics if "averaged" in f and "bands" not in f and "3d" not in f
+    ]
+    lvl_no_bands = [f for f in all_metrics if "per_level" in f and "bands" not in f]
+    avg_bands = [f for f in all_metrics if "averaged" in f and "bands" in f and "3d" not in f]
+    lvl_bands = [f for f in all_metrics if "per_level" in f and "bands" in f]
+    # New 3D summaries
+    avg_3d = [f for f in all_metrics if "averaged" in f and "3d" in f and "bands" not in f]
+    init_3d = [f for f in all_metrics if "init_time" in f and "3d" in f]
 
     # Ignored files (present but not currently processed)
-    init_time = [f for f in all_lsd if "init_time" in f]
-    lead_time = [f for f in all_lsd if "per_lead_time" in f or "by_lead" in f]
+    init_time = [f for f in all_metrics if "init_time" in f and "3d" not in f]
+    lead_time = [f for f in all_metrics if "per_lead_time" in f or "by_lead" in f]
 
     def _count_2d_3d(files: list[str]) -> int:
-        has_2d = any("2d" in f for f in files)
+        # Count distinct categories (2D vs 3D) present in the file list
         has_3d = any("3d" in f for f in files)
-        # If neither explicit tag is found but files exist, assume 1 generic output
-        if not has_2d and not has_3d and files:
-            return 1
-        return (1 if has_2d else 0) + (1 if has_3d else 0)
+        has_2d = any("3d" not in f for f in files)
+        return (1 if has_3d else 0) + (1 if has_2d else 0)
 
     results["LSD Averaged Metrics"] = _count_2d_3d(avg_no_bands)
     results["LSD Banded Averaged Metrics"] = _count_2d_3d(avg_bands)
     results["LSD Per-Level Metrics"] = _count_2d_3d(lvl_no_bands)
     results["LSD Banded Per-Level Metrics"] = _count_2d_3d(lvl_bands)
+    results["LSD 3D Averaged Metrics"] = _count_2d_3d(avg_3d)
+    results["LSD 3D Init Time Metrics"] = _count_2d_3d(init_3d)
+    results["LSD Init Time Metrics"] = _count_2d_3d(init_time)
 
-    results["LSD Init Time Metrics (Ignored)"] = len(init_time)
     results["LSD Per Lead Time Metrics"] = _count_2d_3d(lead_time)
 
     _report_checklist("energy_spectra", results)
 
-    if all_lsd:
-        _print_file_list(f"Found {len(all_lsd)} common LSD metric files", all_lsd)
+    if all_metrics:
+        _print_file_list(f"Found {len(all_metrics)} common LSD/Ratio metric files", all_metrics)
 
     # Process LSD Metrics
     # 1. Averaged (Global)
@@ -465,6 +543,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     for lab, m in zip(labels, models, strict=False):
         cands = [
             f for f in (m / "energy_spectra").glob("lsd_*averaged*.csv") if "bands" not in f.name
+        ]
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_*averaged*.csv")
+            if "bands" not in f.name and "3d" not in f.name
         ]
         for f in cands:
             try:
@@ -486,6 +569,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     frames_band_avg: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         cands = list((m / "energy_spectra").glob("lsd_bands_*averaged*.csv"))
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_bands_*averaged*.csv")
+            if "3d" not in f.name
+        ]
         for f in cands:
             try:
                 df = pd.read_csv(f)
@@ -508,6 +596,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         cands = [
             f for f in (m / "energy_spectra").glob("lsd_*per_level*.csv") if "bands" not in f.name
         ]
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_3d_*per_level*.csv")
+            if "bands" not in f.name
+        ]
         for f in cands:
             try:
                 df = pd.read_csv(f)
@@ -528,6 +621,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     frames_band_lvl: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         cands = list((m / "energy_spectra").glob("lsd_bands_*per_level*.csv"))
+        cands += list((m / "energy_spectra").glob("energy_ratios_bands_3d_*per_level*.csv"))
         for f in cands:
             try:
                 df = pd.read_csv(f)
@@ -544,13 +638,82 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 5. Per Lead Time
+    # 5. 3D Averaged (New)
+    frames_3d_avg: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*averaged*.csv"))
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_3d_avg.append(df)
+            except Exception:
+                pass
+
+    if frames_3d_avg:
+        combined = pd.concat(frames_3d_avg, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_3d_averaged_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 6. 3D Init Time (New)
+    frames_3d_init: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*init_time*.csv"))
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_3d_init.append(df)
+            except Exception:
+                pass
+
+    if frames_3d_init:
+        combined = pd.concat(frames_3d_init, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_3d_init_time_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 7. 2D Init Time (New)
+    frames_init: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_*init_time*.csv")
+            if "3d" not in f.name
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_init.append(df)
+            except Exception:
+                pass
+
+    if frames_init:
+        combined = pd.concat(frames_init, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_init_time_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 8. Per Lead Time
     frames_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         # Match both "per_lead_time" and "by_lead"
         cands = [
             f
             for f in (m / "energy_spectra").glob("lsd_*.csv")
+            if "per_lead_time" in f.name or "by_lead" in f.name
+        ]
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_*.csv")
             if "per_lead_time" in f.name or "by_lead" in f.name
         ]
         for f in cands:
@@ -1041,7 +1204,7 @@ def _clean_var_from_filename(filename: str, prefix: str = "", format: bool = Tru
         stem = stem[len(prefix) :]
 
     # Remove common suffixes/tokens
-    for token in ["_global", "_latbands", "_combined"]:
+    for token in ["_global", "_latbands", "_combined", "_grid", "_data", "_surface"]:
         stem = stem.replace(token, "")
 
     # Remove ensemble token
