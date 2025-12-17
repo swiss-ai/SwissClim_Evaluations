@@ -29,7 +29,7 @@ dependencies = [
     "scores>=0.0.1",
     "tqdm>=4.67.1",
     "weatherbenchx",
-    "xarray>=2025.1",
+    "xarray>=2024.10",
     "zarr>=3.0.0",
     "xrscipy>=0.8.2",
 ]
