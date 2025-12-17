@@ -853,21 +853,6 @@ def run(
                 df_lead.to_csv(out_csv_lead, index=False)
                 print(f"[energy_spectra] saved {out_csv_lead}")
 
-            if lsd_plot_rows:
-                df_plot = pd.DataFrame(lsd_plot_rows)
-                out_csv_plot = section_output / build_output_filename(
-                    metric="energy_ratios",
-                    variable=None,
-                    level=None,
-                    qualifier="plot_datetime",
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="csv",
-                )
-                df_plot.to_csv(out_csv_plot, index=False)
-                print(f"[energy_spectra] saved {out_csv_plot}")
-
             if lsd_banded_rows:
                 df_banded = pd.DataFrame(lsd_banded_rows)
                 out_csv_banded = section_output / build_output_filename(
@@ -1061,23 +1046,6 @@ def run(
             )
             df_3d_lead.to_csv(out_csv_3d_lead, index=False)
             print(f"[energy_spectra] saved {out_csv_3d_lead}")
-
-        if lsd_3d_plot_rows:
-            import pandas as _pd
-
-            df_3d_plot = _pd.DataFrame(lsd_3d_plot_rows)
-            out_csv_3d_plot = section_output / build_output_filename(
-                metric="energy_ratios_3d",
-                variable=None,
-                level=None,
-                qualifier="plot_datetime",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="csv",
-            )
-            df_3d_plot.to_csv(out_csv_3d_plot, index=False)
-            print(f"[energy_spectra] saved {out_csv_3d_plot}")
 
         # Generate plots and NPZ for 3D variables per level
         if save_plot or save_npz:

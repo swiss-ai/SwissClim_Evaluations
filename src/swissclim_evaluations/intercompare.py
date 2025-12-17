@@ -680,37 +680,16 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 7. 3D Plot Datetime (New)
-    frames_3d_plot: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models, strict=False):
-        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*plot_datetime*.csv"))
-        for f in cands:
-            try:
-                df = pd.read_csv(f)
-                df.insert(0, "model", lab)
-                df["source_file"] = f.name
-                frames_3d_plot.append(df)
-            except Exception:
-                pass
-
-    if frames_3d_plot:
-        combined = pd.concat(frames_3d_plot, ignore_index=True)
-        if combined["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_3d_plot_datetime_combined.csv"
-            combined.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
-
     # 8. 2D Lead Time (New)
     frames_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         cands = [
+            f for f in (m / "energy_spectra").glob("lsd_*per_lead_time*.csv") if "3d" not in f.name
+        ]
+        cands += [
             f
             for f in (m / "energy_spectra").glob("energy_ratios_*lead_time*.csv")
             if "3d" not in f.name
-        ]
-        # Also catch legacy names if any
-        cands += [
-            f for f in (m / "energy_spectra").glob("lsd_*per_lead_time*.csv") if "3d" not in f.name
         ]
         for f in cands:
             try:
@@ -725,30 +704,6 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         combined = pd.concat(frames_lead, ignore_index=True)
         if combined["model"].nunique() >= 2:
             out_csv = dst / "lsd_metrics_lead_time_combined.csv"
-            combined.to_csv(out_csv, index=False)
-            c.success(f"Saved {out_csv.relative_to(out_root)}")
-
-    # 9. 2D Plot Datetime (New)
-    frames_plot: list[pd.DataFrame] = []
-    for lab, m in zip(labels, models, strict=False):
-        cands = [
-            f
-            for f in (m / "energy_spectra").glob("energy_ratios_*plot_datetime*.csv")
-            if "3d" not in f.name
-        ]
-        for f in cands:
-            try:
-                df = pd.read_csv(f)
-                df.insert(0, "model", lab)
-                df["source_file"] = f.name
-                frames_plot.append(df)
-            except Exception:
-                pass
-
-    if frames_plot:
-        combined = pd.concat(frames_plot, ignore_index=True)
-        if combined["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_plot_datetime_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
