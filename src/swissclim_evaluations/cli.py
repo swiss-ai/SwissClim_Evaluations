@@ -609,8 +609,8 @@ def prepare_datasets(
     if variables_2d or variables_3d:
         var_list = list(variables_2d or []) + list(variables_3d or [])
 
-    target_path = paths.get("target")
-    prediction_path = paths.get("prediction")
+    target_path = paths.get("target") or paths.get("nwp")
+    prediction_path = paths.get("prediction") or paths.get("ml")
 
     ds_target = data_mod.open_target(target_path, variables=var_list)
     ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
@@ -1055,6 +1055,11 @@ def _maybe_copy_config_to_output(cfg: dict[str, Any], out_root: Path) -> None:
 
 def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
+
+    out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+    # Persist the exact configuration used for this run into the output directory
+    _maybe_copy_config_to_output(cfg, out_root)
+
     t0 = time.time()
     module_timings: list[tuple[str, float]] = []
     # Track per-module outcomes: name, status(success|failed|skipped), seconds, optional error
@@ -1080,10 +1085,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Other modules use full datasets (no plot-time/ensemble filtering)
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
-    out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
-
-    # Persist the exact configuration used for this run into the output directory
-    _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()

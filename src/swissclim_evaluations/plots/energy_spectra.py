@@ -752,8 +752,11 @@ def run(
     if not is_multi_lead:
         summary_rows: list[dict[str, Any]] = []
         lsd_init_time_rows: list[dict[str, Any]] = []
+        lsd_banded_rows: list[dict[str, Any]] = []
+
         # Collect LSD-by-lead for optional line plots/CSVs
         for var in variables_2d:
+            print(f"[energy_spectra] Processing variable: {var}")
             # Preserve ensemble for pooled/members modes
             # Only reduce when resolved == 'mean'
             spec_t, spec_p = _compute_spectra_pair(
@@ -780,6 +783,22 @@ def run(
                             "lsd_mean": val,
                         }
                     )
+
+            # Compute banded LSD metrics (2D)
+            lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
+            # Average over time dims
+            red_dims = [d for d in lsd_bands_da.dims if d != "band"]
+            lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
+
+            for bname in lsd_bands_mean["band"].values:
+                val = float(lsd_bands_mean.sel(band=bname).values)
+                lsd_banded_rows.append(
+                    {
+                        "variable": str(var),
+                        "band": str(bname),
+                        "lsd_mean": val,
+                    }
+                )
 
         if summary_rows:
             df_summary = pd.DataFrame(summary_rows).set_index("variable")
@@ -810,27 +829,6 @@ def run(
                 )
                 df_init.to_csv(out_csv_init, index=False)
                 print(f"[energy_spectra] saved {out_csv_init}")
-
-            # Compute and save banded LSD metrics (2D)
-            lsd_banded_rows: list[dict[str, Any]] = []
-            for var in variables_2d:
-                spec_t, spec_p = _compute_spectra_pair(
-                    tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
-                )
-                lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
-                # Average over time dims
-                red_dims = [d for d in lsd_bands_da.dims if d != "band"]
-                lsd_bands_mean = lsd_bands_da.mean(dim=red_dims) if red_dims else lsd_bands_da
-
-                for bname in lsd_bands_mean["band"].values:
-                    val = float(lsd_bands_mean.sel(band=bname).values)
-                    lsd_banded_rows.append(
-                        {
-                            "variable": str(var),
-                            "band": str(bname),
-                            "lsd_mean": val,
-                        }
-                    )
 
             if lsd_banded_rows:
                 df_banded = pd.DataFrame(lsd_banded_rows)

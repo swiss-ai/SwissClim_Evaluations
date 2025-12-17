@@ -222,6 +222,31 @@ def _calculate_all_metrics(
     if "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
 
+    # --- Pre-compute FSS quantiles if needed (Batch Optimization) ---
+    fss_thresholds_map: dict[str, list[float]] = {}
+    if (include is None) or ("FSS" in metrics_to_compute):
+        lazy_quantiles = []
+        var_needs_quantile = []
+
+        for var in variables:
+            # Check if explicit thresholds exist
+            if fss_thresholds_per_var and (var in fss_thresholds_per_var):
+                fss_thresholds_map[var] = [float(f) for f in fss_thresholds_per_var[var]]
+            else:
+                # Need quantile
+                y_true = ds_target[var]
+                # Use skipna=True to handle NaNs
+                q_da = y_true.quantile(fss_quantile, skipna=True)
+                lazy_quantiles.append(q_da)
+                var_needs_quantile.append(var)
+
+        if lazy_quantiles:
+            # Compute all quantiles in one parallel pass
+            computed_quantiles = dask.compute(*lazy_quantiles)
+            for var, val in zip(var_needs_quantile, computed_quantiles, strict=False):
+                # val is a numpy scalar or 0-d array
+                fss_thresholds_map[var] = [float(val.item() if hasattr(val, "item") else val)]
+
     # Store lazy objects to compute in one go
     # List of (variable_name, metric_name, lazy_object)
     lazy_metrics_to_compute: list[tuple[str, str, Any]] = []
@@ -290,62 +315,59 @@ def _calculate_all_metrics(
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):
-            # Determine event threshold: explicit per-variable threshold wins, else quantile
+            # Use pre-computed thresholds
+            list_event_threshold = fss_thresholds_map.get(var, [])
+            # If we used quantile, we have one threshold. If explicit, we might have multiple.
+            # We need labels.
             if fss_thresholds_per_var and (var in fss_thresholds_per_var):
-                list_event_threshold = [float(f) for f in fss_thresholds_per_var[var]]
                 list_fss_label = [f"FSS_{et}" for et in list_event_threshold]
             else:
-                q_da = y_true.quantile(fss_quantile, skipna=True)
-                list_event_threshold = [float(q_da.compute().item())]
+                # Quantile case
                 list_fss_label = [f"FSS_{100 * fss_quantile}%"]
             for event_threshold, fss_label in zip(
                 list_event_threshold, list_fss_label, strict=False
             ):
                 try:
-                    # Early exit: if both fields have no events anywhere → perfect score
-                    yt_evt = bool((y_true >= event_threshold).any().compute().item())
-                    yp_evt = bool((y_pred >= event_threshold).any().compute().item())
-                    if (not yt_evt) and (not yp_evt):
-                        metrics_dict[var][fss_label] = no_event_value
-                    else:
-                        spatial_dims = ["latitude", "longitude"]
+                    spatial_dims = ["latitude", "longitude"]
 
-                        # Proper call to fss_2d with config-driven arguments only
-                        # We use fss_2d_single_field via apply_ufunc directly to control dask
-                        # behavior and avoid inference issues with small chunks by providing
-                        # output_dtypes.
-                        out = xr.apply_ufunc(
-                            fss_2d_single_field,
-                            y_pred,
-                            y_true,
-                            input_core_dims=[spatial_dims, spatial_dims],
-                            kwargs={
-                                "event_threshold": event_threshold,
-                                "window_size": fss_window_size,
-                            },
-                            vectorize=True,
-                            dask="parallelized",
-                            output_dtypes=[float],
-                        )
-                        # Reduce to scalar
-                        if isinstance(out, xr.DataArray):
-                            try:
-                                evt_t = (y_true >= event_threshold).any(
-                                    dim=spatial_dims, skipna=True
-                                )
-                                evt_p = (y_pred >= event_threshold).any(
-                                    dim=spatial_dims, skipna=True
-                                )
-                                no_evt = (~evt_t) & (~evt_p)
-                                out = out.where(~no_evt, other=1.0)
-                            except Exception:
-                                pass
-                            if curr_preserve:
-                                reduce_dims = [d for d in out.dims if d not in curr_preserve]
-                                fss_scalar = out.mean(dim=reduce_dims, skipna=True)
-                            else:
-                                fss_scalar = out.mean(skipna=True)
-                            lazy_metrics_to_compute.append((var, fss_label, fss_scalar))
+                    # Proper call to fss_2d with config-driven arguments only
+                    # We use fss_2d_single_field via apply_ufunc directly to control dask
+                    # behavior and avoid inference issues with small chunks by providing
+                    # output_dtypes.
+                    out = xr.apply_ufunc(
+                        fss_2d_single_field,
+                        y_pred,
+                        y_true,
+                        input_core_dims=[spatial_dims, spatial_dims],
+                        kwargs={
+                            "event_threshold": event_threshold,
+                            "window_size": fss_window_size,
+                        },
+                        vectorize=True,
+                        dask="parallelized",
+                        output_dtypes=[float],
+                    )
+                    # Reduce to scalar
+                    if isinstance(out, xr.DataArray):
+                        try:
+                            evt_t = (y_true >= event_threshold).any(dim=spatial_dims)
+                            evt_p = (y_pred >= event_threshold).any(dim=spatial_dims)
+                            no_evt = (~evt_t) & (~evt_p)
+                            out = out.where(~no_evt, other=1.0)
+                        except Exception:
+                            pass
+                        if curr_preserve:
+                            reduce_dims = [d for d in out.dims if d not in curr_preserve]
+                            fss_scalar = out.mean(dim=reduce_dims, skipna=True)
+                        else:
+                            fss_scalar = out.mean(skipna=True)
+                        lazy_metrics_to_compute.append((var, fss_label, fss_scalar))
+                    else:
+                        # Eager check for in-memory data (numpy)
+                        yt_evt = bool((y_true >= event_threshold).any())
+                        yp_evt = bool((y_pred >= event_threshold).any())
+                        if (not yt_evt) and (not yp_evt):
+                            metrics_dict[var][fss_label] = no_event_value
                         else:
                             metrics_dict[var][fss_label] = float(out)
                 except Exception as e:
