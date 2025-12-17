@@ -41,6 +41,16 @@ srun --ntasks=1 --cpus-per-task=32 \
 
 echo "Evaluation finished."
 
+# --- Copy Logs ---
+# Extract output_root using python
+OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_FILE')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+
+if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
+    echo "Copying logs to $OUTDIR"
+    cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/slurm_${SLURM_JOB_ID}.out" 2>/dev/null || echo "Could not copy .out log"
+    cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/slurm_${SLURM_JOB_ID}.err" 2>/dev/null || echo "Could not copy .err log"
+fi
+
 # --- Notebook Rendering ---
 echo "Rendering notebooks..."
 
@@ -69,7 +79,6 @@ fi
 echo "Output directory: $OUTDIR"
 
 # List of notebooks to render
-# Note: multi_lead_verification.ipynb was referenced in the original script but is not present in the notebooks folder.
 NOTEBOOKS=("deterministic_verification.ipynb" "probabilistic_verification.ipynb")
 
 for nb_name in "${NOTEBOOKS[@]}"; do
