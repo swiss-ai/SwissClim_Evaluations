@@ -116,10 +116,12 @@ is exported per init_time/lead_time and summarized. Outputs are split into singl
 
 - Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>]...`
 - LSD averaged (2D): `energy_spectra/energy_ratios_averaged_<range>.csv`
-- LSD init_time (2D): `energy_spectra/energy_ratios_init_time_<range>.csv`
+- LSD lead_time (2D): `energy_spectra/energy_ratios_lead_time_<range>.csv`
+- LSD plot_datetime (2D): `energy_spectra/energy_ratios_plot_datetime_<range>.csv`
 - LSD averaged (3D): `energy_spectra/energy_ratios_3d_averaged_<range>.csv`
 - LSD per-level (3D): `energy_spectra/energy_ratios_3d_per_level_<range>.csv`
-- LSD init_time (3D): `energy_spectra/energy_ratios_3d_init_time_<range>.csv`
+- LSD lead_time (3D): `energy_spectra/energy_ratios_3d_lead_time_<range>.csv`
+- LSD plot_datetime (3D): `energy_spectra/energy_ratios_3d_plot_datetime_<range>.csv`
 - LSD Banded: `energy_spectra/energy_ratios_bands_averaged_<range>.csv` (and 3D variants)
 
 **Per Lead (Multi Lead):**

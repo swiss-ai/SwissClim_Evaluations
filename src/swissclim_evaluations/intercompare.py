@@ -510,11 +510,12 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     lvl_bands = [f for f in all_metrics if "per_level" in f and "bands" in f]
     # New 3D summaries
     avg_3d = [f for f in all_metrics if "averaged" in f and "3d" in f and "bands" not in f]
-    init_3d = [f for f in all_metrics if "init_time" in f and "3d" in f]
 
-    # Ignored files (present but not currently processed)
-    init_time = [f for f in all_metrics if "init_time" in f and "3d" not in f]
-    lead_time = [f for f in all_metrics if "per_lead_time" in f or "by_lead" in f]
+    # New temporal summaries (replacing init_time)
+    lead_time = [f for f in all_metrics if "lead_time" in f and "3d" not in f]
+    plot_datetime = [f for f in all_metrics if "plot_datetime" in f and "3d" not in f]
+    lead_time_3d = [f for f in all_metrics if "lead_time" in f and "3d" in f]
+    plot_datetime_3d = [f for f in all_metrics if "plot_datetime" in f and "3d" in f]
 
     def _count_2d_3d(files: list[str]) -> int:
         # Count distinct categories (2D vs 3D) present in the file list
@@ -527,10 +528,11 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     results["LSD Per-Level Metrics"] = _count_2d_3d(lvl_no_bands)
     results["LSD Banded Per-Level Metrics"] = _count_2d_3d(lvl_bands)
     results["LSD 3D Averaged Metrics"] = _count_2d_3d(avg_3d)
-    results["LSD 3D Init Time Metrics"] = _count_2d_3d(init_3d)
-    results["LSD Init Time Metrics"] = _count_2d_3d(init_time)
 
-    results["LSD Per Lead Time Metrics"] = _count_2d_3d(lead_time)
+    results["LSD Lead Time Metrics"] = _count_2d_3d(lead_time)
+    results["LSD Plot Datetime Metrics"] = _count_2d_3d(plot_datetime)
+    results["LSD 3D Lead Time Metrics"] = _count_2d_3d(lead_time_3d)
+    results["LSD 3D Plot Datetime Metrics"] = _count_2d_3d(plot_datetime_3d)
 
     _report_checklist("energy_spectra", results)
 
@@ -658,63 +660,57 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 6. 3D Init Time (New)
-    frames_3d_init: list[pd.DataFrame] = []
+    # 6. 3D Lead Time (New)
+    frames_3d_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*init_time*.csv"))
+        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*lead_time*.csv"))
         for f in cands:
             try:
                 df = pd.read_csv(f)
                 df.insert(0, "model", lab)
                 df["source_file"] = f.name
-                frames_3d_init.append(df)
+                frames_3d_lead.append(df)
             except Exception:
                 pass
 
-    if frames_3d_init:
-        combined = pd.concat(frames_3d_init, ignore_index=True)
+    if frames_3d_lead:
+        combined = pd.concat(frames_3d_lead, ignore_index=True)
         if combined["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_3d_init_time_combined.csv"
+            out_csv = dst / "lsd_metrics_3d_lead_time_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 7. 2D Init Time (New)
-    frames_init: list[pd.DataFrame] = []
+    # 7. 3D Plot Datetime (New)
+    frames_3d_plot: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        cands = [
-            f
-            for f in (m / "energy_spectra").glob("energy_ratios_*init_time*.csv")
-            if "3d" not in f.name
-        ]
+        cands = list((m / "energy_spectra").glob("energy_ratios_3d_*plot_datetime*.csv"))
         for f in cands:
             try:
                 df = pd.read_csv(f)
                 df.insert(0, "model", lab)
                 df["source_file"] = f.name
-                frames_init.append(df)
+                frames_3d_plot.append(df)
             except Exception:
                 pass
 
-    if frames_init:
-        combined = pd.concat(frames_init, ignore_index=True)
+    if frames_3d_plot:
+        combined = pd.concat(frames_3d_plot, ignore_index=True)
         if combined["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_init_time_combined.csv"
+            out_csv = dst / "lsd_metrics_3d_plot_datetime_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 8. Per Lead Time
+    # 8. 2D Lead Time (New)
     frames_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        # Match both "per_lead_time" and "by_lead"
         cands = [
             f
-            for f in (m / "energy_spectra").glob("lsd_*.csv")
-            if "per_lead_time" in f.name or "by_lead" in f.name
+            for f in (m / "energy_spectra").glob("energy_ratios_*lead_time*.csv")
+            if "3d" not in f.name
         ]
+        # Also catch legacy names if any
         cands += [
-            f
-            for f in (m / "energy_spectra").glob("energy_ratios_*.csv")
-            if "per_lead_time" in f.name or "by_lead" in f.name
+            f for f in (m / "energy_spectra").glob("lsd_*per_lead_time*.csv") if "3d" not in f.name
         ]
         for f in cands:
             try:
@@ -728,7 +724,31 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
     if frames_lead:
         combined = pd.concat(frames_lead, ignore_index=True)
         if combined["model"].nunique() >= 2:
-            out_csv = dst / "lsd_metrics_per_lead_combined.csv"
+            out_csv = dst / "lsd_metrics_lead_time_combined.csv"
+            combined.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 9. 2D Plot Datetime (New)
+    frames_plot: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = [
+            f
+            for f in (m / "energy_spectra").glob("energy_ratios_*plot_datetime*.csv")
+            if "3d" not in f.name
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_plot.append(df)
+            except Exception:
+                pass
+
+    if frames_plot:
+        combined = pd.concat(frames_plot, ignore_index=True)
+        if combined["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_plot_datetime_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 

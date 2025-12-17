@@ -41,6 +41,11 @@ What gets combined:
         *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
     *   **CSVs**:
         *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
+        *   `lsd_metrics_lead_time_combined.csv`: LSD metrics per lead time.
+        *   `lsd_metrics_plot_datetime_combined.csv`: LSD metrics per plot datetime.
+        *   `lsd_metrics_3d_averaged_combined.csv`: 3D averaged LSD metrics.
+        *   `lsd_metrics_3d_lead_time_combined.csv`: 3D LSD metrics per lead time.
+        *   `lsd_metrics_3d_plot_datetime_combined.csv`: 3D LSD metrics per plot datetime.
         *   `lsd_metrics_banded_averaged_combined.csv`: Banded averaged LSD metrics.
         *   `lsd_metrics_per_level_combined.csv`: Per-level LSD metrics.
         *   `lsd_metrics_banded_per_level_combined.csv`: Banded per-level LSD metrics.

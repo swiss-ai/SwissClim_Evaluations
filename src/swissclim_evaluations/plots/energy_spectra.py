@@ -751,7 +751,8 @@ def run(
 
     if not is_multi_lead:
         summary_rows: list[dict[str, Any]] = []
-        lsd_init_time_rows: list[dict[str, Any]] = []
+        lsd_lead_time_rows: list[dict[str, Any]] = []
+        lsd_plot_rows: list[dict[str, Any]] = []
         lsd_banded_rows: list[dict[str, Any]] = []
 
         # Collect LSD-by-lead for optional line plots/CSVs
@@ -766,23 +767,45 @@ def run(
             lsd_mean = float(lsd_da.mean().values)
             summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
 
-            if "init_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "init_time"]
-                lsd_init = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                for t in lsd_init["init_time"].values:
-                    val = float(lsd_init.sel(init_time=t).values)
-                    t_str = str(t)
-                    import contextlib
-
-                    with contextlib.suppress(Exception):
-                        t_str = np.datetime_as_string(t, unit="h")
-                    lsd_init_time_rows.append(
+            # Per Lead Time (averaged over init_time)
+            if "lead_time" in lsd_da.dims:
+                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
+                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
+                # Compute once
+                lsd_lead = lsd_lead.compute()
+                for t in lsd_lead["lead_time"].values:
+                    val = float(lsd_lead.sel(lead_time=t).values)
+                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                    lsd_lead_time_rows.append(
                         {
                             "variable": str(var),
-                            "init_time": t_str,
+                            "lead_time": f"{hours:03d}h",
                             "lsd_mean": val,
                         }
                     )
+
+            # Plot Datetime specific LSD
+            if "init_time" in lsd_da.dims:
+                # Calculate LSD for the specific plot datetime only
+                # Use time_index which was computed earlier for plot_dt
+                lsd_plot_da = lsd_da.isel(init_time=time_index)
+                lsd_plot_val = float(lsd_plot_da.mean().compute())
+
+                # Get the actual datetime string
+                t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                t_str = str(t_val)
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    t_str = np.datetime_as_string(t_val, unit="h")
+
+                lsd_plot_rows.append(
+                    {
+                        "variable": str(var),
+                        "init_time": t_str,
+                        "lsd_mean": lsd_plot_val,
+                    }
+                )
 
             # Compute banded LSD metrics (2D)
             lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
@@ -815,20 +838,35 @@ def run(
             df_summary.to_csv(out_csv)
             print(f"[energy_spectra] saved {out_csv}")
 
-            if lsd_init_time_rows:
-                df_init = pd.DataFrame(lsd_init_time_rows)
-                out_csv_init = section_output / build_output_filename(
+            if lsd_lead_time_rows:
+                df_lead = pd.DataFrame(lsd_lead_time_rows)
+                out_csv_lead = section_output / build_output_filename(
                     metric="energy_ratios",
                     variable=None,
                     level=None,
-                    qualifier="init_time",
+                    qualifier="lead_time",
                     init_time_range=init_range,
                     lead_time_range=lead_range,
                     ensemble=ens_token,
                     ext="csv",
                 )
-                df_init.to_csv(out_csv_init, index=False)
-                print(f"[energy_spectra] saved {out_csv_init}")
+                df_lead.to_csv(out_csv_lead, index=False)
+                print(f"[energy_spectra] saved {out_csv_lead}")
+
+            if lsd_plot_rows:
+                df_plot = pd.DataFrame(lsd_plot_rows)
+                out_csv_plot = section_output / build_output_filename(
+                    metric="energy_ratios",
+                    variable=None,
+                    level=None,
+                    qualifier="plot_datetime",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                df_plot.to_csv(out_csv_plot, index=False)
+                print(f"[energy_spectra] saved {out_csv_plot}")
 
             if lsd_banded_rows:
                 df_banded = pd.DataFrame(lsd_banded_rows)
@@ -869,7 +907,8 @@ def run(
         lsd_3d_rows: list[dict[str, Any]] = []
         lsd_banded_3d_rows: list[dict[str, Any]] = []
         lsd_3d_averaged_rows: list[dict[str, Any]] = []  # New for averaged
-        lsd_3d_init_time_rows: list[dict[str, Any]] = []
+        lsd_3d_lead_time_rows: list[dict[str, Any]] = []
+        lsd_3d_plot_rows: list[dict[str, Any]] = []
 
         levels = tgt["level"].values
         for var in variables_3d:
@@ -916,23 +955,43 @@ def run(
                 }
             )
 
-            if "init_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "init_time"]
-                lsd_init = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                for t in lsd_init["init_time"].values:
-                    val = float(lsd_init.sel(init_time=t).values)
-                    t_str = str(t)
-                    import contextlib
-
-                    with contextlib.suppress(Exception):
-                        t_str = np.datetime_as_string(t, unit="h")
-                    lsd_3d_init_time_rows.append(
+            # Per Lead Time (averaged over init_time and level)
+            if "lead_time" in lsd_da.dims:
+                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
+                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
+                lsd_lead = lsd_lead.compute()
+                for t in lsd_lead["lead_time"].values:
+                    val = float(lsd_lead.sel(lead_time=t).values)
+                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                    lsd_3d_lead_time_rows.append(
                         {
                             "variable": str(var),
-                            "init_time": t_str,
+                            "lead_time": f"{hours:03d}h",
                             "lsd_mean": val,
                         }
                     )
+
+            # Plot Datetime specific LSD
+            if "init_time" in lsd_da.dims:
+                # Calculate LSD for the specific plot datetime only
+                lsd_plot_da = lsd_da.isel(init_time=time_index)
+                # Average over other dims (like lead_time, level)
+                lsd_plot_val = float(lsd_plot_da.mean().compute())
+
+                t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                t_str = str(t_val)
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    t_str = np.datetime_as_string(t_val, unit="h")
+
+                lsd_3d_plot_rows.append(
+                    {
+                        "variable": str(var),
+                        "init_time": t_str,
+                        "lsd_mean": lsd_plot_val,
+                    }
+                )
 
         if report_per_level and lsd_3d_rows:
             import pandas as _pd
@@ -986,22 +1045,39 @@ def run(
             df_3d_avg.to_csv(out_csv_3d_avg, index=False)
             print(f"[energy_spectra] saved {out_csv_3d_avg}")
 
-        if lsd_3d_init_time_rows:
+        if lsd_3d_lead_time_rows:
             import pandas as _pd
 
-            df_3d_init = _pd.DataFrame(lsd_3d_init_time_rows)
-            out_csv_3d_init = section_output / build_output_filename(
+            df_3d_lead = _pd.DataFrame(lsd_3d_lead_time_rows)
+            out_csv_3d_lead = section_output / build_output_filename(
                 metric="energy_ratios_3d",
                 variable=None,
                 level=None,
-                qualifier="init_time",
+                qualifier="lead_time",
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=ens_token,
                 ext="csv",
             )
-            df_3d_init.to_csv(out_csv_3d_init, index=False)
-            print(f"[energy_spectra] saved {out_csv_3d_init}")
+            df_3d_lead.to_csv(out_csv_3d_lead, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d_lead}")
+
+        if lsd_3d_plot_rows:
+            import pandas as _pd
+
+            df_3d_plot = _pd.DataFrame(lsd_3d_plot_rows)
+            out_csv_3d_plot = section_output / build_output_filename(
+                metric="energy_ratios_3d",
+                variable=None,
+                level=None,
+                qualifier="plot_datetime",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token,
+                ext="csv",
+            )
+            df_3d_plot.to_csv(out_csv_3d_plot, index=False)
+            print(f"[energy_spectra] saved {out_csv_3d_plot}")
 
         # Generate plots and NPZ for 3D variables per level
         if save_plot or save_npz:
