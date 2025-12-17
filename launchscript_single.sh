@@ -2,12 +2,11 @@
 #SBATCH --job-name=swissclim-eval-single
 #SBATCH --output=logs/swissclim_single_%j.out
 #SBATCH --error=logs/swissclim_single_%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=03:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
@@ -29,14 +28,13 @@ export PYTHONUNBUFFERED=1
 mkdir -p logs
 
 # Config to run
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_1AA_umv3_climforcings_esfmi.yaml"
+CONFIG_FILE="/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_finetune.yaml"
 
 echo "Starting evaluation for config: $CONFIG_FILE"
 
 # Run the evaluation
 # We use srun to launch the python process within the container environment defined by EDF_CONFIG
-srun --ntasks=1 --cpus-per-task=32 \
-    --container-writable --environment="${EDF_CONFIG}" \
+srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
     python -u -m swissclim_evaluations.cli --config "$CONFIG_FILE"
 
 echo "Evaluation finished."
@@ -106,8 +104,7 @@ done
 EOF
 
 # Run the rendering script
-srun --ntasks=1 --cpus-per-task=32 \
-    --container-writable --environment="${EDF_CONFIG}" \
+srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
     bash render_single_notebook.sh "$CONFIG_FILE"
 
 # Cleanup
