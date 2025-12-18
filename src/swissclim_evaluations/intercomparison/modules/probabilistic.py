@@ -38,7 +38,8 @@ def intercompare_probabilistic(
     dst_prob = ensure_dir(out_root / "probabilistic")
 
     # Availability report
-    per_model, _, uni = scan_model_sets(models, "probabilistic/crps_summary*.csv")
+    # Scan broadly for any CSV to catch CRPS, SSR, etc.
+    per_model, _, uni = scan_model_sets(models, "probabilistic/*.csv")
     report_missing("probabilistic", models, labels, per_model, uni)
 
     results = {}
@@ -60,7 +61,10 @@ def intercompare_probabilistic(
 
     # SSR
     ssr = common_files(models, "probabilistic/spread_skill_ratio*.csv")
-    results["Spread Skill Ratio"] = 1 if ssr else 0
+    ssr_line = common_files(models, "probabilistic/ssr_line_*.csv")
+    results["Spread Skill Ratio"] = 1 if (ssr or ssr_line) else 0
+    if ssr_line:
+        results["SSR Line Plots"] = len(ssr_line)
 
     # Ensemble
     ens = common_files(models, "probabilistic/crps_ensemble*.csv")

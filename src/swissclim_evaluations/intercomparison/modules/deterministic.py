@@ -31,11 +31,14 @@ def intercompare_deterministic_metrics(
     lvl = [f for f in all_det if "per_level" in f and "standardized" not in f]
     std = [f for f in all_det if "standardized" in f and "per_level" not in f]
     std_lvl = [f for f in all_det if "standardized" in f and "per_level" in f]
+    lead = [f for f in all_det if "per_lead_time" in f or "by_lead" in f]
 
     results["Deterministic Averaged"] = 1 if avg else 0
     results["Deterministic Per Level"] = 1 if lvl else 0
     results["Deterministic Standardized"] = 1 if std else 0
     results["Deterministic Standardized Per Level"] = 1 if std_lvl else 0
+    if lead:
+        results["Deterministic Temporal"] = len(lead)
 
     # Count potential plots by inspecting the first averaged file
     plot_count = 0
