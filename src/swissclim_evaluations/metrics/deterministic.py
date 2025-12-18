@@ -179,6 +179,8 @@ def _calculate_all_metrics(
     weights = None
     if "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
+        # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
+        weights = weights.clip(min=0.0)
 
     # --- Pre-compute FSS quantiles if needed (Batch Optimization) ---
     fss_thresholds_map: dict[str, list[float]] = {}

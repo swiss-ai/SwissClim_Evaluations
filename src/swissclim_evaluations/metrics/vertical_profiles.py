@@ -303,6 +303,8 @@ def run(
         raise ValueError("Latitude dimension required for vertical profiles metrics.")
 
     weights = create_latitude_weights(ds_target.latitude)
+    # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
+    weights = weights.clip(min=0.0)
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):
