@@ -89,9 +89,6 @@ cat <<'EOF' > render_notebooks.sh
 #!/bin/bash
 # set -e removed to allow continuing after errors
 
-# Install missing dependencies for notebook rendering
-echo "Installing notebook dependencies..."
-
 # Define groups
 # Read from shared file
 if [ ! -f "eval_configs.txt" ]; then
