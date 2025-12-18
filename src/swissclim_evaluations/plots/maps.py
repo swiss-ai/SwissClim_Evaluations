@@ -21,6 +21,7 @@ from ..helpers import (
     resolve_ensemble_mode,
     save_data,
     save_figure,
+    unwrap_longitude_for_plot,
 )
 
 
@@ -143,22 +144,6 @@ def run(
     for _i, var in enumerate(variables_2d):  # _i unused (ruff B007)
         print(f"[maps] 2D variable: {var}")
         for ens in ensemble_members:
-            # Helper: unwrap wrapped longitudes for plotting (e.g. 335..360 U 0..45 -> -25..45)
-            def _unwrap_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
-                if "longitude" not in da.coords:
-                    return da
-                lons = np.asarray(da.longitude.values)
-                if lons.size == 0:
-                    return da
-                lmin, lmax = float(np.min(lons)), float(np.max(lons))
-                # Heuristic: large span plus presence of values on both sides of Greenwich
-                if (lmax - lmin) > 180 and np.any(lons < 90) and np.any(lons > 270):
-                    new = lons.copy()
-                    new[new > 180] -= 360  # shift western segment to negative degrees
-                    order = np.argsort(new)
-                    da = da.isel(longitude=order).assign_coords(longitude=("longitude", new[order]))
-                return da
-
             ds_var_full = ds_target[var]
             ds_prediction_var_full = ds_prediction[var]
 
@@ -238,8 +223,8 @@ def run(
                         ds_prediction_var = ds_prediction_var.isel({dim_drop: 0})
                 ds_var = ds_var.squeeze()
                 ds_prediction_var = ds_prediction_var.squeeze()
-                ds_var = _unwrap_lon_for_plot(ds_var)
-                ds_prediction_var = _unwrap_lon_for_plot(ds_prediction_var)
+                ds_var = unwrap_longitude_for_plot(ds_var)
+                ds_prediction_var = unwrap_longitude_for_plot(ds_prediction_var)
 
                 lon = ds_var.coords.get("longitude", None)
                 lat = ds_var.coords.get("latitude", None)
@@ -376,8 +361,8 @@ def run(
                 if "lead_time" in ds_save_pred.dims and ds_save_pred.sizes["lead_time"] == 1:
                     ds_save_pred = ds_save_pred.isel(lead_time=0)
 
-                ds_save_target = _unwrap_lon_for_plot(ds_save_target)
-                ds_save_pred = _unwrap_lon_for_plot(ds_save_pred)
+                ds_save_target = unwrap_longitude_for_plot(ds_save_target)
+                ds_save_pred = unwrap_longitude_for_plot(ds_save_pred)
 
                 # Ensure consistent dimension order: (lead_time, latitude, longitude) or (latitude,
                 # longitude) This prevents issues where dimensions might be permuted (e.g.
@@ -562,7 +547,6 @@ def run(
                 )
                 ax_pred.coastlines(linewidth=0.5)
 
-                # HEAD's set_extent logic for prediction
                 lon_prediction = ds_prediction_var_lev.coords.get("longitude", None)
                 lat_prediction = ds_prediction_var_lev.coords.get("latitude", None)
                 _lon = (

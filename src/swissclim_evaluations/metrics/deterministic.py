@@ -15,7 +15,6 @@ from scores.continuous import additive_bias, mae, mse, rmse
 from scores.continuous.correlation import pearsonr
 from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d_single_field
-from skimage.metrics import structural_similarity as ssim
 
 from ..helpers import (
     format_variable_name,
@@ -55,46 +54,6 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     max_spatial_dim = max(int(ds.longitude.size), int(ds.latitude.size))
     ws = max(1, max_spatial_dim // 10)
     return (ws, ws)
-
-
-def _calculate_ssim(
-    da_target: xr.DataArray,
-    da_pred: xr.DataArray,
-    compute: bool = True,
-    preserve_dims: list[str] | None = None,
-) -> float | Any:
-    if "latitude" not in da_target.dims or "longitude" not in da_target.dims:
-        return np.nan
-
-    def _ssim_2d(p, t):
-        dr = t.max() - t.min()
-        if dr == 0:
-            return 1.0 if np.allclose(p, t) else 0.0
-        return ssim(t, p, data_range=dr)
-
-    try:
-        res = xr.apply_ufunc(
-            _ssim_2d,
-            da_pred,
-            da_target,
-            input_core_dims=[["latitude", "longitude"], ["latitude", "longitude"]],
-            vectorize=True,
-            dask="parallelized",
-            output_dtypes=[float],
-        )
-        if preserve_dims:
-            reduce_dims = [d for d in res.dims if d not in preserve_dims]
-            mean_res = res.mean(dim=reduce_dims)
-        else:
-            mean_res = res.mean()
-
-        if compute:
-            if preserve_dims:
-                return mean_res.compute()
-            return float(mean_res.compute().item())
-        return mean_res
-    except Exception:
-        return np.nan
 
 
 def _finalize_metrics(
@@ -214,7 +173,6 @@ def _calculate_all_metrics(
         "Relative L1",
         "Relative L2",
         "SEEPS",
-        "SSIM",
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
@@ -305,13 +263,6 @@ def _calculate_all_metrics(
         if (include is None) or ("Pearson R" in metrics_to_compute):
             val = pearsonr(y_pred, y_true, preserve_dims=curr_preserve)
             lazy_metrics_to_compute.append((var, "Pearson R", val))
-
-        # SSIM
-        if (include is None) or ("SSIM" in metrics_to_compute):
-            # SSIM implementation here calls compute() internally, so we can't easily lazy-batch it
-            # without refactoring _calculate_ssim. We leave it as is for now.
-            val = _calculate_ssim(y_true, y_pred, compute=False, preserve_dims=curr_preserve)
-            lazy_metrics_to_compute.append((var, "SSIM", val))
 
         # FSS
         if (include is None) or ("FSS" in metrics_to_compute):

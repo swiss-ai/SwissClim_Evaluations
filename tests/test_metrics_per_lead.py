@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 import xarray as xr
 
 from swissclim_evaluations.lead_time_policy import LeadTimePolicy
@@ -24,13 +23,6 @@ def _build_pair(n_leads=3):
     ds_target = xr.Dataset({"var": arr})
     ds_pred = xr.Dataset({"var": arr * 1.01})
     return ds_target, ds_pred
-
-
-@pytest.mark.skip(
-    reason="legacy simple per-lead filenames removed; standardized tokenized filenames only"
-)
-def test_deterministic_per_lead(tmp_path: Path):
-    pass  # Explicitly skipped; deterministic per-lead filenames standardized elsewhere
 
 
 def test_ets_per_lead(tmp_path: Path):

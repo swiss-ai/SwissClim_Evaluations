@@ -27,8 +27,6 @@ If the dataset contains multiple ensembles, metrics can be computed on the mean 
 - **vertical_profiles**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
-- **ssim**: mean, pooled, members
-- **multivariate**: mean, pooled, members
 - **probabilistic**: prob only
 
 The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
@@ -65,46 +63,6 @@ ets_metrics_ensmean.csv
 ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
 ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
-```
-
-### Multivariate Metrics
-
-Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
-
-**Recommended Bivariate Pairs:**
-
-To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
-
-1.  **Surface Dynamics (Wind Vector):** `10m_u_component_of_wind` vs `10m_v_component_of_wind`.
-    *   *Suggested Level:* Surface (10m).
-    *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
-2.  **Upper-level Dynamics (Wind Vector):** `u_component_of_wind` vs `v_component_of_wind`.
-    *   *Suggested Level:* 250 hPa (Jet Stream).
-    *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
-3.  **Thermodynamics (Clausius-Clapeyron):** `temperature` vs `specific_humidity`.
-    *   *Suggested Level:* 850 hPa (Lower Troposphere).
-    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve, which follows the Clausius-Clapeyron relation. Points beyond this curve indicate unphysical supersaturation.
-4.  **Hydrostatics:** `geopotential` vs `temperature`.
-    *   *Suggested Level:* 500 hPa (Mid-troposphere).
-    *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
-5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapour`.
-    *   *Suggested Level:* Surface / Column-integrated.
-    *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
-6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
-    *   *Suggested Level:* 500 hPa (Mid-troposphere).
-    *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
-
-Outputs:
-- `bivariate_hist_<var1>_<var2>_<ensemble_token>.npz`: Saved histogram counts and bin edges.
-- `bivariate_<var1>_<var2>_<ensemble_token>.png`: The generated density plot comparing the current model (Prediction) against the reference.
-
-### SSIM
-
-SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
-
-```text
-ssim_ensmean.csv
-ssim_ssim_ens0.csv   # members mode per-member file
 ```
 
 ### Energy Spectra Analysis

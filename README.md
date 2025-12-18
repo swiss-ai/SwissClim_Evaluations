@@ -25,6 +25,7 @@ We recommend the container workflow for fastest, reproducible setup.
     You can also run the provided notebooks from the command line to generate reports with your specific configuration:
 
     ```bash
+    pip
     papermill notebooks/deterministic_verification.ipynb output/my_run_report.ipynb -p config_path_str config/my_run.yaml
     ```
 
@@ -88,8 +89,6 @@ Modules include:
 *   **Vertical Profiles**: NMAE vertical profiles.
 *   **Deterministic Metrics**: MAE, RMSE, FSS, etc.
 *   **ETS**: Equitable Threat Score.
-*   **SSIM**: Structural Similarity Index.
-*   **Multivariate**: Bivariate histograms.
 *   **Probabilistic**: CRPS, PIT, Spread-Skill Ratio.
 
 For a detailed overview of outputs, file naming conventions, and ensemble handling, see [docs/OUTPUTS.md](docs/OUTPUTS.md).
@@ -148,7 +147,6 @@ What gets combined:
 - maps: panel maps with DS in the first column and each model as subsequent columns.
 - deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
 - ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
-- ssim: merged CSVs (`ssim_combined.csv`) and a comparison bar plot of the average SSIM (`ssim_comparison.png`).
 - probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
   - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
   - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).

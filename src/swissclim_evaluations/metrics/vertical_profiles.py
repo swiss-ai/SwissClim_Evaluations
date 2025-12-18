@@ -531,7 +531,6 @@ def run(
                 evolve_profiles_lazy.append(prof)
             job["evolve_profiles_lazy"] = evolve_profiles_lazy
 
-            # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
             hour_index_pairs = []
             for h in panel_hours:
                 try:
@@ -540,19 +539,6 @@ def run(
                     hour_index_pairs.append((int(h), panel_hours.index(h)))
 
             job["evolve_info"]["hour_index_pairs"] = hour_index_pairs
-
-            if hour_index_pairs:
-                heatmap_profiles_lazy = []
-                for _j, (_h, li) in enumerate(hour_index_pairs):
-                    da_t = ds_target[var]
-                    da_p = ds_prediction[var]
-                    if "lead_time" in da_t.dims:
-                        da_t = da_t.isel(lead_time=li)
-                    if "lead_time" in da_p.dims:
-                        da_p = da_p.isel(lead_time=li)
-                    prof = _compute_nmae(da_t, da_p, _lat_slice(-90.0, 90.0), level_values)
-                    heatmap_profiles_lazy.append(prof)
-                job["heatmap_profiles_lazy"] = heatmap_profiles_lazy
 
         # Compute per-lead NMAE vertical profiles
         nmae_lead = _compute_nmae_per_lead(
@@ -580,7 +566,6 @@ def run(
             "combined_lazy": "combined",
             "combined_all_lazy": "combined_all",
             "evolve_profiles_lazy": "evolve_profiles",
-            "heatmap_profiles_lazy": "heatmap_profiles",
             "nmae_lead_lazy": "nmae_lead",
             "global_profile_lazy": "global_profile",
         },
@@ -793,63 +778,6 @@ def run(
                     nmae_profiles=np.array(profiles, dtype=object),
                     allow_pickle=True,
                 )
-
-            # Additionally: full evolution heatmap with x=lead_time (h), y=level, color=NMAE
-            if "heatmap_profiles" in job:
-                hour_index_pairs = evolve_info["hour_index_pairs"]
-                heatmap_profiles = job["heatmap_profiles"]
-
-                n_levels = len(level_values)
-                n_leads = len(hour_index_pairs)
-                grid = np.full((n_levels, n_leads), np.nan, dtype=float)
-                for j, (_h, _li) in enumerate(hour_index_pairs):
-                    prof = heatmap_profiles[j]
-                    grid[:, j] = np.asarray(prof.values).ravel()
-                lead_hours_plot = [h for h, _ in hour_index_pairs]
-                fig2, ax2 = plt.subplots(figsize=(9, 6), dpi=dpi * 2)
-                im = ax2.pcolormesh(
-                    lead_hours_plot,
-                    level_values,
-                    grid,
-                    shading="nearest",
-                    cmap="viridis",
-                )
-                ax2.invert_yaxis()
-                ax2.set_xlabel("lead_time (h)")
-                ax2.set_ylabel("Level")
-                ax2.set_title(f"Vertical Profiles NMAE — lead-time evolution (heatmap) — {var}")
-                cbar = plt.colorbar(im, ax=ax2, orientation="vertical")
-                cbar.set_label("NMAE (%)")
-                out_png2 = section_output / build_output_filename(
-                    metric="vertical_profiles_nmae",
-                    variable=str(var),
-                    level="multi",
-                    qualifier="evolve_heatmap",
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token if resolved_mode != "members" else None,
-                    ext="png",
-                )
-                plt.tight_layout()
-                save_figure(fig2, out_png2)
-                plt.close(fig2)
-                if save_npz:
-                    out_npz2 = section_output / build_output_filename(
-                        metric="vertical_profiles_nmae",
-                        variable=str(var),
-                        level="multi",
-                        qualifier="evolve_heatmap_data",
-                        init_time_range=init_range,
-                        lead_time_range=lead_range,
-                        ensemble=ens_token if resolved_mode != "members" else None,
-                        ext="npz",
-                    )
-                    save_data(
-                        out_npz2,
-                        lead_hours=np.array(lead_hours_plot, dtype=float),
-                        level=np.asarray(level_values),
-                        nmae_grid=grid,
-                    )
 
         # Plot global profile
         if "global_profile" in job:

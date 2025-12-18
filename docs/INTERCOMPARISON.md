@@ -74,11 +74,6 @@ What gets combined:
     *   **Plots**:
         *   `ets_<var>_ETS_<thresh>pct_compare.png`: ETS vs Lead Time plots.
 
-*   **SSIM**
-    *   **CSVs**:
-        *   `ssim_combined.csv`: Combined SSIM metrics.
-    *   **Plots**:
-        *   `ssim_comparison.png`: Comparison bar plot of the average SSIM.
 
 *   **Probabilistic**
     *   **CSVs**:

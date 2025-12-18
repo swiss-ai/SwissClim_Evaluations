@@ -814,9 +814,6 @@ def run(
         per_lead = bool(plotting_cfg.get("histograms_per_lead", True)) and (
             "lead_time" in ds_prediction_mean.dims and int(ds_prediction_mean.lead_time.size) > 1
         )
-        # removed unused lead_indices (ruff F841)
-        # Suppress individual per-lead global PNGs: only produce grid later
-        # (retain potential single-lead case by emitting one global if only one lead)
         if not per_lead:
             for variable_name in variables_2d:
                 _plot_global_hist(

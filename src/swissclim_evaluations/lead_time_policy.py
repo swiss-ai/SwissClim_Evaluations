@@ -1,10 +1,6 @@
 """Lead time selection policy (simplified).
 
-Simplified multi-lead evaluation logic used across all plotting & metrics. All
-modules now operate directly on the selected lead_time coordinates without a
-secondary "panel" concept. Previously, a panel subset was injected to produce
-smaller multi-panel grids; this has been deprecated so every figure reflects
-the same complete set of retained forecast hours.
+Simplified multi-lead evaluation logic used across all plotting & metrics.
 
 Modes
 -----
@@ -20,9 +16,6 @@ stride_hours     : Interval for stride selection (stride mode).
 max_hour         : Inclusive upper bound (applies to all modes except 'first').
 chunk_size       : Reserved for future adaptive chunking optimisations.
 store_full_fields: Hint allowing modules to persist full per-lead arrays.
-
-Deprecated Fields (retained for backwards compatibility, ignored):
-panel_selection, panel_specific_hours, max_panels.
 
 Helper Functions
 ----------------

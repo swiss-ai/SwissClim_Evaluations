@@ -671,5 +671,3 @@ def run(
         )
         df_w.to_csv(out_csv, index=False)
         print(f"[wd_kde] saved {out_csv}")
-
-        # Removed: heatmaps, 3D curves, and NPZ bundle.

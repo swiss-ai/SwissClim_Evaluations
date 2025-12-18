@@ -58,4 +58,3 @@ def test_wd_kde_ridgeline_evolve_output(tmp_path: Path):
 
     wd_dir = out_root / "wd_kde"
     assert wd_dir.exists()
-    # In the test environment, matplotlib savefig is a no-op; ensure no error and directory present.

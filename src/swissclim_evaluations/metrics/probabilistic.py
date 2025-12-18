@@ -32,6 +32,7 @@ from ..helpers import (
     save_dataframe,
     save_figure,
     time_chunks,
+    unwrap_longitude_for_plot,
 )
 
 
@@ -656,16 +657,7 @@ def plot_probabilistic(
     if lat_vals[0] > lat_vals[-1]:
         crps_map = crps_map.sortby(lat_name)
     # Unwrap longitudes for wrapped selections (e.g., 335..360 U 0..45 -> -25..45)
-    lon_vals = np.asarray(crps_map[lon_name].values)
-    if lon_vals.size:
-        lmin, lmax = float(np.nanmin(lon_vals)), float(np.nanmax(lon_vals))
-        if (lmax - lmin) > 180 and np.any(lon_vals < 90) and np.any(lon_vals > 270):
-            new = lon_vals.copy()
-            new[new > 180] -= 360
-            order = np.argsort(new)
-            crps_map = crps_map.isel({lon_name: order}).assign_coords(
-                {lon_name: (lon_name, new[order])}
-            )
+    crps_map = unwrap_longitude_for_plot(crps_map, lon_name)
 
     # Attempt time range extraction for plots
     def _extract_init_range_plot(ds: xr.Dataset):
@@ -802,16 +794,7 @@ def plot_probabilistic(
             if lat_vals[0] > lat_vals[-1]:
                 crps_by_lead = crps_by_lead.sortby(lat_name)
             # Unwrap longitudes for wrapped domains
-            lon_vals2 = np.asarray(crps_by_lead[lon_name].values)
-            if lon_vals2.size:
-                lmin2, lmax2 = float(np.nanmin(lon_vals2)), float(np.nanmax(lon_vals2))
-                if (lmax2 - lmin2) > 180 and np.any(lon_vals2 < 90) and np.any(lon_vals2 > 270):
-                    new2 = lon_vals2.copy()
-                    new2[new2 > 180] -= 360
-                    order2 = np.argsort(new2)
-                    crps_by_lead = crps_by_lead.isel({lon_name: order2}).assign_coords(
-                        {lon_name: (lon_name, new2[order2])}
-                    )
+            crps_by_lead = unwrap_longitude_for_plot(crps_by_lead, lon_name)
             # Build mapping from all available lead hours -> index
             raw_leads = crps_by_lead["lead_time"].values
             crps_hours: list[int] = [

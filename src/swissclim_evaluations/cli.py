@@ -34,10 +34,9 @@ EXPECTED_SUBDIRS: set[str] = {
     "energy_spectra",
     "ets",
     "histograms",
+    "wd_kde",
     "maps",
     "vertical_profiles",
-    "ssim",
-    "multivariate",
 }
 
 
@@ -1069,8 +1068,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
 
-    # Panel hour injection deprecated: all plots now use full retained lead_time set.
-    # Remove any legacy 'lead_panel_hours' to avoid accidental partial plotting.
     try:
         plotting_block = cfg.setdefault("plotting", {})
         if "lead_panel_hours" in plotting_block:
@@ -1118,8 +1115,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "vertical_profiles",
         "deterministic",
         "ets",
-        "ssim",
-        "multivariate",
         "probabilistic",
     ]
     resolved_modes: dict[str, str] = {}
@@ -1600,90 +1595,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
             module_results.append(
                 {
                     "name": "ets",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
-
-    # ssim
-    if chapter_flags.get("ssim"):
-        from .metrics import ssim
-
-        c.module_status("ssim", "run", f"variables={len(all_vars)}")
-        if "ensemble" in ds_prediction.dims:
-            ens_size_multi = int(ds_prediction.sizes.get("ensemble", 0))
-            use_mode = resolved_modes.get("ssim", "mean")
-            c.info(format_ensemble_log("ssim", use_mode, ens_size_multi))
-        else:
-            c.info("No ensemble dimension → deterministic inputs.")
-        _t = time.time()
-        try:
-            ssim.run(
-                ds_target,
-                ds_prediction,
-                out_root,
-                cfg.get("metrics", {}),
-                ensemble_mode=ensemble_cfg.get("ssim"),
-            )
-            dt = time.time() - _t
-            module_timings.append(("ssim", dt))
-            module_results.append(
-                {
-                    "name": "ssim",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
-        except Exception as ex:  # pragma: no cover
-            dt = time.time() - _t
-            c.error(f"ssim failed: {ex}")
-            module_results.append(
-                {
-                    "name": "ssim",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
-
-    # multivariate
-    if chapter_flags.get("multivariate"):
-        from .metrics import multivariate as multi_mod
-
-        c.module_status("multivariate", "run", f"variables={len(all_vars)}")
-        if "ensemble" in ds_prediction.dims:
-            ens_size_multi = int(ds_prediction.sizes.get("ensemble", 0))
-            use_mode = resolved_modes.get("multivariate", "mean")
-            c.info(format_ensemble_log("multivariate", use_mode, ens_size_multi))
-        else:
-            c.info("No ensemble dimension → deterministic inputs.")
-        _t = time.time()
-        try:
-            multi_mod.run(
-                ds_target,
-                ds_prediction,
-                out_root,
-                cfg.get("metrics", {}),
-                ensemble_mode=ensemble_cfg.get("multivariate"),
-            )
-            dt = time.time() - _t
-            module_timings.append(("multivariate", dt))
-            module_results.append(
-                {
-                    "name": "multivariate",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
-        except Exception as ex:  # pragma: no cover
-            dt = time.time() - _t
-            c.error(f"multivariate failed: {ex}")
-            module_results.append(
-                {
-                    "name": "multivariate",
                     "status": "failed",
                     "seconds": dt,
                     "error": str(ex),

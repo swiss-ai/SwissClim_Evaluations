@@ -634,8 +634,7 @@ def run(
         "energy_spectra", ensemble_mode, ds_target_full, ds_prediction_full
     )
     has_ens = "ensemble" in ds_target_full.dims or "ensemble" in ds_prediction_full.dims
-    if resolved_mode == "prob":
-        raise ValueError("ensemble_mode=prob invalid for energy_spectra")
+    ensemble_members: list[int | None] = [None]
     if resolved_mode == "mean" and has_ens:
         if "ensemble" in ds_target_full.dims:
             ds_target_full = ds_target_full.mean(dim="ensemble")
@@ -647,7 +646,9 @@ def run(
         ens_token = ensemble_mode_to_token("pooled")
     elif resolved_mode == "members" and has_ens:
         # Preserve ensemble members; token will indicate members mode
-        ens_token = ensemble_mode_to_token("members")
+        n_ens = ds_prediction_full.sizes.get("ensemble", ds_target_full.sizes.get("ensemble", 0))
+        ensemble_members = list(range(n_ens))
+        ens_token = None
     else:
         ens_token = None
 
@@ -871,17 +872,29 @@ def run(
     # Generate plots and NPZ for 2D variables
     if save_plot or save_npz:
         for var in variables_2d:
-            _plot_energy_spectra(
-                tgt_plot,
-                pred_plot,
-                str(var),
-                None,
-                section_output / "placeholder",
-                dpi=dpi,
-                save_plot_data=save_npz,
-                save_figure=save_plot,
-                override_ensemble_token=ens_token,
-            )
+            for ens_idx in ensemble_members:
+                t_p = tgt_plot
+                p_p = pred_plot
+                curr_ens_token = ens_token
+
+                if ens_idx is not None:
+                    if "ensemble" in p_p.dims:
+                        p_p = p_p.isel(ensemble=ens_idx)
+                    if "ensemble" in t_p.dims:
+                        t_p = t_p.isel(ensemble=ens_idx)
+                    curr_ens_token = ensemble_mode_to_token("members", ens_idx)
+
+                _plot_energy_spectra(
+                    t_p,
+                    p_p,
+                    str(var),
+                    None,
+                    section_output / "placeholder",
+                    dpi=dpi,
+                    save_plot_data=save_npz,
+                    save_figure=save_plot,
+                    override_ensemble_token=curr_ens_token,
+                )
 
     # 3D variables (per-level)
     variables_3d = []
@@ -1051,17 +1064,29 @@ def run(
         if save_plot or save_npz:
             for var in variables_3d:
                 for lvl in levels:
-                    _plot_energy_spectra(
-                        tgt_plot,
-                        pred_plot,
-                        str(var),
-                        int(lvl),
-                        section_output / "placeholder",
-                        dpi=dpi,
-                        save_plot_data=save_npz,
-                        save_figure=save_plot,
-                        override_ensemble_token=ens_token,
-                    )
+                    for ens_idx in ensemble_members:
+                        t_p = tgt_plot
+                        p_p = pred_plot
+                        curr_ens_token = ens_token
+
+                        if ens_idx is not None:
+                            if "ensemble" in p_p.dims:
+                                p_p = p_p.isel(ensemble=ens_idx)
+                            if "ensemble" in t_p.dims:
+                                t_p = t_p.isel(ensemble=ens_idx)
+                            curr_ens_token = ensemble_mode_to_token("members", ens_idx)
+
+                        _plot_energy_spectra(
+                            t_p,
+                            p_p,
+                            str(var),
+                            int(lvl),
+                            section_output / "placeholder",
+                            dpi=dpi,
+                            save_plot_data=save_npz,
+                            save_figure=save_plot,
+                            override_ensemble_token=curr_ens_token,
+                        )
 
     # Optional: per-member NPZ spectrum exports when requested
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()

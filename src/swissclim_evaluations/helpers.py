@@ -339,7 +339,6 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     # metrics
     "deterministic": "mean",
     "ets": "mean",
-    "ssim": "mean",
     "probabilistic": "prob",
     # plots / diagnostics
     "energy_spectra": "mean",
@@ -361,8 +360,6 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "energy_spectra": {"mean", "pooled", "members"},
     "deterministic": {"mean", "pooled", "members"},
     "ets": {"mean", "pooled", "members"},
-    "multivariate": {"mean", "pooled", "members"},
-    "ssim": {"mean", "pooled", "members"},
 }
 
 
@@ -753,3 +750,28 @@ def save_dataframe(
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=index, index_label=index_label, **kwargs)
     print(f"Saved {path}")
+
+
+def unwrap_longitude_for_plot(da: xr.DataArray, lon_name: str = "longitude") -> xr.DataArray:
+    """Unwrap wrapped longitudes for plotting (e.g. 335..360 U 0..45 -> -25..45).
+
+    Detects if the domain crosses the prime meridian (values < 90 and > 270 present)
+    and shifts the western segment (values > 180) to negative degrees, then re-sorts.
+    """
+    if lon_name not in da.coords:
+        return da
+
+    lons = np.asarray(da[lon_name].values)
+    if lons.size == 0:
+        return da
+
+    lmin, lmax = float(np.nanmin(lons)), float(np.nanmax(lons))
+
+    # Heuristic: large span plus presence of values on both sides of Greenwich
+    if (lmax - lmin) > 180 and np.any(lons < 90) and np.any(lons > 270):
+        new = lons.copy()
+        new[new > 180] -= 360  # shift western segment to negative degrees
+        order = np.argsort(new)
+        da = da.isel({lon_name: order}).assign_coords({lon_name: (lon_name, new[order])})
+
+    return da
