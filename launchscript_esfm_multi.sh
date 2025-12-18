@@ -52,7 +52,7 @@ for config in "${EVAL_CONFIGS[@]}"; do
     [ -z "$config" ] && continue
     job_name=$(basename "${config}" .yaml)
     # Map task ID to command.
-    echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > logs/${job_name}.log 2>&1'" >> "$MP_CONF"
+    echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > logs/${job_name}.log 2>&1 || true'" >> "$MP_CONF"
     ((idx++))
 done
 
@@ -84,92 +84,79 @@ done
 # --- Step 3: Render Notebooks ---
 echo "Rendering notebooks..."
 
-# Create a bash script to handle notebook rendering using papermill CLI
-cat <<'EOF' > render_notebooks.sh
+# Create a bash script to handle notebook rendering for a single config
+cat <<'EOF' > render_single_notebook.sh
 #!/bin/bash
-# set -e removed to allow continuing after errors
 
-# Define groups
-# Read from shared file
-if [ ! -f "eval_configs.txt" ]; then
-    echo "Error: eval_configs.txt not found!"
-    exit 1
+config=$1
+shift
+notebooks=("$@")
+
+if [ ! -f "$config" ]; then
+    echo "Config file not found: $config"
+    exit 0
 fi
-mapfile -t eval_configs < eval_configs.txt
 
-# Filter out empty lines
-valid_configs=()
-for config in "${eval_configs[@]}"; do
-    [[ -n "$config" ]] && valid_configs+=("$config")
-done
-eval_configs=("${valid_configs[@]}")
+# Get absolute path to config to ensure notebooks find it correctly
+abs_config=$(python -c "import os; print(os.path.abspath('$config'))")
 
-# Function to render notebooks
-render_notebooks() {
-    local config=$1
-    shift
-    local notebooks=("$@")
+# Extract output_root using python for robust YAML parsing
+outdir=$(python -c "import yaml; cfg=yaml.safe_load(open('$config')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
 
-    if [ ! -f "$config" ]; then
-        echo "Config file not found: $config"
-        return
+if [ -z "$outdir" ]; then
+    echo "No output_root found in $config"
+    exit 0
+fi
+
+if [ ! -d "$outdir" ]; then
+    echo "Output directory does not exist: $outdir"
+    exit 0
+fi
+
+echo "Processing notebooks for config: $config -> $outdir"
+
+for nb_name in "${notebooks[@]}"; do
+    nb="notebooks/${nb_name}"
+    if [ ! -f "$nb" ]; then
+        echo "Notebook not found: $nb"
+        continue
     fi
 
-    # Get absolute path to config to ensure notebooks find it correctly
-    abs_config=$(python -c "import os; print(os.path.abspath('$config'))")
+    out_nb_path="${outdir}/${nb_name}"
 
-    # Extract output_root using python for robust YAML parsing
-    outdir=$(python -c "import yaml; cfg=yaml.safe_load(open('$config')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
-
-    if [ -z "$outdir" ]; then
-        echo "No output_root found in $config"
-        return
+    echo "  Rendering $nb_name..."
+    # Execute notebook with papermill
+    if ! python -m papermill "$nb" "$out_nb_path" -p config_path_str "$abs_config"; then
+        echo "ERROR: Failed to render $nb_name for config $config"
+        continue
     fi
 
-    if [ ! -d "$outdir" ]; then
-        echo "Output directory does not exist: $outdir"
-        return
+    echo "  Converting to HTML..."
+    # Convert to HTML
+    if ! python -m jupyter nbconvert --to html "$out_nb_path"; then
+        echo "ERROR: Failed to convert $nb_name to HTML"
     fi
-
-    echo "Processing notebooks for config: $config -> $outdir"
-
-    for nb_name in "${notebooks[@]}"; do
-        nb="notebooks/${nb_name}"
-        if [ ! -f "$nb" ]; then
-            echo "Notebook not found: $nb"
-            continue
-        fi
-
-        out_nb_path="${outdir}/${nb_name}"
-
-        echo "  Rendering $nb_name..."
-        # Execute notebook with papermill
-        if ! python -m papermill "$nb" "$out_nb_path" -p config_path_str "$abs_config"; then
-            echo "ERROR: Failed to render $nb_name for config $config"
-            continue
-        fi
-
-        echo "  Converting to HTML..."
-        # Convert to HTML
-        if ! python -m jupyter nbconvert --to html "$out_nb_path"; then
-            echo "ERROR: Failed to convert $nb_name to HTML"
-        fi
-    done
-}
-
-# Process Eval Configs
-for config in "${eval_configs[@]}"; do
-    [ -z "$config" ] && continue
-    render_notebooks "$config" "deterministic_verification.ipynb"
 done
 EOF
 
-# Run the rendering script
-srun --ntasks=1 --cpus-per-task=32 --exclusive --output="logs/notebook_rendering.log" \
-    --container-writable --environment="${EDF_CONFIG}" \
-    bash render_notebooks.sh
+# Create multi-prog config for notebooks
+MP_NB_CONF="notebook_multiprog.conf"
+rm -f "$MP_NB_CONF"
 
-# Cleanup temporary script
-rm render_notebooks.sh
+idx=0
+for config in "${EVAL_CONFIGS[@]}"; do
+    [ -z "$config" ] && continue
+    job_name=$(basename "${config}" .yaml)
+    # We use || true to ensure the srun step doesn't fail if one script fails
+    echo "$idx bash render_single_notebook.sh \"$config\" \"deterministic_verification.ipynb\" > logs/notebook_${job_name}.log 2>&1 || true" >> "$MP_NB_CONF"
+    ((idx++))
+done
+
+echo "Rendering notebooks in parallel..."
+srun --ntasks=${#EVAL_CONFIGS[@]} --cpus-per-task=32 --multi-prog "$MP_NB_CONF" \
+    --container-writable --environment="${EDF_CONFIG}"
+
+# Cleanup
+rm "$MP_NB_CONF" "render_single_notebook.sh"
 
 echo "All tasks completed."
