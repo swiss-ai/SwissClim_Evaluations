@@ -344,7 +344,7 @@ def run_probabilistic(
     )
 
     # --- Optimization: Collect all lazy computations ---
-    jobs = []
+    # jobs = [] (Removed to process sequentially)
     is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
 
     for var in variables:
@@ -385,25 +385,20 @@ def run_probabilistic(
         job["crps_field_lazy"] = crps_da
         job["pit_field_lazy"] = pit_da
 
-        jobs.append(job)
+        # --- Batch Compute (Per Variable) ---
+        compute_jobs(
+            [job],
+            key_map={
+                "crps_mean_lazy": "crps_mean_res",
+                "crps_per_lead_lazy": "crps_per_lead_res",
+                "crps_per_level_lazy": "crps_per_level_res",
+                "pit_counts_lazy": "pit_counts_res",
+                "crps_field_lazy": "crps_field_res",
+                "pit_field_lazy": "pit_field_res",
+            },
+        )
 
-    # --- Batch Compute ---
-    compute_jobs(
-        jobs,
-        key_map={
-            "crps_mean_lazy": "crps_mean_res",
-            "crps_per_lead_lazy": "crps_per_lead_res",
-            "crps_per_level_lazy": "crps_per_level_res",
-            "pit_counts_lazy": "pit_counts_res",
-            "crps_field_lazy": "crps_field_res",
-            "pit_field_lazy": "pit_field_res",
-        },
-    )
-
-    # --- Process Results (Save/Plot) ---
-    for job in jobs:
-        var = job["var"]
-
+        # --- Process Results (Save/Plot) ---
         # 1. CRPS Mean
         if job["crps_mean_lazy"] is not None:
             try:
@@ -531,6 +526,9 @@ def run_probabilistic(
         )
         _save_npz_with_coords(out_npz_pit, job["pit_field_res"])
         print(f"[probabilistic] saved {out_npz_pit}")
+
+        # Explicitly release memory
+        del job
 
     if crps_rows:
         if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:

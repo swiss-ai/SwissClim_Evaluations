@@ -376,7 +376,7 @@ def run(
     fig_count = 0
 
     # Collect all lazy computations
-    jobs = []
+    # jobs = [] (Removed to process sequentially)
 
     for var in variables_3d:
         print(f"[vertical_profiles] preparing {var}...")
@@ -558,24 +558,20 @@ def run(
         )
         job["global_profile_lazy"] = global_profile
 
-        jobs.append(job)
+        # Batch compute (Per Variable)
+        print(f"[vertical_profiles] computing job for {var}...")
+        compute_jobs(
+            [job],
+            key_map={
+                "combined_lazy": "combined",
+                "combined_all_lazy": "combined_all",
+                "evolve_profiles_lazy": "evolve_profiles",
+                "nmae_lead_lazy": "nmae_lead",
+                "global_profile_lazy": "global_profile",
+            },
+        )
 
-    # Batch compute
-    print(f"[vertical_profiles] computing {len(jobs)} jobs...")
-    compute_jobs(
-        jobs,
-        key_map={
-            "combined_lazy": "combined",
-            "combined_all_lazy": "combined_all",
-            "evolve_profiles_lazy": "evolve_profiles",
-            "nmae_lead_lazy": "nmae_lead",
-            "global_profile_lazy": "global_profile",
-        },
-    )
-
-    # Process results
-    for job in jobs:
-        var = job["var"]
+        # Process results (Inline)
         print(f"[vertical_profiles] post-processing {var}...")
         combined = job["combined"]
         south_meta = job["south_meta"]
@@ -853,3 +849,6 @@ def run(
                 dpi=dpi,
                 save_fig=save_fig,
             )
+
+        # Explicitly release memory
+        del job

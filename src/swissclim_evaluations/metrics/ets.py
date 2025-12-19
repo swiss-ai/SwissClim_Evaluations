@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import dask
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -21,7 +20,7 @@ def _compute_ets_raw(
     preserve_dims: list[str] | None = None,
 ) -> dict[str, xr.DataArray]:
     variables = list(ds_target.data_vars)
-    lazy_results = {}
+    computed_results = {}
     q_values = [t / 100.0 for t in thresholds]
 
     for var in variables:
@@ -44,17 +43,11 @@ def _compute_ets_raw(
         bcm = bcm.transform(reduce_dims=reduce_dims)
 
         ets_score = bcm.equitable_threat_score()
-        lazy_results[var] = ets_score
 
-    # Compute all at once
-    if not lazy_results:
-        return {}
+        # Compute immediately per variable to avoid OOM
+        computed_results[var] = ets_score.compute()
 
-    keys = list(lazy_results.keys())
-    values = list(lazy_results.values())
-    computed_values = dask.compute(*values)
-
-    return dict(zip(keys, computed_values, strict=False))
+    return computed_results
 
 
 def _calculate_ets_for_thresholds(

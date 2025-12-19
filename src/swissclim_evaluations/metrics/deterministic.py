@@ -4,7 +4,7 @@ import contextlib
 import functools
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import dask
 import numpy as np
@@ -16,6 +16,7 @@ from scores.continuous.correlation import pearsonr
 from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d_single_field
 
+from ..dask_utils import compute_jobs
 from ..helpers import (
     format_variable_name,
     get_variable_units,
@@ -568,7 +569,7 @@ def run(
     df_all_lead = pd.DataFrame()
 
     if members_indices is None:
-        # Check multi_lead early to include in batch compute
+        # Check multi_lead early
         try:
             multi_lead = (
                 (lead_policy is not None)
@@ -579,132 +580,179 @@ def run(
         except Exception:
             multi_lead = False
 
-        # 1. Regular metrics
-        reg_dict, reg_lazy = ({}, [])
-        if not multi_lead:
-            reg_dict, reg_lazy = _calculate_all_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                n_points=n_points,
-                include=include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
-                compute=False,
+        # Initialize result lists
+        results_reg = []
+        results_std = []
+        results_lvl = []
+        results_lvl_std = []
+        results_lead = []
+
+        variables = list(ds_target.data_vars)
+
+        for var in variables:
+            job: dict[str, Any] = {"var": var}
+
+            # Create single-variable datasets
+            ds_t_var = ds_target[[var]]
+            ds_p_var = ds_prediction[[var]]
+
+            # For standardized, check if var exists
+            ds_t_std_var = ds_target_std[[var]] if var in ds_target_std else None
+            ds_p_std_var = ds_prediction_std[[var]] if var in ds_prediction_std else None
+
+            # 1. Regular metrics
+            reg_dict, reg_lazy_list = ({}, [])
+            if not multi_lead:
+                reg_dict, reg_lazy_list = _calculate_all_metrics(
+                    ds_t_var,
+                    ds_p_var,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                    seeps_climatology_path=seeps_climatology_path,
+                    compute=False,
+                )
+                if reg_lazy_list:
+                    _, _, lazy_objs = zip(*reg_lazy_list, strict=False)
+                    job["reg_lazy"] = list(lazy_objs)
+                else:
+                    job["reg_lazy"] = None
+
+            # 2. Standardized metrics
+            std_dict, std_lazy_list = ({}, [])
+            if not multi_lead and ds_t_std_var is not None and ds_p_std_var is not None:
+                std_dict, std_lazy_list = _calculate_all_metrics(
+                    ds_t_std_var,
+                    ds_p_std_var,
+                    calc_relative=False,
+                    n_points=n_points,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                    seeps_climatology_path=seeps_climatology_path,
+                    compute=False,
+                )
+                if std_lazy_list:
+                    _, _, lazy_objs = zip(*std_lazy_list, strict=False)
+                    job["std_lazy"] = list(lazy_objs)
+                else:
+                    job["std_lazy"] = None
+
+            # 3. Per-level metrics
+            lvl_dict, lvl_lazy_list = ({}, [])
+            lvl_std_dict, lvl_std_lazy_list = ({}, [])
+            if report_per_level and not multi_lead:
+                res = _calculate_per_level_metrics(
+                    ds_t_var,
+                    ds_p_var,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                    compute=False,
+                )
+                if res is not None:
+                    lvl_dict, lvl_lazy_list = res
+                    if lvl_lazy_list:
+                        _, _, lazy_objs = zip(*lvl_lazy_list, strict=False)
+                        job["lvl_lazy"] = list(lazy_objs)
+                    else:
+                        job["lvl_lazy"] = None
+
+                if ds_t_std_var is not None and ds_p_std_var is not None:
+                    res_std = _calculate_per_level_metrics(
+                        ds_t_std_var,
+                        ds_p_std_var,
+                        calc_relative=False,
+                        n_points=n_points,
+                        include=std_include,
+                        fss_cfg=fss_cfg,
+                        compute=False,
+                    )
+                    if res_std is not None:
+                        lvl_std_dict, lvl_std_lazy_list = res_std
+                        if lvl_std_lazy_list:
+                            _, _, lazy_objs = zip(*lvl_std_lazy_list, strict=False)
+                            job["lvl_std_lazy"] = list(lazy_objs)
+                        else:
+                            job["lvl_std_lazy"] = None
+
+            # 4. Multi-lead metrics
+            lead_dict, lead_lazy_list = ({}, [])
+            if multi_lead:
+                lead_dict, lead_lazy_list = _calculate_all_metrics(
+                    ds_t_var,
+                    ds_p_var,
+                    calc_relative=True,
+                    n_points=n_points,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                    preserve_dims=["lead_time"],
+                    compute=False,
+                )
+                if lead_lazy_list:
+                    _, _, lazy_objs = zip(*lead_lazy_list, strict=False)
+                    job["lead_lazy"] = list(lazy_objs)
+                else:
+                    job["lead_lazy"] = None
+
+            # Compute
+            compute_jobs(
+                [job],
+                key_map={
+                    "reg_lazy": "reg_res",
+                    "std_lazy": "std_res",
+                    "lvl_lazy": "lvl_res",
+                    "lvl_std_lazy": "lvl_std_res",
+                    "lead_lazy": "lead_res",
+                },
             )
 
-        # 2. Standardized metrics
-        std_dict, std_lazy = ({}, [])
-        if not multi_lead:
-            std_dict, std_lazy = _calculate_all_metrics(
-                ds_target_std,
-                ds_prediction_std,
-                calc_relative=False,
-                n_points=n_points,
-                include=std_include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
-                compute=False,
-            )
+            # Finalize
+            if job.get("reg_res"):
+                df_reg = _finalize_metrics(reg_dict, reg_lazy_list, job["reg_res"], None)
+                if not df_reg.empty:
+                    results_reg.append(df_reg)
 
-        # 3. Per-level metrics
-        lvl_dict, lvl_lazy = ({}, [])
-        lvl_std_dict, lvl_std_lazy = ({}, [])
+            if job.get("std_res"):
+                df_std = _finalize_metrics(std_dict, std_lazy_list, job["std_res"], None)
+                if not df_std.empty:
+                    results_std.append(df_std)
 
-        if report_per_level and not multi_lead:
-            res = _calculate_per_level_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                n_points=n_points,
-                include=include,
-                fss_cfg=fss_cfg,
-                compute=False,
-            )
-            if res is not None:
-                lvl_dict, lvl_lazy = res
+            if job.get("lvl_res"):
+                df_lvl = _finalize_metrics(lvl_dict, lvl_lazy_list, job["lvl_res"], ["level"])
+                if not df_lvl.empty:
+                    results_lvl.append(df_lvl)
 
-            res_std = _calculate_per_level_metrics(
-                ds_target_std,
-                ds_prediction_std,
-                calc_relative=False,
-                n_points=n_points,
-                include=std_include,
-                fss_cfg=fss_cfg,
-                compute=False,
-            )
-            if res_std is not None:
-                lvl_std_dict, lvl_std_lazy = res_std
+            if job.get("lvl_std_res"):
+                df_lvl_std = _finalize_metrics(
+                    lvl_std_dict, lvl_std_lazy_list, job["lvl_std_res"], ["level"]
+                )
+                if not df_lvl_std.empty:
+                    results_lvl_std.append(df_lvl_std)
 
-        # 4. Multi-lead metrics
-        lead_dict, lead_lazy = ({}, [])
-        if multi_lead:
-            lead_dict, lead_lazy = _calculate_all_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                n_points=n_points,
-                include=include,
-                fss_cfg=fss_cfg,
-                preserve_dims=["lead_time"],
-                compute=False,
-            )
+            if job.get("lead_res"):
+                df_lead = _finalize_metrics(
+                    lead_dict, lead_lazy_list, job["lead_res"], ["lead_time"]
+                )
+                if not df_lead.empty:
+                    results_lead.append(df_lead)
 
-        # Compute in batches to avoid OOM
+            # Explicit cleanup
+            del ds_t_var, ds_p_var, ds_t_std_var, ds_p_std_var, job
 
-        # 1. Regular
-        res_reg = []
-        if reg_lazy:
-            _, _, lazy_objs = zip(*reg_lazy, strict=False)
-            res_reg = dask.compute(*lazy_objs)
-        regular_metrics = _finalize_metrics(reg_dict, reg_lazy, res_reg, None)
+        # Concatenate results
+        regular_metrics = pd.concat(results_reg) if results_reg else pd.DataFrame()
+        standardized_metrics = pd.concat(results_std) if results_std else pd.DataFrame()
+        per_level_metrics = pd.concat(results_lvl) if results_lvl else pd.DataFrame()
+        per_level_std = pd.concat(results_lvl_std) if results_lvl_std else pd.DataFrame()
+        df_all_lead = pd.concat(results_lead) if results_lead else pd.DataFrame()
 
-        # 2. Standardized
-        res_std = []
-        if std_lazy:
-            _, _, lazy_objs = zip(*std_lazy, strict=False)
-            res_std = dask.compute(*lazy_objs)
-        standardized_metrics = _finalize_metrics(std_dict, std_lazy, res_std, None)
-
-        # 3. Per-level
-        per_level_metrics = None
-        if lvl_lazy or lvl_dict:
-            res_lvl = []
-            if lvl_lazy:
-                _, _, lazy_objs = zip(*lvl_lazy, strict=False)
-                res_lvl = dask.compute(*lazy_objs)
-
-            per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, res_lvl, ["level"])
-            if (
-                per_level_metrics is not None
-                and not per_level_metrics.empty
-                and "level" in per_level_metrics.columns
-            ):
-                per_level_metrics["level"] = per_level_metrics["level"].astype(int)
-
-        # 4. Per-level Standardized
-        per_level_std = None
-        if lvl_std_lazy or lvl_std_dict:
-            res_lvl_std = []
-            if lvl_std_lazy:
-                _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
-                res_lvl_std = dask.compute(*lazy_objs)
-
-            per_level_std = _finalize_metrics(lvl_std_dict, lvl_std_lazy, res_lvl_std, ["level"])
-            if (
-                per_level_std is not None
-                and not per_level_std.empty
-                and "level" in per_level_std.columns
-            ):
-                per_level_std["level"] = per_level_std["level"].astype(int)
-
-        # 5. Multi-lead
-        if lead_lazy or lead_dict:
-            res_lead = []
-            if lead_lazy:
-                _, _, lazy_objs = zip(*lead_lazy, strict=False)
-                res_lead = dask.compute(*lazy_objs)
-            df_all_lead = _finalize_metrics(lead_dict, lead_lazy, res_lead, ["lead_time"])
+        # Ensure level column is int if present
+        if not per_level_metrics.empty and "level" in per_level_metrics.columns:
+            per_level_metrics["level"] = per_level_metrics["level"].astype(int)
+        if not per_level_std.empty and "level" in per_level_std.columns:
+            per_level_std["level"] = per_level_std["level"].astype(int)
 
         # Save outputs
         out_csv = section_output / build_output_filename(
@@ -792,30 +840,136 @@ def run(
                 else ds_target_std
             )
 
-            reg_m = cast(
-                pd.DataFrame,
-                _calculate_all_metrics(
-                    ds_tgt_m,
-                    ds_pred_m,
+            # Loop over variables for memory safety
+            res_reg_m = []
+            res_std_m = []
+            res_lvl_m = []
+            res_lvl_std_m = []
+
+            variables = list(ds_target.data_vars)
+            for var in variables:
+                job = {"var": var}
+                ds_t_m_var = ds_tgt_m[[var]]
+                ds_p_m_var = ds_pred_m[[var]]
+                ds_t_m_std_var = ds_tgt_m_std[[var]] if var in ds_tgt_m_std else None
+                ds_p_m_std_var = ds_pred_m_std[[var]] if var in ds_pred_m_std else None
+
+                # Regular
+                reg_dict, reg_lazy_list = _calculate_all_metrics(
+                    ds_t_m_var,
+                    ds_p_m_var,
                     calc_relative=True,
                     n_points=n_points,
                     include=include,
                     fss_cfg=fss_cfg,
                     seeps_climatology_path=seeps_climatology_path,
-                ),
-            )
-            std_m = cast(
-                pd.DataFrame,
-                _calculate_all_metrics(
-                    ds_tgt_m_std,
-                    ds_pred_m_std,
-                    calc_relative=False,
-                    n_points=n_points,
-                    include=std_include,
-                    fss_cfg=fss_cfg,
-                    seeps_climatology_path=seeps_climatology_path,
-                ),
-            )
+                    compute=False,
+                )
+                if reg_lazy_list:
+                    _, _, lazy_objs = zip(*reg_lazy_list, strict=False)
+                    job["reg_lazy"] = list(lazy_objs)
+                else:
+                    job["reg_lazy"] = None
+
+                # Standardized
+                std_dict, std_lazy_list = ({}, [])
+                if ds_t_m_std_var is not None and ds_p_m_std_var is not None:
+                    std_dict, std_lazy_list = _calculate_all_metrics(
+                        ds_t_m_std_var,
+                        ds_p_m_std_var,
+                        calc_relative=False,
+                        n_points=n_points,
+                        include=std_include,
+                        fss_cfg=fss_cfg,
+                        seeps_climatology_path=seeps_climatology_path,
+                        compute=False,
+                    )
+                    if std_lazy_list:
+                        _, _, lazy_objs = zip(*std_lazy_list, strict=False)
+                        job["std_lazy"] = list(lazy_objs)
+                    else:
+                        job["std_lazy"] = None
+
+                # Per-level
+                lvl_dict, lvl_lazy_list = ({}, [])
+                lvl_std_dict, lvl_std_lazy_list = ({}, [])
+                if report_per_level:
+                    res = _calculate_per_level_metrics(
+                        ds_t_m_var,
+                        ds_p_m_var,
+                        calc_relative=True,
+                        n_points=n_points,
+                        include=include,
+                        fss_cfg=fss_cfg,
+                        compute=False,
+                    )
+                    if res is not None:
+                        lvl_dict, lvl_lazy_list = res
+                        if lvl_lazy_list:
+                            _, _, lazy_objs = zip(*lvl_lazy_list, strict=False)
+                            job["lvl_lazy"] = list(lazy_objs)
+                        else:
+                            job["lvl_lazy"] = None
+
+                    if ds_t_m_std_var is not None and ds_p_m_std_var is not None:
+                        res_std = _calculate_per_level_metrics(
+                            ds_t_m_std_var,
+                            ds_p_m_std_var,
+                            calc_relative=False,
+                            n_points=n_points,
+                            include=std_include,
+                            fss_cfg=fss_cfg,
+                            compute=False,
+                        )
+                        if res_std is not None:
+                            lvl_std_dict, lvl_std_lazy_list = res_std
+                            if lvl_std_lazy_list:
+                                _, _, lazy_objs = zip(*lvl_std_lazy_list, strict=False)
+                                job["lvl_std_lazy"] = list(lazy_objs)
+                            else:
+                                job["lvl_std_lazy"] = None
+
+                # Compute
+                compute_jobs(
+                    [job],
+                    key_map={
+                        "reg_lazy": "reg_res",
+                        "std_lazy": "std_res",
+                        "lvl_lazy": "lvl_res",
+                        "lvl_std_lazy": "lvl_std_res",
+                    },
+                )
+
+                # Finalize
+                if job.get("reg_res"):
+                    df_reg = _finalize_metrics(reg_dict, reg_lazy_list, job["reg_res"], None)
+                    if not df_reg.empty:
+                        res_reg_m.append(df_reg)
+
+                if job.get("std_res"):
+                    df_std = _finalize_metrics(std_dict, std_lazy_list, job["std_res"], None)
+                    if not df_std.empty:
+                        res_std_m.append(df_std)
+
+                if job.get("lvl_res"):
+                    df_lvl = _finalize_metrics(lvl_dict, lvl_lazy_list, job["lvl_res"], ["level"])
+                    if not df_lvl.empty:
+                        res_lvl_m.append(df_lvl)
+
+                if job.get("lvl_std_res"):
+                    df_lvl_std = _finalize_metrics(
+                        lvl_std_dict, lvl_std_lazy_list, job["lvl_std_res"], ["level"]
+                    )
+                    if not df_lvl_std.empty:
+                        res_lvl_std_m.append(df_lvl_std)
+
+                del ds_t_m_var, ds_p_m_var, ds_t_m_std_var, ds_p_m_std_var, job
+
+            reg_m = pd.concat(res_reg_m) if res_reg_m else pd.DataFrame()
+            std_m = pd.concat(res_std_m) if res_std_m else pd.DataFrame()
+            per_level_m = pd.concat(res_lvl_m) if res_lvl_m else None
+            per_level_m_std = pd.concat(res_lvl_std_m) if res_lvl_std_m else None
+
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
             if first_std_df is None:
@@ -845,54 +999,31 @@ def run(
             save_dataframe(std_m, out_csv_m_std, index_label="variable")
             pooled_metrics.append(reg_m)
 
-            if report_per_level:
-                per_level_m = cast(
-                    pd.DataFrame | None,
-                    _calculate_per_level_metrics(
-                        ds_tgt_m,
-                        ds_pred_m,
-                        calc_relative=True,
-                        n_points=n_points,
-                        include=include,
-                        fss_cfg=fss_cfg,
-                    ),
+            if per_level_m is not None and not per_level_m.empty:
+                out_csv_m_lvl = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=token_m,
+                    ext="csv",
                 )
-                if per_level_m is not None:
-                    out_csv_m_lvl = section_output / build_output_filename(
-                        metric="deterministic_metrics",
-                        variable=None,
-                        level=None,
-                        qualifier="per_level",
-                        init_time_range=init_range,
-                        lead_time_range=lead_range,
-                        ensemble=token_m,
-                        ext="csv",
-                    )
-                    save_dataframe(per_level_m, out_csv_m_lvl, index=False)
+                save_dataframe(per_level_m, out_csv_m_lvl, index=False)
 
-                per_level_m_std = cast(
-                    pd.DataFrame | None,
-                    _calculate_per_level_metrics(
-                        ds_tgt_m_std,
-                        ds_pred_m_std,
-                        calc_relative=False,
-                        n_points=n_points,
-                        include=std_include,
-                        fss_cfg=fss_cfg,
-                    ),
+            if per_level_m_std is not None and not per_level_m_std.empty:
+                out_csv_m_lvl_std = section_output / build_output_filename(
+                    metric="deterministic_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="standardized_per_level",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=token_m,
+                    ext="csv",
                 )
-                if per_level_m_std is not None:
-                    out_csv_m_lvl_std = section_output / build_output_filename(
-                        metric="deterministic_metrics",
-                        variable=None,
-                        level=None,
-                        qualifier="standardized_per_level",
-                        init_time_range=init_range,
-                        lead_time_range=lead_range,
-                        ensemble=token_m,
-                        ext="csv",
-                    )
-                    save_dataframe(per_level_m_std, out_csv_m_lvl_std, index=False)
+                save_dataframe(per_level_m_std, out_csv_m_lvl_std, index=False)
 
         # Aggregate pooled metrics across members if requested
         if pooled_metrics and aggregate_members_mean:
