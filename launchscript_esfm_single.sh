@@ -27,6 +27,11 @@ mkdir -p logs
 # Config to run
 CONFIG_FILE="/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_finetune.yaml"
 
+# Generate robust job name from config (parent_dir + filename)
+filename=$(basename "${CONFIG_FILE}" .yaml)
+parent_dir=$(basename "$(dirname "${CONFIG_FILE}")")
+job_name="${parent_dir}_${filename}"
+
 echo "Starting evaluation for config: $CONFIG_FILE"
 
 # Run the evaluation
@@ -42,8 +47,8 @@ OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_FILE')); print
 
 if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
     echo "Copying logs to $OUTDIR"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/slurm_${SLURM_JOB_ID}.out" 2>/dev/null || echo "Could not copy .out log"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/slurm_${SLURM_JOB_ID}.err" 2>/dev/null || echo "Could not copy .err log"
+    cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
+    cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
 fi
 
 # --- Notebook Rendering ---

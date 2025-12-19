@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=swissclim-eval-large
-#SBATCH --output=logs/swissclim_large_%j.out
-#SBATCH --error=logs/swissclim_large_%j.err
+#SBATCH --job-name=swissclim-eval-multi
+#SBATCH --output=logs/swissclim_multi_%j.out
+#SBATCH --error=logs/swissclim_multi_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
-#SBATCH --nodes=15
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=32
 
@@ -50,7 +50,11 @@ rm -f "$MP_CONF"
 idx=0
 for config in "${EVAL_CONFIGS[@]}"; do
     [ -z "$config" ] && continue
-    job_name=$(basename "${config}" .yaml)
+    # Use parent dir + filename to avoid collisions
+    filename=$(basename "${config}" .yaml)
+    parent_dir=$(basename "$(dirname "${config}")")
+    job_name="${parent_dir}_${filename}"
+
     # Map task ID to command.
     echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > logs/${job_name}.log 2>&1 || true'" >> "$MP_CONF"
     ((idx++))
@@ -67,7 +71,10 @@ echo "Evaluation jobs finished."
 
 # Copy logs to output folders
 for config in "${EVAL_CONFIGS[@]}"; do
-    job_name=$(basename "${config}" .yaml)
+    # Use parent dir + filename to avoid collisions
+    filename=$(basename "${config}" .yaml)
+    parent_dir=$(basename "$(dirname "${config}")")
+    job_name="${parent_dir}_${filename}"
     log_file="logs/${job_name}.log"
 
     if [ -f "$log_file" ]; then
@@ -146,9 +153,13 @@ rm -f "$MP_NB_CONF"
 idx=0
 for config in "${EVAL_CONFIGS[@]}"; do
     [ -z "$config" ] && continue
-    job_name=$(basename "${config}" .yaml)
+    # Use parent dir + filename to avoid collisions
+    filename=$(basename "${config}" .yaml)
+    parent_dir=$(basename "$(dirname "${config}")")
+    job_name="${parent_dir}_${filename}"
+
     # We use || true to ensure the srun step doesn't fail if one script fails
-    echo "$idx bash render_single_notebook.sh \"$config\" \"deterministic_verification.ipynb\" > logs/notebook_${job_name}.log 2>&1 || true" >> "$MP_NB_CONF"
+    echo "$idx bash render_single_notebook.sh $config deterministic_verification.ipynb > logs/notebook_${job_name}.log 2>&1 || true" >> "$MP_NB_CONF"
     ((idx++))
 done
 
