@@ -683,6 +683,9 @@ def prepare_datasets(
                 # If mode is first, we need init + first_lead; otherwise use max_lead
                 extend_hours = int(leads_h[0]) if mode == "first" else int(leads_h.max())
         except Exception:
+            # If anything goes wrong while inferring extend_hours from lead_time,
+            # fall back to the default extend_hours=0; downstream selection still works
+            # with shorter targets, and we prefer not to fail the evaluation here.
             pass
 
     ds_target = _slice_common(ds_target, cfg, extend_end_hours=extend_hours)
