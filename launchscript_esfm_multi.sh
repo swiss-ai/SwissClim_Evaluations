@@ -5,7 +5,7 @@
 #SBATCH --time=04:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=32
 
@@ -30,11 +30,11 @@ echo "Starting parallel evaluation jobs..."
 
 # List of evaluation configs
 # Read from shared file
-if [ ! -f "eval_configs.txt" ]; then
-    echo "Error: eval_configs.txt not found!"
+if [ ! -f "eval_configs2.txt" ]; then
+    echo "Error: eval_configs2.txt not found!"
     exit 1
 fi
-mapfile -t EVAL_CONFIGS < eval_configs.txt
+mapfile -t EVAL_CONFIGS < eval_configs2.txt
 
 # Filter out empty lines
 VALID_CONFIGS=()
@@ -96,8 +96,12 @@ cat <<'EOF' > render_single_notebook.sh
 #!/bin/bash
 
 config=$1
-shift
+logfile=$2
+shift 2
 notebooks=("$@")
+
+# Redirect all output to logfile
+exec > "$logfile" 2>&1
 
 if [ ! -f "$config" ]; then
     echo "Config file not found: $config"
@@ -144,6 +148,7 @@ for nb_name in "${notebooks[@]}"; do
         echo "ERROR: Failed to convert $nb_name to HTML"
     fi
 done
+exit 0
 EOF
 
 # Create multi-prog config for notebooks
@@ -159,7 +164,7 @@ for config in "${EVAL_CONFIGS[@]}"; do
     job_name="${parent_dir}_${filename}"
 
     # We use || true to ensure the srun step doesn't fail if one script fails
-    echo "$idx bash render_single_notebook.sh $config deterministic_verification.ipynb > logs/notebook_${job_name}.log 2>&1 || true" >> "$MP_NB_CONF"
+    echo "$idx bash render_single_notebook.sh $config logs/notebook_${job_name}.log deterministic_verification.ipynb" >> "$MP_NB_CONF"
     ((idx++))
 done
 
