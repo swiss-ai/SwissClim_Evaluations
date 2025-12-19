@@ -59,9 +59,6 @@ def calculate_energy_spectra(
         quadratic power computation.
     Time / lead dimensions are never implicitly averaged here.
     """
-    # Remove trivial level dimension
-    if "level" in da_var.dims and da_var.sizes.get("level", 0) == 1:
-        da_var = da_var.isel(level=0, drop=True)
 
     if "longitude" not in da_var.dims:
         raise ValueError("longitude dimension required for energy spectra")
@@ -703,10 +700,7 @@ def run(
     ) > 1
 
     # Select 2D variables (exclude true 3D with 'level' dim)
-    if "level" in tgt.dims and int(getattr(tgt.level, "size", 0)) > 1:
-        variables_2d = [v for v in tgt.data_vars if "level" not in tgt[v].dims]
-    else:
-        variables_2d = list(tgt.data_vars)
+    variables_2d = [v for v in tgt.data_vars if "level" not in tgt[v].dims]
 
     # Prepare plotting subset (single init_time) to avoid figure explosion
     time_index = 0

@@ -104,12 +104,8 @@ def run(
     lead_range = _extract_lead_range(ds_prediction)
 
     # Determine variables
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
-        variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
-        variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
-    else:
-        variables_3d = []
-        variables_2d = list(ds_target.data_vars)
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    variables_2d = [v for v in ds_target.data_vars if "level" not in ds_target[v].dims]
 
     # Assume no missing data per project requirement; use direct min/max.
 

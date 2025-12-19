@@ -275,6 +275,15 @@ def _fast_plots(monkeypatch):
     import matplotlib.pyplot as plt
 
     def _fast_subplots(nrows=1, ncols=1, *a, squeeze=True, **k):
+        if not squeeze:
+            # Always return 2D array if squeeze=False
+            arr = _np.empty((nrows, ncols), dtype=object)
+            for i in range(nrows):
+                for j in range(ncols):
+                    arr[i, j] = _DummyAxis()
+            axes = arr
+            return _DummyFig(axes), axes
+
         if nrows == 1 and ncols == 1:
             axes = _DummyAxis()
         elif nrows == 1:  # return 1D list like real matplotlib for single row multi-col
