@@ -373,6 +373,8 @@ def intercompare_deterministic_metrics(
 
                 temporal_rows.extend(melted.to_dict("records"))
             except Exception:
+                # If a single CSV is malformed or cannot be read, skip it and continue
+                # processing the remaining files so that aggregation can still proceed.
                 pass
 
     if temporal_rows:
