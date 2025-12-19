@@ -94,8 +94,7 @@ def intercompare_wd_kde(
             ax.set_title(
                 f"Global Normalized KDE — {format_variable_name(var)}{date_suffix}", fontsize=16
             )
-            # if units := payloads[0].get("units"):
-            #     ax.set_xlabel(str(units))
+            # Note: units for the x-axis are available via payloads[0].get("units") if needed.
             ax.legend()
 
             out_png = dst / base.replace(".npz", "_compare.png")
@@ -151,8 +150,6 @@ def intercompare_wd_kde(
                 lat_min = float(payloads[0]["pos_lat_min"][j])
                 lat_max = float(payloads[0]["pos_lat_max"][j])
                 ax.set_title(f"Lat {lat_min}° to {lat_max}° (North)")
-                # if units:
-                #     ax.set_xlabel(str(units))
 
             handles, labels_leg = axs[0, 0].get_legend_handles_labels()
             if handles:
