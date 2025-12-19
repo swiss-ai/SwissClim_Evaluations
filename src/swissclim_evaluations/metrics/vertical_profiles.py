@@ -734,7 +734,6 @@ def run(
         if "evolve_profiles" in job:
             evolve_info = job["evolve_info"]
             panel_hours = evolve_info["panel_hours"]
-            all_hours = evolve_info["all_hours"]
             evolve_profiles = job["evolve_profiles"]
 
             # Compute global (all-latitudes) profiles per selected lead

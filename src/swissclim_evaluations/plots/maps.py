@@ -469,23 +469,6 @@ def run(
             if "time" in ds_prediction_var.dims:
                 ds_prediction_var = ds_prediction_var.isel(time=time_index)
 
-            lead_str = ""
-            if "lead_time" in ds_prediction_var.coords:
-                val = ds_prediction_var.coords["lead_time"].values
-                if val.size == 1:
-                    val = val.item()
-                    if np.issubdtype(type(val), np.timedelta64):
-                        h = int(val / np.timedelta64(1, "h"))
-                        lead_str = f" (+{h}h)"
-                    elif isinstance(val, int | float | np.integer | np.floating):
-                        # Heuristic: if value is very large (e.g. > 1e12), assume nanoseconds
-                        if val > 1e12:
-                            h = int(val / 3600e9)
-                            lead_str = f" (+{h}h)"
-                        else:
-                            lead_str = f" (+{int(val)}h)"
-                    else:
-                        lead_str = f" (lead={val})"
             ens_str = f" (member {ens})" if ens is not None else ""
 
             for idx, level in enumerate(levels):

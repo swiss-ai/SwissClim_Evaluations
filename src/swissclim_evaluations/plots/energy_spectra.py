@@ -797,11 +797,10 @@ def run(
 
                 # Get the actual datetime string
                 t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                t_str = str(t_val)
-                import contextlib
-
-                with contextlib.suppress(Exception):
+                try:
                     t_str = np.datetime_as_string(t_val, unit="h")
+                except Exception:
+                    t_str = str(t_val)
 
                 lsd_plot_rows.append(
                     {
@@ -980,11 +979,10 @@ def run(
                 lsd_plot_val = float(lsd_plot_da.mean().compute())
 
                 t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                t_str = str(t_val)
-                import contextlib
-
-                with contextlib.suppress(Exception):
+                try:
                     t_str = np.datetime_as_string(t_val, unit="h")
+                except Exception:
+                    t_str = str(t_val)
 
                 lsd_3d_plot_rows.append(
                     {
