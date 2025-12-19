@@ -650,57 +650,61 @@ def run(
                 compute=False,
             )
 
-        # Combine and compute all
-        all_lazy = reg_lazy + std_lazy + lvl_lazy + lvl_std_lazy + lead_lazy
+        # Compute in batches to avoid OOM
 
-        if all_lazy:
-            _, _, lazy_objs = zip(*all_lazy, strict=False)
-            results = dask.compute(*lazy_objs)
+        # 1. Regular
+        res_reg = []
+        if reg_lazy:
+            _, _, lazy_objs = zip(*reg_lazy, strict=False)
+            res_reg = dask.compute(*lazy_objs)
+        regular_metrics = _finalize_metrics(reg_dict, reg_lazy, res_reg, None)
 
-            # Distribute results
-            idx_reg = len(reg_lazy)
-            idx_std = idx_reg + len(std_lazy)
-            idx_lvl = idx_std + len(lvl_lazy)
-            idx_lvl_std = idx_lvl + len(lvl_std_lazy)
+        # 2. Standardized
+        res_std = []
+        if std_lazy:
+            _, _, lazy_objs = zip(*std_lazy, strict=False)
+            res_std = dask.compute(*lazy_objs)
+        standardized_metrics = _finalize_metrics(std_dict, std_lazy, res_std, None)
 
-            res_reg = results[:idx_reg]
-            res_std = results[idx_reg:idx_std]
-            res_lvl = results[idx_std:idx_lvl]
-            res_lvl_std = results[idx_lvl:idx_lvl_std]
-            res_lead = results[idx_lvl_std:]
+        # 3. Per-level
+        per_level_metrics = None
+        if lvl_lazy or lvl_dict:
+            res_lvl = []
+            if lvl_lazy:
+                _, _, lazy_objs = zip(*lvl_lazy, strict=False)
+                res_lvl = dask.compute(*lazy_objs)
 
-            regular_metrics = _finalize_metrics(reg_dict, reg_lazy, res_reg, None)
-            standardized_metrics = _finalize_metrics(std_dict, std_lazy, res_std, None)
+            per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, res_lvl, ["level"])
+            if (
+                per_level_metrics is not None
+                and not per_level_metrics.empty
+                and "level" in per_level_metrics.columns
+            ):
+                per_level_metrics["level"] = per_level_metrics["level"].astype(int)
 
-            per_level_metrics = None
-            if lvl_lazy or lvl_dict:
-                per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, res_lvl, ["level"])
-                if (
-                    per_level_metrics is not None
-                    and not per_level_metrics.empty
-                    and "level" in per_level_metrics.columns
-                ):
-                    per_level_metrics["level"] = per_level_metrics["level"].astype(int)
+        # 4. Per-level Standardized
+        per_level_std = None
+        if lvl_std_lazy or lvl_std_dict:
+            res_lvl_std = []
+            if lvl_std_lazy:
+                _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
+                res_lvl_std = dask.compute(*lazy_objs)
 
-            per_level_std = None
-            if lvl_std_lazy or lvl_std_dict:
-                per_level_std = _finalize_metrics(
-                    lvl_std_dict, lvl_std_lazy, res_lvl_std, ["level"]
-                )
-                if (
-                    per_level_std is not None
-                    and not per_level_std.empty
-                    and "level" in per_level_std.columns
-                ):
-                    per_level_std["level"] = per_level_std["level"].astype(int)
+            per_level_std = _finalize_metrics(lvl_std_dict, lvl_std_lazy, res_lvl_std, ["level"])
+            if (
+                per_level_std is not None
+                and not per_level_std.empty
+                and "level" in per_level_std.columns
+            ):
+                per_level_std["level"] = per_level_std["level"].astype(int)
 
-            if lead_lazy or lead_dict:
-                df_all_lead = _finalize_metrics(lead_dict, lead_lazy, res_lead, ["lead_time"])
-        else:
-            regular_metrics = pd.DataFrame()
-            standardized_metrics = pd.DataFrame()
-            per_level_metrics = None
-            per_level_std = None
+        # 5. Multi-lead
+        if lead_lazy or lead_dict:
+            res_lead = []
+            if lead_lazy:
+                _, _, lazy_objs = zip(*lead_lazy, strict=False)
+                res_lead = dask.compute(*lazy_objs)
+            df_all_lead = _finalize_metrics(lead_dict, lead_lazy, res_lead, ["lead_time"])
 
         # Save outputs
         out_csv = section_output / build_output_filename(
