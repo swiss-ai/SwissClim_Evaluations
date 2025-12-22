@@ -35,7 +35,6 @@ EXPECTED_SUBDIRS: set[str] = {
     "energy_spectra",
     "ets",
     "histograms",
-    "wd_kde",
     "maps",
     "vertical_profiles",
 }
@@ -240,18 +239,13 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0
                 # valid_time = init+lead remains covered by the ground-truth window.
                 end = datetimes[1]
                 try:
-                    if dim_name == "time" and extend_end_hours > 0:
+                    lt_cfg = (cfg or {}).get("lead_time", {})
+                    mode = str(lt_cfg.get("mode", "first")).lower()
+                    max_h = lt_cfg.get("max_hour")
+                    if dim_name == "time" and mode != "first" and max_h is not None:
                         end_dt = np.datetime64(end).astype("datetime64[ns]")
-                        end_ext = end_dt + np.timedelta64(int(extend_end_hours), "h")
+                        end_ext = end_dt + np.timedelta64(int(max_h), "h")
                         end = str(end_ext)
-                    else:
-                        lt_cfg = (cfg or {}).get("lead_time", {})
-                        mode = str(lt_cfg.get("mode", "first")).lower()
-                        max_h = lt_cfg.get("max_hour")
-                        if dim_name == "time" and mode != "first" and max_h is not None:
-                            end_dt = np.datetime64(end).astype("datetime64[ns]")
-                            end_ext = end_dt + np.timedelta64(int(max_h), "h")
-                            end = str(end_ext)
                 except Exception:
                     # If any error occurs while extending the end bound, fall back to the original
                     # end value.
@@ -272,14 +266,11 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0
                 end = vals.max()
             # Extend end bound for ERA5 targets when multi-lead horizon is requested
             try:
-                if dim_name == "time" and extend_end_hours > 0:
-                    end = end + np.timedelta64(int(extend_end_hours), "h")
-                else:
-                    lt_cfg = (cfg or {}).get("lead_time", {})
-                    mode = str(lt_cfg.get("mode", "first")).lower()
-                    max_h = lt_cfg.get("max_hour")
-                    if dim_name == "time" and mode != "first" and max_h is not None:
-                        end = end + np.timedelta64(int(max_h), "h")
+                lt_cfg = (cfg or {}).get("lead_time", {})
+                mode = str(lt_cfg.get("mode", "first")).lower()
+                max_h = lt_cfg.get("max_hour")
+                if dim_name == "time" and mode != "first" and max_h is not None:
+                    end = end + np.timedelta64(int(max_h), "h")
             except Exception:
                 # If any error occurs while extending the end bound,
                 # fall back to the original end value.
@@ -623,7 +614,7 @@ def prepare_datasets(
     if errors:
         raise ValueError("Missing data requirements:\n" + "\n".join(errors))
 
-    # Debug visibility: show raw lead_time counts in prediction/targets before any selection
+    # Debug visibility: show raw lead_time counts in ML/targets before any selection
     def _lead_hours(ds: xr.Dataset) -> list[int]:
         if "lead_time" not in ds.dims:
             return []
@@ -638,9 +629,9 @@ def prepare_datasets(
     lead_audit: list[dict[str, Any]] = []
 
     def _audit(
-        step: str, ds_prediction: xr.Dataset | None = None, ds_target: xr.Dataset | None = None
+        step: str, ds_ml: xr.Dataset | None = None, ds_nwp: xr.Dataset | None = None
     ) -> None:
-        """Record lead_time hours and sizes for prediction and target at a named step."""
+        """Record lead_time hours and sizes for ML and NWP at a named step."""
 
         def _hours(ds: xr.Dataset | None) -> list[int]:
             if ds is None or "lead_time" not in ds.dims:
@@ -667,6 +658,15 @@ def prepare_datasets(
 
     # Align dims to match config expectations
     ds_prediction = _slice_common(ds_prediction, cfg)
+    # Guard: empty init_time at this stage leads to cryptic errors later.
+    # Check predictions primarily, as they drive alignment.
+    if "init_time" in ds_prediction.sizes and int(ds_prediction.sizes["init_time"]) == 0:
+        raise ValueError(
+            "No init_time labels remain after selection. Check selection.datetimes window "
+            "and ensure it overlaps the ML store's init_time coordinates."
+        )
+    # Defer selection prints; capture only in audit
+    _audit("after selection", ds_prediction, ds_target)
 
     # Determine required target extension based on prediction lead times
     extend_hours = 0
@@ -724,6 +724,7 @@ def prepare_datasets(
     if lt_cfg is None and isinstance(cfg, dict):
         lt_cfg = cfg.get("selection", {}).get("lead_time")
     lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
+    preserve_all = lead_policy.preserve_all_leads
     # preserve_all_leads when mode != first
     cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
 
@@ -781,7 +782,13 @@ def prepare_datasets(
                 ds_target = ds_target.sel(time=slice(None, end_ext))
                 _audit("after extend_target_window", ds_prediction, ds_target)
 
-    if lead_policy.preserve_all_leads:
+    # Apply lead time selection (subset/stride) after temporal resolution so
+    # stride logic doesn't fight it. IMPORTANT: For targets that often have only
+    # a zero lead_time (ERA5 with time→init_time), applying subset/stride can drop
+    # all leads and error. We therefore apply the policy to predictions always,
+    # and only apply to targets for 'full' mode (to honor max_hour caps). For
+    # 'subset'/'stride', we skip target filtering and rely on valid_time alignment.
+    if preserve_all:
         # Always filter predictions per policy
         ds_prediction_before_policy = ds_prediction
         ds_prediction = apply_lead_time_selection(ds_prediction, lead_policy)
@@ -819,6 +826,15 @@ def prepare_datasets(
                     )
                 }
             )
+            # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
+            try:
+                pre_align_hours = (
+                    (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
+                    .astype(int)
+                    .tolist()
+                )
+            except Exception:
+                pre_align_hours = []
 
         # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
         try:
@@ -883,13 +899,13 @@ def prepare_datasets(
                 "No overlapping valid times between ground_truth (time/init+lead) and "
                 "predictions (init+lead) after selection."
             )
-        prediction_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
-        target_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
+        ml_mask = np.isin(ds_pred_stacked["valid_time"].values, common_valid)
+        nwp_mask = np.isin(ds_tgt_stacked["valid_time"].values, common_valid)
         # Cast masks to boolean arrays to satisfy mypy (avoiding Hashable/Any ambiguity)
-        prediction_mask_bool = np.asarray(prediction_mask, dtype=bool)
-        target_mask_bool = np.asarray(target_mask, dtype=bool)
-        ds_pred_stacked = ds_pred_stacked.isel(pair=prediction_mask_bool)
-        ds_tgt_stacked = ds_tgt_stacked.isel(pair=target_mask_bool)
+        ml_mask_bool = np.asarray(ml_mask, dtype=bool)
+        nwp_mask_bool = np.asarray(nwp_mask, dtype=bool)
+        ds_pred_stacked = ds_pred_stacked.isel(pair=ml_mask_bool)
+        ds_tgt_stacked = ds_tgt_stacked.isel(pair=nwp_mask_bool)
 
         # Order targets to match predictions
         target_vt = ds_tgt_stacked["valid_time"].values
@@ -922,7 +938,7 @@ def prepare_datasets(
         # Warn if alignment dropped lead_time hours selected by the policy due to missing
         # ground-truth valid_time overlap.
         try:
-            if lead_policy.preserve_all_leads:
+            if preserve_all:
                 try:
                     after_align_hours = (
                         (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
@@ -1108,6 +1124,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
 
+    # Panel hour injection deprecated: all plots now use full retained lead_time set.
+    # Remove any legacy 'lead_panel_hours' to avoid accidental partial plotting.
     try:
         plotting_block = cfg.setdefault("plotting", {})
         if "lead_panel_hours" in plotting_block:
@@ -1122,6 +1140,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Other modules use full datasets (no plot-time/ensemble filtering)
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
+    out_root = _ensure_output(cfg.get("paths", {}).get("output_root", "output/verification_esfm"))
+
+    # Persist the exact configuration used for this run into the output directory
+    _maybe_copy_config_to_output(cfg, out_root)
     chapter_flags = cfg.get("modules", {})
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()
@@ -1242,42 +1264,54 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 if lead_policy.max_hour is not None:
                     details.append(f"max_hour={lead_policy.max_hour}")
                 # 'bins' mode removed
-                policy_text = "Lead time policy → " + ", ".join(details)
-                if USE_RICH:
-                    c.print(f"[magenta][bold]{policy_text}[/]")
-                else:
-                    c.print(policy_text)
-
+                panel_text = (
+                    "Lead time policy → "
+                    + ", ".join(details)
+                    + (f"\nAvailable lead hours after selection: {hours}" if hours else "")
+                )
+                c.panel(panel_text, title="Lead Time Policy", style="magenta")
                 # Compact lead-time snapshot (moved down near policy)
                 try:
                     audit = cfg.get("__lead_time_audit") or []
 
                     def _fmt(step_key: str, label: str) -> str | None:
                         for e in audit:
-                            if e.get("step") == step_key and "prediction" in e:
-                                pred = e["prediction"]
-                                sample = pred.get("sample", [])
+                            if e.get("step") == step_key and "ml" in e:
+                                ml = e["ml"]
+                                sample = ml.get("sample", [])
                                 return (
-                                    f"Available lead hours {label}: count={pred.get('count', 0)} "
+                                    f"[lead-time] ML {label}: count={ml.get('count', 0)} "
                                     f"sample={sample[:8]}"
                                 )
                         return None
 
                     lines = []
-                    s1 = _fmt("after open", "before selection")
+                    s1 = _fmt("after open", "raw hours")
                     if s1:
                         lines.append(s1)
-                    s2 = _fmt("after selection", "after selection")
+                    s2 = _fmt("after selection", "after selection.datetimes")
                     if s2:
                         lines.append(s2)
-
+                    s3 = _fmt("after standardize_dims", "after standardize_dims")
+                    if s3:
+                        lines.append(s3)
+                    # Also include policy/alignment summaries for easier debugging
+                    # Try common modes explicitly; only one will match the audit step label
+                    s4 = (
+                        _fmt("after lead_time policy (stride)", "after lead_time policy")
+                        or _fmt("after lead_time policy (full)", "after lead_time policy")
+                        or _fmt("after lead_time policy (subset)", "after lead_time policy")
+                        or _fmt("after lead_time policy (panel)", "after lead_time policy")
+                    )
+                    if s4:
+                        lines.append(s4)
+                    s5 = _fmt("after alignment", "after alignment")
+                    if s5:
+                        lines.append(s5)
                     for ln in lines:
-                        if USE_RICH:
-                            c.print(f"[cyan][bold]{ln}[/]")
-                        else:
-                            c.print(ln)
-                except Exception as exc:
-                    c.warn(f"Failed to log lead-time audit information: {exc}")
+                        c.info(ln)
+                except Exception:
+                    c.warn("Exception occurred while formatting lead time audit")
                 # Extra visibility: warn if multi-lead requested but only a single lead remains
                 try:
                     if isinstance(lead_policy, LeadTimePolicy):
@@ -1293,11 +1327,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 ):
                     c.warn(
                         "Multi-lead policy requested but only a single lead is present after "
-                        "selection/alignment. This typically means either your prediction store "
-                        "has a single lead, your date window clips most valid times, or "
-                        "target/prediction time alignment leaves only one overlapping offset. "
-                        "Consider widening 'selection.datetimes', setting lead_time.mode=full "
-                        "temporarily, or inspecting the prediction Zarr."
+                        "selection/alignment. This typically means either your ML store has a "
+                        "single lead, your date window clips most valid times, or target/ML "
+                        "time alignment leaves only one overlapping offset. Consider widening "
+                        "'selection.datetimes', setting lead_time.mode=full temporarily, or "
+                        "inspecting the ML Zarr with tools/inspect_zarr.py."
                     )
         except Exception as ex:
             c.warn(f"Exception occurred during lead time policy handling: {ex}")
@@ -1315,7 +1349,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.print(f"[cyan][bold]{msg}[/]")
     else:
         c.print(msg)
-
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):
         from .plots import maps as maps_mod
@@ -1616,6 +1649,78 @@ def run_selected(cfg: dict[str, Any]) -> None:
             module_results.append(
                 {
                     "name": "ets",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
+    # Multivariate (Bivariate Histograms)
+    if chapter_flags.get("multivariate"):
+        from .metrics.multivariate import run as run_multivariate
+
+        c.module_status("multivariate", "run", "Bivariate Histograms")
+        _t = time.time()
+        try:
+            run_multivariate(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("histograms"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("multivariate", dt))
+            module_results.append(
+                {
+                    "name": "multivariate",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:
+            dt = time.time() - _t
+            c.error(f"multivariate failed: {ex}")
+            module_results.append(
+                {
+                    "name": "multivariate",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
+    # SSIM
+    if chapter_flags.get("ssim"):
+        from .metrics.ssim import run as run_ssim
+
+        c.module_status("ssim", "run", "Structural Similarity Index")
+        _t = time.time()
+        try:
+            run_ssim(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("ssim"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("ssim", dt))
+            module_results.append(
+                {
+                    "name": "ssim",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:
+            dt = time.time() - _t
+            c.error(f"ssim failed: {ex}")
+            module_results.append(
+                {
+                    "name": "ssim",
                     "status": "failed",
                     "seconds": dt,
                     "error": str(ex),

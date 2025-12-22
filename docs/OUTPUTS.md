@@ -131,6 +131,13 @@ map_temperature_500_init2023010200-2023010412_ensmean.png        # mean reductio
 map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (output_mode=npz/both)
 ```
 
+### Bivariate Histograms
+
+Outputs (standardized naming):
+
+- Plot: `bivariate/bivariate_<var1>_<var2>_ens*.png`
+- Data (NPZ): `bivariate/bivariate_hist_<var1>_<var2>_ens*.npz`
+
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
@@ -163,6 +170,7 @@ Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
+crps_ensemble_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv

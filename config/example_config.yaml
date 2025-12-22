@@ -234,6 +234,18 @@ metrics:
     # If true, compute and report CRPS summaries per pressure level (for 3D variables).
     report_per_level: true
 
+  # Multivariate metrics configuration.
+  multivariate:
+    # Bivariate histograms configuration
+    # List of variable pairs to generate 2D histograms and density plots for.
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
+      - ["temperature", "specific_humidity"]
+      - ["geopotential", "temperature"]
+      - ["total_precipitation", "total_column_water_vapour"]
+      - ["vertical_velocity", "temperature"]
+
 performance:
   # Dask scheduler choice. Controls how parallel computation is managed.
   #   - distributed: Use distributed scheduler with LocalCluster (default).

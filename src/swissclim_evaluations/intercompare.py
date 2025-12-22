@@ -24,6 +24,7 @@ from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
+from swissclim_evaluations.intercomparison.modules.ssim import intercompare_ssim
 from swissclim_evaluations.intercomparison.modules.vertical_profiles import (
     intercompare_vertical_profiles,
 )
@@ -102,6 +103,8 @@ def run_from_config(cfg: dict) -> None:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
+    if "ssim" in mods:
+        intercompare_ssim(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 

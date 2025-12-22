@@ -48,6 +48,7 @@ modules:
   energy_spectra: true
   vertical_profiles: true
   deterministic: true
+  ssim: true
   ets: true
   probabilistic: false
 
@@ -62,6 +63,12 @@ metrics:
   ets:
     report_per_level: true
     thresholds: [90]
+  ssim:
+    sigma: 1.5
+    k1: 0.01
+    k2: 0.03
+    gaussian_weights: true
+    use_sample_covariance: true
   energy_spectra:
     report_per_level: true
 
