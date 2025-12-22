@@ -8,7 +8,8 @@ import numpy as np
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
-from ..dask_utils import compute_jobs, to_finite_array
+from .. import console as c
+from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs, to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -33,6 +34,7 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -69,12 +71,12 @@ def run(
     variables_2d = [v for v in ds_target_std.data_vars if "level" not in ds_target_std[v].dims]
     variables_3d = [v for v in ds_target_std.data_vars if "level" in ds_target_std[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
-        print("[wd_kde] No eligible variables found – skipping.")
+        c.print("[wd_kde] No eligible variables found – skipping.")
         return
     if variables_2d:
-        print(f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized).")
+        c.print(f"[wd_kde] Processing {len(variables_2d)} 2D variables (standardized).")
     if process_3d and variables_3d:
-        print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
+        c.print(f"[wd_kde] Processing {len(variables_3d)} 3D variables (per-level, standardized).")
     # Global KDE curves instead of latitude-binned panels
 
     # Resolve ensemble handling (pooled/mean/members). Prob not allowed here.
@@ -114,6 +116,9 @@ def run(
         ds_prediction_std_eff = ds_prediction_std
         ens_token_base = None  # per-member inside loop
 
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target_std)
+
     def _process_variable(
         var_name: str,
         da_t_std: xr.DataArray,
@@ -122,7 +127,7 @@ def run(
         ens_token: str | None,
         level_val: Any = None,
     ):
-        print(f"[wd_kde] variable: {var_name} level={level_token}")
+        c.print(f"[wd_kde] variable: {var_name} level={level_token}")
 
         # Collect all jobs
         jobs = []
@@ -182,10 +187,12 @@ def run(
                 jobs.append(job)
 
         # Compute all
+        # Compute all
         compute_jobs(
             jobs,
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
+            chunk_size=dynamic_chunk,
         )
 
         # --- Process Global KDE ---
@@ -241,7 +248,7 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                save_figure(fig_g, out_png_g)
+                save_figure(fig_g, out_png_g, module="wd_kde")
 
             if save_npz:
                 out_npz_g = section_output / build_output_filename(
@@ -262,6 +269,7 @@ def run(
                     kde_prediction=kde_prediction_g(x_eval_g),
                     units=units,
                     allow_pickle=True,
+                    module="wd_kde",
                 )
             plt.close(fig_g)
 
@@ -372,7 +380,7 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_figure(fig, out_png)
+            save_figure(fig, out_png, module="wd_kde")
         if save_npz:
             out_npz = section_output / build_output_filename(
                 metric="wd_kde",
@@ -398,6 +406,7 @@ def run(
                 pos_lat_min=np.array(combined["pos_lat_min"]),
                 pos_lat_max=np.array(combined["pos_lat_max"]),
                 allow_pickle=True,
+                module="wd_kde",
             )
         plt.close(fig)
 
@@ -550,6 +559,7 @@ def run(
                     "da_t_lazy": "da_t",
                     "da_p_lazy": "da_p",
                 },
+                chunk_size=dynamic_chunk,
             )
 
             # Process quantiles
@@ -629,7 +639,7 @@ def run(
                     ensemble=ensemble_mode_to_token(ensemble_mode),
                     ext="png",
                 )
-                save_figure(fig_r, out_png)
+                save_figure(fig_r, out_png, module="wd_kde")
             else:
                 plt.close(fig_r)
             if save_npz:
@@ -650,8 +660,8 @@ def run(
                     density_target=Z_t_arr,
                     density_model=Z_p_arr,
                     variable=base_var,
+                    module="wd_kde",
                 )
-                print(f"[wd_kde] saved {out_npz}")
 
             # Removed: heatmaps, 3D curves, and NPZ bundle.
 
@@ -670,4 +680,4 @@ def run(
             ext="csv",
         )
         df_w.to_csv(out_csv, index=False)
-        print(f"[wd_kde] saved {out_csv}")
+        c.print(f"[wd_kde] saved {out_csv}")

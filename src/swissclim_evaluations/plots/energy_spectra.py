@@ -11,7 +11,8 @@ import xarray as xr
 from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
 
-from ..dask_utils import compute_jobs
+from .. import console as c
+from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -23,6 +24,7 @@ from ..helpers import (
     get_variable_units,
     resolve_ensemble_mode,
     save_data,
+    save_dataframe,
     save_figure as save_fig_helper,
 )
 
@@ -41,6 +43,7 @@ WAVE_BANDS: list[dict[str, float | str]] = [
 def calculate_energy_spectra(
     da_var: xr.DataArray,
     average_dims: Sequence[str] | None = None,
+    weights: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """Compute zonal energy spectra retaining time structure.
 
@@ -125,9 +128,11 @@ def calculate_energy_spectra(
         raise ValueError(
             "calculate_energy_spectra requires a 'latitude' coordinate in the input DataArray."
         )
-    weights = create_latitude_weights(da_power["latitude"])
-    # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
-    weights = weights.clip(min=0.0)
+
+    if weights is None:
+        weights = create_latitude_weights(da_power["latitude"])
+        # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
+        weights = weights.clip(min=0.0)
 
     da_power = da_power.weighted(weights).mean(dim="latitude")
 
@@ -214,6 +219,7 @@ def _compute_spectra_pair(
     level: int | None = None,
     *,
     reduce_ensemble: bool = True,
+    weights: xr.DataArray | None = None,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Compute and align spectra for target and prediction once.
 
@@ -231,12 +237,14 @@ def _compute_spectra_pair(
         average_dims=(
             ["ensemble"] if (reduce_ensemble and ("ensemble" in da_target.dims)) else None
         ),
+        weights=weights,
     )
     spec_p = calculate_energy_spectra(
         da_prediction,
         average_dims=(
             ["ensemble"] if (reduce_ensemble and ("ensemble" in da_prediction.dims)) else None
         ),
+        weights=weights,
     )
     spec_t, spec_p = xr.align(spec_t, spec_p, join="inner")
     return spec_t, spec_p
@@ -312,7 +320,7 @@ def _plot_single_spectrum(
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
     if save_figure and out_path is not None:
-        save_fig_helper(fig, out_path)
+        save_fig_helper(fig, out_path, module="energy_spectra")
 
         # Generate Ratio Plot
         # We derive the filename by replacing the metric name
@@ -350,7 +358,7 @@ def _plot_single_spectrum(
             )
             ax_r.grid(True, which="both", ls="--", alpha=0.5)
             plt.tight_layout()
-            save_fig_helper(fig_r, ratio_path)
+            save_fig_helper(fig_r, ratio_path, module="energy_spectra")
             plt.close(fig_r)
 
     if save_plot_data and out_path is not None:
@@ -365,6 +373,7 @@ def _plot_single_spectrum(
             level=-1 if level is None else level,
             init_time=init_label,
             lead_time=lead_label,
+            module="energy_spectra",
         )
     plt.close(fig)
 
@@ -379,6 +388,8 @@ def _plot_energy_spectra(
     save_plot_data: bool = False,
     save_figure: bool = True,
     override_ensemble_token: str | None = None,
+    chunk_size_cfg: int | str | None = None,
+    weights: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
 
@@ -388,7 +399,7 @@ def _plot_energy_spectra(
         LSD values with remaining time-like dims (init_time, lead_time, ...).
     """
     spectrum_target, spectrum_pred = _compute_spectra_pair(
-        ds_target, ds_prediction, var, level, reduce_ensemble=True
+        ds_target, ds_prediction, var, level, reduce_ensemble=True, weights=weights
     )
 
     # Compute LSD per time slice (vectorized)
@@ -555,9 +566,16 @@ def _plot_energy_spectra(
         )
 
     # Compute all
+    n_points = int(spectrum_target.size + spectrum_pred.size)
+    num_vars = 1
+    dynamic_chunk = calculate_dynamic_chunk_size(
+        n_points=n_points, num_vars=num_vars, config_chunk_size=chunk_size_cfg
+    )
+
     compute_jobs(
         jobs,
         key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
+        chunk_size=dynamic_chunk,
     )
 
     # Distribute and plot
@@ -595,6 +613,7 @@ def run(
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
     cfg: dict[str, Any] | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute basic 2D energy spectra metrics and write an averaged LSD CSV.
 
@@ -605,6 +624,8 @@ def run(
     """
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
+
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
 
     # Helper to place x-ticks exactly at selected lead hours (downsample if many)
     def _apply_lead_ticks(ax: Any, hours: np.ndarray) -> None:
@@ -714,13 +735,13 @@ def run(
                 if matches.size > 0:
                     time_index = int(matches[0])
                 else:
-                    print(
+                    c.print(
                         f"[energy_spectra] Warning: plot_datetime {plot_dt} not found. "
                         "Using first init_time."
                     )
                     time_index = 0
             except Exception as e:
-                print(
+                c.print(
                     f"[energy_spectra] Warning: Error selecting plot_datetime {plot_dt}: {e}. "
                     "Using first init_time."
                 )
@@ -736,6 +757,12 @@ def run(
     )
     if not has_lon_any:
         raise ValueError("longitude dimension required for energy spectra")
+
+    # Compute weights once
+    weights = None
+    if "latitude" in tgt.dims:
+        weights = create_latitude_weights(tgt.latitude)
+        weights = weights.clip(min=0.0)
 
     # In multi-lead mode, suppress non-spectrogram artifacts (CSV summaries, 1D exports)
     # Initialize holders used in both branches
@@ -755,11 +782,11 @@ def run(
 
         # Collect LSD-by-lead for optional line plots/CSVs
         for var in variables_2d:
-            print(f"[energy_spectra] Processing variable: {var}")
+            c.print(f"[energy_spectra] Processing variable: {var}")
             # Preserve ensemble for pooled/members modes
             # Only reduce when resolved == 'mean'
             spec_t, spec_p = _compute_spectra_pair(
-                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
+                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights
             )
             lsd_da = _compute_lsd_da(spec_t, spec_p)
             lsd_mean = float(lsd_da.mean().values)
@@ -833,7 +860,7 @@ def run(
                 ext="csv",
             )
             df_summary.to_csv(out_csv)
-            print(f"[energy_spectra] saved {out_csv}")
+            c.print(f"[energy_spectra] saved {out_csv}")
 
             if lsd_lead_time_rows:
                 df_lead = pd.DataFrame(lsd_lead_time_rows)
@@ -848,7 +875,7 @@ def run(
                     ext="csv",
                 )
                 df_lead.to_csv(out_csv_lead, index=False)
-                print(f"[energy_spectra] saved {out_csv_lead}")
+                c.print(f"[energy_spectra] saved {out_csv_lead}")
 
             if lsd_banded_rows:
                 df_banded = pd.DataFrame(lsd_banded_rows)
@@ -863,7 +890,7 @@ def run(
                     ext="csv",
                 )
                 df_banded.to_csv(out_csv_banded, index=False)
-                print(f"[energy_spectra] saved {out_csv_banded}")
+                c.print(f"[energy_spectra] saved {out_csv_banded}")
 
     # Generate plots and NPZ for 2D variables
     if save_plot or save_npz:
@@ -890,6 +917,8 @@ def run(
                     save_plot_data=save_npz,
                     save_figure=save_plot,
                     override_ensemble_token=curr_ens_token,
+                    chunk_size_cfg=chunk_size_cfg,
+                    weights=weights,
                 )
 
     # 3D variables (per-level)
@@ -908,7 +937,12 @@ def run(
         for var in variables_3d:
             # Compute spectra for ALL levels at once (vectorized)
             spec_t, spec_p = _compute_spectra_pair(
-                tgt, pred, str(var), level=None, reduce_ensemble=(resolved == "mean")
+                tgt,
+                pred,
+                str(var),
+                level=None,
+                reduce_ensemble=(resolved == "mean"),
+                weights=weights,
             )
 
             # 1. Global LSD per level
@@ -1001,7 +1035,7 @@ def run(
                 ext="csv",
             )
             df_3d.to_csv(out_csv_3d, index=False)
-            print(f"[energy_spectra] saved {out_csv_3d}")
+            c.print(f"[energy_spectra] saved {out_csv_3d}")
 
         if report_per_level and lsd_banded_3d_rows:
             import pandas as _pd
@@ -1017,8 +1051,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            df_banded_3d.to_csv(out_csv_banded_3d, index=False)
-            print(f"[energy_spectra] saved {out_csv_banded_3d}")
+            save_dataframe(df_banded_3d, out_csv_banded_3d, index=False, module="energy_spectra")
 
         # Always save averaged 3D metrics
         if lsd_3d_averaged_rows:
@@ -1035,8 +1068,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            df_3d_avg.to_csv(out_csv_3d_avg, index=False)
-            print(f"[energy_spectra] saved {out_csv_3d_avg}")
+            save_dataframe(df_3d_avg, out_csv_3d_avg, index=False, module="energy_spectra")
 
         if lsd_3d_lead_time_rows:
             import pandas as _pd
@@ -1052,8 +1084,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            df_3d_lead.to_csv(out_csv_3d_lead, index=False)
-            print(f"[energy_spectra] saved {out_csv_3d_lead}")
+            save_dataframe(df_3d_lead, out_csv_3d_lead, index=False, module="energy_spectra")
 
         # Generate plots and NPZ for 3D variables per level
         if save_plot or save_npz:
@@ -1081,6 +1112,7 @@ def run(
                             save_plot_data=save_npz,
                             save_figure=save_plot,
                             override_ensemble_token=curr_ens_token,
+                            weights=weights,
                         )
 
     # Optional: per-member NPZ spectrum exports when requested
@@ -1131,7 +1163,7 @@ def run(
         for var in variables_2d:
             # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
             spec_t, spec_p = _compute_spectra_pair(
-                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean")
+                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights
             )
             # Reduce over init_time/time, retaining lead_time and wavenumber
             spec_t2 = _reduce_time_like(spec_t)
@@ -1195,6 +1227,7 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
+                c.print(f"[energy_spectra] Saved {out_png}")
                 plt.tight_layout()
                 save_fig_helper(fig, out_png)
                 plt.close(fig)
@@ -1234,7 +1267,7 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            save_fig_helper(fig, out_png)
+            save_fig_helper(fig, out_png, module="energy_spectra")
             plt.close(fig)
 
             # Also compute LSD versus lead_time and emit one plot per variable
@@ -1271,7 +1304,7 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            save_fig_helper(fig, out_png)
+            save_fig_helper(fig, out_png, module="energy_spectra")
             plt.close(fig)
 
             # Compute Banded LSD versus lead_time
@@ -1318,7 +1351,7 @@ def run(
                     ext="png",
                 )
                 plt.tight_layout()
-                save_fig_helper(fig, out_png_band)
+                save_fig_helper(fig, out_png_band, module="energy_spectra")
                 plt.close(fig)
 
             # Save bundle NPZ for programmatic use
@@ -1340,6 +1373,7 @@ def run(
                 energy_prediction=Zp,
                 log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
                 variable=str(var),
+                module="energy_spectra",
             )
 
             # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
@@ -1455,7 +1489,8 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_fig_helper(fig, out_tripanel)
+            c.print(f"[energy_spectra] Saved {out_tripanel}")
+            save_fig_helper(fig, out_tripanel, module="energy_spectra")
             plt.close(fig)
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
@@ -1473,7 +1508,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            ldf.to_csv(out_long, index=False)
+            save_dataframe(ldf, out_long, index=False, module="energy_spectra")
             wdf = ldf.pivot_table(index="lead_time_hours", columns="variable", values="LSD")
             wdf = wdf.reset_index()
             out_wide = section_output / build_output_filename(
@@ -1486,7 +1521,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            wdf.to_csv(out_wide, index=False)
+            save_dataframe(wdf, out_wide, index=False, module="energy_spectra")
 
         if lsd_banded_long_rows:
             bdf = _pd.DataFrame(lsd_banded_long_rows)
@@ -1500,14 +1535,27 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            bdf.to_csv(out_banded, index=False)
-            print(f"[energy_spectra] saved {out_banded}")
+            save_dataframe(bdf, out_banded, index=False, module="energy_spectra")
+
+            # Also save per-variable files
+            for var_name, group in bdf.groupby("variable"):
+                out_banded_var = section_output / build_output_filename(
+                    metric="energy_ratios_bands_per_lead",
+                    variable=str(var_name),
+                    level=None,
+                    qualifier="per_lead_time",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                save_dataframe(group, out_banded_var, index=False, module="energy_spectra")
 
     # Completion message
     if is_multi_lead:
-        print("[energy_spectra] Completed per-lead spectrograms only.")
+        c.print("[energy_spectra] Completed per-lead spectrograms only.")
     else:
-        print("[energy_spectra] Completed energy spectra metrics & plots.")
+        c.print("[energy_spectra] Completed energy spectra metrics & plots.")
 
 
 def add_wavelength_axis(ax, k_min: float, k_max: float) -> None:

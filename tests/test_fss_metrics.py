@@ -22,8 +22,7 @@ def test_fss_not_nan_default_dims(tmp_path: Path):
     df = det._calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
-        True,
-        ds_t["var"].size,
+        calc_relative=True,
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
@@ -37,8 +36,7 @@ def test_fss_not_nan_latlon_dims(tmp_path: Path):
     df = det._calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
-        True,
-        ds_t["var"].size,
+        calc_relative=True,
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
@@ -53,9 +51,45 @@ def test_fss_no_event_defaults_to_one(tmp_path: Path):
     df = det._calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
-        True,
-        ds_t["var"].size,
+        calc_relative=True,
         include=["FSS"],
         fss_cfg=cfg["deterministic"]["fss"],
     )
     assert df.loc["var", "FSS_0.5"] == 1.0
+
+
+def test_fss_with_nans(tmp_path: Path):
+    ds_t = _make_ds()
+    # Introduce NaNs
+    ds_t["var"] = ds_t["var"].where(ds_t["var"] > 0.2)
+    ds_p = ds_t.copy(deep=True)
+
+    cfg = {"deterministic": {"fss": {"quantile": 0.8}}}
+    df = det._calculate_all_metrics(  # noqa: SLF001
+        ds_t,
+        ds_p,
+        calc_relative=True,
+        include=["FSS"],
+        fss_cfg=cfg["deterministic"]["fss"],
+    )
+    # Should not crash and return a value (or NaN if all are NaN, but here we have data)
+    assert "FSS_80.0%" in df.columns
+
+
+def test_fss_with_extra_dims(tmp_path: Path):
+    # Create dataset with time dimension
+    data = np.random.rand(2, 4, 6)
+    ds_t = xr.Dataset({"var": (("time", "latitude", "longitude"), data)})
+    ds_p = ds_t.copy(deep=True)
+
+    # preserve_dims=["time"]
+    cfg = {"deterministic": {"fss": {"quantile": 0.8}}}
+    df = det._calculate_all_metrics(
+        ds_t,
+        ds_p,
+        calc_relative=True,
+        include=["FSS"],
+        fss_cfg=cfg["deterministic"]["fss"],
+        preserve_dims=["time"],
+    )
+    assert "FSS_80.0%" in df.columns

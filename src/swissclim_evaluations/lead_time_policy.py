@@ -53,6 +53,10 @@ class LeadTimePolicy:
         # Deprecated; now always returns full list (panel concept removed).
         return list(available_hours)
 
+    @property
+    def preserve_all_leads(self) -> bool:
+        return self.mode != "first"
+
 
 def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
     # Default to 'first' (single-lead) if configuration is omitted, preserving

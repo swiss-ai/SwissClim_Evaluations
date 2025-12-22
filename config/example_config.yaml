@@ -233,3 +233,17 @@ metrics:
   probabilistic:
     # If true, compute and report CRPS summaries per pressure level (for 3D variables).
     report_per_level: true
+
+performance:
+  # Dask scheduler choice. Controls how parallel computation is managed.
+  #   - distributed: Use distributed scheduler with LocalCluster (default).
+  #                  Provides dashboard, memory spillover to disk, and better for large data.
+  #   - threaded:    Use default threaded scheduler (no distributed overhead).
+  #                  Faster for single-machine/smaller workloads, but no spillover or dashboard.
+  # Recommendation: Use "threaded" for fast testing and smaller datasets.
+  #                 Use "distributed" for production runs with large data to avoid OOM.
+  dask_scheduler: distributed
+
+  # Controls chunking for metric computation. Set to integer or "no-chunk" to disable.
+  # Smaller chunk sizes help prevent OOM but add overhead. Default is dynamically calculated.
+  # chunk_size: 20

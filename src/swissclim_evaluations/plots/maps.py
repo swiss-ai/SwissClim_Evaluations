@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from .. import console as c
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -51,12 +52,12 @@ def run(
                 if matches.size > 0:
                     time_index = int(matches[0])
                 else:
-                    print(
+                    c.print(
                         f"[maps] Warning: plot_datetime {plot_dt} not found. Using first init_time."
                     )
                     time_index = 0
             except Exception as e:
-                print(
+                c.print(
                     f"[maps] Warning: Error selecting plot_datetime {plot_dt}: {e}. "
                     "Using first init_time."
                 )
@@ -138,7 +139,7 @@ def run(
 
     # 2D maps (one figure per ensemble member if present)
     for _i, var in enumerate(variables_2d):  # _i unused (ruff B007)
-        print(f"[maps] 2D variable: {var}")
+        c.print(f"[maps] 2D variable: {var}")
         for ens in ensemble_members:
             ds_var_full = ds_target[var]
             ds_prediction_var_full = ds_prediction[var]
@@ -335,7 +336,7 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                save_figure(fig, out_png)
+                save_figure(fig, out_png, module="maps")
             else:
                 plt.close(fig)
             if save_npz:
@@ -407,12 +408,13 @@ def run(
                     variable=str(var),
                     units=get_variable_units(ds_target, str(var)),
                     lead_time=lead_coords if n_leads > 1 else None,
+                    module="maps",
                 )
             plt.close(fig)
 
     # 3D maps per level (one figure with rows per level)
     for _i, var in enumerate(variables_3d):
-        print(f"[maps] 3D variable: {var}")
+        c.print(f"[maps] 3D variable: {var}")
         levels = list(ds_target[var].coords.get("level", []))
         # Ensure levels are scalars for formatting
         levels = [lvl.item() if hasattr(lvl, "item") else lvl for lvl in levels]
@@ -576,7 +578,7 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                save_figure(fig, out_png)
+                save_figure(fig, out_png, module="maps")
             else:
                 plt.close(fig)
             if save_npz:
@@ -605,4 +607,5 @@ def run(
                     variable=str(var),
                     units=get_variable_units(ds_target, str(var)),
                     allow_pickle=True,
+                    module="maps",
                 )

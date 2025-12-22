@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import dask
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -13,6 +12,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scores.categorical import BinaryContingencyManager
 
+from .. import console as c
+from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs, compute_quantile_preserving
+
 
 def _compute_ets_raw(
     ds_target: xr.Dataset,
@@ -21,7 +23,7 @@ def _compute_ets_raw(
     preserve_dims: list[str] | None = None,
 ) -> dict[str, xr.DataArray]:
     variables = list(ds_target.data_vars)
-    lazy_results = {}
+    computed_results = {}
     q_values = [t / 100.0 for t in thresholds]
 
     for var in variables:
@@ -34,7 +36,8 @@ def _compute_ets_raw(
             reduce_dims = [d for d in reduce_dims if d not in preserve_dims]
 
         # Compute quantiles lazily.
-        quantiles = da_target.quantile(q_values, dim=reduce_dims, skipna=True)
+        # Use custom quantile to avoid memory issues
+        quantiles = compute_quantile_preserving(da_target, q_values, preserve_dims)
 
         # Create events. Broadcasting will add 'quantile' dimension.
         obs_events = da_target >= quantiles
@@ -44,28 +47,33 @@ def _compute_ets_raw(
         bcm = bcm.transform(reduce_dims=reduce_dims)
 
         ets_score = bcm.equitable_threat_score()
-        lazy_results[var] = ets_score
 
-    # Compute all at once
-    if not lazy_results:
-        return {}
+        # Return lazy object
+        computed_results[var] = ets_score
 
-    keys = list(lazy_results.keys())
-    values = list(lazy_results.values())
-    computed_values = dask.compute(*values)
-
-    return dict(zip(keys, computed_values, strict=False))
+    return computed_results
 
 
 def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
+    chunk_size: int = 20,
 ) -> pd.DataFrame:
     raw_results = _compute_ets_raw(ds_target, ds_prediction, thresholds)
+
+    # Compute all at once
+    if not raw_results:
+        return pd.DataFrame()
+
+    jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
+    compute_jobs(jobs, key_map={"lazy": "res"}, chunk_size=chunk_size)
+
     metrics_dict: dict[str, dict[str, float]] = {}
 
-    for var, ets_score in raw_results.items():
+    for job in jobs:
+        var = job["var"]
+        ets_score = job["res"]
         metrics_dict[var] = {}
         ets_values = ets_score.values
         for i, threshold in enumerate(thresholds):
@@ -78,6 +86,7 @@ def _calculate_ets_per_level(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
+    chunk_size: int = 20,
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:
@@ -90,8 +99,17 @@ def _calculate_ets_per_level(
         ds_target[variables_3d], ds_prediction[variables_3d], thresholds, preserve_dims=["level"]
     )
 
+    # Compute all at once
+    if not raw_results:
+        return None
+
+    jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
+    compute_jobs(jobs, key_map={"lazy": "res"}, chunk_size=chunk_size)
+
     dfs = []
-    for var, ets_score in raw_results.items():
+    for job in jobs:
+        var = job["var"]
+        ets_score = job["res"]
         # ets_score: (quantile, level)
         levels = ets_score.level.values
         for lvl in levels:
@@ -118,9 +136,22 @@ def run(
     metrics_cfg: dict[str, Any] | None = None,
     ensemble_mode: str | None = None,
     lead_policy: Any | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
+
+    # Compute metrics
+    # n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
+    n_points = None
+    num_vars = len(ds_target.data_vars)
+    dynamic_chunk = calculate_dynamic_chunk_size(
+        n_points=n_points,
+        num_vars=num_vars,
+        config_chunk_size=chunk_size_cfg,
+        ds=ds_target,
+    )
     report_per_level = bool(ets_cfg.get("report_per_level", True))
     reduce_ens_mean = True
     rem = ets_cfg.get("reduce_ensemble_mean")
@@ -135,6 +166,7 @@ def run(
         get_colormap_for_variable,
         resolve_ensemble_mode,
         save_dataframe,
+        save_figure,
     )
 
     resolved_mode = resolve_ensemble_mode("ets", ensemble_mode, ds_target, ds_prediction)
@@ -151,10 +183,12 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
 
-    df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
+    df = _calculate_ets_for_thresholds(
+        ds_target, ds_prediction, thresholds, chunk_size=dynamic_chunk
+    )
 
-    print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
-    print(df.head())
+    c.print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
+    c.print(df.head())
 
     if out_root is not None:
         from ..helpers import build_output_filename, format_init_time_range
@@ -187,6 +221,8 @@ def run(
 
         init_range = _extract_init_range(ds_prediction)
         lead_range = _extract_lead_range(ds_prediction)
+
+        # Compute metrics
         section_output = out_root / "ets"
         section_output.mkdir(parents=True, exist_ok=True)
 
@@ -207,7 +243,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            save_dataframe(df, out_csv, index_label="variable")
+            save_dataframe(df, out_csv, index_label="variable", module="ets")
             # Optional per-lead wide CSV when multi-lead policy provided
             multi_lead = ("lead_time" in ds_prediction.dims) and int(
                 ds_prediction.sizes.get("lead_time", 0)
@@ -225,7 +261,9 @@ def run(
                         else ds_target
                     )
                     ds_p_i = ds_prediction.isel(lead_time=i, drop=False)
-                    df_i = _calculate_ets_for_thresholds(ds_t_i, ds_p_i, thresholds)
+                    df_i = _calculate_ets_for_thresholds(
+                        ds_t_i, ds_p_i, thresholds, chunk_size=dynamic_chunk
+                    )
                     # Flatten columns with variable names to create a wide row
                     flat: dict[str, float] = {"lead_time_hours": float(hours)}
                     for var, row in df_i.iterrows():
@@ -235,7 +273,7 @@ def run(
                 if rows:
                     wide_df = pd.DataFrame(rows)
                     out_wide = section_output / "ets_metrics_by_lead_wide.csv"
-                    save_dataframe(wide_df, out_wide, index=False)
+                    save_dataframe(wide_df, out_wide, index=False, module="ets")
                     # Optional: line plot of thresholds vs lead_time per variable
                     # Default to True so ETS thresholds per lead are visualized
                     do_plot = bool(ets_cfg.get("line_plot", True))
@@ -244,13 +282,13 @@ def run(
 
                         hours = wide_df["lead_time_hours"].values
                         # For each variable present in columns, collect threshold series
-                        var_cols = [c for c in wide_df.columns if c != "lead_time_hours"]
+                        var_cols = [col for col in wide_df.columns if col != "lead_time_hours"]
                         # Expect columns like "<var>_ETS 50%"
                         by_var: dict[str, list[tuple[str, str]]] = {}
-                        for c in var_cols:
-                            if "_ETS " in c and c.endswith("%"):
-                                v, rest = c.split("_ETS ", 1)
-                                by_var.setdefault(v, []).append((c, rest))
+                        for col in var_cols:
+                            if "_ETS " in col and col.endswith("%"):
+                                v, rest = col.split("_ETS ", 1)
+                                by_var.setdefault(v, []).append((col, rest))
                         for v, pairs in by_var.items():
                             fig, ax = plt.subplots(figsize=(10, 6))
                             pairs_sorted = sorted(pairs, key=lambda kv: int(kv[1].rstrip("%")))
@@ -291,14 +329,7 @@ def run(
                                 ext="png",
                             )
                             plt.tight_layout()
-                            plt.savefig(out_png, bbox_inches="tight", dpi=150)
-                            plt.close(fig)
-                            # Save NPZ and CSV for line plot values
-                            if not out_png.exists():
-                                print(f"[ets] ERROR: File {out_png} was NOT created!")
-                            else:
-                                print(f"[ets] SUCCESS: File {out_png} created.")
-                            # Save NPZ and CSV for line plot values
+                            save_figure(fig, out_png, module="ets")
                             from numpy import savez as _savez
 
                             hours_arr = np.asarray(hours, dtype=float)
@@ -318,6 +349,7 @@ def run(
                             )
                             # Cast to Any to bypass mypy strict kwargs check on numpy.savez
                             _savez(str(out_npz), **data)
+                            c.print(f"[ets] Saved {out_npz}")
                             out_csv = section_output / build_output_filename(
                                 metric="ets_line",
                                 variable=str(v),
@@ -345,12 +377,13 @@ def run(
                                             "ETS": float(val),
                                         }
                                     )
-                            pd.DataFrame(rows_csv).to_csv(out_csv, index=False)
-                            print(f"[ets] saved {out_png}")
-                            print(f"[ets] saved {out_npz}")
-                            print(f"[ets] saved {out_csv}")
+                            save_dataframe(
+                                pd.DataFrame(rows_csv), out_csv, index=False, module="ets"
+                            )
             if report_per_level:
-                per_level_df = _calculate_ets_per_level(ds_target, ds_prediction, thresholds)
+                per_level_df = _calculate_ets_per_level(
+                    ds_target, ds_prediction, thresholds, chunk_size=dynamic_chunk
+                )
                 if per_level_df is not None:
                     out_csv_lvl = section_output / build_output_filename(
                         metric="ets_metrics",
@@ -362,8 +395,7 @@ def run(
                         ensemble=ens_token,
                         ext="csv",
                     )
-                    per_level_df.to_csv(out_csv_lvl, index=False)
-                    print(f"[ets] saved {out_csv_lvl}")
+                    save_dataframe(per_level_df, out_csv_lvl, index=False, module="ets")
         else:
             per_member_dfs = []
             for mi in members_indices:
@@ -371,7 +403,9 @@ def run(
                 ds_tgt_m = (
                     ds_target.isel(ensemble=mi) if "ensemble" in ds_target.dims else ds_target
                 )
-                df_m = _calculate_ets_for_thresholds(ds_tgt_m, ds_pred_m, thresholds)
+                df_m = _calculate_ets_for_thresholds(
+                    ds_tgt_m, ds_pred_m, thresholds, chunk_size=dynamic_chunk
+                )
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(
                     metric="ets_metrics",
@@ -383,7 +417,7 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                save_dataframe(df_m, out_csv_m, index_label="variable")
+                save_dataframe(df_m, out_csv_m, index_label="variable", module="ets")
                 per_member_dfs.append(df_m)
 
                 if report_per_level:
@@ -399,8 +433,7 @@ def run(
                             ensemble=token_m,
                             ext="csv",
                         )
-                        per_level_m.to_csv(out_csv_m_lvl, index=False)
-                        print(f"[ets] saved {out_csv_m_lvl}")
+                        save_dataframe(per_level_m, out_csv_m_lvl, index=False, module="ets")
 
             if per_member_dfs and aggregate_members_mean:
                 from ..helpers import aggregate_member_dfs
@@ -417,5 +450,4 @@ def run(
                         ensemble="enspooled",
                         ext="csv",
                     )
-                    pooled_df.to_csv(out_pool, index_label="variable")
-                    print(f"[ets] saved {out_pool}")
+                    save_dataframe(pooled_df, out_pool, index_label="variable", module="ets")

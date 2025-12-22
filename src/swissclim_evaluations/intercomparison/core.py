@@ -21,7 +21,7 @@ except ImportError:
                 def _noop(*args, **kwargs):
                     # Fallback to basic print when console is not available
                     if args:
-                        print(*args)
+                        print(*args, flush=True)
 
                 return _noop
 

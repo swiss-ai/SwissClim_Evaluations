@@ -7,7 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..dask_utils import as_float_array, compute_jobs, dask_histogram, to_finite_array
+from .. import console as c
+from ..dask_utils import (
+    as_float_array,
+    calculate_dynamic_chunk_size,
+    compute_jobs,
+    dask_histogram,
+    to_finite_array,
+)
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -37,6 +44,7 @@ def run(
     out_root: Path,
     plotting_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
@@ -51,7 +59,10 @@ def run(
     except Exception:
         max_samples = None
     base_seed = int(plotting_cfg.get("random_seed", 42))
-    # Always use identical subsamples for target/prediction (paired subsampling enforced)
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+
+    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+
     section_output = out_root / "histograms"
 
     # Config options for 3D handling
@@ -70,12 +81,12 @@ def run(
     variables_2d = [v for v in ds_target.data_vars if "level" not in ds_target[v].dims]
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_2d and (not process_3d or not variables_3d):
-        print("[histograms] No eligible variables found – skipping.")
+        c.print("[histograms] No eligible variables found – skipping.")
         return
     if variables_2d:
-        print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
+        c.print(f"[histograms] Processing {len(variables_2d)} 2D variables.")
     if process_3d and variables_3d:
-        print(f"[histograms] Processing {len(variables_3d)} 3D variables (per-level).")
+        c.print(f"[histograms] Processing {len(variables_3d)} 3D variables (per-level).")
     lat_bins, n_bands, n_rows = _lat_bands()
 
     # Helper to choose common bin edges without loading full arrays
@@ -118,7 +129,7 @@ def run(
             return
 
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
-        print(f"[histograms] lat_bands: {variable_name}")
+        c.print(f"[histograms] lat_bands: {variable_name}")
 
         fig, axs = plt.subplots(
             n_rows,
@@ -199,6 +210,7 @@ def run(
                 jobs,
                 key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
                 post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
+                chunk_size=dynamic_chunk,
             )
             for job in jobs:
                 # Calculate edges immediately (fast in memory)
@@ -214,7 +226,7 @@ def run(
                         qlow, qhigh = -1.0, 1.0
                     job["edges"] = np.linspace(qlow, qhigh, 1001)
         else:
-            compute_jobs(jobs, key_map={"quantile_lazy": "quantile_res"})
+            compute_jobs(jobs, key_map={"quantile_lazy": "quantile_res"}, chunk_size=dynamic_chunk)
             for job in jobs:
                 q = job.get("quantile_res")
                 if q is not None:
@@ -236,6 +248,7 @@ def run(
                 jobs,
                 key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
                 post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
+                chunk_size=dynamic_chunk,
             )
         else:
             for job in jobs:
@@ -328,7 +341,7 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_figure(fig, out_png)
+            save_figure(fig, out_png, module="histograms")
         else:
             plt.close(fig)
 
@@ -355,6 +368,7 @@ def run(
                 pos_lat_max=np.array(combined["pos_lat_max"]),
                 units=units,
                 allow_pickle=True,
+                module="histograms",
             )
 
     def _plot_global_hist(
@@ -449,7 +463,7 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_figure(fig, out_png)
+            save_figure(fig, out_png, module="histograms")
         else:
             plt.close(fig)
 
@@ -464,7 +478,13 @@ def run(
                 ensemble=ens_token,
                 ext="npz",
             )
-            save_data(out_npz, counts_target=dens_true, counts_prediction=dens_pred, edges=edges)
+            save_data(
+                out_npz,
+                counts_target=dens_true,
+                counts_prediction=dens_pred,
+                edges=edges,
+                module="histograms",
+            )
 
     def _plot_global_hist_gridded(
         da_target_var: xr.DataArray,
@@ -548,6 +568,7 @@ def run(
             jobs,
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
+            chunk_size=dynamic_chunk,
         )
 
         # Calculate edges from edge_job
@@ -614,7 +635,7 @@ def run(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_figure(fig, out_png)
+            save_figure(fig, out_png, module="histograms")
         else:
             plt.close(fig)
 
@@ -874,7 +895,7 @@ def run(
                         ensemble=token,
                         ext="png",
                     )
-                    save_figure(fig, out_png)
+                    save_figure(fig, out_png, module="histograms")
                 else:
                     plt.close(fig)
 
@@ -900,6 +921,7 @@ def run(
                         densities_pred=np.array(dens_pred_list, dtype=object),
                         edges=np.array(edges_list, dtype=object),
                         allow_pickle=True,
+                        module="histograms",
                     )
 
     # 3D variables per level

@@ -7,7 +7,6 @@ import yaml
 
 from swissclim_evaluations.intercomparison.core import (
     as_paths,
-    c,
     ensure_dir,
     model_label,
 )
@@ -29,6 +28,8 @@ from swissclim_evaluations.intercomparison.modules.vertical_profiles import (
     intercompare_vertical_profiles,
 )
 from swissclim_evaluations.intercomparison.modules.wd_kde import intercompare_wd_kde
+
+from . import console as c
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,7 +81,7 @@ def run_from_config(cfg: dict) -> None:
     # Light validation: warn on missing model dirs
     for m in models:
         if not m.exists():
-            print(f"[intercompare] WARNING: model folder does not exist: {m}")
+            c.print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
     mods = set(modules)
     if "maps" in mods:

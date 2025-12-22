@@ -400,16 +400,15 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
         raise ValueError("No Zarr paths provided.")
     if len(dsets) == 1:
         return dsets[0]
-    # Combine strictly by coords; override attrs to avoid conflicts. Join outer to allow
-    # non-overlapping time ranges.
     combined: xr.Dataset = cast(
         xr.Dataset,
         xr.combine_by_coords(
             dsets,
             combine_attrs="override",
+            coords="minimal",
             data_vars="all",
             join="outer",
-            compat="no_conflicts",
+            compat="override",
         ),
     )
     return combined
