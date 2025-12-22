@@ -116,6 +116,7 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                     var_part, thresh_part = col.split("_ETS ", 1)
                     wide_metrics.setdefault(var_part, []).append((thresh_part, col))
                 except ValueError:
+                    # Column name is not in the expected "<variable>_ETS <threshold>" format; skip it.
                     pass
 
         for var, items in wide_metrics.items():
