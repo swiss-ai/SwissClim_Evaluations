@@ -1310,10 +1310,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         config_chunk_size=performance_cfg.get("chunk_size"),
         ds=ds_prediction,
     )
-    num_vars = len(ds_prediction.data_vars)
-    total_chunks = (num_vars + chunk_size - 1) // chunk_size if chunk_size > 0 else 0
-    msg = f"Dask Execution: Processing {chunk_size} variables per batch "
-    msg += f"(Total batches: {total_chunks})"
+    msg = f"Dask Execution: Base Chunk Size: {chunk_size}"
     if USE_RICH:
         c.print(f"[cyan][bold]{msg}[/]")
     else:
@@ -1770,7 +1767,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Always print a plain-text completion line so logs are readable without Rich
     c.print(
         f"FINISHED: duration={elapsed:,.1f}s • outputs={out_root}",
-        flush=True,
     )
     # If Rich is enabled, also show a styled panel
     try:

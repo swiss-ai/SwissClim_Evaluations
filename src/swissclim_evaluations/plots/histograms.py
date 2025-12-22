@@ -90,19 +90,6 @@ def run(
     lat_bins, n_bands, n_rows = _lat_bands()
 
     # Helper to choose common bin edges without loading full arrays
-    def _choose_edges(da1: xr.DataArray, da2: xr.DataArray, bins: int = 1000):
-        # Fast guard: empty selections → default symmetric range
-        if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
-            vmin, vmax = -1.0, 1.0
-        else:
-            both = xr.concat([da1, da2], dim="_t")
-            q = both.quantile([0.001, 0.999], skipna=True).compute()
-            vmin = float(q.isel(quantile=0).item())
-            vmax = float(q.isel(quantile=1).item())
-            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-                vmin, vmax = -1.0, 1.0
-        return np.linspace(vmin, vmax, bins + 1)
-
     def _choose_edges_lazy(da1: xr.DataArray, da2: xr.DataArray):
         if int(getattr(da1, "size", 0) or 0) == 0 or int(getattr(da2, "size", 0) or 0) == 0:
             return None

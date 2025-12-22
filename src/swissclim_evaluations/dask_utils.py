@@ -5,6 +5,8 @@ import dask
 import dask.array as dsa
 import numpy as np
 
+from . import console as c
+
 
 def to_finite_array(arr: Any) -> np.ndarray:
     """Converts input to a 1D numpy array containing only finite values."""
@@ -39,6 +41,11 @@ def compute_jobs(
     """
     if not jobs:
         return
+
+    num_batches = (len(jobs) + chunk_size - 1) // chunk_size
+    c.print(
+        f"[Dask] Processing {len(jobs)} jobs in {num_batches} batches (chunk_size={chunk_size})..."
+    )
 
     # Chunk the jobs directly
     for i in range(0, len(jobs), chunk_size):

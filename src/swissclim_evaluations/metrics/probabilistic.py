@@ -260,9 +260,7 @@ def run_probabilistic(
     section_output.mkdir(parents=True, exist_ok=True)
     # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
 
-    cfg = cfg_all.get("probabilistic", {})
     chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
-    report_per_level = bool(cfg.get("report_per_level", True))
 
     if "ensemble" not in ds_prediction.dims:
         c.print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
@@ -409,7 +407,6 @@ def run_probabilistic(
 
     for job in all_jobs:
         var = job["var"]
-        crps_da = ds_crps[var]
         pit_da = ds_pit[var]
 
         # --- Process Results (Save/Plot) ---
