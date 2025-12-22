@@ -147,7 +147,8 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
 
                         sorted_thresh = sorted(df_plot.index, key=parse_thresh)
                         df_plot = df_plot.reindex(sorted_thresh)
-                    except Exception:
+                    except (ValueError, TypeError):
+                        # If thresholds are not numeric-like, keep the original order.
                         pass
 
                     fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
