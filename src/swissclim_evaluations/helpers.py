@@ -10,6 +10,8 @@ import pandas as pd
 import xarray as xr
 from matplotlib.colors import Colormap, LinearSegmentedColormap
 
+from . import console as c
+
 
 def get_pit_evolution_colormap() -> Colormap:
     """
@@ -504,7 +506,7 @@ def display_outputs(
 
     path = Path(output_dir)
     if not path.exists():
-        print(f"Directory not found: {path}")
+        c.print(f"Directory not found: {path}")
         return
 
     # Images
@@ -520,12 +522,12 @@ def display_outputs(
         if images:
             to_show = images if limit is None else list(islice(images, 0, limit))
             count_str = f"({len(to_show)}/{len(images)})" if limit is not None else ""
-            print(f"--- Images in {path.name} {count_str} ---")
+            c.print(f"--- Images in {path.name} {count_str} ---")
             for img in to_show:
-                print(f"Displaying: {img.name}")
+                c.print(f"Displaying: {img.name}")
                 display(Image(filename=str(img)))
         else:
-            print(f"No images found for pattern '{pattern_img}' in {path.name}")
+            c.print(f"No images found for pattern '{pattern_img}' in {path.name}")
 
     # Tables
     if pattern_csv:
@@ -538,9 +540,9 @@ def display_outputs(
             tables = [tbl for tbl in tables if not any(pat in tbl.name for pat in exclude_patterns)]
 
         if tables:
-            print(f"--- Tables in {path.name} ---")
+            c.print(f"--- Tables in {path.name} ---")
             for tbl in tables:
-                print(f"Table: {tbl.name}")
+                c.print(f"Table: {tbl.name}")
                 try:
                     df = pd.read_csv(tbl)
                     with pd.option_context("display.max_rows", None):
@@ -551,9 +553,9 @@ def display_outputs(
                             )
                         )
                 except Exception as e:
-                    print(f"Could not read {tbl.name}: {e}")
+                    c.print(f"Could not read {tbl.name}: {e}")
         else:
-            print(f"No tables found for pattern '{pattern_csv}' in {path.name}")
+            c.print(f"No tables found for pattern '{pattern_csv}' in {path.name}")
 
 
 def extract_date_from_filename(filename: str) -> str:
@@ -728,28 +730,36 @@ def subsample_values(
         return arr[np.isfinite(arr)]
 
 
-def save_figure(fig: plt.Figure, path: Path, dpi: int = 200) -> None:
+def save_figure(fig: plt.Figure, path: Path, dpi: int = 200, module: str | None = None) -> None:
     """Save figure to path, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight", dpi=dpi)
-    print(f"Saved {path}")
+    prefix = f"[{module}] " if module else ""
+    c.print(f"{prefix}Saved {path}")
     plt.close(fig)
 
 
-def save_data(path: Path, **kwargs: Any) -> None:
+def save_data(path: Path, module: str | None = None, **kwargs: Any) -> None:
     """Save data to NPZ file, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, **kwargs)
-    print(f"Saved {path}")
+    prefix = f"[{module}] " if module else ""
+    c.print(f"{prefix}Saved {path}")
 
 
 def save_dataframe(
-    df: pd.DataFrame, path: Path, index: bool = True, index_label: str | None = None, **kwargs: Any
+    df: pd.DataFrame,
+    path: Path,
+    index: bool = True,
+    index_label: str | None = None,
+    module: str | None = None,
+    **kwargs: Any,
 ) -> None:
     """Save pandas DataFrame to CSV file, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=index, index_label=index_label, **kwargs)
-    print(f"Saved {path}")
+    prefix = f"[{module}] " if module else ""
+    c.print(f"{prefix}Saved {path}")
 
 
 def unwrap_longitude_for_plot(da: xr.DataArray, lon_name: str = "longitude") -> xr.DataArray:

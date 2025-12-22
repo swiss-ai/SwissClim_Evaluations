@@ -9,7 +9,8 @@ import numpy as np  # retained only for final serialization (NPZ) and minimal li
 import xarray as xr
 from scores.functions import create_latitude_weights
 
-from ..dask_utils import compute_jobs
+from .. import console as c
+from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs
 from ..helpers import (
     COLOR_MODEL_PREDICTION,
     build_output_filename,
@@ -18,6 +19,7 @@ from ..helpers import (
     format_variable_name,
     resolve_ensemble_mode,
     save_data,
+    save_dataframe,
     save_figure,
 )
 
@@ -186,7 +188,7 @@ def _plot_vertical_profile_evolution(
             ensemble=ens_token,
             ext="png",
         )
-        save_figure(fig, out_png)
+        save_figure(fig, out_png, module="vertical_profiles")
     plt.close(fig)
 
 
@@ -239,7 +241,7 @@ def _plot_vertical_profile_lines(
             ensemble=ens_token,
             ext="png",
         )
-        save_figure(fig, out_png)
+        save_figure(fig, out_png, module="vertical_profiles")
     plt.close(fig)
 
 
@@ -277,7 +279,7 @@ def _plot_global_profile(
             ensemble=ens_token,
             ext="png",
         )
-        save_figure(fig, out_png)
+        save_figure(fig, out_png, module="vertical_profiles")
     plt.close(fig)
 
 
@@ -289,12 +291,15 @@ def run(
     select_cfg: dict[str, Any],
     ensemble_mode: str | None = None,
     metrics_cfg: dict[str, Any] | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "vertical_profiles"
+
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
 
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
@@ -376,10 +381,10 @@ def run(
     fig_count = 0
 
     # Collect all lazy computations
-    # jobs = [] (Removed to process sequentially)
+    all_jobs: list[dict[str, Any]] = []
 
     for var in variables_3d:
-        print(f"[vertical_profiles] preparing {var}...")
+        c.print(f"[vertical_profiles] preparing {var}...")
         level_values = ds_target[var].level.values
         south_curves: list[xr.DataArray] = []
         north_curves: list[xr.DataArray] = []
@@ -558,21 +563,28 @@ def run(
         )
         job["global_profile_lazy"] = global_profile
 
-        # Batch compute (Per Variable)
-        print(f"[vertical_profiles] computing job for {var}...")
-        compute_jobs(
-            [job],
-            key_map={
-                "combined_lazy": "combined",
-                "combined_all_lazy": "combined_all",
-                "evolve_profiles_lazy": "evolve_profiles",
-                "nmae_lead_lazy": "nmae_lead",
-                "global_profile_lazy": "global_profile",
-            },
-        )
+        all_jobs.append(job)
 
+    # Batch compute (All Variables)
+    c.print("[vertical_profiles] computing all jobs...")
+    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+
+    compute_jobs(
+        all_jobs,
+        key_map={
+            "combined_lazy": "combined",
+            "combined_all_lazy": "combined_all",
+            "evolve_profiles_lazy": "evolve_profiles",
+            "nmae_lead_lazy": "nmae_lead",
+            "global_profile_lazy": "global_profile",
+        },
+        chunk_size=dynamic_chunk,
+    )
+
+    for job in all_jobs:
+        var = job["var"]
         # Process results (Inline)
-        print(f"[vertical_profiles] post-processing {var}...")
+        c.print(f"[vertical_profiles] post-processing {var}...")
         combined = job["combined"]
         south_meta = job["south_meta"]
         north_meta = job["north_meta"]
@@ -583,7 +595,7 @@ def run(
         # Mask of finite values (ignores NaN/inf). If none are finite, skip gracefully.
         finite_mask = np.isfinite(vals)
         if not finite_mask.any():
-            print(
+            c.print(
                 f"[vertical_profiles] skipping {var}: no finite NMAE values (all selections empty)."
             )
             plt.close("all")
@@ -664,7 +676,7 @@ def run(
                     ensemble=ens_token_local,
                     ext="png",
                 )
-                save_figure(fig, out_png)
+                save_figure(fig, out_png, module="vertical_profiles")
 
                 # Also save as CSV
                 out_csv = section_output / build_output_filename(
@@ -679,9 +691,9 @@ def run(
                 )
                 try:
                     df = _combined.to_dataframe(name="nmae").reset_index()
-                    df.to_csv(out_csv, index=False)
+                    save_dataframe(df, out_csv, index=False, module="vertical_profiles")
                 except Exception as e:
-                    print(f"[vertical_profiles] Warning: could not save CSV: {e}")
+                    c.print(f"[vertical_profiles] Warning: could not save CSV: {e}")
 
             if save_npz:
                 out_npz = section_output / build_output_filename(
@@ -710,6 +722,7 @@ def run(
                     neg_lat_max=neg_max,
                     pos_lat_min=pos_min,
                     pos_lat_max=pos_max,
+                    module="vertical_profiles",
                 )
             plt.close(fig)
 
@@ -754,7 +767,7 @@ def run(
                 ext="png",
             )
             plt.tight_layout()
-            save_figure(fig, out_png)
+            save_figure(fig, out_png, module="vertical_profiles")
             plt.close(fig)
             if save_npz:
                 out_npz = section_output / build_output_filename(
@@ -774,6 +787,7 @@ def run(
                     level=np.asarray(level_values),
                     nmae_profiles=np.array(profiles, dtype=object),
                     allow_pickle=True,
+                    module="vertical_profiles",
                 )
 
         # Plot global profile
@@ -793,7 +807,7 @@ def run(
                     "nmae": job["global_profile"].values,
                     "level": np.asarray(level_values),
                 }
-                save_data(out_npz, **save_dict)
+                save_data(out_npz, module="vertical_profiles", **save_dict)
 
             _plot_global_profile(
                 job["global_profile"],
@@ -828,7 +842,7 @@ def run(
                 if "lead_time" in ds_prediction:
                     save_dict["lead_time"] = ds_prediction["lead_time"].values
 
-                save_data(out_npz, **save_dict)
+                save_data(out_npz, module="vertical_profiles", **save_dict)
 
             # Plot evolution of vertical profile (contour plot)
             _plot_vertical_profile_evolution(

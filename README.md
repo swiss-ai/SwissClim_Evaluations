@@ -29,6 +29,21 @@ We recommend the container workflow for fastest, reproducible setup.
     papermill notebooks/deterministic_verification.ipynb output/my_run_report.ipynb -p config_path_str config/my_run.yaml
     ```
 
+6. **(Optional) Run on HPC**:
+    Use `launchscript_single.sh` to run a single configuration.
+
+    1.  Edit the script to point `CONFIG_FILE` to your YAML config.
+    1.  Submit: `sbatch launchscript_single.sh`
+
+    Use `launchscript_multi.sh` to run many evaluations in parallel.
+
+    1.  List your config files in `eval_configs.txt` (one absolute path per line).
+    1.  Adjust `--nodes` in the SBATCH directives to number of config files / 4.
+    1.  Submit: `sbatch launchscript_multi.sh`
+
+    Both scripts automatically handle container setup, Dask spillover directories, and will render
+    the verification notebooks into HTML reports upon completion.
+
 For detailed installation instructions, including Podman, uenv, and conda setups, see [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Configuration

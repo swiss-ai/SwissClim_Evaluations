@@ -20,7 +20,8 @@ from weatherbenchX.metrics.probabilistic import (
     UnbiasedSpreadSkillRatio,
 )
 
-from ..dask_utils import compute_jobs, dask_histogram
+from .. import console as c
+from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs, dask_histogram
 from ..helpers import (
     COLOR_DIAGNOSTIC,
     build_output_filename,
@@ -120,7 +121,7 @@ def compute_wbx_crps(
     return xr.Dataset(crps_results)
 
 
-def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
+def _save_npz_with_coords(path: Path, da: xr.DataArray, module: str | None = None, **kwargs):
     """Save DataArray to NPZ with coordinates, handling missing ones gracefully."""
     coords = {}
     # Standard coordinates we care about
@@ -133,9 +134,7 @@ def _save_npz_with_coords(path: Path, da: xr.DataArray, **kwargs):
     # Add any extra kwargs
     coords.update(kwargs)
 
-    save_data(path, data=da.values, **coords)
-
-    np.savez(path, data=da.values, **coords)
+    save_data(path, module=module, data=da.values, **coords)
 
 
 def _pit(da_target, da_prediction):
@@ -245,6 +244,7 @@ def run_probabilistic(
     cfg_plot: dict[str, Any],
     cfg_all: dict[str, Any],
     ensemble_mode: str | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute CRPS and PIT, save summaries and optional fields.
 
@@ -260,13 +260,17 @@ def run_probabilistic(
     section_output.mkdir(parents=True, exist_ok=True)
     # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
 
+    cfg = cfg_all.get("probabilistic", {})
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    report_per_level = bool(cfg.get("report_per_level", True))
+
     if "ensemble" not in ds_prediction.dims:
-        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
+        c.print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
         return
 
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
-        print(
+        c.print(
             "[probabilistic] No overlapping variables between targets and predictions; "
             "nothing to do."
         )
@@ -344,7 +348,7 @@ def run_probabilistic(
     )
 
     # --- Optimization: Collect all lazy computations ---
-    # jobs = [] (Removed to process sequentially)
+    all_jobs: list[dict[str, Any]] = []
     is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
 
     for var in variables:
@@ -385,18 +389,28 @@ def run_probabilistic(
         job["crps_field_lazy"] = crps_da
         job["pit_field_lazy"] = pit_da
 
-        # --- Batch Compute (Per Variable) ---
-        compute_jobs(
-            [job],
-            key_map={
-                "crps_mean_lazy": "crps_mean_res",
-                "crps_per_lead_lazy": "crps_per_lead_res",
-                "crps_per_level_lazy": "crps_per_level_res",
-                "pit_counts_lazy": "pit_counts_res",
-                "crps_field_lazy": "crps_field_res",
-                "pit_field_lazy": "pit_field_res",
-            },
-        )
+        all_jobs.append(job)
+
+    # --- Batch Compute (All Variables) ---
+    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+
+    compute_jobs(
+        all_jobs,
+        key_map={
+            "crps_mean_lazy": "crps_mean_res",
+            "crps_per_lead_lazy": "crps_per_lead_res",
+            "crps_per_level_lazy": "crps_per_level_res",
+            "pit_counts_lazy": "pit_counts_res",
+            "crps_field_lazy": "crps_field_res",
+            "pit_field_lazy": "pit_field_res",
+        },
+        chunk_size=dynamic_chunk,
+    )
+
+    for job in all_jobs:
+        var = job["var"]
+        crps_da = ds_crps[var]
+        pit_da = ds_pit[var]
 
         # --- Process Results (Save/Plot) ---
         # 1. CRPS Mean
@@ -456,8 +470,7 @@ def run_probabilistic(
                 ensemble=ens_token,
                 ext="png",
             )
-            save_figure(fig, out_png_lead)
-            print(f"[probabilistic] saved {out_png_lead}")
+            save_figure(fig, out_png_lead, module="probabilistic")
 
         # 3. Per Level CRPS
         if job["crps_per_level_lazy"] is not None:
@@ -474,7 +487,7 @@ def run_probabilistic(
         # 4. PIT Global Histogram
         if job["pit_counts_lazy"] is None:
             if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
-                print("[probabilistic] Skipping average PIT histogram (lead_time > 1 present).")
+                c.print("[probabilistic] Skipping average PIT histogram (lead_time > 1 present).")
         else:
             counts = job["pit_counts_res"].astype(np.float64)
             edges = job["pit_edges"]
@@ -493,12 +506,12 @@ def run_probabilistic(
                 ensemble=ens_token,
                 ext="npz",
             )
-            np.savez(
+            save_data(
                 pit_npz,
                 counts=counts,
                 edges=edges,
+                module="probabilistic",
             )
-            print(f"[probabilistic] saved {pit_npz}")
 
         # 6. Save Full Fields
         out_npz_crps = section_output / build_output_filename(
@@ -511,8 +524,7 @@ def run_probabilistic(
             ensemble=ens_token,
             ext="npz",
         )
-        _save_npz_with_coords(out_npz_crps, job["crps_field_res"])
-        print(f"[probabilistic] saved {out_npz_crps}")
+        _save_npz_with_coords(out_npz_crps, job["crps_field_res"], module="probabilistic")
 
         out_npz_pit = section_output / build_output_filename(
             metric="pit_field",
@@ -524,15 +536,14 @@ def run_probabilistic(
             ensemble=ens_token,
             ext="npz",
         )
-        _save_npz_with_coords(out_npz_pit, job["pit_field_res"])
-        print(f"[probabilistic] saved {out_npz_pit}")
+        _save_npz_with_coords(out_npz_pit, job["pit_field_res"], module="probabilistic")
 
         # Explicitly release memory
-        del job
+        # del job
 
     if crps_rows:
         if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
-            print("[probabilistic] Skipping CRPS summary table (lead_time > 1 present).")
+            c.print("[probabilistic] Skipping CRPS summary table (lead_time > 1 present).")
         else:
             df = pd.DataFrame(crps_rows).groupby("variable").mean()
             out_csv = section_output / build_output_filename(
@@ -545,10 +556,9 @@ def run_probabilistic(
                 ensemble=ens_token,
                 ext="csv",
             )
-            df.to_csv(out_csv)
-            print("CRPS summary (per variable):")
-            print(df.head())
-            print(f"[probabilistic] saved {out_csv}")
+            save_dataframe(df, out_csv, module="probabilistic")
+            c.print("CRPS summary (per variable):")
+            c.print(df.head())
         # Backward-compatible copy for tests expecting ensnone naming
 
     if crps_rows_per_level:
@@ -563,8 +573,7 @@ def run_probabilistic(
             ensemble=ens_token,
             ext="csv",
         )
-        df_lvl.to_csv(out_csv_lvl, index=False)
-        print(f"[probabilistic] saved {out_csv_lvl}")
+        save_dataframe(df_lvl, out_csv_lvl, index=False, module="probabilistic")
 
 
 def _select_base_variable_for_plot(
@@ -703,7 +712,7 @@ def plot_probabilistic(
 
     # Plot CRPS map (simple original style, no percentile scaling / fallback)
     if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
-        print("[probabilistic] Skipping average CRPS map (lead_time > 1 present).")
+        c.print("[probabilistic] Skipping average CRPS map (lead_time > 1 present).")
     else:
         fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
         ax = plt.axes(projection=ccrs.PlateCarree())
@@ -802,7 +811,7 @@ def plot_probabilistic(
             from contextlib import suppress
 
             with suppress(Exception):
-                print(f"[probabilistic] CRPS grid using lead_hours={crps_hours}")
+                c.print(f"[probabilistic] CRPS grid using lead_hours={crps_hours}")
             hour_index_pairs = []
             for h in full_hours:
                 try:
@@ -919,8 +928,7 @@ def plot_probabilistic(
                     ensemble=ensemble_mode_to_token("prob"),
                     ext="csv",
                 )
-                df_crps_line.to_csv(out_csv_line, index=False)
-                print(f"[probabilistic] saved {out_csv_line}")
+                save_dataframe(df_crps_line, out_csv_line, index=False, module="probabilistic")
                 if save_npz:
                     out_npz_line = section / build_output_filename(
                         metric="crps_line",
@@ -1070,7 +1078,7 @@ def plot_probabilistic(
                     )
                     axes_flat = axes.flatten()
                     for i, (h, li) in enumerate(hour_index_pairs):
-                        r, c = divmod(i, ncols)
+                        r, col = divmod(i, ncols)
                         sub = pit.isel(lead_time=li)
                         data = np.asarray(sub.values).ravel()
                         data = data[np.isfinite(data)]
@@ -1091,7 +1099,7 @@ def plot_probabilistic(
                         ax.set_title(f"PIT (+{int(h)}h)", fontsize=10)
                         if r == nrows - 1:
                             ax.set_xlabel("PIT value")
-                        if c == 0:
+                        if col == 0:
                             ax.set_ylabel("Density")
 
                     # Hide unused axes if n not multiple of ncols
@@ -1269,12 +1277,12 @@ def run_probabilistic_wbx(
     section.mkdir(parents=True, exist_ok=True)
 
     if "ensemble" not in ds_prediction.dims:
-        print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
+        c.print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
         return
 
     common_vars = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not common_vars:
-        print(
+        c.print(
             "[probabilistic] No overlapping variables between targets and predictions; "
             "nothing to do."
         )
@@ -1308,7 +1316,7 @@ def run_probabilistic_wbx(
                 "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
             ) from e
     else:
-        print("[probabilistic] Skipping average SSR summary (lead_time > 1 present).")
+        c.print("[probabilistic] Skipping average SSR summary (lead_time > 1 present).")
         ssr_df = pd.DataFrame()
 
     # Extract time ranges for naming
@@ -1357,8 +1365,7 @@ def run_probabilistic_wbx(
             ensemble=ens_token_prob,
             ext="csv",
         )
-        ssr_df.to_csv(ssr_csv)
-        print(f"[probabilistic] saved {ssr_csv}")
+        save_dataframe(ssr_df, ssr_csv, module="probabilistic")
 
     def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
         return {
@@ -1434,8 +1441,7 @@ def run_probabilistic_wbx(
             ensemble=ens_token_prob,
             ext="npz",
         )
-        _save_npz_with_coords(npz_path, results_temporal[var_name])
-        print("Wrote:", npz_path)
+        _save_npz_with_coords(npz_path, results_temporal[var_name], module="probabilistic")
 
     for var_name, _da in results_spatial.data_vars.items():
         metric_name, variable = var_name.split(".", 1)
@@ -1449,8 +1455,7 @@ def run_probabilistic_wbx(
             ensemble=ens_token_prob,
             ext="npz",
         )
-        _save_npz_with_coords(npz_path, results_spatial[var_name])
-        print("Wrote:", npz_path)
+        _save_npz_with_coords(npz_path, results_spatial[var_name], module="probabilistic")
 
     # --- Plotting SSR (Temporal and Spatial) ---
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
@@ -1510,8 +1515,7 @@ def run_probabilistic_wbx(
             )
             # Ensure column name is standard for intercompare
             df_save = df.rename(columns={x_col: "lead_time_hours"})
-            df_save.to_csv(out_csv_line, index=False)
-            print(f"[probabilistic] saved {out_csv_line}")
+            save_dataframe(df_save, out_csv_line, index=False, module="probabilistic")
 
             # Plot line
             ax.plot(df[x_col], df["SSR"], marker="o")
@@ -1536,8 +1540,7 @@ def run_probabilistic_wbx(
                 ensemble=ens_token_prob,
                 ext="png",
             )
-            save_figure(fig, out_png_temp)
-            print(f"[probabilistic] saved {out_png_temp}")
+            save_figure(fig, out_png_temp, module="probabilistic")
 
         # Plot Regional Comparison (Bar Chart of Regions)
         # Only plot if lead_time dimension is not present or has size 1 (i.e., not multi-lead)
@@ -1604,7 +1607,8 @@ def run_probabilistic_wbx(
                         ensemble=ens_token_prob,
                         ext="png",
                     )
-                    save_figure(fig, out_png_spatial)
-                    print(f"[probabilistic] saved {out_png_spatial}")
+                    save_figure(fig, out_png_spatial, module="probabilistic")
                 else:
-                    print(f"[probabilistic] Skipping spatial plot for {var_name}: No numeric data.")
+                    c.print(
+                        f"[probabilistic] Skipping spatial plot for {var_name}: No numeric data."
+                    )

@@ -15,6 +15,7 @@ import xarray as xr
 import yaml
 
 from . import console as c, data as data_mod
+from .dask_utils import calculate_dynamic_chunk_size
 from .helpers import (
     format_ensemble_log,
     resolve_ensemble_mode,
@@ -724,7 +725,6 @@ def prepare_datasets(
         lt_cfg = cfg.get("selection", {}).get("lead_time")
     lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
     # preserve_all_leads when mode != first
-    preserve_all = lead_policy.mode != "first"
     cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
 
     # Keep only the first lead by default; when multi-lead policy is active
@@ -732,21 +732,19 @@ def prepare_datasets(
     ds_target = data_mod.standardize_dims(
         ds_target,
         dataset_name="target",
-        first_lead_only=not preserve_all,
-        preserve_all_leads=preserve_all,
+        first_lead_only=not lead_policy.preserve_all_leads,
+        preserve_all_leads=lead_policy.preserve_all_leads,
     )
     ds_prediction = data_mod.standardize_dims(
         ds_prediction,
         dataset_name="prediction",
-        first_lead_only=not preserve_all,
-        preserve_all_leads=preserve_all,
+        first_lead_only=not lead_policy.preserve_all_leads,
+        preserve_all_leads=lead_policy.preserve_all_leads,
     )
     # Defer standardize prints; capture only in audit
     _audit("after standardize_dims", ds_prediction, ds_target)
 
     # Handle optional ensemble dimension according to config and selected modules
-    # modules_cfg = cfg.get("modules", {})
-    # probabilistic_enabled = bool(modules_cfg.get("probabilistic"))
     ds_prediction = data_mod.apply_ensemble_policy(
         ds_prediction,
         ensemble_members=ensemble_members,
@@ -760,13 +758,14 @@ def prepare_datasets(
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
     _audit("after temporal_resolution", ds_prediction, ds_target)
 
-    # If a multi-lead policy is active and the user provided a datetimes window, ensure
-    # the ground-truth window is wide enough to cover the selected forecast horizon.
-    # Concretely, extend the target's upper bound by max_hour so that valid_time = init+lead
-    # remains within the available ERA5 range; otherwise alignment can drop most leads.
     sel_block = cfg.get("selection", {}) or {}
     bounds = sel_block.get("datetimes")
-    if preserve_all and lead_policy.max_hour is not None and bounds and len(bounds) == 2:
+    if (
+        lead_policy.preserve_all_leads
+        and lead_policy.max_hour is not None
+        and bounds
+        and len(bounds) == 2
+    ):
         end = np.datetime64(bounds[1]).astype("datetime64[ns]")
         extend_h = int(lead_policy.max_hour)
         end_ext = end + np.timedelta64(extend_h, "h")
@@ -782,13 +781,7 @@ def prepare_datasets(
                 ds_target = ds_target.sel(time=slice(None, end_ext))
                 _audit("after extend_target_window", ds_prediction, ds_target)
 
-    # Apply lead time selection (subset/stride) after temporal resolution so
-    # stride logic doesn't fight it. IMPORTANT: For targets that often have only
-    # a zero lead_time (ERA5 with time→init_time), applying subset/stride can drop
-    # all leads and error. We therefore apply the policy to predictions always,
-    # and only apply to targets for 'full' mode (to honor max_hour caps). For
-    # 'subset'/'stride', we skip target filtering and rely on valid_time alignment.
-    if preserve_all:
+    if lead_policy.preserve_all_leads:
         # Always filter predictions per policy
         ds_prediction_before_policy = ds_prediction
         ds_prediction = apply_lead_time_selection(ds_prediction, lead_policy)
@@ -929,7 +922,7 @@ def prepare_datasets(
         # Warn if alignment dropped lead_time hours selected by the policy due to missing
         # ground-truth valid_time overlap.
         try:
-            if preserve_all:
+            if lead_policy.preserve_all_leads:
                 try:
                     after_align_hours = (
                         (ds_prediction["lead_time"].values // np.timedelta64(1, "h"))
@@ -1055,6 +1048,50 @@ def _maybe_copy_config_to_output(cfg: dict[str, Any], out_root: Path) -> None:
         pass
 
 
+def _setup_dask_logging(log_file: str = "logs/dask_distributed.log") -> None:
+    """Redirects dask distributed logs to a file and suppresses them from stderr."""
+    import logging
+    import os
+    from pathlib import Path
+
+    try:
+        # Append SLURM_JOB_ID and SLURM_PROCID to filename if available to avoid collisions
+        job_id = os.environ.get("SLURM_JOB_ID")
+        proc_id = os.environ.get("SLURM_PROCID")
+
+        if job_id:
+            p = Path(log_file)
+            suffix = f"_{job_id}"
+            if proc_id:
+                suffix += f"_{proc_id}"
+            log_file = str(p.parent / f"{p.stem}{suffix}{p.suffix}")
+
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        dask_logger = logging.getLogger("distributed")
+        dask_logger.propagate = False
+
+        # Clear existing handlers
+        if dask_logger.hasHandlers():
+            dask_logger.handlers.clear()
+
+        fh = logging.FileHandler(log_path)
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        fh.setFormatter(formatter)
+        dask_logger.addHandler(fh)
+
+        # Capture standard warnings (like those from contextlib or distributed.client)
+        logging.captureWarnings(True)
+        warnings_logger = logging.getLogger("py.warnings")
+        warnings_logger.propagate = False
+        if warnings_logger.hasHandlers():
+            warnings_logger.handlers.clear()
+        warnings_logger.addHandler(fh)
+    except Exception as e:
+        c.print(f"Failed to setup dask logging: {e}")
+
+
 def run_selected(cfg: dict[str, Any]) -> None:
     c.header("SwissClim Evaluations")
 
@@ -1142,7 +1179,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     c.panel(
         (
             f"Output: [bold]{out_root}[/]"
-            f"\nMode: [bold]{mode}[/]"
+            f"\nPlotting Mode: [bold]{mode}[/]"
             f"\nVariables → 2D: [bold]{len(vars_2d)}[/], 3D: [bold]{len(vars_3d)}[/]"
         ),
         title="Run Overview",
@@ -1163,9 +1200,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
             _rc.print(Pretty(ds_prediction))
         else:
-            print(ds_prediction)
+            c.print(ds_prediction)
     except Exception:
-        print(ds_prediction)
+        c.print(ds_prediction)
     # Consolidated ensemble information (fallbacks + resolved modes + high-level message)
     try:
         ens_msg = _ensemble_handling_message(ds_prediction, cfg, resolved_modes)
@@ -1177,7 +1214,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         blocks.append(
             "Resolved Modes:\n" + "\n".join(f"{m}: {resolved_modes[m]}" for m in module_names)
         )
-        blocks.append("Summary:\n" + ens_msg)
+        blocks.append("ℹ️  Summary:\n" + ens_msg)
         c.panel(
             "\n\n".join(blocks),
             title="Ensemble Configuration",
@@ -1205,12 +1242,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 if lead_policy.max_hour is not None:
                     details.append(f"max_hour={lead_policy.max_hour}")
                 # 'bins' mode removed
-                panel_text = (
-                    "Lead time policy → "
-                    + ", ".join(details)
-                    + (f"\nAvailable lead hours after selection: {hours}" if hours else "")
-                )
-                c.panel(panel_text, title="Lead Time Policy", style="magenta")
+                policy_text = "Lead time policy → " + ", ".join(details)
+                if USE_RICH:
+                    c.print(f"[magenta][bold]{policy_text}[/]")
+                else:
+                    c.print(policy_text)
+
                 # Compact lead-time snapshot (moved down near policy)
                 try:
                     audit = cfg.get("__lead_time_audit") or []
@@ -1221,36 +1258,24 @@ def run_selected(cfg: dict[str, Any]) -> None:
                                 pred = e["prediction"]
                                 sample = pred.get("sample", [])
                                 return (
-                                    f"[lead-time] prediction {label}: count={pred.get('count', 0)} "
+                                    f"Available lead hours {label}: count={pred.get('count', 0)} "
                                     f"sample={sample[:8]}"
                                 )
                         return None
 
                     lines = []
-                    s1 = _fmt("after open", "raw hours")
+                    s1 = _fmt("after open", "before selection")
                     if s1:
                         lines.append(s1)
-                    s2 = _fmt("after selection", "after selection.datetimes")
+                    s2 = _fmt("after selection", "after selection")
                     if s2:
                         lines.append(s2)
-                    s3 = _fmt("after standardize_dims", "after standardize_dims")
-                    if s3:
-                        lines.append(s3)
-                    # Also include policy/alignment summaries for easier debugging
-                    # Try common modes explicitly; only one will match the audit step label
-                    s4 = (
-                        _fmt("after lead_time policy (stride)", "after lead_time policy")
-                        or _fmt("after lead_time policy (full)", "after lead_time policy")
-                        or _fmt("after lead_time policy (subset)", "after lead_time policy")
-                        or _fmt("after lead_time policy (panel)", "after lead_time policy")
-                    )
-                    if s4:
-                        lines.append(s4)
-                    s5 = _fmt("after alignment", "after alignment")
-                    if s5:
-                        lines.append(s5)
+
                     for ln in lines:
-                        c.info(ln)
+                        if USE_RICH:
+                            c.print(f"[cyan][bold]{ln}[/]")
+                        else:
+                            c.print(ln)
                 except Exception as exc:
                     c.warn(f"Failed to log lead-time audit information: {exc}")
                 # Extra visibility: warn if multi-lead requested but only a single lead remains
@@ -1272,10 +1297,27 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         "has a single lead, your date window clips most valid times, or "
                         "target/prediction time alignment leaves only one overlapping offset. "
                         "Consider widening 'selection.datetimes', setting lead_time.mode=full "
-                        "temporarily, or inspecting the prediction Zarr with tools/inspect_zarr.py."
+                        "temporarily, or inspecting the prediction Zarr."
                     )
         except Exception as ex:
             c.warn(f"Exception occurred during lead time policy handling: {ex}")
+
+    # Get performance configuration
+    performance_cfg = cfg.get("performance", {}) or {}
+
+    # Calculate and print dynamic chunk size
+    chunk_size = calculate_dynamic_chunk_size(
+        config_chunk_size=performance_cfg.get("chunk_size"),
+        ds=ds_prediction,
+    )
+    num_vars = len(ds_prediction.data_vars)
+    total_chunks = (num_vars + chunk_size - 1) // chunk_size if chunk_size > 0 else 0
+    msg = f"Dask Execution: Processing {chunk_size} variables per batch "
+    msg += f"(Total batches: {total_chunks})"
+    if USE_RICH:
+        c.print(f"[cyan][bold]{msg}[/]")
+    else:
+        c.print(msg)
 
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):
@@ -1332,11 +1374,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
-            c.info(
-                format_ensemble_log(
-                    "histograms", resolved_modes.get("histograms", "pooled"), ens_size
-                )
-            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1347,6 +1384,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 out_root,
                 plotting,
                 ensemble_mode=ensemble_cfg.get("histograms"),
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("histograms", dt))
@@ -1389,6 +1427,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 out_root,
                 plotting,
                 ensemble_mode=ensemble_cfg.get("wd_kde"),
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("wd_kde", dt))
@@ -1415,18 +1454,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
 
-        c.module_status(
-            "energy_spectra",
-            "run",
-            f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}",
-        )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
-            c.info(
-                format_ensemble_log(
-                    "energy_spectra", resolved_modes.get("energy_spectra", "mean"), ens_size
-                )
-            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1439,6 +1468,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("energy_spectra"),
                 cfg=cfg,
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("energy_spectra", dt))
@@ -1468,11 +1498,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
-            c.info(
-                format_ensemble_log(
-                    "vertical_profiles", resolved_modes.get("vertical_profiles", "mean"), ens_size
-                )
-            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1485,6 +1510,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 cfg.get("selection", {}),
                 ensemble_mode=ensemble_cfg.get("vertical_profiles"),
                 metrics_cfg=cfg.get("metrics", {}),
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("vertical_profiles", dt))
@@ -1516,13 +1542,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             ens_size_det: int = int(ds_prediction.sizes.get("ensemble", 0))
             use_mode = resolved_modes.get("deterministic", "mean")
-            c.info(
-                format_ensemble_log(
-                    "deterministic",
-                    use_mode,
-                    ens_size_det,
-                )
-            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1538,6 +1557,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 cfg.get("metrics", {}),
                 ensemble_mode=ensemble_cfg.get("deterministic"),
                 lead_policy=lead_policy,
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("deterministic", dt))
@@ -1581,6 +1601,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 cfg.get("metrics", {}),
                 ensemble_mode=ensemble_cfg.get("ets"),
                 lead_policy=lead_policy,
+                performance_cfg=performance_cfg,
             )
             dt = time.time() - _t
             module_timings.append(("ets", dt))
@@ -1649,6 +1670,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         plotting,
                         cfg,
                         ensemble_mode=ensemble_cfg.get("probabilistic"),
+                        performance_cfg=performance_cfg,
                     )
                     # 2. Plots
                     plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
@@ -1719,16 +1741,16 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         )
                     _rc.print(tbl)
                 except Exception:
-                    print("Module Results:")
+                    c.print("Module Results:")
                     for r in module_results:
-                        print(
+                        c.print(
                             f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
                             + (f" error={r['error']}" if r["error"] else "")
                         )
             else:
-                print("Module Results:")
+                c.print("Module Results:")
                 for r in module_results:
-                    print(
+                    c.print(
                         f" - {r['name']}: {r['status']} ({r['seconds']:.2f}s)"
                         + (f" error={r['error']}" if r["error"] else "")
                     )
@@ -1746,7 +1768,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     except Exception:
         pass
     # Always print a plain-text completion line so logs are readable without Rich
-    print(
+    c.print(
         f"FINISHED: duration={elapsed:,.1f}s • outputs={out_root}",
         flush=True,
     )
@@ -1814,7 +1836,68 @@ def main(argv: list[str] | None = None) -> None:
     # Record the original config path for reproducibility actions (not part of user schema)
     with contextlib.suppress(Exception):
         cfg["_config_path"] = args.config
-    run_selected(cfg)
+
+    # Check if user wants to use distributed scheduler (default: True for backwards compat)
+    performance_cfg = cfg.get("performance", {}) or {}
+    use_distributed = performance_cfg.get("dask_scheduler", "distributed").lower() != "threaded"
+
+    if use_distributed:
+        # Initialize Dask Client if available to enable spillover and distributed scheduling
+        try:
+            import socket
+
+            import dask.config
+
+            # Disable worker profiling to avoid AttributeError: '_AllCompletedWaiter' object has no
+            # attribute 'f_back' on Python 3.11+ with recent distributed versions.
+            # Also set timeouts to avoid hanging clients when workers die.
+            c.print("Configuring Dask Client with timeouts and retry limits...")
+            dask.config.set(
+                {
+                    "distributed.worker.profile.enabled": False,
+                    "distributed.comm.timeouts.connect": "30s",
+                    "distributed.comm.timeouts.tcp": "30s",
+                    "distributed.comm.retry.count": 3,
+                    "distributed.scheduler.allowed-failures": 3,
+                }
+            )
+
+            from dask.distributed import Client
+
+            _setup_dask_logging()
+
+            try:
+                _ = Client.current()
+                run_selected(cfg)
+            except (ValueError, OSError):
+                c.print("Initializing Dask Client for distributed scheduling and spillover...")
+                with Client() as client:
+                    # Retrieve dashboard port and hostname for tunneling instructions
+                    try:
+                        dask_info = client.scheduler_info()
+                        dashboard_port = dask_info["services"]["dashboard"]
+                        host = socket.gethostname()
+                        c.print(f"Dask Dashboard running on node: {host}")
+                        c.print(f"Dashboard URL: {client.dashboard_link}")
+                        c.print("To view the dashboard in VS Code:")
+                        c.print("1. Open a new terminal in VS Code")
+                        c.print(
+                            f"2. Run: ssh -N -L {dashboard_port}:127.0.0.1:{dashboard_port} {host}"
+                        )
+                        c.print(
+                            f"3. Open 'Simple Browser' in VS Code and go to: http://localhost:{dashboard_port}/status"
+                        )
+                    except Exception:
+                        c.print(f"Dask dashboard available at: {client.dashboard_link}")
+
+                    run_selected(cfg)
+                    c.print("Evaluation finished, closing Dask Client...")
+        except ImportError:
+            run_selected(cfg)
+    else:
+        # Use default threaded scheduler - faster for single-machine workloads
+        c.print("Using default threaded Dask scheduler (no distributed client)...")
+        run_selected(cfg)
 
 
 if __name__ == "__main__":

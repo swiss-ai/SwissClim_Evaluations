@@ -2,11 +2,19 @@
 #SBATCH --job-name=swissclim-eval-single
 #SBATCH --output=logs/swissclim_single_%j.out
 #SBATCH --error=logs/swissclim_single_%j.err
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --account=a122
-#SBATCH --partition=debug
+#SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+
+# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+
+# -------------------------------------------------------------
+# CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
+CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/reproduce_eval.yaml"
+# CONFIG_FILE="${SUBMIT_DIR}/config/reproduce_eval.yaml"
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
@@ -14,18 +22,23 @@
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
 
-# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+# -------------------------------------------------------------
+# DASK SCRATCH CONFIGURATION
+# Set the directory for Dask spillover to avoid filling /tmp
+# -------------------------------------------------------------
+export DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+mkdir -p "$DASK_TEMPORARY_DIRECTORY"
+
 
 # Disable rich/ANSI output so SLURM log files remain clean
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
 
+export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
-# Config to run
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_finetune.yaml"
 
 # Generate robust job name from config (parent_dir + filename)
 filename=$(basename "${CONFIG_FILE}" .yaml)
@@ -38,6 +51,7 @@ echo "Starting evaluation for config: $CONFIG_FILE"
 # We use srun to launch the python process within the container environment defined by EDF_CONFIG
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
     python -u -m swissclim_evaluations.cli --config "$CONFIG_FILE"
+EXIT_CODE=$?
 
 echo "Evaluation finished."
 
@@ -49,6 +63,13 @@ if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
     echo "Copying logs to $OUTDIR"
     cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
     cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
+    cp "logs/dask_distributed_${SLURM_JOB_ID}_0.log" "$OUTDIR/${job_name}_dask.log" 2>/dev/null || \
+    echo "Could not copy dask log"
+fi
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "Evaluation failed with exit code $EXIT_CODE. Aborting notebook rendering."
+    exit $EXIT_CODE
 fi
 
 # --- Notebook Rendering ---

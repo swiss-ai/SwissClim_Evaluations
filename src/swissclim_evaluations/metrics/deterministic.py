@@ -16,7 +16,12 @@ from scores.continuous.correlation import pearsonr
 from scores.functions import create_latitude_weights
 from scores.spatial import fss_2d_single_field
 
-from ..dask_utils import compute_jobs
+from .. import console as c
+from ..dask_utils import (
+    calculate_dynamic_chunk_size,
+    compute_global_quantile,
+    compute_quantile_preserving,
+)
 from ..helpers import (
     format_variable_name,
     get_variable_units,
@@ -83,7 +88,7 @@ def _finalize_metrics(
                 df_var["variable"] = var
                 dfs.append(df_var)
             except Exception as e:
-                print(f"[deterministic] Failed to convert metrics for {var} to DataFrame: {e}")
+                c.print(f"[deterministic] Failed to convert metrics for {var} to DataFrame: {e}")
                 continue
 
         if dfs:
@@ -97,12 +102,12 @@ def _calculate_all_metrics(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     calc_relative: bool,
-    n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None = None,
     seeps_climatology_path: str | None = None,
     preserve_dims: list[str] | None = None,
     compute: bool = True,
+    weights: xr.DataArray | None = None,
 ) -> pd.DataFrame | tuple[dict[str, dict[str, Any]], list[tuple[str, str, Any]]]:
     """Compute scalar deterministic metrics per variable.
 
@@ -177,14 +182,13 @@ def _calculate_all_metrics(
     }
     metrics_to_compute = all_metric_names if include is None else set(include)
 
-    weights = None
-    if "latitude" in ds_target.dims:
+    if weights is None and "latitude" in ds_target.dims:
         weights = create_latitude_weights(ds_target.latitude)
         # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
         weights = weights.clip(min=0.0)
 
     # --- Pre-compute FSS quantiles if needed (Batch Optimization) ---
-    fss_thresholds_map: dict[str, list[float]] = {}
+    fss_thresholds_map: dict[str, list[Any]] = {}
     if (include is None) or ("FSS" in metrics_to_compute):
         lazy_quantiles = []
         var_needs_quantile = []
@@ -196,8 +200,14 @@ def _calculate_all_metrics(
             else:
                 # Need quantile
                 y_true = ds_target[var]
-                # Use skipna=True to handle NaNs
-                q_da = y_true.quantile(fss_quantile, skipna=True)
+                # Use custom quantile to avoid memory issues with large arrays
+                # If preserve_dims is set (e.g. for per-level metrics), we must compute quantile
+                # per slice to avoid aggregating across levels.
+                if preserve_dims:
+                    q_da = compute_quantile_preserving(y_true, [fss_quantile], preserve_dims)
+                else:
+                    q_da = compute_global_quantile(y_true, fss_quantile, skipna=True)
+
                 lazy_quantiles.append(q_da)
                 var_needs_quantile.append(var)
 
@@ -205,8 +215,10 @@ def _calculate_all_metrics(
             # Compute all quantiles in one parallel pass
             computed_quantiles = dask.compute(*lazy_quantiles)
             for var, val in zip(var_needs_quantile, computed_quantiles, strict=False):
-                # val is a numpy scalar or 0-d array
-                fss_thresholds_map[var] = [float(val.item() if hasattr(val, "item") else val)]
+                if isinstance(val, xr.DataArray | np.ndarray) and val.ndim > 0:
+                    fss_thresholds_map[var] = [val]
+                else:
+                    fss_thresholds_map[var] = [float(val.item() if hasattr(val, "item") else val)]
 
     # Store lazy objects to compute in one go
     # List of (variable_name, metric_name, lazy_object)
@@ -278,29 +290,51 @@ def _calculate_all_metrics(
             else:
                 # Quantile case
                 list_fss_label = [f"FSS_{100 * fss_quantile}%"]
+
             for event_threshold, fss_label in zip(
                 list_event_threshold, list_fss_label, strict=False
             ):
                 try:
                     spatial_dims = ["latitude", "longitude"]
 
-                    # Proper call to fss_2d with config-driven arguments only
-                    # We use fss_2d_single_field via apply_ufunc directly to control dask
-                    # behavior and avoid inference issues with small chunks by providing
-                    # output_dtypes.
-                    out = xr.apply_ufunc(
-                        fss_2d_single_field,
-                        y_pred,
-                        y_true,
-                        input_core_dims=[spatial_dims, spatial_dims],
-                        kwargs={
-                            "event_threshold": event_threshold,
-                            "window_size": fss_window_size,
-                        },
-                        vectorize=True,
-                        dask="parallelized",
-                        output_dtypes=[float],
-                    )
+                    if isinstance(event_threshold, xr.DataArray | xr.Variable):
+                        # Wrapper to adapt positional threshold to keyword-only argument
+                        def _fss_wrapper(p, t, th, **kwargs):
+                            return fss_2d_single_field(p, t, event_threshold=th, **kwargs)
+
+                        out = xr.apply_ufunc(
+                            _fss_wrapper,
+                            y_pred,
+                            y_true,
+                            event_threshold,
+                            input_core_dims=[
+                                spatial_dims,
+                                spatial_dims,
+                                [],
+                            ],
+                            kwargs={
+                                "window_size": fss_window_size,
+                            },
+                            vectorize=True,
+                            dask="parallelized",
+                            output_dtypes=[float],
+                        )
+                    else:
+                        # Pass as kwarg (scalar)
+                        out = xr.apply_ufunc(
+                            fss_2d_single_field,
+                            y_pred,
+                            y_true,
+                            input_core_dims=[spatial_dims, spatial_dims],
+                            kwargs={
+                                "event_threshold": event_threshold,
+                                "window_size": fss_window_size,
+                            },
+                            vectorize=True,
+                            dask="parallelized",
+                            output_dtypes=[float],
+                        )
+
                     # Reduce to scalar
                     if isinstance(out, xr.DataArray):
                         try:
@@ -327,7 +361,7 @@ def _calculate_all_metrics(
                 except Exception as e:
                     # Surface the error context once while keeping pipeline resilient
                     with contextlib.suppress(Exception):
-                        print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
+                        c.print(f"[deterministic:FSS] fss_2d failed for var='{var}': {e!r}")
                     metrics_dict[var][fss_label] = float("nan")
 
         if "total_precipitation" in var and "SEEPS" in metrics_to_compute:
@@ -426,10 +460,10 @@ def _calculate_per_level_metrics(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     calc_relative: bool,
-    n_points: int,
     include: list[str] | None,
     fss_cfg: dict[str, Any] | None,
     compute: bool = True,
+    weights: xr.DataArray | None = None,
 ) -> pd.DataFrame | tuple[dict, list] | None:
     """Compute metrics per pressure level for 3D variables."""
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
@@ -447,11 +481,11 @@ def _calculate_per_level_metrics(
         ds_t_3d,
         ds_p_3d,
         calc_relative,
-        n_points,
         include,
         fss_cfg,
         preserve_dims=["level"],
         compute=compute,
+        weights=weights,
     )
 
 
@@ -465,6 +499,7 @@ def run(
     metrics_cfg: dict[str, Any] | None,
     ensemble_mode: str | None = None,
     lead_policy: Any | None = None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     """Compute and write deterministic metrics CSVs.
 
@@ -481,6 +516,7 @@ def run(
     fss_cfg = cfg.get("fss", {})
     seeps_climatology_path = cfg.get("seeps_climatology_path")
     report_per_level = bool(cfg.get("report_per_level", True))
+    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
     reduce_ens_mean = True
     try:
         rem = cfg.get("reduce_ensemble_mean")
@@ -520,7 +556,6 @@ def run(
             ds_target_std = ds_target_std.mean(dim="ensemble", keep_attrs=True)
 
     # Compute metrics
-    n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
     section_output = out_root / "deterministic"
 
     def _extract_init_range(ds: xr.Dataset):
@@ -568,6 +603,13 @@ def run(
 
     df_all_lead = pd.DataFrame()
 
+    # Compute weights once if needed
+    weights = None
+    if "latitude" in ds_target.dims:
+        weights = create_latitude_weights(ds_target.latitude)
+        # Fix for floating point errors giving slightly (~-10^-8) negative weights at poles
+        weights = weights.clip(min=0.0)
+
     if members_indices is None:
         # Check multi_lead early
         try:
@@ -580,173 +622,172 @@ def run(
         except Exception:
             multi_lead = False
 
-        # Initialize result lists
-        results_reg = []
-        results_std = []
-        results_lvl = []
-        results_lvl_std = []
-        results_lead = []
+        # Build all lazy objects on full datasets (not per-variable) for better dask graph sharing
+        # This allows dask to optimize across variables and share intermediate computations
+        # IMPORTANT: All lazy objects are collected into ONE list and computed in ONE call
+        # to allow dask to optimize the entire graph together
 
-        variables = list(ds_target.data_vars)
-
-        for var in variables:
-            job: dict[str, Any] = {"var": var}
-
-            # Create single-variable datasets
-            ds_t_var = ds_target[[var]]
-            ds_p_var = ds_prediction[[var]]
-
-            # For standardized, check if var exists
-            ds_t_std_var = ds_target_std[[var]] if var in ds_target_std else None
-            ds_p_std_var = ds_prediction_std[[var]] if var in ds_prediction_std else None
-
-            # 1. Regular metrics
-            reg_dict, reg_lazy_list = ({}, [])
-            if not multi_lead:
-                reg_dict, reg_lazy_list = _calculate_all_metrics(
-                    ds_t_var,
-                    ds_p_var,
-                    calc_relative=True,
-                    n_points=n_points,
-                    include=include,
-                    fss_cfg=fss_cfg,
-                    seeps_climatology_path=seeps_climatology_path,
-                    compute=False,
-                )
-                if reg_lazy_list:
-                    _, _, lazy_objs = zip(*reg_lazy_list, strict=False)
-                    job["reg_lazy"] = list(lazy_objs)
-                else:
-                    job["reg_lazy"] = None
-
-            # 2. Standardized metrics
-            std_dict, std_lazy_list = ({}, [])
-            if not multi_lead and ds_t_std_var is not None and ds_p_std_var is not None:
-                std_dict, std_lazy_list = _calculate_all_metrics(
-                    ds_t_std_var,
-                    ds_p_std_var,
-                    calc_relative=False,
-                    n_points=n_points,
-                    include=std_include,
-                    fss_cfg=fss_cfg,
-                    seeps_climatology_path=seeps_climatology_path,
-                    compute=False,
-                )
-                if std_lazy_list:
-                    _, _, lazy_objs = zip(*std_lazy_list, strict=False)
-                    job["std_lazy"] = list(lazy_objs)
-                else:
-                    job["std_lazy"] = None
-
-            # 3. Per-level metrics
-            lvl_dict, lvl_lazy_list = ({}, [])
-            lvl_std_dict, lvl_std_lazy_list = ({}, [])
-            if report_per_level and not multi_lead:
-                res = _calculate_per_level_metrics(
-                    ds_t_var,
-                    ds_p_var,
-                    calc_relative=True,
-                    n_points=n_points,
-                    include=include,
-                    fss_cfg=fss_cfg,
-                    compute=False,
-                )
-                if res is not None:
-                    lvl_dict, lvl_lazy_list = res
-                    if lvl_lazy_list:
-                        _, _, lazy_objs = zip(*lvl_lazy_list, strict=False)
-                        job["lvl_lazy"] = list(lazy_objs)
-                    else:
-                        job["lvl_lazy"] = None
-
-                if ds_t_std_var is not None and ds_p_std_var is not None:
-                    res_std = _calculate_per_level_metrics(
-                        ds_t_std_var,
-                        ds_p_std_var,
-                        calc_relative=False,
-                        n_points=n_points,
-                        include=std_include,
-                        fss_cfg=fss_cfg,
-                        compute=False,
-                    )
-                    if res_std is not None:
-                        lvl_std_dict, lvl_std_lazy_list = res_std
-                        if lvl_std_lazy_list:
-                            _, _, lazy_objs = zip(*lvl_std_lazy_list, strict=False)
-                            job["lvl_std_lazy"] = list(lazy_objs)
-                        else:
-                            job["lvl_std_lazy"] = None
-
-            # 4. Multi-lead metrics
-            lead_dict, lead_lazy_list = ({}, [])
-            if multi_lead:
-                lead_dict, lead_lazy_list = _calculate_all_metrics(
-                    ds_t_var,
-                    ds_p_var,
-                    calc_relative=True,
-                    n_points=n_points,
-                    include=include,
-                    fss_cfg=fss_cfg,
-                    preserve_dims=["lead_time"],
-                    compute=False,
-                )
-                if lead_lazy_list:
-                    _, _, lazy_objs = zip(*lead_lazy_list, strict=False)
-                    job["lead_lazy"] = list(lazy_objs)
-                else:
-                    job["lead_lazy"] = None
-
-            # Compute
-            compute_jobs(
-                [job],
-                key_map={
-                    "reg_lazy": "reg_res",
-                    "std_lazy": "std_res",
-                    "lvl_lazy": "lvl_res",
-                    "lvl_std_lazy": "lvl_std_res",
-                    "lead_lazy": "lead_res",
-                },
+        # 1. Regular metrics (all variables at once)
+        reg_dict, reg_lazy = ({}, [])
+        if not multi_lead:
+            reg_dict, reg_lazy = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                include=include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+                weights=weights,
             )
 
-            # Finalize
-            if job.get("reg_res"):
-                df_reg = _finalize_metrics(reg_dict, reg_lazy_list, job["reg_res"], None)
-                if not df_reg.empty:
-                    results_reg.append(df_reg)
+        # 2. Standardized metrics (all variables at once)
+        std_dict, std_lazy = ({}, [])
+        if not multi_lead:
+            std_dict, std_lazy = _calculate_all_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+                weights=weights,
+            )
 
-            if job.get("std_res"):
-                df_std = _finalize_metrics(std_dict, std_lazy_list, job["std_res"], None)
-                if not df_std.empty:
-                    results_std.append(df_std)
+        # 3. Per-level metrics (all 3D variables at once)
+        lvl_dict, lvl_lazy = ({}, [])
+        lvl_std_dict, lvl_std_lazy = ({}, [])
+        if report_per_level and not multi_lead:
+            res = _calculate_per_level_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                include=include,
+                fss_cfg=fss_cfg,
+                compute=False,
+                weights=weights,
+            )
+            if res is not None:
+                lvl_dict, lvl_lazy = res
 
-            if job.get("lvl_res"):
-                df_lvl = _finalize_metrics(lvl_dict, lvl_lazy_list, job["lvl_res"], ["level"])
-                if not df_lvl.empty:
-                    results_lvl.append(df_lvl)
+            res_std = _calculate_per_level_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                compute=False,
+                weights=weights,
+            )
+            if res_std is not None:
+                lvl_std_dict, lvl_std_lazy = res_std
 
-            if job.get("lvl_std_res"):
-                df_lvl_std = _finalize_metrics(
-                    lvl_std_dict, lvl_std_lazy_list, job["lvl_std_res"], ["level"]
-                )
-                if not df_lvl_std.empty:
-                    results_lvl_std.append(df_lvl_std)
+        # 4. Multi-lead metrics (all variables at once)
+        lead_dict, lead_lazy = ({}, [])
+        if multi_lead:
+            lead_dict, lead_lazy = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                include=include,
+                fss_cfg=fss_cfg,
+                preserve_dims=["lead_time"],
+                compute=False,
+                weights=weights,
+            )
 
-            if job.get("lead_res"):
-                df_lead = _finalize_metrics(
-                    lead_dict, lead_lazy_list, job["lead_res"], ["lead_time"]
-                )
-                if not df_lead.empty:
-                    results_lead.append(df_lead)
+        # Heuristic for chunk size: target ~1B points per batch to avoid OOM
+        dynamic_chunk = calculate_dynamic_chunk_size(
+            config_chunk_size=chunk_size_cfg,
+            ds=ds_target,
+        )
 
-            # Explicit cleanup
-            del ds_t_var, ds_p_var, ds_t_std_var, ds_p_std_var, job
+        # Collect ALL lazy objects into one list for unified dask graph optimization
+        # Track the boundaries so we can dispatch results back to categories
+        all_lazy_objs: list[Any] = []
+        category_boundaries: list[tuple[str, int, int]] = []  # (name, start_idx, end_idx)
 
-        # Concatenate results
-        regular_metrics = pd.concat(results_reg) if results_reg else pd.DataFrame()
-        standardized_metrics = pd.concat(results_std) if results_std else pd.DataFrame()
-        per_level_metrics = pd.concat(results_lvl) if results_lvl else pd.DataFrame()
-        per_level_std = pd.concat(results_lvl_std) if results_lvl_std else pd.DataFrame()
-        df_all_lead = pd.concat(results_lead) if results_lead else pd.DataFrame()
+        if reg_lazy:
+            _, _, lazy_objs = zip(*reg_lazy, strict=False)
+            start = len(all_lazy_objs)
+            all_lazy_objs.extend(lazy_objs)
+            category_boundaries.append(("reg", start, len(all_lazy_objs)))
+
+        if std_lazy:
+            _, _, lazy_objs = zip(*std_lazy, strict=False)
+            start = len(all_lazy_objs)
+            all_lazy_objs.extend(lazy_objs)
+            category_boundaries.append(("std", start, len(all_lazy_objs)))
+
+        if lvl_lazy:
+            _, _, lazy_objs = zip(*lvl_lazy, strict=False)
+            start = len(all_lazy_objs)
+            all_lazy_objs.extend(lazy_objs)
+            category_boundaries.append(("lvl", start, len(all_lazy_objs)))
+
+        if lvl_std_lazy:
+            _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
+            start = len(all_lazy_objs)
+            all_lazy_objs.extend(lazy_objs)
+            category_boundaries.append(("lvl_std", start, len(all_lazy_objs)))
+
+        if lead_lazy:
+            _, _, lazy_objs = zip(*lead_lazy, strict=False)
+            start = len(all_lazy_objs)
+            all_lazy_objs.extend(lazy_objs)
+            category_boundaries.append(("lead", start, len(all_lazy_objs)))
+
+        # Compute ALL lazy objects in ONE call (or chunked for OOM protection)
+        # This allows dask to optimize the entire graph together
+        all_results: list[Any] = []
+        if all_lazy_objs:
+            # Use chunk_size for OOM protection, None means compute all at once (fastest)
+            chunk_size = dynamic_chunk if dynamic_chunk < 100 else None
+            if chunk_size is None or chunk_size >= len(all_lazy_objs):
+                all_results = list(dask.compute(*all_lazy_objs))
+            else:
+                # Chunked computation for OOM protection
+                for i in range(0, len(all_lazy_objs), chunk_size):
+                    chunk = all_lazy_objs[i : i + chunk_size]
+                    all_results.extend(dask.compute(*chunk))
+
+        # Dispatch results back to categories using boundaries
+        reg_results: list[Any] = []
+        std_results: list[Any] = []
+        lvl_results: list[Any] = []
+        lvl_std_results: list[Any] = []
+        lead_results: list[Any] = []
+
+        for name, start, end in category_boundaries:
+            if name == "reg":
+                reg_results = all_results[start:end]
+            elif name == "std":
+                std_results = all_results[start:end]
+            elif name == "lvl":
+                lvl_results = all_results[start:end]
+            elif name == "lvl_std":
+                lvl_std_results = all_results[start:end]
+            elif name == "lead":
+                lead_results = all_results[start:end]
+
+        # Finalize metrics
+        regular_metrics = _finalize_metrics(reg_dict, reg_lazy, reg_results, None)
+        standardized_metrics = _finalize_metrics(std_dict, std_lazy, std_results, None)
+
+        per_level_metrics = pd.DataFrame()
+        if lvl_lazy or lvl_dict:
+            per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, lvl_results, ["level"])
+
+        per_level_std = pd.DataFrame()
+        if lvl_std_lazy or lvl_std_dict:
+            per_level_std = _finalize_metrics(
+                lvl_std_dict, lvl_std_lazy, lvl_std_results, ["level"]
+            )
+
+        df_all_lead = pd.DataFrame()
+        if lead_lazy or lead_dict:
+            df_all_lead = _finalize_metrics(lead_dict, lead_lazy, lead_results, ["lead_time"])
 
         # Ensure level column is int if present
         if not per_level_metrics.empty and "level" in per_level_metrics.columns:
@@ -776,9 +817,11 @@ def run(
             ext="csv",
         )
         if not regular_metrics.empty:
-            save_dataframe(regular_metrics, out_csv, index_label="variable")
+            save_dataframe(regular_metrics, out_csv, index_label="variable", module="deterministic")
         if not standardized_metrics.empty:
-            save_dataframe(standardized_metrics, out_csv_std, index_label="variable")
+            save_dataframe(
+                standardized_metrics, out_csv_std, index_label="variable", module="deterministic"
+            )
 
         if per_level_metrics is not None and not per_level_metrics.empty:
             out_csv_lvl = section_output / build_output_filename(
@@ -791,7 +834,7 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            save_dataframe(per_level_metrics, out_csv_lvl, index=False)
+            save_dataframe(per_level_metrics, out_csv_lvl, index=False, module="deterministic")
 
         if per_level_std is not None and not per_level_std.empty:
             out_csv_lvl_std = section_output / build_output_filename(
@@ -804,17 +847,21 @@ def run(
                 ensemble=ens_token,
                 ext="csv",
             )
-            save_dataframe(per_level_std, out_csv_lvl_std, index=False)
+            save_dataframe(per_level_std, out_csv_lvl_std, index=False, module="deterministic")
 
         # Console summary
         try:
-            print("Deterministic metrics (targets vs predictions) — first 5 rows:")
-            print(regular_metrics.head())
+            if not regular_metrics.empty:
+                c.print("Deterministic metrics (targets vs predictions) — first 5 rows:")
+                c.print(regular_metrics.head())
         except Exception:
             pass
         try:
-            print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
-            print(standardized_metrics.head())
+            if not standardized_metrics.empty:
+                c.print(
+                    "Deterministic standardized metrics (targets vs predictions) — first 5 rows:"
+                )
+                c.print(standardized_metrics.head())
         except Exception:
             pass
     else:
@@ -824,6 +871,12 @@ def run(
         pooled_metrics: list[pd.DataFrame] = []
         first_reg_df: pd.DataFrame | None = None
         first_std_df: pd.DataFrame | None = None
+        # Heuristic for chunk size also in members mode
+        dynamic_chunk = calculate_dynamic_chunk_size(
+            config_chunk_size=chunk_size_cfg,
+            ds=ds_target,
+        )
+
         for mi in members_indices:
             ds_pred_m = ds_prediction
             if "ensemble" in ds_prediction.dims:
@@ -840,135 +893,129 @@ def run(
                 else ds_target_std
             )
 
-            # Loop over variables for memory safety
-            res_reg_m = []
-            res_std_m = []
-            res_lvl_m = []
-            res_lvl_std_m = []
+            # Build all lazy objects on full member datasets (not per-variable)
+            # for better dask graph sharing - ALL categories computed in ONE call
 
-            variables = list(ds_target.data_vars)
-            for var in variables:
-                job = {"var": var}
-                ds_t_m_var = ds_tgt_m[[var]]
-                ds_p_m_var = ds_pred_m[[var]]
-                ds_t_m_std_var = ds_tgt_m_std[[var]] if var in ds_tgt_m_std else None
-                ds_p_m_std_var = ds_pred_m_std[[var]] if var in ds_pred_m_std else None
+            # 1. Regular metrics (all variables at once)
+            reg_dict, reg_lazy = _calculate_all_metrics(
+                ds_tgt_m,
+                ds_pred_m,
+                calc_relative=True,
+                include=include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+                weights=weights,
+            )
 
-                # Regular
-                reg_dict, reg_lazy_list = _calculate_all_metrics(
-                    ds_t_m_var,
-                    ds_p_m_var,
+            # 2. Standardized metrics (all variables at once)
+            std_dict, std_lazy = _calculate_all_metrics(
+                ds_tgt_m_std,
+                ds_pred_m_std,
+                calc_relative=False,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=False,
+                weights=weights,
+            )
+
+            # 3. Per-level metrics (all 3D variables at once)
+            lvl_dict, lvl_lazy = ({}, [])
+            lvl_std_dict, lvl_std_lazy = ({}, [])
+            if report_per_level:
+                res = _calculate_per_level_metrics(
+                    ds_tgt_m,
+                    ds_pred_m,
                     calc_relative=True,
-                    n_points=n_points,
                     include=include,
                     fss_cfg=fss_cfg,
-                    seeps_climatology_path=seeps_climatology_path,
                     compute=False,
+                    weights=weights,
                 )
-                if reg_lazy_list:
-                    _, _, lazy_objs = zip(*reg_lazy_list, strict=False)
-                    job["reg_lazy"] = list(lazy_objs)
+                if res is not None:
+                    lvl_dict, lvl_lazy = res
+
+                res_std = _calculate_per_level_metrics(
+                    ds_tgt_m_std,
+                    ds_pred_m_std,
+                    calc_relative=False,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                    compute=False,
+                    weights=weights,
+                )
+                if res_std is not None:
+                    lvl_std_dict, lvl_std_lazy = res_std
+
+            # Collect ALL lazy objects into one list for unified dask graph optimization
+            m_all_lazy_objs: list = []
+            m_category_boundaries = []
+
+            if reg_lazy:
+                _, _, lazy_objs = zip(*reg_lazy, strict=False)
+                start = len(m_all_lazy_objs)
+                m_all_lazy_objs.extend(lazy_objs)
+                m_category_boundaries.append(("reg", start, len(m_all_lazy_objs)))
+
+            if std_lazy:
+                _, _, lazy_objs = zip(*std_lazy, strict=False)
+                start = len(m_all_lazy_objs)
+                m_all_lazy_objs.extend(lazy_objs)
+                m_category_boundaries.append(("std", start, len(m_all_lazy_objs)))
+
+            if lvl_lazy:
+                _, _, lazy_objs = zip(*lvl_lazy, strict=False)
+                start = len(m_all_lazy_objs)
+                m_all_lazy_objs.extend(lazy_objs)
+                m_category_boundaries.append(("lvl", start, len(m_all_lazy_objs)))
+
+            if lvl_std_lazy:
+                _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
+                start = len(m_all_lazy_objs)
+                m_all_lazy_objs.extend(lazy_objs)
+                m_category_boundaries.append(("lvl_std", start, len(m_all_lazy_objs)))
+
+            # Compute ALL lazy objects in ONE call (or chunked for OOM protection)
+            m_all_results = []
+            if m_all_lazy_objs:
+                chunk_size = dynamic_chunk if dynamic_chunk < 100 else None
+                if chunk_size is None or chunk_size >= len(m_all_lazy_objs):
+                    m_all_results = list(dask.compute(*m_all_lazy_objs))
                 else:
-                    job["reg_lazy"] = None
+                    for i in range(0, len(m_all_lazy_objs), chunk_size):
+                        chunk = m_all_lazy_objs[i : i + chunk_size]
+                        m_all_results.extend(dask.compute(*chunk))
 
-                # Standardized
-                std_dict, std_lazy_list = ({}, [])
-                if ds_t_m_std_var is not None and ds_p_m_std_var is not None:
-                    std_dict, std_lazy_list = _calculate_all_metrics(
-                        ds_t_m_std_var,
-                        ds_p_m_std_var,
-                        calc_relative=False,
-                        n_points=n_points,
-                        include=std_include,
-                        fss_cfg=fss_cfg,
-                        seeps_climatology_path=seeps_climatology_path,
-                        compute=False,
-                    )
-                    if std_lazy_list:
-                        _, _, lazy_objs = zip(*std_lazy_list, strict=False)
-                        job["std_lazy"] = list(lazy_objs)
-                    else:
-                        job["std_lazy"] = None
+            # Dispatch results back to categories
+            reg_results = []
+            std_results = []
+            lvl_results = []
+            lvl_std_results = []
 
-                # Per-level
-                lvl_dict, lvl_lazy_list = ({}, [])
-                lvl_std_dict, lvl_std_lazy_list = ({}, [])
-                if report_per_level:
-                    res = _calculate_per_level_metrics(
-                        ds_t_m_var,
-                        ds_p_m_var,
-                        calc_relative=True,
-                        n_points=n_points,
-                        include=include,
-                        fss_cfg=fss_cfg,
-                        compute=False,
-                    )
-                    if res is not None:
-                        lvl_dict, lvl_lazy_list = res
-                        if lvl_lazy_list:
-                            _, _, lazy_objs = zip(*lvl_lazy_list, strict=False)
-                            job["lvl_lazy"] = list(lazy_objs)
-                        else:
-                            job["lvl_lazy"] = None
+            for name, start, end in m_category_boundaries:
+                if name == "reg":
+                    reg_results = m_all_results[start:end]
+                elif name == "std":
+                    std_results = m_all_results[start:end]
+                elif name == "lvl":
+                    lvl_results = m_all_results[start:end]
+                elif name == "lvl_std":
+                    lvl_std_results = m_all_results[start:end]
 
-                    if ds_t_m_std_var is not None and ds_p_m_std_var is not None:
-                        res_std = _calculate_per_level_metrics(
-                            ds_t_m_std_var,
-                            ds_p_m_std_var,
-                            calc_relative=False,
-                            n_points=n_points,
-                            include=std_include,
-                            fss_cfg=fss_cfg,
-                            compute=False,
-                        )
-                        if res_std is not None:
-                            lvl_std_dict, lvl_std_lazy_list = res_std
-                            if lvl_std_lazy_list:
-                                _, _, lazy_objs = zip(*lvl_std_lazy_list, strict=False)
-                                job["lvl_std_lazy"] = list(lazy_objs)
-                            else:
-                                job["lvl_std_lazy"] = None
+            # Finalize metrics
+            reg_m = _finalize_metrics(reg_dict, reg_lazy, reg_results, None)
+            std_m = _finalize_metrics(std_dict, std_lazy, std_results, None)
 
-                # Compute
-                compute_jobs(
-                    [job],
-                    key_map={
-                        "reg_lazy": "reg_res",
-                        "std_lazy": "std_res",
-                        "lvl_lazy": "lvl_res",
-                        "lvl_std_lazy": "lvl_std_res",
-                    },
+            per_level_m = None
+            if lvl_lazy or lvl_dict:
+                per_level_m = _finalize_metrics(lvl_dict, lvl_lazy, lvl_results, ["level"])
+
+            per_level_m_std = None
+            if lvl_std_lazy or lvl_std_dict:
+                per_level_m_std = _finalize_metrics(
+                    lvl_std_dict, lvl_std_lazy, lvl_std_results, ["level"]
                 )
-
-                # Finalize
-                if job.get("reg_res"):
-                    df_reg = _finalize_metrics(reg_dict, reg_lazy_list, job["reg_res"], None)
-                    if not df_reg.empty:
-                        res_reg_m.append(df_reg)
-
-                if job.get("std_res"):
-                    df_std = _finalize_metrics(std_dict, std_lazy_list, job["std_res"], None)
-                    if not df_std.empty:
-                        res_std_m.append(df_std)
-
-                if job.get("lvl_res"):
-                    df_lvl = _finalize_metrics(lvl_dict, lvl_lazy_list, job["lvl_res"], ["level"])
-                    if not df_lvl.empty:
-                        res_lvl_m.append(df_lvl)
-
-                if job.get("lvl_std_res"):
-                    df_lvl_std = _finalize_metrics(
-                        lvl_std_dict, lvl_std_lazy_list, job["lvl_std_res"], ["level"]
-                    )
-                    if not df_lvl_std.empty:
-                        res_lvl_std_m.append(df_lvl_std)
-
-                del ds_t_m_var, ds_p_m_var, ds_t_m_std_var, ds_p_m_std_var, job
-
-            reg_m = pd.concat(res_reg_m) if res_reg_m else pd.DataFrame()
-            std_m = pd.concat(res_std_m) if res_std_m else pd.DataFrame()
-            per_level_m = pd.concat(res_lvl_m) if res_lvl_m else None
-            per_level_m_std = pd.concat(res_lvl_std_m) if res_lvl_std_m else None
 
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
@@ -995,8 +1042,8 @@ def run(
                 ensemble=token_m,
                 ext="csv",
             )
-            save_dataframe(reg_m, out_csv_m, index_label="variable")
-            save_dataframe(std_m, out_csv_m_std, index_label="variable")
+            save_dataframe(reg_m, out_csv_m, index_label="variable", module="deterministic")
+            save_dataframe(std_m, out_csv_m_std, index_label="variable", module="deterministic")
             pooled_metrics.append(reg_m)
 
             if per_level_m is not None and not per_level_m.empty:
@@ -1010,7 +1057,7 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                save_dataframe(per_level_m, out_csv_m_lvl, index=False)
+                save_dataframe(per_level_m, out_csv_m_lvl, index=False, module="deterministic")
 
             if per_level_m_std is not None and not per_level_m_std.empty:
                 out_csv_m_lvl_std = section_output / build_output_filename(
@@ -1023,7 +1070,9 @@ def run(
                     ensemble=token_m,
                     ext="csv",
                 )
-                save_dataframe(per_level_m_std, out_csv_m_lvl_std, index=False)
+                save_dataframe(
+                    per_level_m_std, out_csv_m_lvl_std, index=False, module="deterministic"
+                )
 
         # Aggregate pooled metrics across members if requested
         if pooled_metrics and aggregate_members_mean:
@@ -1039,24 +1088,28 @@ def run(
                     ensemble="enspooled",
                     ext="csv",
                 )
-                save_dataframe(pooled_df, out_csv_pool, index_label="variable")
+                save_dataframe(
+                    pooled_df, out_csv_pool, index_label="variable", module="deterministic"
+                )
 
         # Console previews for members mode
         try:
-            print("Deterministic metrics (targets vs predictions) — first 5 rows:")
             df_show = (
                 pooled_df
                 if ("pooled_df" in locals() and pooled_df is not None and not pooled_df.empty)
                 else first_reg_df
             )
-            if df_show is not None:
-                print(df_show.head())
+            if df_show is not None and not df_show.empty:
+                c.print("Deterministic metrics (targets vs predictions) — first 5 rows:")
+                c.print(df_show.head())
         except Exception:
             pass
         try:
-            print("Deterministic standardized metrics (targets vs predictions) — first 5 rows:")
-            if first_std_df is not None:
-                print(first_std_df.head())
+            if first_std_df is not None and not first_std_df.empty:
+                c.print(
+                    "Deterministic standardized metrics (targets vs predictions) — first 5 rows:"
+                )
+                c.print(first_std_df.head())
         except Exception:
             pass
 
@@ -1079,10 +1132,10 @@ def run(
                 ds_target,
                 ds_prediction,
                 calc_relative=True,
-                n_points=n_points,
                 include=include,
                 fss_cfg=fss_cfg,
                 preserve_dims=["lead_time"],
+                weights=weights,
             )
 
         wide_df = pd.DataFrame()
@@ -1131,7 +1184,7 @@ def run(
                 )
                 save_dataframe(long_df, out_long, index=False)
             except Exception as e:
-                print(f"[deterministic] Failed to save {out_long}: {e}")
+                c.print(f"[deterministic] Failed to save {out_long}: {e}")
 
             # Save wide_df
             try:
@@ -1145,9 +1198,14 @@ def run(
                     ensemble=ens_token,
                     ext="csv",
                 )
-                save_dataframe(wide_df, out_wide, index=False)
+                save_dataframe(wide_df, out_wide, index=False, module="deterministic")
+
+                # Print wide_df head to console if available
+                if not wide_df.empty:
+                    c.print("Deterministic metrics by lead time (first 5 rows):")
+                    c.print(wide_df.head())
             except Exception as e:
-                print(f"[deterministic] Failed to save {out_wide}: {e}")
+                c.print(f"[deterministic] Failed to save {out_wide}: {e}")
 
         # Optional quick line plots over lead_time
         # Always generate one plot per (variable, metric): x=lead_time, y=value
@@ -1202,7 +1260,7 @@ def run(
                             ext="png",
                         )
                         _plt.tight_layout()
-                        save_figure(fig, out_png)
+                        save_figure(fig, out_png, module="deterministic")
                         # Save NPZ and CSV for the line plot
                         out_npz = section_output / build_output_filename(
                             metric="det_line",
@@ -1220,6 +1278,7 @@ def run(
                             values=y.astype(float),
                             metric=str(m),
                             variable=str(v),
+                            module="deterministic",
                         )
                         out_csv = section_output / build_output_filename(
                             metric="det_line",
@@ -1232,8 +1291,10 @@ def run(
                             ext="csv",
                         )
                         save_dataframe(
-                            pd.DataFrame({"lead_time_hours": x, m: y}), out_csv, index=False
+                            pd.DataFrame({"lead_time_hours": x, m: y}),
+                            out_csv,
+                            index=False,
+                            module="deterministic",
                         )
         except Exception:
             pass
-        # (Removed duplicate standardized metrics console summary to reduce noise)
