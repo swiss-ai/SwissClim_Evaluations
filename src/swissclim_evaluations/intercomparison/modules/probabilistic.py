@@ -405,6 +405,8 @@ def intercompare_probabilistic(
                             )
                             has_data = True
                     except Exception:
+                        # If reading/parsing this SSR CSV fails for any reason,
+                        # skip this model/file and continue plotting the others.
                         pass
 
             if has_data:
