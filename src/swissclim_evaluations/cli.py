@@ -1643,15 +1643,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     f"{ens_size} <2 → skipping probabilistic metrics (CRPS/PIT + WBX require >=2)."
                 )
                 # Register skipped modules
-                for suffix in ("xarray", "plots", "wbx"):
-                    module_results.append(
-                        {
-                            "name": f"probabilistic:{suffix}",
-                            "status": "skipped",
-                            "seconds": 0.0,
-                            "error": "ensemble size <2",
-                        }
-                    )
+                module_results.append(
+                    {
+                        "name": "probabilistic",
+                        "status": "skipped",
+                        "seconds": 0.0,
+                        "error": "ensemble size <2",
+                    }
+                )
                 # Continue to completion without executing probabilistic submodules
                 pass
             else:
@@ -1697,6 +1696,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     )
         else:
             c.warn("No ensemble dimension → skipping probabilistic metrics (requires 'ensemble').")
+            module_results.append(
+                {
+                    "name": "probabilistic",
+                    "status": "skipped",
+                    "seconds": 0.0,
+                    "error": "no ensemble dimension",
+                }
+            )
     # Final completion message + timings summary + module results summary (pass/fail)
     elapsed = time.time() - t0
     try:
