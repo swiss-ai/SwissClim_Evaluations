@@ -102,6 +102,7 @@ def calculate_and_plot_bivariate_histograms(
             "min_y": "min_y_res",
             "max_y": "max_y_res",
         },
+        desc="Computing ranges",
     )
 
     # 2. Second pass: Create histogram lazy objects using computed ranges
@@ -181,6 +182,7 @@ def calculate_and_plot_bivariate_histograms(
             "h_pred": "hist_pred",
             "h_target": "hist_target",
         },
+        desc="Computing histograms",
     )
 
     # 3. Plotting

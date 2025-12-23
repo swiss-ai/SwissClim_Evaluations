@@ -25,6 +25,7 @@ def compute_jobs(
     post_process: dict[str, Callable[[Any], Any]] | None = None,
     chunk_size: int = 20,
     optimize_graph: bool | None = None,
+    desc: str | None = None,
 ) -> None:
     """
     Batch compute dask lazy objects inside a list of job dictionaries.
@@ -38,14 +39,18 @@ def compute_jobs(
                       e.g. {"sub_t": to_finite_array}
         chunk_size: Number of jobs to compute in one batch.
                     Default is 20.
+        desc: Optional description to prepend to the log message.
     """
     if not jobs:
         return
 
     num_batches = (len(jobs) + chunk_size - 1) // chunk_size
-    c.print(
+    msg = (
         f"[Dask] Processing {len(jobs)} jobs in {num_batches} batches (chunk_size={chunk_size})..."
     )
+    if desc:
+        msg = f"[Dask] {desc}: {msg}"
+    c.print(msg)
 
     # Chunk the jobs directly
     for i in range(0, len(jobs), chunk_size):

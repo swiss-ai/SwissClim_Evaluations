@@ -80,6 +80,7 @@ def calculate_ssim(
             "p_min": "p_min_res",
             "p_max": "p_max_res",
         },
+        desc="Computing ranges",
     )
 
     # 2. Second pass: Create SSIM lazy objects using computed ranges
@@ -136,6 +137,7 @@ def calculate_ssim(
     compute_jobs(
         ssim_jobs,
         key_map={"ssim_mean": "ssim_res"},
+        desc="Computing SSIM metrics",
     )
 
     # 3. Populate results
