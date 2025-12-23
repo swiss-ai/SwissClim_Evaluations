@@ -235,7 +235,7 @@ metrics:
   # SSIM configuration
   ssim:
     sigma: 1.5               # Standard deviation for Gaussian kernel
-    # win_size: 11           # Window size (optional, defaults to 7 or derived from sigma)
+    # win_size: 7           # Window size (optional, defaults to 7 or derived from sigma)
 
   probabilistic:
     # If true, compute and report CRPS summaries per pressure level (for 3D variables).

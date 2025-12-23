@@ -13,14 +13,14 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 
 # -------------------------------------------------------------
 # CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/reproduce_eval.yaml"
-# CONFIG_FILE="${SUBMIT_DIR}/config/reproduce_eval.yaml"
+CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml"
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
 # 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
+export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # -------------------------------------------------------------
 # DASK SCRATCH CONFIGURATION
@@ -34,7 +34,6 @@ mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
 
-export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
