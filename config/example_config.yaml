@@ -66,7 +66,7 @@ selection:
   # Variables without a level dimension present in BOTH datasets.
   variables_2d: [
     "10m_u_component_of_wind",
-    # "10m_v_component_of_wind",
+    "10m_v_component_of_wind",
     # "2m_temperature",
     # "mean_sea_level_pressure",
   ]
@@ -76,7 +76,7 @@ selection:
     # "geopotential",
     # "specific_humidity",
     # "temperature",
-    "u_component_of_wind",
+    # "u_component_of_wind",
     # "v_component_of_wind",
   ]
 
@@ -173,15 +173,15 @@ plotting:
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
-  maps: true                 # Global and per-level maps (Cartopy)
-  histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
-  wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
-  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
-  deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
-  ets: true                  # Equitable Threat Score across quantile thresholds
-  probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
-  ssim: true                 # Structural Similarity Index (SSIM)
+  maps: false                 # Global and per-level maps (Cartopy)
+  histograms: false           # Distributions by latitude bands (2D + optional per-level 3D variables)
+  wd_kde: false               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
+  energy_spectra: false       # Zonal energy spectra + LSD table; NPZ always saved
+  vertical_profiles: false    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
+  deterministic: false        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: false                  # Equitable Threat Score across quantile thresholds
+  probabilistic: false        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  ssim: false                 # Structural Similarity Index (SSIM)
   multivariate: true         # Multivariate metrics (e.g. Bivariate Histograms)
 
 metrics:

@@ -15,12 +15,13 @@ from matplotlib.lines import Line2D
 
 from .. import console as c
 from ..dask_utils import compute_jobs
+from ..helpers import format_variable_name, get_variable_units
 
 
 def _get_label(da: xr.DataArray, var_name: str) -> str:
     """Get a formatted label with unit for a variable from DataArray attributes."""
-    name = var_name
-    unit = da.attrs.get("units", "")
+    name = format_variable_name(var_name)
+    unit = get_variable_units(da, var_name)
     if unit:
         return f"{name} [{unit}]"
     return name
@@ -385,7 +386,7 @@ def plot_bivariate_histogram(
 
     ax.set_xlabel(xlabel if xlabel else var_x)
     ax.set_ylabel(ylabel if ylabel else var_y)
-    ax.set_title(f"{var_x} vs {var_y}")
+    ax.set_title(f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}")
 
     # Zoom out by 25%
     x_min, x_max = bins_x.min(), bins_x.max()
