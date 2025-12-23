@@ -3,7 +3,6 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-import dask
 import dask.array as da
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
@@ -15,6 +14,7 @@ from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
 
 from .. import console as c
+from ..dask_utils import compute_jobs
 
 
 def _get_label(da: xr.DataArray, var_name: str) -> str:
@@ -41,7 +41,11 @@ def calculate_and_plot_bivariate_histograms(
     plotted_pairs = []
     skipped_pairs = []
 
-    for pair in pairs:
+    # 1. First pass: Collect lazy min/max computations for all pairs
+    range_jobs = []
+    valid_pairs_indices = []
+
+    for i, pair in enumerate(pairs):
         if len(pair) != 2:
             continue
         var_x, var_y = pair
@@ -70,10 +74,48 @@ def calculate_and_plot_bivariate_histograms(
         min_y_lazy = da.nanmin(da_y)
         max_y_lazy = da.nanmax(da_y)
 
+        range_jobs.append(
+            {
+                "min_x": min_x_lazy,
+                "max_x": max_x_lazy,
+                "min_y": min_y_lazy,
+                "max_y": max_y_lazy,
+                "pair_idx": i,
+                "var_x": var_x,
+                "var_y": var_y,
+            }
+        )
+        valid_pairs_indices.append(i)
+
+    if not range_jobs:
+        if skipped_pairs:
+            unique_skips = sorted(set(skipped_pairs))
+            c.warn("[multivariate] Skipped pairs:\n  • " + "\n  • ".join(unique_skips))
+        return
+
+    # Compute ranges in batch
+    compute_jobs(
+        range_jobs,
+        key_map={
+            "min_x": "min_x_res",
+            "max_x": "max_x_res",
+            "min_y": "min_y_res",
+            "max_y": "max_y_res",
+        },
+    )
+
+    # 2. Second pass: Create histogram lazy objects using computed ranges
+    hist_jobs = []
+
+    for job in range_jobs:
+        var_x = job["var_x"]
+        var_y = job["var_y"]
+
         try:
-            min_x, max_x, min_y, max_y = dask.compute(
-                min_x_lazy, max_x_lazy, min_y_lazy, max_y_lazy
-            )
+            min_x = float(job["min_x_res"])
+            max_x = float(job["max_x_res"])
+            min_y = float(job["min_y_res"])
+            max_y = float(job["max_y_res"])
         except Exception:
             skipped_pairs.append(f"{var_x} vs {var_y} (computation failed)")
             continue
@@ -89,25 +131,69 @@ def calculate_and_plot_bivariate_histograms(
         fill_x = min_x - 1.0
         fill_y = min_y - 1.0
 
+        # Re-access data (dask arrays)
+        da_x = ds_prediction[var_x].data.flatten()
+        da_y = ds_prediction[var_y].data.flatten()
+
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
 
-        h_pred_lazy, xedges, yedges = da.histogram2d(
-            da_x, da_y, bins=bins, range=[range_x, range_y]
+        # Calculate edges manually to avoid dask array edges which cannot be passed to bins=
+        xedges = np.linspace(min_x, max_x, bins + 1)
+        yedges = np.linspace(min_y, max_y, bins + 1)
+
+        h_pred_lazy, _, _ = da.histogram2d(
+            da_x, da_y, bins=[xedges, yedges], range=[range_x, range_y]
         )
-        hist_pred = h_pred_lazy.compute()
 
-        # Compute for Target
-        da_x_t = ds_target[var_x].data.flatten()
-        da_y_t = ds_target[var_y].data.flatten()
+        # Target data
+        if ds_target is not None:
+            da_x_t = ds_target[var_x].data.flatten()
+            da_y_t = ds_target[var_y].data.flatten()
 
-        da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
-        da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
+            da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
+            da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
 
-        h_target_lazy, _, _ = da.histogram2d(
-            da_x_t, da_y_t, bins=[xedges, yedges], range=[range_x, range_y]
+            h_target_lazy, _, _ = da.histogram2d(
+                da_x_t, da_y_t, bins=[xedges, yedges], range=[range_x, range_y]
+            )
+        else:
+            # Should not happen given checks above, but for safety
+            h_target_lazy = None
+
+        hist_jobs.append(
+            {
+                "h_pred": h_pred_lazy,
+                "h_target": h_target_lazy,
+                "xedges": xedges,
+                "yedges": yedges,
+                "var_x": var_x,
+                "var_y": var_y,
+                "range_x": range_x,
+                "range_y": range_y,
+            }
         )
-        hist_target = h_target_lazy.compute()
+
+    # Compute histograms in batch
+    compute_jobs(
+        hist_jobs,
+        key_map={
+            "h_pred": "hist_pred",
+            "h_target": "hist_target",
+        },
+    )
+
+    # 3. Plotting
+    for job in hist_jobs:
+        if "hist_pred" not in job or "hist_target" not in job:
+            continue
+
+        hist_pred = job["hist_pred"]
+        hist_target = job["hist_target"]
+        xedges = job["xedges"]
+        yedges = job["yedges"]
+        var_x = job["var_x"]
+        var_y = job["var_y"]
 
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""

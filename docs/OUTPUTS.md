@@ -65,29 +65,60 @@ ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
 ```
 
+### Multivariate Metrics
+
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
+
+**Recommended Bivariate Pairs:**
+
+To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
+
+1.  **Surface Dynamics (Wind Vector):** `10m_u_component_of_wind` vs `10m_v_component_of_wind`.
+    *   *Suggested Level:* Surface (10m).
+    *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
+2.  **Upper-level Dynamics (Wind Vector):** `u_component_of_wind` vs `v_component_of_wind`.
+    *   *Suggested Level:* 250 hPa (Jet Stream).
+    *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
+3.  **Thermodynamics (Clausius-Clapeyron):** `temperature` vs `specific_humidity`.
+    *   *Suggested Level:* 850 hPa (Lower Troposphere).
+    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve, which follows the Clausius-Clapeyron relation. Points beyond this curve indicate unphysical supersaturation.
+4.  **Hydrostatics:** `geopotential` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
+5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapour`.
+    *   *Suggested Level:* Surface / Column-integrated.
+    *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
+6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
+
+Outputs:
+- `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
+- `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.
+
+### SSIM
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+
+```text
+ssim_ssim_ensmean.csv
+ssim_ssim_ens0.csv   # members mode per-member file
+```
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
-is exported per init_time/lead_time and summarized. Outputs are split into single-lead (standard) and per-lead variants.
+is exported per init_time/lead_time and summarized. Outputs:
 
-**Standard (Single Lead or averaged):**
-
-- Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>]...`
-- LSD averaged (2D): `energy_spectra/energy_ratios_averaged_<range>.csv`
-- LSD lead_time (2D): `energy_spectra/energy_ratios_lead_time_<range>.csv`
-- LSD plot_datetime (2D): `energy_spectra/energy_ratios_plot_datetime_<range>.csv`
-- LSD averaged (3D): `energy_spectra/energy_ratios_3d_averaged_<range>.csv`
-- LSD per-level (3D): `energy_spectra/energy_ratios_3d_per_level_<range>.csv`
-- LSD lead_time (3D): `energy_spectra/energy_ratios_3d_lead_time_<range>.csv`
-- LSD plot_datetime (3D): `energy_spectra/energy_ratios_3d_plot_datetime_<range>.csv`
-- LSD Banded: `energy_spectra/energy_ratios_bands_averaged_<range>.csv` (and 3D variants)
-
-**Per Lead (Multi Lead):**
-
-- Spectrograms: `energy_spectra/energy_spectra_per_lead_<variable>...`
-- LSD per-lead (2D): `energy_spectra/energy_ratios_per_lead_by_lead_long_<range>.csv` (and wide format)
-- LSD Banded per-lead: `energy_spectra/energy_ratios_bands_per_lead_per_lead_time_<range>.csv`
-- LSD Line Plot: `energy_spectra/energy_ratios_line_per_lead_<variable>...`
+- Figures / NPZ (subset init_time for plotting) : `energy_spectra/lsd_<variable>[_<level>]_spectrum[_init...][_lead...]_ens*.{png|npz}`
+- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_init_time_<range>.csv` or `per_lead_time` depending on dims
+- LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
+- LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
+- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
+- LSD averaged (3D): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (scalar mean over levels and time)
+- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv` (only if `report_per_level=true`)
+- LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
+- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged (scalar), per-level, and init_time summaries.
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
@@ -117,8 +148,8 @@ Time ranges (if present) appear just before the ensemble token: `..._init2023010
 
 Outputs (standardized naming):
 
-- Plot: `vertical_profiles/vertical_profiles_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
-- Combined band data (NPZ): `vertical_profiles/vertical_profiles_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Plot: `vertical_profiles/vprof_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
+- Combined band data (NPZ): `vertical_profiles/vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
 - Summaries (CSV) may be produced by intercomparison rather than the module itself.
 
 ### Spatial Maps
@@ -170,7 +201,6 @@ Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
-crps_ensemble_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv

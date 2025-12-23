@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import dask
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
 
+from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -32,6 +32,10 @@ def calculate_ssim(
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
 
+    # 1. First pass: Collect lazy min/max computations for all variables
+    range_jobs = []
+    valid_vars = []
+
     for var in variables:
         if var not in ds_prediction:
             continue
@@ -44,30 +48,62 @@ def calculate_ssim(
         spatial_dims = [d for d in dims if d in ["latitude", "longitude", "lat", "lon"]]
 
         if len(spatial_dims) != 2:
-            # Skip variables that don't have exactly 2 spatial dimensions
             continue
 
-        # Calculate global data range for the variable to ensure consistent SSIM calculation
-        # We use the union of target and prediction ranges
+        valid_vars.append(var)
+
+        # Calculate global data range for the variable
         t_min_lazy = da_target.min(skipna=True)
         t_max_lazy = da_target.max(skipna=True)
         p_min_lazy = da_prediction.min(skipna=True)
         p_max_lazy = da_prediction.max(skipna=True)
 
-        t_min, t_max, p_min, p_max = dask.compute(t_min_lazy, t_max_lazy, p_min_lazy, p_max_lazy)
+        range_jobs.append(
+            {
+                "t_min": t_min_lazy,
+                "t_max": t_max_lazy,
+                "p_min": p_min_lazy,
+                "p_max": p_max_lazy,
+                "var": var,
+            }
+        )
 
-        t_min = float(t_min)
-        t_max = float(t_max)
-        p_min = float(p_min)
-        p_max = float(p_max)
+    if not range_jobs:
+        return pd.DataFrame()
+
+    # Compute ranges in batch
+    compute_jobs(
+        range_jobs,
+        key_map={
+            "t_min": "t_min_res",
+            "t_max": "t_max_res",
+            "p_min": "p_min_res",
+            "p_max": "p_max_res",
+        },
+    )
+
+    # 2. Second pass: Create SSIM lazy objects using computed ranges
+    ssim_jobs = []
+
+    for job in range_jobs:
+        var = job["var"]
+        t_min = float(job["t_min_res"])
+        t_max = float(job["t_max_res"])
+        p_min = float(job["p_min_res"])
+        p_max = float(job["p_max_res"])
 
         data_range = max(t_max, p_max) - min(t_min, p_min)
         if data_range == 0:
             data_range = 1.0
 
+        da_target = ds_target[var]
+        da_prediction = ds_prediction[var]
+
+        # Re-identify spatial dims (safe as we filtered already)
+        dims = list(da_target.dims)
+        spatial_dims = [d for d in dims if d in ["latitude", "longitude", "lat", "lon"]]
+
         def _ssim_wrapper(t, p, data_range=data_range):
-            # Use Gaussian weights to match the standard SSIM definition (Wang et al. 2004)
-            # and the MATLAB implementation used in Baker et al. 2019.
             return ssim(
                 t,
                 p,
@@ -91,9 +127,22 @@ def calculate_ssim(
             output_dtypes=[float],
         )
 
-        # Average SSIM over all non-spatial dimensions (e.g., init_time, lead_time, level, ensemble)
-        mean_ssim = float(ssim_da.mean(skipna=True).compute())
-        metrics_dict[var] = {"SSIM": mean_ssim}
+        # Average SSIM over all non-spatial dimensions
+        mean_ssim_lazy = ssim_da.mean(skipna=True)
+
+        ssim_jobs.append({"ssim_mean": mean_ssim_lazy, "var": var})
+
+    # Compute SSIM means in batch
+    compute_jobs(
+        ssim_jobs,
+        key_map={"ssim_mean": "ssim_res"},
+    )
+
+    # 3. Populate results
+    for job in ssim_jobs:
+        var = job["var"]
+        val = float(job["ssim_res"])
+        metrics_dict[var] = {"SSIM": val}
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
