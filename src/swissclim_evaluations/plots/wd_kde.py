@@ -193,6 +193,7 @@ def run(
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
             chunk_size=dynamic_chunk,
+            desc="Computing KDE subsamples",
         )
 
         # --- Process Global KDE ---
@@ -560,6 +561,7 @@ def run(
                     "da_p_lazy": "da_p",
                 },
                 chunk_size=dynamic_chunk,
+                desc="Computing KDE evolution",
             )
 
             # Process quantiles

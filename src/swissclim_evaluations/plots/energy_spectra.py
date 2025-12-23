@@ -576,6 +576,7 @@ def _plot_energy_spectra(
         jobs,
         key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
         chunk_size=dynamic_chunk,
+        desc="Computing energy spectra",
     )
 
     # Distribute and plot

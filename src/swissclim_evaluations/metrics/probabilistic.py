@@ -403,7 +403,10 @@ def run_probabilistic(
             "pit_field_lazy": "pit_field_res",
         },
         chunk_size=dynamic_chunk,
+        desc="Computing CRPS and PIT metrics",
     )
+
+    # --- Process Results ---
 
     for job in all_jobs:
         var = job["var"]

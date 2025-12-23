@@ -579,6 +579,7 @@ def run(
             "global_profile_lazy": "global_profile",
         },
         chunk_size=dynamic_chunk,
+        desc="Computing vertical profiles",
     )
 
     for job in all_jobs:
