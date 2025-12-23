@@ -45,11 +45,8 @@ def compute_jobs(
         return
 
     num_batches = (len(jobs) + chunk_size - 1) // chunk_size
-    msg = (
-        f"[Dask] Processing {len(jobs)} jobs in {num_batches} batches (chunk_size={chunk_size})..."
-    )
-    if desc:
-        msg = f"[Dask] {desc}: {msg}"
+    msg = f"Processing {len(jobs)} jobs in {num_batches} batches (chunk_size={chunk_size})..."
+    msg = f"[Dask] {desc}: {msg}" if desc else f"[Dask] {msg}"
     c.print(msg)
 
     # Chunk the jobs directly

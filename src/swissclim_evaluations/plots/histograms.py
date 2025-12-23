@@ -198,6 +198,7 @@ def run(
                 key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
                 post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
                 chunk_size=dynamic_chunk,
+                desc="Computing subsamples",
             )
             for job in jobs:
                 # Calculate edges immediately (fast in memory)
@@ -213,7 +214,12 @@ def run(
                         qlow, qhigh = -1.0, 1.0
                     job["edges"] = np.linspace(qlow, qhigh, 1001)
         else:
-            compute_jobs(jobs, key_map={"quantile_lazy": "quantile_res"}, chunk_size=dynamic_chunk)
+            compute_jobs(
+                jobs,
+                key_map={"quantile_lazy": "quantile_res"},
+                chunk_size=dynamic_chunk,
+                desc="Computing quantiles",
+            )
             for job in jobs:
                 q = job.get("quantile_res")
                 if q is not None:
@@ -236,6 +242,7 @@ def run(
                 key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
                 post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
                 chunk_size=dynamic_chunk,
+                desc="Computing histograms",
             )
         else:
             for job in jobs:
@@ -556,6 +563,7 @@ def run(
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
             chunk_size=dynamic_chunk,
+            desc="Computing global histograms",
         )
 
         # Calculate edges from edge_job

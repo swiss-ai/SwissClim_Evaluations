@@ -67,7 +67,12 @@ def _calculate_ets_for_thresholds(
         return pd.DataFrame()
 
     jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
-    compute_jobs(jobs, key_map={"lazy": "res"}, chunk_size=chunk_size)
+    compute_jobs(
+        jobs,
+        key_map={"lazy": "res"},
+        chunk_size=chunk_size,
+        desc="Computing ETS scores",
+    )
 
     metrics_dict: dict[str, dict[str, float]] = {}
 
@@ -104,7 +109,12 @@ def _calculate_ets_per_level(
         return None
 
     jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
-    compute_jobs(jobs, key_map={"lazy": "res"}, chunk_size=chunk_size)
+    compute_jobs(
+        jobs,
+        key_map={"lazy": "res"},
+        chunk_size=chunk_size,
+        desc="Computing ETS per level",
+    )
 
     dfs = []
     for job in jobs:
