@@ -181,6 +181,8 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  ssim: true                 # Structural Similarity Index (SSIM)
+  multivariate: true         # Multivariate metrics (e.g. Bivariate Histograms)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
@@ -229,6 +231,11 @@ metrics:
   energy_spectra:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
+
+  # SSIM configuration
+  ssim:
+    sigma: 1.5               # Standard deviation for Gaussian kernel
+    # win_size: 11           # Window size (optional, defaults to 7 or derived from sigma)
 
   probabilistic:
     # If true, compute and report CRPS summaries per pressure level (for 3D variables).

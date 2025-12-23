@@ -101,8 +101,8 @@ Outputs:
 SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
 
 ```text
-ssim_ssim_ensmean.csv
-ssim_ssim_ens0.csv   # members mode per-member file
+ssim/ssim_ssim_ensmean.csv
+ssim/ssim_ssim_ens0.csv   # members mode per-member file
 ```
 
 ### Energy Spectra Analysis
@@ -166,8 +166,8 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (o
 
 Outputs (standardized naming):
 
-- Plot: `bivariate/bivariate_<var1>_<var2>_ens*.png`
-- Data (NPZ): `bivariate/bivariate_hist_<var1>_<var2>_ens*.npz`
+- Plot: `multivariate/bivariate_<var1>_<var2>_ens*.png`
+- Data (NPZ): `multivariate/bivariate_hist_<var1>_<var2>_ens*.npz`
 
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 

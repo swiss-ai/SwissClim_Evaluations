@@ -38,6 +38,8 @@ EXPECTED_SUBDIRS: set[str] = {
     "wd_kde",
     "maps",
     "vertical_profiles",
+    "ssim",
+    "multivariate",
 }
 
 

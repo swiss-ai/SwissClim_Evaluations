@@ -102,7 +102,9 @@ Modules include:
 *   **Wasserstein Distance & KDE**: KDE by latitude band on standardized fields.
 *   **Energy Spectra**: Zonal energy spectra + LSD table.
 *   **Vertical Profiles**: NMAE vertical profiles.
-*   **Deterministic Metrics**: MAE, RMSE, FSS, SSIM, etc.
+*   **Deterministic Metrics**: MAE, RMSE, FSS, etc.
+*   **SSIM**: Structural Similarity Index.
+*   **Multivariate**: Bivariate histograms and density plots.
 *   **ETS**: Equitable Threat Score.
 *   **Probabilistic**: CRPS, PIT, Spread-Skill Ratio.
 
