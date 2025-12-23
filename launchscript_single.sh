@@ -13,8 +13,7 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 
 # -------------------------------------------------------------
 # CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/reproduce_eval.yaml"
-# CONFIG_FILE="${SUBMIT_DIR}/config/reproduce_eval.yaml"
+CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml"
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
