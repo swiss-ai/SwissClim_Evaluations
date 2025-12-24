@@ -116,8 +116,22 @@ def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
 
 
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0) -> xr.Dataset:
-    sel = cfg.get("selection", {})
+    # Ensure selection dict exists in config so we can update it if needed
+    sel = cfg.setdefault("selection", {})
     levels: list[int] | None = sel.get("levels")
+
+    # If levels are not specified but present in the dataset, select ALL available levels
+    # and update the configuration so downstream modules are aware of the full list.
+    if levels is None and "level" in ds.dims:
+        try:
+            # Use sorted list of available levels
+            all_levels = sorted(ds.coords["level"].values.tolist())
+            sel["levels"] = all_levels
+            levels = all_levels
+        except Exception:
+            # Fallback: if we can't read levels, proceed without selection
+            pass
+
     latitudes: list[float] | None = sel.get("latitudes")
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
