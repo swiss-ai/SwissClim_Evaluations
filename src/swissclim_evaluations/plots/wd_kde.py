@@ -509,8 +509,10 @@ def run(
                     da_p_all = da_p_all.sel(level=lvl)
 
                 # Collapse spatial + time to estimate global min/max quickly
-                q_t_lazy = da_t_all.quantile([0.001, 0.999], skipna=True)
-                q_p_lazy = da_p_all.quantile([0.001, 0.999], skipna=True)
+                # Use subsampling for quantile estimation to avoid OOM
+                seed_q = base_seed + (hash(base_var + str(lvl)) % 1000) * 1000 + 999
+                sub_t_q_lazy = subsample_values(da_t_all, max_samples, seed_q, lazy=True)
+                sub_p_q_lazy = subsample_values(da_p_all, max_samples, seed_q, lazy=True)
 
                 # Build densities per lead for target and model
                 leads = list(ds_prediction_std_eff["lead_time"].values)
@@ -518,8 +520,14 @@ def run(
 
                 jobs = []
 
-                # Quantile job
-                jobs.append({"type": "quantile", "q_t_lazy": q_t_lazy, "q_p_lazy": q_p_lazy})
+                # Quantile job (now subsample job)
+                jobs.append(
+                    {
+                        "type": "quantile_subsample",
+                        "sub_t_q_lazy": sub_t_q_lazy,
+                        "sub_p_q_lazy": sub_p_q_lazy,
+                    }
+                )
 
                 for i, lt in enumerate(leads):
                     # Convert timedelta leads to hours; fall back to index
@@ -541,32 +549,51 @@ def run(
                         da_t = da_t.isel(lead_time=i, drop=True)
                     if "lead_time" in da_p.dims:
                         da_p = da_p.isel(lead_time=i, drop=True)
-                    # Average over remaining time/init dims for stability
-                    reduce_dims = [d for d in ["time", "init_time", "ensemble"] if d in da_t.dims]
-                    if reduce_dims:
-                        da_t = da_t.mean(dim=reduce_dims, skipna=True)
-                    reduce_dims_p = [d for d in ["time", "init_time", "ensemble"] if d in da_p.dims]
-                    if reduce_dims_p:
-                        da_p = da_p.mean(dim=reduce_dims_p, skipna=True)
 
-                    jobs.append({"type": "lead", "i": i, "da_t_lazy": da_t, "da_p_lazy": da_p})
+                    # Use subsampling instead of full mean
+                    seed = base_seed + (hash(base_var + str(lvl)) % 1000) * 1000 + i * 10
+
+                    jobs.append(
+                        {
+                            "type": "lead",
+                            "i": i,
+                            "sub_t_lazy": subsample_values(da_t, max_samples, seed, lazy=True),
+                            "sub_p_lazy": subsample_values(da_p, max_samples, seed, lazy=True),
+                        }
+                    )
 
             # Compute all
             compute_jobs(
                 jobs,
                 key_map={
-                    "q_t_lazy": "q_t",
-                    "q_p_lazy": "q_p",
-                    "da_t_lazy": "da_t",
-                    "da_p_lazy": "da_p",
+                    "sub_t_q_lazy": "sub_t_q",
+                    "sub_p_q_lazy": "sub_p_q",
+                    "sub_t_lazy": "sub_t",
+                    "sub_p_lazy": "sub_p",
+                },
+                post_process={
+                    "sub_t": to_finite_array,
+                    "sub_p": to_finite_array,
+                    "sub_t_q": to_finite_array,
+                    "sub_p_q": to_finite_array,
                 },
                 chunk_size=dynamic_chunk,
                 desc="Computing KDE evolution",
             )
 
             # Process quantiles
-            q_t = jobs[0]["q_t"]
-            q_p = jobs[0]["q_p"]
+            sub_t_q = np.asarray(jobs[0]["sub_t_q"])
+            sub_p_q = np.asarray(jobs[0]["sub_p_q"])
+
+            if sub_t_q.size > 0:
+                q_t = np.quantile(sub_t_q, [0.001, 0.999])
+            else:
+                q_t = np.array([np.nan, np.nan])
+
+            if sub_p_q.size > 0:
+                q_p = np.quantile(sub_p_q, [0.001, 0.999])
+            else:
+                q_p = np.array([np.nan, np.nan])
 
             vmin = float(min(q_t[0], q_p[0]))
             vmax = float(max(q_t[1], q_p[1]))
@@ -587,8 +614,8 @@ def run(
 
             # Process leads
             for job in jobs[1:]:
-                arr_t = np.asarray(job["da_t"])
-                arr_p = np.asarray(job["da_p"])
+                arr_t = np.asarray(job["sub_t"])
+                arr_p = np.asarray(job["sub_p"])
 
                 Z_t.append(_eval_kde_from_array(arr_t, y_eval))
                 Z_p.append(_eval_kde_from_array(arr_p, y_eval))
