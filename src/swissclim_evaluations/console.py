@@ -163,7 +163,7 @@ def module_status(name: str, status: str, detail: str = "") -> None:
         console.print(f"[{color}]{msg}[/]{suffix}")
     else:
         suffix = f" ({detail})" if detail else ""
-        console.print(f"{icon} {name}{suffix}")
+        console.print(f">>> {name.upper()}{suffix}")
 
 
 def ensemble_panel(message: str, level: str = "info") -> None:
