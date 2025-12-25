@@ -1385,6 +1385,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(
+                format_ensemble_log(
+                    "histograms", resolved_modes.get("histograms", "pooled"), ens_size
+                )
+            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1465,8 +1470,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("energy_spectra"):
         from .plots import energy_spectra as es_mod
 
+        c.module_status("energy_spectra", "run", f"vars_2d={len(vars_2d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(
+                format_ensemble_log(
+                    "energy_spectra", resolved_modes.get("energy_spectra", "mean"), ens_size
+                )
+            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1509,6 +1520,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(
+                format_ensemble_log(
+                    "vertical_profiles", resolved_modes.get("vertical_profiles", "mean"), ens_size
+                )
+            )
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1553,6 +1569,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         if "ensemble" in ds_prediction.dims:
             ens_size_det: int = int(ds_prediction.sizes.get("ensemble", 0))
             use_mode = resolved_modes.get("deterministic", "mean")
+            c.info(format_ensemble_log("deterministic", use_mode, ens_size_det))
         else:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
@@ -1668,7 +1685,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 # Continue to completion without executing probabilistic submodules
                 pass
             else:
-                c.success(format_ensemble_log("probabilistic", "prob", ens_size))
+                c.info(format_ensemble_log("probabilistic", "prob", ens_size))
                 # Combined probabilistic module
                 _t = time.time()
                 try:
