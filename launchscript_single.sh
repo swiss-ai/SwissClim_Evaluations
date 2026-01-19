@@ -19,6 +19,8 @@ CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/conf
 # Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
+# Override PYTHONPATH to include src directory (latest code changes)
+# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # -------------------------------------------------------------
 # DASK SCRATCH CONFIGURATION
@@ -32,7 +34,6 @@ mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
 
-export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # Create logs directory if it doesn't exist
 mkdir -p logs

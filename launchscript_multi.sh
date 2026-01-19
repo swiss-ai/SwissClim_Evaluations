@@ -14,6 +14,8 @@
 # 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
+# Override PYTHONPATH to include src directory (latest code changes)
+# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # -------------------------------------------------------------
 # DASK SCRATCH CONFIGURATION
@@ -28,8 +30,6 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 # Disable rich/ANSI output so SLURM log files remain clean
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
-
-export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
