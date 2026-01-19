@@ -69,13 +69,12 @@
 1. Or submit a batch job (CSCS Alps):
 
    ```bash
-   sbatch launchscript.sh
+   sbatch launchscript_single.sh
    ```
 
    Don't forget to adjust the path to your `config/my_run.yaml` in
-   `launchscript.sh` if you placed it elsewhere.
-
-1. Here is a one-liner with `srun` instead of the `launchscript`:
+   `launchscript_single.sh` if you placed it elsewhere.
+1. Here is a one-liner with `srun` instead of the `launchscript_single.sh`:
 
    ```bash
    srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'

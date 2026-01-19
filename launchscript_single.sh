@@ -16,8 +16,7 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml"
 
 # -------------------------------------------------------------
-# EDIT THESE TWO LINES FOR YOUR SETUP
-# 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
+# Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
 
