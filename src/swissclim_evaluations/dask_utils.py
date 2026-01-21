@@ -26,6 +26,7 @@ def compute_jobs(
     chunk_size: int = 20,
     optimize_graph: bool | None = None,
     desc: str | None = None,
+    batch_callback: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> None:
     """
     Batch compute dask lazy objects inside a list of job dictionaries.
@@ -39,7 +40,12 @@ def compute_jobs(
                       e.g. {"sub_t": to_finite_array}
         chunk_size: Number of jobs to compute in one batch.
                     Default is 20.
+        optimize_graph: Whether to optimize the dask graph.
         desc: Optional description to prepend to the log message.
+        batch_callback: Optional function to call with the list of jobs
+                        in the current batch after results have been computed
+                        and assigned. This is useful for processing results
+                        immediately (e.g. saving to disk) and clearing memory.
     """
     if not jobs:
         return
@@ -91,6 +97,9 @@ def compute_jobs(
 
         # Handle Nones (items that were None in the job)
         _fill_defaults(job_chunk, key_map, post_process, skip_existing=True)
+
+        if batch_callback:
+            batch_callback(job_chunk)
 
 
 def _fill_defaults(
