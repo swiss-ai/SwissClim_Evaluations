@@ -572,38 +572,155 @@ def _plot_energy_spectra(
         n_points=n_points, num_vars=num_vars, config_chunk_size=chunk_size_cfg
     )
 
+    wn = spectrum_target["wavenumber"].values
+
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        for job in batch_jobs:
+            if "arr_t" not in job:
+                continue
+
+            arr_t = job["arr_t"]
+            arr_p = job["arr_p"]
+            lsd_val = float(job["lsd_val"])
+
+            _plot_single_spectrum(
+                wn,
+                np.asarray(arr_t),
+                np.asarray(arr_p),
+                lsd_val,
+                var,
+                level,
+                job["init_label"],
+                job["lead_label"],
+                job["target_path"],
+                dpi,
+                save_plot_data,
+                save_figure,
+                date_str=job.get("date_str", ""),
+            )
+            # Clear large arrays from memory
+            job["arr_t"] = None
+            job["arr_p"] = None
+
     compute_jobs(
         jobs,
         key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
         chunk_size=dynamic_chunk,
         desc="Computing energy spectra",
+        batch_callback=_process_batch,
     )
 
-    # Distribute and plot
-    wn = spectrum_target["wavenumber"].values
+    return lsd_da  # shape: time dims only (no wavenumber)
 
-    for job in jobs:
-        arr_t = job["arr_t"]
-        arr_p = job["arr_p"]
-        lsd_val = float(job["lsd_val"])
+
+def _plot_averaged_spectra(
+    spec_t: xr.DataArray,
+    spec_p: xr.DataArray,
+    var: str,
+    level: int | None,
+    out_dir: Path,
+    init_range: tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+    ens_token: str | None,
+    dpi: int,
+    save_plot_data: bool,
+    save_figure: bool,
+) -> None:
+    """Plot spectra averaged over init_time.
+
+    This generates a single plot (per lead time) where the power spectra have been
+    averaged over all initialization times. The filename will reflect the full
+    initialization range (e.g. init2020010100-2020123123).
+    """
+    if "init_time" not in spec_t.dims or spec_t.sizes["init_time"] <= 1:
+        return
+
+    # Average over init_time
+    # Note: docstring says "Time / lead dimensions are never implicitly averaged".
+    # Here we explicitly average over init_time to get the mean spectrum.
+    spec_t_avg = spec_t.mean(dim="init_time")
+    spec_p_avg = spec_p.mean(dim="init_time")
+
+    # Compute LSD of the averaged spectra
+    lsd_avg_da = _compute_lsd_da(spec_t_avg, spec_p_avg)
+    wn = spec_t_avg["wavenumber"].values
+
+    # Determine iteration dims (likely lead_time)
+    if "lead_time" in spec_t_avg.dims:
+        leads = spec_t_avg["lead_time"].values
+        for lt in leads:
+            st = spec_t_avg.sel(lead_time=lt)
+            sp = spec_p_avg.sel(lead_time=lt)
+            lsd = float(lsd_avg_da.sel(lead_time=lt).values)
+
+            # Format lead label
+            try:
+                hours = int(pd.Timedelta(lt).total_seconds() / 3600)
+                lead_label = f"{hours:03d}h"
+            except Exception:
+                # Handle potential numpy/other types
+                val = lt.item() if hasattr(lt, "item") else lt
+                hours = int(val / 3600 / 1e9) if isinstance(val, int) else 0
+                lead_label = f"{hours:03d}h"
+
+            # Construct filename with full init range
+            fname = build_output_filename(
+                metric="energy_spectrum",
+                variable=var,
+                level=f"{level}hPa" if level is not None else None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=(lead_label, lead_label),
+                ensemble=ens_token,
+                ext="png",
+            )
+            out_path = out_dir / fname
+            init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
+
+            _plot_single_spectrum(
+                wn,
+                st.values,
+                sp.values,
+                lsd,
+                var,
+                level,
+                init_label=init_label_str,
+                lead_label=lead_label,
+                out_path=out_path,
+                dpi=dpi,
+                save_plot_data=save_plot_data,
+                save_figure=save_figure,
+            )
+    else:
+        # No lead time dim (scalar or missing)
+        lead_label = "noLead"
+        fname = build_output_filename(
+            metric="energy_spectrum",
+            variable=var,
+            level=f"{level}hPa" if level is not None else None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,  # Default lead range from dataset
+            ensemble=ens_token,
+            ext="png",
+        )
+        out_path = out_dir / fname
+        init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
 
         _plot_single_spectrum(
             wn,
-            np.asarray(arr_t),
-            np.asarray(arr_p),
-            lsd_val,
+            spec_t_avg.values,
+            spec_p_avg.values,
+            float(lsd_avg_da.values),
             var,
             level,
-            job["init_label"],
-            job["lead_label"],
-            job["target_path"],
-            dpi,
-            save_plot_data,
-            save_figure,
-            date_str=job.get("date_str", ""),
+            init_label=init_label_str,
+            lead_label=lead_label,
+            out_path=out_path,
+            dpi=dpi,
+            save_plot_data=save_plot_data,
+            save_figure=save_figure,
         )
-
-    return lsd_da  # shape: time dims only (no wavenumber)
 
 
 def run(
@@ -810,6 +927,21 @@ def run(
                         }
                     )
 
+            if save_plot or save_npz:
+                _plot_averaged_spectra(
+                    spec_t,
+                    spec_p,
+                    str(var),
+                    None,
+                    section_output,
+                    init_range,
+                    lead_range,
+                    ens_token,
+                    dpi,
+                    save_plot_data=save_npz,
+                    save_figure=save_plot,
+                )
+
             # Plot Datetime specific LSD
             if "init_time" in lsd_da.dims:
                 # Calculate LSD for the specific plot datetime only
@@ -905,7 +1037,10 @@ def run(
                     if "ensemble" in p_p.dims:
                         p_p = p_p.isel(ensemble=ens_idx)
                     if "ensemble" in t_p.dims:
-                        t_p = t_p.isel(ensemble=ens_idx)
+                        if t_p.sizes["ensemble"] == 1:
+                            t_p = t_p.isel(ensemble=0)
+                        else:
+                            t_p = t_p.isel(ensemble=ens_idx)
                     curr_ens_token = ensemble_mode_to_token("members", ens_idx)
 
                 _plot_energy_spectra(
@@ -998,6 +1133,22 @@ def run(
                             "lead_time": f"{hours:03d}h",
                             "lsd_mean": val,
                         }
+                    )
+
+            if save_plot or save_npz:
+                for lvl in levels:
+                    _plot_averaged_spectra(
+                        spec_t.sel(level=lvl),
+                        spec_p.sel(level=lvl),
+                        str(var),
+                        int(lvl),
+                        section_output,
+                        init_range,
+                        lead_range,
+                        ens_token,
+                        dpi,
+                        save_plot_data=save_npz,
+                        save_figure=save_plot,
                     )
 
             # Plot Datetime specific LSD
@@ -1100,7 +1251,10 @@ def run(
                             if "ensemble" in p_p.dims:
                                 p_p = p_p.isel(ensemble=ens_idx)
                             if "ensemble" in t_p.dims:
-                                t_p = t_p.isel(ensemble=ens_idx)
+                                if t_p.sizes["ensemble"] == 1:
+                                    t_p = t_p.isel(ensemble=0)
+                                else:
+                                    t_p = t_p.isel(ensemble=ens_idx)
                             curr_ens_token = ensemble_mode_to_token("members", ens_idx)
 
                         _plot_energy_spectra(

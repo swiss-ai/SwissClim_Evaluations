@@ -72,7 +72,7 @@ is exported per init_time/lead_time and summarized. Outputs are split into singl
 
 **Standard (Single Lead or averaged):**
 
-- Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>]...`
+- Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>][_init<start>-<end>]...`
 - LSD averaged (2D): `energy_spectra/energy_ratios_averaged_<range>.csv`
 - LSD lead_time (2D): `energy_spectra/energy_ratios_lead_time_<range>.csv`
 - LSD plot_datetime (2D): `energy_spectra/energy_ratios_plot_datetime_<range>.csv`
