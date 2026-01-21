@@ -640,7 +640,13 @@ def run(
             yield None, ds_target, ds_prediction
         else:
             for i in range(int(ds_prediction.sizes["ensemble"])):
-                tgt_m = ds_target.isel(ensemble=i) if "ensemble" in ds_target.dims else ds_target
+                if "ensemble" in ds_target.dims:
+                    if ds_target.sizes["ensemble"] == 1:
+                        tgt_m = ds_target.isel(ensemble=0)
+                    else:
+                        tgt_m = ds_target.isel(ensemble=i)
+                else:
+                    tgt_m = ds_target
                 pred_m = ds_prediction.isel(ensemble=i)
                 yield i, tgt_m, pred_m
 

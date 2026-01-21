@@ -151,7 +151,11 @@ def run(
 
             if ens is not None:
                 if "ensemble" in ds_var_full.dims:
-                    ds_var_full = ds_var_full.isel(ensemble=ens)
+                    # If target has only 1 member (e.g. ERA5), reuse it for all prediction members
+                    if ds_var_full.sizes["ensemble"] == 1:
+                        ds_var_full = ds_var_full.isel(ensemble=0)
+                    else:
+                        ds_var_full = ds_var_full.isel(ensemble=ens)
                 if "ensemble" in ds_prediction_var_full.dims:
                     ds_prediction_var_full = ds_prediction_var_full.isel(ensemble=ens)
             if "init_time" in ds_var_full.dims:
@@ -450,7 +454,11 @@ def run(
 
             if ens is not None:
                 if "ensemble" in ds_var.dims:
-                    ds_var = ds_var.isel(ensemble=ens)
+                    # If target has only 1 member (e.g. ERA5), reuse it for all prediction members
+                    if ds_var.sizes["ensemble"] == 1:
+                        ds_var = ds_var.isel(ensemble=0)
+                    else:
+                        ds_var = ds_var.isel(ensemble=ens)
                 if "ensemble" in ds_prediction_var.dims:
                     ds_prediction_var = ds_prediction_var.isel(ensemble=ens)
             if "init_time" in ds_var.dims:

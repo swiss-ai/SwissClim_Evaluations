@@ -90,11 +90,13 @@ def run(
             yield None, ds_target_std, ds_prediction_std
         else:
             for i in range(int(ds_prediction_std.sizes["ensemble"])):
-                tgt_m = (
-                    ds_target_std.isel(ensemble=i)
-                    if "ensemble" in ds_target_std.dims
-                    else ds_target_std
-                )
+                if "ensemble" in ds_target_std.dims:
+                    if ds_target_std.sizes["ensemble"] == 1:
+                        tgt_m = ds_target_std.isel(ensemble=0)
+                    else:
+                        tgt_m = ds_target_std.isel(ensemble=i)
+                else:
+                    tgt_m = ds_target_std
                 pred_m = ds_prediction_std.isel(ensemble=i)
                 yield i, tgt_m, pred_m
 
