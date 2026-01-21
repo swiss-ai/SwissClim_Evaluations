@@ -20,6 +20,7 @@ from .. import console as c
 from ..dask_utils import (
     calculate_dynamic_chunk_size,
     compute_global_quantile,
+    compute_jobs,
     compute_quantile_preserving,
 )
 from ..helpers import (
@@ -191,34 +192,97 @@ def _calculate_all_metrics(
     fss_thresholds_map: dict[str, list[Any]] = {}
     if (include is None) or ("FSS" in metrics_to_compute):
         lazy_quantiles = []
-        var_needs_quantile = []
+        # Store metadata for reconstruction: (variable_name, level_value_or_None)
+        quantile_meta: list[tuple[str, Any]] = []
 
         for var in variables:
             # Check if explicit thresholds exist
             if fss_thresholds_per_var and (var in fss_thresholds_per_var):
                 fss_thresholds_map[var] = [float(f) for f in fss_thresholds_per_var[var]]
-            else:
-                # Need quantile
-                y_true = ds_target[var]
-                # Use custom quantile to avoid memory issues with large arrays
-                # If preserve_dims is set (e.g. for per-level metrics), we must compute quantile
-                # per slice to avoid aggregating across levels.
-                if preserve_dims:
-                    q_da = compute_quantile_preserving(y_true, [fss_quantile], preserve_dims)
-                else:
-                    q_da = compute_global_quantile(y_true, fss_quantile, skipna=True)
+                continue
 
+            # Need quantile
+            y_true = ds_target[var]
+
+            # Check for per-level splitting optimization
+            # Only if preserve_dims is active and contains "level"
+            should_split_levels = False
+            if preserve_dims and "level" in preserve_dims and "level" in y_true.dims:
+                should_split_levels = True
+
+            if should_split_levels:
+                # Split by level to avoid large graph/memory usage (OOM protection)
+                # Compute quantile per-level as separate jobs
+                levels = y_true["level"].values
+                for lvl in levels:
+                    # Select level; result handles Time/Lat/Lon
+                    y_slice = y_true.sel(level=lvl)
+                    # Compute global quantile for this slice
+                    q_lazy = compute_global_quantile(y_slice, fss_quantile, skipna=True)
+                    lazy_quantiles.append(q_lazy)
+                    quantile_meta.append((var, lvl))
+            elif preserve_dims:
+                # Fallback for other preserve dims or if level not present
+                q_da = compute_quantile_preserving(y_true, [fss_quantile], preserve_dims)
                 lazy_quantiles.append(q_da)
-                var_needs_quantile.append(var)
+                quantile_meta.append((var, None))
+            else:
+                # Standard global case
+                q_da = compute_global_quantile(y_true, fss_quantile, skipna=True)
+                lazy_quantiles.append(q_da)
+                quantile_meta.append((var, None))
 
         if lazy_quantiles:
-            # Compute all quantiles in one parallel pass
-            computed_quantiles = dask.compute(*lazy_quantiles)
-            for var, val in zip(var_needs_quantile, computed_quantiles, strict=False):
-                if isinstance(val, xr.DataArray | np.ndarray) and val.ndim > 0:
-                    fss_thresholds_map[var] = [val]
+            # Compute all quantiles using batched compute_jobs to avoid OOM
+            # Map lazy quantiles to a job structure
+            quantile_jobs = [{"q_lazy": q} for q in lazy_quantiles]
+
+            # Determine chunk size dynamically
+            dyn_chunk = calculate_dynamic_chunk_size(ds=ds_target)
+
+            compute_jobs(
+                quantile_jobs,
+                key_map={"q_lazy": "q_res"},
+                chunk_size=dyn_chunk,
+                desc="Computing FSS quantiles",
+            )
+
+            computed_quantiles = [j["q_res"] for j in quantile_jobs]
+
+            # Reconstruct results from flat list back to variable mapping
+            from collections import defaultdict
+
+            reconstruction = defaultdict(list)
+            for (var, lvl), res in zip(quantile_meta, computed_quantiles, strict=False):
+                if lvl is not None:
+                    reconstruction[var].append((lvl, res))
                 else:
-                    fss_thresholds_map[var] = [float(val.item() if hasattr(val, "item") else val)]
+                    reconstruction[var] = res
+
+            for var, data in reconstruction.items():
+                if isinstance(data, list):
+                    # Reassemble level-split data into a DataArray
+                    try:
+                        # each item is (level_val, quantile_val)
+                        levels_vals = [x[0] for x in data]
+                        # extraction heuristic for scalar-like dask/numpy results
+                        q_vals = [
+                            float(x[1].item() if hasattr(x[1], "item") else x[1]) for x in data
+                        ]
+                        da = xr.DataArray(q_vals, coords={"level": levels_vals}, dims="level")
+                        fss_thresholds_map[var] = [da]
+                    except Exception as e:
+                        c.print(f"[deterministic] Failed to reassemble quantiles for {var}: {e}")
+                        fss_thresholds_map[var] = []
+                else:
+                    # Single object (DataArray or scalar) from non-split path
+                    val = data
+                    if isinstance(val, xr.DataArray | np.ndarray) and val.ndim > 0:
+                        fss_thresholds_map[var] = [val]
+                    else:
+                        fss_thresholds_map[var] = [
+                            float(val.item() if hasattr(val, "item") else val)
+                        ]
 
     # Store lazy objects to compute in one go
     # List of (variable_name, metric_name, lazy_object)
@@ -443,11 +507,19 @@ def _calculate_all_metrics(
         return metrics_dict, lazy_metrics_to_compute
 
     if lazy_metrics_to_compute:
-        # Unzip
-        _, _, lazy_objs = zip(*lazy_metrics_to_compute, strict=False)
+        # Use compute_jobs to batch computation and avoid OOM
+        metrics_jobs = [{"lazy": obj} for _, _, obj in lazy_metrics_to_compute]
 
-        # Compute
-        computed_results = dask.compute(*lazy_objs)
+        dyn_chunk = calculate_dynamic_chunk_size(ds=ds_target)
+
+        compute_jobs(
+            metrics_jobs,
+            key_map={"lazy": "res"},
+            chunk_size=dyn_chunk,
+            desc="Computing deterministic metrics",
+        )
+
+        computed_results = [j["res"] for j in metrics_jobs]
 
         return _finalize_metrics(
             metrics_dict, lazy_metrics_to_compute, computed_results, preserve_dims
@@ -886,12 +958,22 @@ def run(
                 if "ensemble" in ds_prediction_std.dims
                 else ds_prediction_std
             )
-            ds_tgt_m = ds_target.isel(ensemble=mi) if "ensemble" in ds_target.dims else ds_target
-            ds_tgt_m_std = (
-                ds_target_std.isel(ensemble=mi)
-                if "ensemble" in ds_target_std.dims
-                else ds_target_std
-            )
+
+            if "ensemble" in ds_target.dims:
+                if ds_target.sizes["ensemble"] == 1:
+                    ds_tgt_m = ds_target.isel(ensemble=0)
+                else:
+                    ds_tgt_m = ds_target.isel(ensemble=mi)
+            else:
+                ds_tgt_m = ds_target
+
+            if "ensemble" in ds_target_std.dims:
+                if ds_target_std.sizes["ensemble"] == 1:
+                    ds_tgt_m_std = ds_target_std.isel(ensemble=0)
+                else:
+                    ds_tgt_m_std = ds_target_std.isel(ensemble=mi)
+            else:
+                ds_tgt_m_std = ds_target_std
 
             # Build all lazy objects on full member datasets (not per-variable)
             # for better dask graph sharing - ALL categories computed in ONE call

@@ -66,6 +66,12 @@ def _calculate_ets_for_thresholds(
     if not raw_results:
         return pd.DataFrame()
 
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        # We don't save to disk here, but we could populate a shared list.
+        # However, passing a callback allows for potential memory clearing
+        # if job results were large.
+        pass
+
     jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
     compute_jobs(
         jobs,
@@ -99,16 +105,42 @@ def _calculate_ets_per_level(
     if "level" not in ds_target.dims:
         return None
 
-    # Vectorized computation preserving 'level'
-    raw_results = _compute_ets_raw(
-        ds_target[variables_3d], ds_prediction[variables_3d], thresholds, preserve_dims=["level"]
-    )
+    # Vectorized computation preserving 'level' - Optimized to batch per level
+    # raw_results = _compute_ets_raw(
+    #    ds_target[variables_3d], ds_prediction[variables_3d], thresholds, preserve_dims=["level"]
+    # )
 
-    # Compute all at once
-    if not raw_results:
+    jobs: list[dict[str, Any]] = []
+
+    for var in variables_3d:
+        da_target_full = ds_target[var]
+        # da_pred_full = ds_prediction[var] # Unused
+
+        # Safe access to levels
+        if "level" not in da_target_full.dims:
+            continue
+
+        levels = da_target_full["level"].values
+        for lvl in levels:
+            # Slice for single level
+            # Note: _compute_ets_raw expects Dataset input
+            ds_t_slice = ds_target[[var]].sel(level=lvl, drop=True)
+            ds_p_slice = ds_prediction[[var]].sel(level=lvl, drop=True)
+
+            # Compute ETS for this level (scaleless w.r.t level)
+            # The result from _compute_ets_raw is {var: DataArray(dims=[quantile])}
+            # We don't use preserve_dims=["level"] because we sliced it out.
+            raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
+
+            if var in raw_res_dict:
+                jobs.append({"var": var, "level": lvl, "lazy": raw_res_dict[var]})
+
+    if not jobs:
         return None
 
-    jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        pass
+
     compute_jobs(
         jobs,
         key_map={"lazy": "res"},
@@ -119,22 +151,25 @@ def _calculate_ets_per_level(
     dfs = []
     for job in jobs:
         var = job["var"]
-        ets_score = job["res"]
-        # ets_score: (quantile, level)
-        levels = ets_score.level.values
-        for lvl in levels:
-            row = {"variable": var, "level": int(lvl)}
-            # Select this level
-            ets_lvl = ets_score.sel(level=lvl).values
-            for i, threshold in enumerate(thresholds):
-                row[f"ETS {threshold}%"] = float(ets_lvl[i].item())
-            dfs.append(row)
+        lvl = job["level"]
+        if job.get("res") is None:
+            continue
+
+        ets_score = job["res"]  # dims: [quantile] (level is dropped)
+
+        row = {"variable": var, "level": int(lvl) if hasattr(lvl, "item") else lvl}
+        vals = ets_score.values
+        for i, threshold in enumerate(thresholds):
+            row[f"ETS {threshold}%"] = float(
+                vals[i].item() if hasattr(vals[i], "item") else vals[i]
+            )
+        dfs.append(row)
 
     if not dfs:
         return None
 
     df = pd.DataFrame(dfs)
-    # Set index to variable to match original structure (though original had repeated index)
+    # Set index to variable to match original structure
     df = df.set_index("variable", drop=False)
     return df
 
@@ -379,14 +414,12 @@ def run(
                                     wide_df[col].values.tolist(),
                                     strict=False,
                                 ):
-                                    rows_csv.append(
-                                        {
-                                            "variable": v,
-                                            "lead_time_hours": float(h),
-                                            "threshold": tlabel,
-                                            "ETS": float(val),
-                                        }
-                                    )
+                                    rows_csv.append({
+                                        "variable": v,
+                                        "lead_time_hours": float(h),
+                                        "threshold": tlabel,
+                                        "ETS": float(val),
+                                    })
                             save_dataframe(
                                 pd.DataFrame(rows_csv), out_csv, index=False, module="ets"
                             )
@@ -410,9 +443,14 @@ def run(
             per_member_dfs = []
             for mi in members_indices:
                 ds_pred_m = ds_prediction.isel(ensemble=mi)
-                ds_tgt_m = (
-                    ds_target.isel(ensemble=mi) if "ensemble" in ds_target.dims else ds_target
-                )
+                if "ensemble" in ds_target.dims:
+                    if ds_target.sizes["ensemble"] == 1:
+                        ds_tgt_m = ds_target.isel(ensemble=0)
+                    else:
+                        ds_tgt_m = ds_target.isel(ensemble=mi)
+                else:
+                    ds_tgt_m = ds_target
+
                 df_m = _calculate_ets_for_thresholds(
                     ds_tgt_m, ds_pred_m, thresholds, chunk_size=dynamic_chunk
                 )

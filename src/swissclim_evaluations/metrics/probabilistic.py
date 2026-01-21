@@ -289,7 +289,8 @@ def run_probabilistic(
 
         def _fmt(x):
             return (
-                np.datetime_as_string(x, unit="h")
+                np
+                .datetime_as_string(x, unit="h")
                 .replace("-", "")
                 .replace(":", "")
                 .replace("T", "")
@@ -346,51 +347,315 @@ def run_probabilistic(
     )
 
     # --- Optimization: Collect all lazy computations ---
+    # --- Optimization: Collect all lazy computations ---
     all_jobs: list[dict[str, Any]] = []
     is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
 
     for var in variables:
-        job: dict[str, Any] = {"var": var}
-        crps_da = ds_crps[var]
-        pit_da = ds_pit[var]
+        crps_da_full = ds_crps[var]
+        pit_da_full = ds_pit[var]
 
-        # 1. CRPS Mean
-        if not is_multi_lead:
-            job["crps_mean_lazy"] = _reduce_mean_all(crps_da)
-        else:
-            job["crps_mean_lazy"] = None
+        # Determine levels to iterate (batching per-level for 3D vars)
+        levels_to_process: list[Any] = [None]
+        is_3d = False
+        if "level" in crps_da_full.dims:
+            is_3d = True
+            levels_to_process = crps_da_full["level"].values.tolist()
 
-        # 2. CRPS Per Lead
-        if "lead_time" in crps_da.dims and crps_da.sizes["lead_time"] > 1:
-            dims_to_reduce = [d for d in crps_da.dims if d != "lead_time"]
-            job["crps_per_lead_lazy"] = crps_da.mean(dim=dims_to_reduce, skipna=True)
-        else:
-            job["crps_per_lead_lazy"] = None
+        for lvl in levels_to_process:
+            # Slicing logic
+            if lvl is not None:
+                crps_da = crps_da_full.sel(level=lvl, drop=True)
+                pit_da = pit_da_full.sel(level=lvl, drop=True)
+                level_val = int(lvl) if hasattr(lvl, "item") else lvl
+            else:
+                crps_da = crps_da_full
+                pit_da = pit_da_full
+                level_val = None
 
-        # 3. CRPS Per Level
-        if report_per_level and "level" in crps_da.dims:
-            dims_to_reduce = [d for d in crps_da.dims if d != "level"]
-            job["crps_per_level_lazy"] = crps_da.mean(dim=dims_to_reduce, skipna=True)
-        else:
-            job["crps_per_level_lazy"] = None
+            job: dict[str, Any] = {"var": var, "level": level_val, "is_3d": is_3d}
 
-        # 4. PIT Global Histogram
-        if not is_multi_lead:
-            counts_lazy, edges = _pit_histogram_dask_lazy(pit_da, bins=50)
-            job["pit_counts_lazy"] = counts_lazy
-            job["pit_edges"] = edges
-        else:
-            job["pit_counts_lazy"] = None
-            job["pit_edges"] = None
+            # 1. CRPS Mean (Global Scalar)
+            if not is_multi_lead:
+                job["crps_mean_lazy"] = _reduce_mean_all(crps_da)
+            else:
+                job["crps_mean_lazy"] = None
 
-        # 6. Full Fields (for saving)
-        job["crps_field_lazy"] = crps_da
-        job["pit_field_lazy"] = pit_da
+            # 2. CRPS Per Lead
+            if "lead_time" in crps_da.dims and crps_da.sizes["lead_time"] > 1:
+                dims_to_reduce = [d for d in crps_da.dims if d != "lead_time"]
+                job["crps_per_lead_lazy"] = crps_da.mean(dim=dims_to_reduce, skipna=True)
+            else:
+                job["crps_per_lead_lazy"] = None
 
-        all_jobs.append(job)
+            # 3. CRPS Per Level (Accumulated from sliced scalars)
+            # Replaced by scalar mean per slice if report_per_level is active
+            if is_3d and report_per_level:
+                job["crps_per_level_scalar_lazy"] = crps_da.mean(skipna=True)
+            else:
+                job["crps_per_level_scalar_lazy"] = None
+
+            # 4. PIT Global Histogram
+            if not is_multi_lead:
+                counts_lazy, edges = _pit_histogram_dask_lazy(pit_da, bins=50)
+                job["pit_counts_lazy"] = counts_lazy
+                job["pit_edges"] = edges
+            else:
+                job["pit_counts_lazy"] = None
+                job["pit_edges"] = None
+
+            # 6. Full Fields (Sliced internally to avoid OOM)
+            # We slice the lazy array into a list of chunks time dimensions.
+            # compute_jobs will return a list of numpy arrays, which we concatenate before saving.
+            # If lead_time is large, separate by lead_time.
+            # If init_time is large, separate by init_time.
+            lead_chunk_size = 6
+            init_time_chunk_size = 24  # 24 steps -> ~100MB chunk for 720x1440 float32
+
+            job["is_split"] = False
+            job["split_dim"] = None
+            job["split_axis"] = None
+
+            n_leads = crps_da.sizes.get("lead_time", 1)
+            n_inits = crps_da.sizes.get("init_time", 1)
+
+            if "lead_time" in crps_da.dims and n_leads > lead_chunk_size:
+                slices = [
+                    slice(i, min(i + lead_chunk_size, n_leads))
+                    for i in range(0, n_leads, lead_chunk_size)
+                ]
+                job["crps_field_lazy"] = [crps_da.isel(lead_time=s) for s in slices]
+                job["pit_field_lazy"] = [pit_da.isel(lead_time=s) for s in slices]
+                job["split_axis"] = crps_da.get_axis_num("lead_time")
+                job["is_split"] = True
+                job["split_dim"] = "lead_time"
+            elif "init_time" in crps_da.dims and n_inits > init_time_chunk_size:
+                # Fallback: slice by init_time if lead_time is small but init_time is huge
+                # (e.g. 1344)
+                slices = [
+                    slice(i, min(i + init_time_chunk_size, n_inits))
+                    for i in range(0, n_inits, init_time_chunk_size)
+                ]
+                job["crps_field_lazy"] = [crps_da.isel(init_time=s) for s in slices]
+                job["pit_field_lazy"] = [pit_da.isel(init_time=s) for s in slices]
+                job["split_axis"] = crps_da.get_axis_num("init_time")
+                job["is_split"] = True
+                job["split_dim"] = "init_time"
+            else:
+                job["crps_field_lazy"] = crps_da
+                job["pit_field_lazy"] = pit_da
+
+            all_jobs.append(job)
 
     # --- Batch Compute (All Variables) ---
     dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+
+    # Accumulators for aggregate metrics
+    # var -> list of (level, value)
+    crps_level_aggs: dict[str, list[tuple[int, float]]] = {}
+    # var -> list of crps values (for global mean reconstruction of 3D vars)
+    crps_global_accumulators: dict[str, list[float]] = {}
+
+    # Define callback to process results incrementally and free memory
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        for job in batch_jobs:
+            var = job["var"]
+            lvl = job["level"]
+            is_3d = job["is_3d"]
+
+            # 1. CRPS Mean
+            # For 3D vars, we accumulate per-level means and aggregate later
+            if job.get("crps_mean_res") is not None:
+                try:
+                    val = float(
+                        job["crps_mean_res"].item()
+                        if hasattr(job["crps_mean_res"], "item")
+                        else job["crps_mean_res"]
+                    )
+                except Exception:
+                    val = float(job["crps_mean_res"])
+
+                if is_3d:
+                    if var not in crps_global_accumulators:
+                        crps_global_accumulators[var] = []
+                    crps_global_accumulators[var].append(val)
+                else:
+                    crps_rows.append({"variable": var, "CRPS": val})
+
+            # 2. Per Lead Time CRPS
+            if job.get("crps_per_lead_res") is not None:
+                crps_per_lead = job["crps_per_lead_res"]
+                # For 3D vars, this is a per-level lead series. We save it with a discriminator.
+                leads = crps_per_lead["lead_time"].values
+                if np.issubdtype(leads.dtype, np.timedelta64):
+                    lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+                else:
+                    lead_hours = leads
+                values = crps_per_lead.values
+
+                qualifier = "per_lead_time"
+                if lvl is not None:
+                    # Specialized per-level-lead export
+                    qualifier = f"per_lead_time_level{lvl}"
+
+                df_lead = pd.DataFrame({
+                    "lead_time_hours": lead_hours,
+                    "CRPS": values,
+                    "variable": str(var),
+                })
+                if lvl is not None:
+                    df_lead["level"] = lvl
+
+                out_csv_lead = section_output / build_output_filename(
+                    metric="temporal_probabilistic_metrics",
+                    variable=str(var),
+                    level=lvl,  # Handled by build_output_filename if passed
+                    qualifier=qualifier,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="csv",
+                )
+                save_dataframe(df_lead, out_csv_lead, index=False)
+
+                # Only plot top-level (2D) or explicit single-level requests to avoid spam
+                if not is_3d:
+                    fig, ax = plt.subplots(figsize=(8, 4), dpi=150)
+                    ax.plot(lead_hours, values, marker="o", linestyle="-")
+                    ax.set_xlabel("Lead Time [h]")
+                    ax.set_ylabel("CRPS")
+                    ax.set_title(f"CRPS Evolution — {format_variable_name(str(var))}")
+                    ax.grid(True, linestyle="--", alpha=0.6)
+                    out_png_lead = section_output / build_output_filename(
+                        metric="temporal_probabilistic_metrics",
+                        variable=str(var),
+                        level=None,
+                        qualifier=qualifier,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig, out_png_lead, module="probabilistic")
+
+            # 3. Per Level CRPS (Scalar Aggregation)
+            if job.get("crps_per_level_scalar_lazy_res") is not None:
+                val = float(job["crps_per_level_scalar_lazy_res"].item())
+                if var not in crps_level_aggs:
+                    crps_level_aggs[var] = []
+                crps_level_aggs[var].append((int(lvl), val))
+
+            # 4. PIT Global Histogram
+            if job.get("pit_counts_res") is not None:
+                # 3D: Save per-level histogram
+                # 2D: Save global histogram
+                counts = job["pit_counts_res"].astype(np.float64)
+                edges = job["pit_edges"]
+                width = np.diff(edges)
+                bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
+                counts = counts / bin_area
+
+                pit_npz = section_output / build_output_filename(
+                    metric="pit_hist",
+                    variable=str(var),
+                    level=lvl,
+                    qualifier=f"level{lvl}" if lvl is not None else None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_data(
+                    pit_npz,
+                    counts=counts,
+                    edges=edges,
+                    module="probabilistic",
+                )
+
+            # 6. Save Full Fields (Sliced)
+            if job.get("crps_field_res") is not None:
+                crps_res = job["crps_field_res"]
+                if job.get("is_split"):
+                    # Concatenate if we got a list of chunks
+                    # Use xr.concat to preserve DataArray type and coordinates
+                    crps_res = xr.concat(crps_res, dim=job["split_dim"])
+
+                qual = f"level{lvl}" if lvl is not None else None
+                out_npz_crps = section_output / build_output_filename(
+                    metric="crps_field",
+                    variable=str(var),
+                    level=lvl,
+                    qualifier=qual,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                _save_npz_with_coords(out_npz_crps, crps_res, module="probabilistic", level=lvl)
+
+            if job.get("pit_field_res") is not None:
+                pit_res = job["pit_field_res"]
+                if job.get("is_split"):
+                    # Concatenate if we got a list of chunks
+                    # Use xr.concat to preserve DataArray type and coordinates
+                    pit_res = xr.concat(pit_res, dim=job["split_dim"])
+
+                qual = f"level{lvl}" if lvl is not None else None
+                out_npz_pit = section_output / build_output_filename(
+                    metric="pit_field",
+                    variable=str(var),
+                    level=lvl,
+                    qualifier=qual,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                _save_npz_with_coords(out_npz_pit, pit_res, module="probabilistic", level=lvl)
+
+            # Release memory
+            keys_to_clear = [
+                "crps_mean_res",
+                "crps_per_lead_res",
+                "crps_per_level_scalar_lazy_res",
+                "pit_counts_res",
+                "crps_field_res",
+                "pit_field_res",
+            ]
+            for k in keys_to_clear:
+                if k in job:
+                    job[k] = None
+
+    compute_jobs(
+        all_jobs,
+        key_map={
+            "crps_mean_lazy": "crps_mean_res",
+            "crps_per_lead_lazy": "crps_per_lead_res",
+            # Not used directly in new flow but kept for safety
+            "crps_per_level_lazy": "crps_per_level_res",
+            "crps_per_level_scalar_lazy": "crps_per_level_scalar_lazy_res",
+            "pit_counts_lazy": "pit_counts_res",
+            "crps_field_lazy": "crps_field_res",
+            "pit_field_lazy": "pit_field_res",
+        },
+        chunk_size=dynamic_chunk,
+        desc="Computing CRPS and PIT metrics",
+        batch_callback=_process_batch,
+    )
+
+    # Post-process aggregations for 3D vars
+    for var, vals in crps_global_accumulators.items():
+        # Average across levels to get a single global CRPS
+        global_mean = sum(vals) / len(vals)
+        crps_rows.append({"variable": var, "CRPS": global_mean})
+
+    for var, lvl_pairs in crps_level_aggs.items():
+        for lvl, val in lvl_pairs:
+            crps_rows_per_level.append({
+                "variable": var,
+                "level": lvl,
+                "CRPS": val,
+            })
 
     compute_jobs(
         all_jobs,
@@ -404,142 +669,8 @@ def run_probabilistic(
         },
         chunk_size=dynamic_chunk,
         desc="Computing CRPS and PIT metrics",
+        batch_callback=_process_batch,
     )
-
-    # --- Process Results ---
-
-    for job in all_jobs:
-        var = job["var"]
-        pit_da = ds_pit[var]
-
-        # --- Process Results (Save/Plot) ---
-        # 1. CRPS Mean
-        if job["crps_mean_lazy"] is not None:
-            try:
-                crps_mean = float(job["crps_mean_res"].item())
-            except Exception:
-                crps_mean = float(job["crps_mean_res"])
-            crps_rows.append({"variable": var, "CRPS": crps_mean})
-
-        # 2. Per Lead Time CRPS
-        if job["crps_per_lead_lazy"] is not None:
-            crps_per_lead = job["crps_per_lead_res"]
-            # Re-extract leads from the computed result (coords preserved)
-            leads = crps_per_lead["lead_time"].values
-            if np.issubdtype(leads.dtype, np.timedelta64):
-                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
-            else:
-                lead_hours = leads
-
-            values = crps_per_lead.values
-
-            df_lead = pd.DataFrame(
-                {
-                    "lead_time_hours": lead_hours,
-                    "CRPS": values,
-                    "variable": str(var),
-                }
-            )
-
-            out_csv_lead = section_output / build_output_filename(
-                metric="temporal_probabilistic_metrics",
-                variable=str(var),
-                level=None,
-                qualifier="per_lead_time",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="csv",
-            )
-            save_dataframe(df_lead, out_csv_lead, index=False)
-
-            # Plot CRPS vs Lead Time
-            fig, ax = plt.subplots(figsize=(8, 4), dpi=150)
-            ax.plot(lead_hours, values, marker="o", linestyle="-")
-            ax.set_xlabel("Lead Time [h]")
-            ax.set_ylabel("CRPS")
-            ax.set_title(f"CRPS Evolution — {format_variable_name(str(var))}")
-            ax.grid(True, linestyle="--", alpha=0.6)
-            out_png_lead = section_output / build_output_filename(
-                metric="temporal_probabilistic_metrics",
-                variable=str(var),
-                level=None,
-                qualifier="per_lead_time",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            save_figure(fig, out_png_lead, module="probabilistic")
-
-        # 3. Per Level CRPS
-        if job["crps_per_level_lazy"] is not None:
-            crps_per_level = job["crps_per_level_res"]
-            for lvl in crps_per_level.level.values:
-                crps_rows_per_level.append(
-                    {
-                        "variable": var,
-                        "level": int(lvl),
-                        "CRPS": float(crps_per_level.sel(level=lvl).item()),
-                    }
-                )
-
-        # 4. PIT Global Histogram
-        if job["pit_counts_lazy"] is None:
-            if "lead_time" in pit_da.dims and pit_da.sizes["lead_time"] > 1:
-                c.print("[probabilistic] Skipping average PIT histogram (lead_time > 1 present).")
-        else:
-            counts = job["pit_counts_res"].astype(np.float64)
-            edges = job["pit_edges"]
-            # Density normalization
-            width = np.diff(edges)
-            bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
-            counts = counts / bin_area
-
-            pit_npz = section_output / build_output_filename(
-                metric="pit_hist",
-                variable=str(var),
-                level=None,
-                qualifier=None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="npz",
-            )
-            save_data(
-                pit_npz,
-                counts=counts,
-                edges=edges,
-                module="probabilistic",
-            )
-
-        # 6. Save Full Fields
-        out_npz_crps = section_output / build_output_filename(
-            metric="crps_field",
-            variable=str(var),
-            level=None,
-            qualifier=None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token,
-            ext="npz",
-        )
-        _save_npz_with_coords(out_npz_crps, job["crps_field_res"], module="probabilistic")
-
-        out_npz_pit = section_output / build_output_filename(
-            metric="pit_field",
-            variable=str(var),
-            level=None,
-            qualifier=None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token,
-            ext="npz",
-        )
-        _save_npz_with_coords(out_npz_pit, job["pit_field_res"], module="probabilistic")
-
-        # Explicitly release memory
-        # del job
 
     if crps_rows:
         if "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1:
@@ -679,7 +810,8 @@ def plot_probabilistic(
 
         def _fmt(x):
             return (
-                np.datetime_as_string(x, unit="h")
+                np
+                .datetime_as_string(x, unit="h")
                 .replace("-", "")
                 .replace(":", "")
                 .replace("T", "")
@@ -876,12 +1008,10 @@ def plot_probabilistic(
                         )
                     ax.set_title(f"CRPS (+{int(h)}h)", fontsize=10)
                     # Mean CRPS per lead for later CSV/NPZ line output
-                    crps_line_rows.append(
-                        {
-                            "lead_time_hours": float(h),
-                            "CRPS": float(np.nanmean(Z)),
-                        }
-                    )
+                    crps_line_rows.append({
+                        "lead_time_hours": float(h),
+                        "CRPS": float(np.nanmean(Z)),
+                    })
                 # Hide unused axes if n not multiple of ncols
                 for j in range(n, nrows * ncols):
                     axes_flat[j].axis("off")
