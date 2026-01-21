@@ -772,6 +772,30 @@ def prepare_datasets(
     ds_prediction = _apply_temporal_resolution(ds_prediction, hours)
     _audit("after temporal_resolution", ds_prediction, ds_target)
 
+    # Validate ensemble consistency between aligned datasets
+    if "ensemble" in ds_prediction.dims and "ensemble" in ds_target.dims:
+        e_pred = int(ds_prediction.sizes["ensemble"])
+        e_tgt = int(ds_target.sizes["ensemble"])
+
+        if e_pred > 1 and e_tgt == 1:
+            c.info(
+                f"Ensemble Info: Prediction has {e_pred} members, Target has 1. "
+                "Target will be broadcast/reused for all prediction members."
+            )
+        elif e_pred == 1 and e_tgt > 1:
+            c.warn(
+                f"Ensemble Warning: Prediction has 1 member, Target has {e_tgt}. "
+                "In 'members' mode, only the first target member (idx=0) will be used "
+                "for comparison. Other target members are ignored."
+            )
+        elif e_pred != e_tgt:
+            c.warn(
+                f"Ensemble Mismatch: Prediction has {e_pred} members, Target has {e_tgt}. "
+                "Modules operating in 'members' mode typically iterate over prediction members. "
+                "Indices matching available target members will be compared; "
+                "excessive prediction indices may fail."
+            )
+
     sel_block = cfg.get("selection", {}) or {}
     bounds = sel_block.get("datetimes")
     if (
@@ -1913,10 +1937,16 @@ def main(argv: list[str] | None = None) -> None:
                         host = socket.gethostname()
                         c.print(f"Dask Dashboard running on node: {host}")
                         c.print(f"Dashboard URL: {client.dashboard_link}")
-                        c.print("To view the dashboard in VS Code:")
+                        c.print(
+                            "To view the dashboard in VS Code, "
+                            "add these entries to your SSH config:"
+                        )
+                        c.print("'AddKeysToAgent yes'")
+                        c.print("'ForwardAgent yes'")
                         c.print("1. Open a new terminal in VS Code")
                         c.print(
-                            f"2. Run: ssh -N -L {dashboard_port}:127.0.0.1:{dashboard_port} {host}"
+                            f"2. Run: ssh -N -L {dashboard_port}:127.0.0.1:"
+                            f"{dashboard_port} {host} &"
                         )
                         c.print(
                             f"3. Open 'Simple Browser' in VS Code and go to: http://localhost:{dashboard_port}/status"
