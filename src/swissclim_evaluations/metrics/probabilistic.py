@@ -289,8 +289,7 @@ def run_probabilistic(
 
         def _fmt(x):
             return (
-                np
-                .datetime_as_string(x, unit="h")
+                np.datetime_as_string(x, unit="h")
                 .replace("-", "")
                 .replace(":", "")
                 .replace("T", "")
@@ -498,11 +497,13 @@ def run_probabilistic(
                     # Specialized per-level-lead export
                     qualifier = f"per_lead_time_level{lvl}"
 
-                df_lead = pd.DataFrame({
-                    "lead_time_hours": lead_hours,
-                    "CRPS": values,
-                    "variable": str(var),
-                })
+                df_lead = pd.DataFrame(
+                    {
+                        "lead_time_hours": lead_hours,
+                        "CRPS": values,
+                        "variable": str(var),
+                    }
+                )
                 if lvl is not None:
                     df_lead["level"] = lvl
 
@@ -651,11 +652,13 @@ def run_probabilistic(
 
     for var, lvl_pairs in crps_level_aggs.items():
         for lvl, val in lvl_pairs:
-            crps_rows_per_level.append({
-                "variable": var,
-                "level": lvl,
-                "CRPS": val,
-            })
+            crps_rows_per_level.append(
+                {
+                    "variable": var,
+                    "level": lvl,
+                    "CRPS": val,
+                }
+            )
 
     compute_jobs(
         all_jobs,
@@ -810,8 +813,7 @@ def plot_probabilistic(
 
         def _fmt(x):
             return (
-                np
-                .datetime_as_string(x, unit="h")
+                np.datetime_as_string(x, unit="h")
                 .replace("-", "")
                 .replace(":", "")
                 .replace("T", "")
@@ -1008,10 +1010,12 @@ def plot_probabilistic(
                         )
                     ax.set_title(f"CRPS (+{int(h)}h)", fontsize=10)
                     # Mean CRPS per lead for later CSV/NPZ line output
-                    crps_line_rows.append({
-                        "lead_time_hours": float(h),
-                        "CRPS": float(np.nanmean(Z)),
-                    })
+                    crps_line_rows.append(
+                        {
+                            "lead_time_hours": float(h),
+                            "CRPS": float(np.nanmean(Z)),
+                        }
+                    )
                 # Hide unused axes if n not multiple of ncols
                 for j in range(n, nrows * ncols):
                     axes_flat[j].axis("off")

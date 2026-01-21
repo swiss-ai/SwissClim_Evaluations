@@ -414,12 +414,14 @@ def run(
                                     wide_df[col].values.tolist(),
                                     strict=False,
                                 ):
-                                    rows_csv.append({
-                                        "variable": v,
-                                        "lead_time_hours": float(h),
-                                        "threshold": tlabel,
-                                        "ETS": float(val),
-                                    })
+                                    rows_csv.append(
+                                        {
+                                            "variable": v,
+                                            "lead_time_hours": float(h),
+                                            "threshold": tlabel,
+                                            "ETS": float(val),
+                                        }
+                                    )
                             save_dataframe(
                                 pd.DataFrame(rows_csv), out_csv, index=False, module="ets"
                             )

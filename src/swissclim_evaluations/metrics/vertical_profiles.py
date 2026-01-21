@@ -324,8 +324,7 @@ def run(
 
         def _fmt(x):
             return (
-                np
-                .datetime_as_string(x, unit="h")
+                np.datetime_as_string(x, unit="h")
                 .replace("-", "")
                 .replace(":", "")
                 .replace("T", "")
