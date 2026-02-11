@@ -680,23 +680,39 @@ def prepare_datasets(
     _audit("after open", ds_prediction, ds_target)
 
     # Align dims to match config expectations
+    # Lead time policy parsing (opt-in multi-lead) ---------------------------------
+    # Parse policy early to standardize predictions and correctly calc extension hours
+    lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
+    if lt_cfg is None and isinstance(cfg, dict):
+        lt_cfg = cfg.get("selection", {}).get("lead_time")
+    lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
+    # preserve_all_leads when mode != first
+    cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
+
+    # Standardize predictions immediately to allow robust lead_time detection
+    ds_prediction = data_mod.standardize_dims(
+        ds_prediction,
+        dataset_name="prediction",
+        first_lead_only=not lead_policy.preserve_all_leads,
+        preserve_all_leads=lead_policy.preserve_all_leads,
+    )
+
+    # Align dims to match config expectations
     ds_prediction = _slice_common(ds_prediction, cfg)
 
     # Determine required target extension based on prediction lead times
     extend_hours = 0
     if "lead_time" in ds_prediction.coords:
         try:
-            # Parse policy early to determine if we need first lead or max lead
-            lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
-            if lt_cfg is None and isinstance(cfg, dict):
-                lt_cfg = cfg.get("selection", {}).get("lead_time")
-            mode = (lt_cfg or {}).get("mode", "first")
+            # We can use the parsed policy directly now
+            mode = str(lead_policy.mode).lower()
 
             leads = ds_prediction["lead_time"].values
             leads_h = (leads // np.timedelta64(1, "h")).astype(int)
             if len(leads_h) > 0:
                 # If mode is first, we need init + first_lead; otherwise use max_lead
-                extend_hours = int(leads_h[0]) if mode == "first" else int(leads_h.max())
+                is_first = mode == "first"
+                extend_hours = int(leads_h[0]) if is_first else int(leads_h.max())
         except Exception:
             # If anything goes wrong while inferring extend_hours from lead_time,
             # fall back to the default extend_hours=0; downstream selection still works
@@ -732,31 +748,14 @@ def prepare_datasets(
     _ensure_nonempty_temporal(ds_prediction, "Predictions")
     _ensure_nonempty_temporal(ds_target, "Ground-truth")
 
-    # Standardize temporal dims and enforce required schema
-    # Lead time policy parsing (opt-in multi-lead) ---------------------------------
-    lt_cfg = cfg.get("lead_time") if isinstance(cfg, dict) else None
-    if lt_cfg is None and isinstance(cfg, dict):
-        lt_cfg = cfg.get("selection", {}).get("lead_time")
-    lead_policy: LeadTimePolicy = parse_lead_time_policy(lt_cfg)
-    # preserve_all_leads when mode != first
-    cfg["__lead_time_policy"] = lead_policy  # attach for downstream modules
-
-    # Keep only the first lead by default; when multi-lead policy is active
-    # (preserve_all=True), retain all leads to allow downstream selection/stride.
+    # Standardize target (keep original location for target to support 'time' slicing above)
     ds_target = data_mod.standardize_dims(
         ds_target,
         dataset_name="target",
         first_lead_only=not lead_policy.preserve_all_leads,
         preserve_all_leads=lead_policy.preserve_all_leads,
     )
-    ds_prediction = data_mod.standardize_dims(
-        ds_prediction,
-        dataset_name="prediction",
-        first_lead_only=not lead_policy.preserve_all_leads,
-        preserve_all_leads=lead_policy.preserve_all_leads,
-    )
-    # Defer standardize prints; capture only in audit
-    _audit("after standardize_dims", ds_prediction, ds_target)
+    # ds_prediction already standardized above
 
     # Handle optional ensemble dimension according to config and selected modules
     ds_prediction = data_mod.apply_ensemble_policy(
