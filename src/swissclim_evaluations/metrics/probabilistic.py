@@ -322,32 +322,28 @@ def run_probabilistic(
 
     crps_rows_per_level: list[dict[str, Any]] = []
 
-    # --- Optimization: Batch compute CRPS and PIT ---
-    ds_target_sub = ds_target[variables]
-    ds_prediction_sub = ds_prediction[variables]
-
-    if "ensemble" in ds_target_sub.dims:
-        ds_target_sub = ds_target_sub.isel(ensemble=0, drop=True)
-    if "ensemble" in ds_target_sub.coords:
-        ds_target_sub = ds_target_sub.drop_vars("ensemble")
-
-    # Ensure target does not have ensemble dimension (even after align)
-    if "ensemble" in ds_target_sub.dims:
-        ds_target_sub = ds_target_sub.isel(ensemble=0, drop=True)
-
-    ds_crps = compute_wbx_crps(ds_prediction_sub, ds_target_sub, ensemble_dim="ensemble")
-    ds_pit = probability_integral_transform(
-        ds_target_sub, ds_prediction_sub, ensemble_dim="ensemble", name_prefix=None
-    )
-
-    # --- Optimization: Collect all lazy computations ---
-    # --- Optimization: Collect all lazy computations ---
+    # --- Use Batching Logic (Variable by Variable) ---
     all_jobs: list[dict[str, Any]] = []
     is_multi_lead = "lead_time" in ds_prediction.dims and ds_prediction.sizes["lead_time"] > 1
 
     for var in variables:
-        crps_da_full = ds_crps[var]
-        pit_da_full = ds_pit[var]
+        # Slice per variable to decouple dask graphs
+        ds_p_var = ds_prediction[[var]]
+        ds_t_var = ds_target[[var]]
+
+        if "ensemble" in ds_t_var.dims:
+            ds_t_var = ds_t_var.isel(ensemble=0, drop=True)
+        if "ensemble" in ds_t_var.coords:
+            ds_t_var = ds_t_var.drop_vars("ensemble")
+
+        # Compute CRPS and PIT for this single variable
+        ds_crps_var = compute_wbx_crps(ds_p_var, ds_t_var, ensemble_dim="ensemble")
+        ds_pit_var = probability_integral_transform(
+            ds_t_var, ds_p_var, ensemble_dim="ensemble", name_prefix=None
+        )
+
+        crps_da_full = ds_crps_var[var]
+        pit_da_full = ds_pit_var[var]
 
         # Determine levels to iterate (batching per-level for 3D vars)
         levels_to_process: list[Any] = [None]
