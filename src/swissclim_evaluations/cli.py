@@ -1358,13 +1358,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chunk_mode.startswith("auto"):
         try:
             chunk_details = resolve_dynamic_chunk_details(performance_cfg, ds=ds_prediction)
+            avg_points = chunk_details.get("avg_points_per_var", "n/a")
+            avg_points_text = f"{avg_points:,}" if isinstance(avg_points, int) else str(avg_points)
             details_msg = (
-                "Dask Auto Chunk Details: "
-                f"vars={chunk_details.get('num_vars', 'n/a')} "
-                f"avg_points_per_var={chunk_details.get('avg_points_per_var', 'n/a')} "
-                f"effective_cap={chunk_details.get('effective_cap', 'n/a')} "
-                f"effective_safe_points_per_batch="
-                f"{chunk_details.get('effective_safe_points_per_batch', 'n/a')}"
+                "Dask Auto Chunk: "
+                f"{chunk_details.get('chunk_size', 'n/a')} jobs/batch "
+                f"(cap {chunk_details.get('effective_cap', 'n/a')}, "
+                f"vars {chunk_details.get('num_vars', 'n/a')}, "
+                f"~{avg_points_text} points/var)"
             )
             if USE_RICH:
                 c.print(f"[cyan]{details_msg}[/]")

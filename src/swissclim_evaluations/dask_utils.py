@@ -277,9 +277,10 @@ def calculate_dynamic_chunk_size(
         avg_points = n_points / num_vars
         if avg_points > 0:
             if max_dynamic_chunk_size is None:
-                # Dataset-driven cap: larger per-variable chunk footprints -> fewer jobs per batch.
-                auto_cap = int(np.sqrt(1_000_000_000 / avg_points))
-                cap = max(4, min(auto_cap, 32))
+                # Dataset-driven conservative cap: larger per-variable chunk footprints
+                # -> fewer jobs per batch. Tuned to prefer more batches by default.
+                auto_cap = int(np.sqrt(250_000_000 / avg_points))
+                cap = max(2, min(auto_cap, 16))
             else:
                 cap = max(1, int(max_dynamic_chunk_size))
 
@@ -420,8 +421,8 @@ def resolve_dynamic_chunk_details(
         max_cfg = None
 
     if max_cfg is None:
-        auto_cap = int(np.sqrt(1_000_000_000 / avg_points)) if avg_points > 0 else 12
-        cap = max(4, min(auto_cap, 32))
+        auto_cap = int(np.sqrt(250_000_000 / avg_points)) if avg_points > 0 else 8
+        cap = max(2, min(auto_cap, 16))
     else:
         cap = max(1, int(max_cfg))
 

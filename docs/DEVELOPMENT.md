@@ -50,6 +50,8 @@ Optional advanced tuning:
 - `safe_points_per_batch` (default `auto`, dataset-driven)
 - `max_dynamic_chunk_size` (default `auto`, dataset-driven)
 
+Auto mode is intentionally conservative (favors more batches / fewer jobs per batch).
+
 ### Dev environment (linting & formatting)
 
 This project uses Ruff for both linting and formatting, managed via an optional "dev" extra
