@@ -50,6 +50,43 @@ def _load_yaml(path: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
+MODULE_ALIASES: dict[str, str] = {
+    # canonical
+    "maps": "maps",
+    "hist": "hist",
+    "kde": "kde",
+    "spectra": "spectra",
+    "vprof": "vprof",
+    "metrics": "metrics",
+    "ets": "ets",
+    "prob": "prob",
+    # long-form aliases
+    "histograms": "hist",
+    "wd_kde": "kde",
+    "energy_spectra": "spectra",
+    "vertical_profiles": "vprof",
+    "deterministic": "metrics",
+    "probabilistic": "prob",
+}
+
+
+def _normalize_modules(modules: list[str]) -> set[str]:
+    """Normalize module names from config to canonical keys used by dispatch."""
+    normalized: set[str] = set()
+    unknown: list[str] = []
+    for module_name in modules:
+        key = str(module_name).lower().strip()
+        mapped = MODULE_ALIASES.get(key)
+        if mapped is None:
+            unknown.append(str(module_name))
+            continue
+        normalized.add(mapped)
+
+    if unknown:
+        c.warn(f"[intercompare] Unknown modules ignored: {', '.join(sorted(unknown))}")
+    return normalized
+
+
 def run_from_config(cfg: dict) -> None:
     # Resolve models
     model_strs = cfg.get("models") or []
@@ -70,6 +107,7 @@ def run_from_config(cfg: dict) -> None:
         "kde",
         "maps",
         "metrics",
+        "ets",
         "prob",
         "vprof",
     ]
@@ -83,7 +121,7 @@ def run_from_config(cfg: dict) -> None:
         if not m.exists():
             c.print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
-    mods = set(modules)
+    mods = _normalize_modules(modules)
     if "maps" in mods:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "hist" in mods:

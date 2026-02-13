@@ -244,6 +244,26 @@ performance:
   #                 Use "distributed" for production runs with large data to avoid OOM.
   dask_scheduler: distributed
 
-  # Controls chunking for metric computation. Set to integer or "no-chunk" to disable.
-  # Smaller chunk sizes help prevent OOM but add overhead. Default is dynamically calculated.
+  # Global Dask batch size.
+  # - Set an integer for manual mode.
+  # - Set "no-chunk" to effectively disable batching.
+  # - Omit/comment out to enable auto chunk tuning.
   # chunk_size: 20
+
+  # Optional auto-chunk tuning (active only when chunk_size is omitted).
+  # safe_points_per_batch and max_dynamic_chunk_size do NOT override manual chunk_size.
+  # safe_points_per_batch: 200000000
+  # max_dynamic_chunk_size: 64
+
+  # Shared split flags across all batching modules.
+  # These control job partitioning dimensions before batch execution.
+  # split_3d_by_level: true
+  # split_lead_time: true
+  # split_init_time: true
+
+  # Shared split block sizes.
+  # These DO NOT compete with chunk_size:
+  # - split flags + block sizes decide job shape/count
+  # - chunk_size decides how many jobs are executed per Dask batch
+  # lead_time_block_size: 12
+  # init_time_block_size: 12

@@ -13,7 +13,14 @@ import matplotlib.pyplot as plt
 from scores.categorical import BinaryContingencyManager
 
 from .. import console as c
-from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs, compute_quantile_preserving
+from ..dask_utils import (
+    apply_split_to_dataarray,
+    build_variable_level_lead_splits,
+    compute_jobs,
+    compute_quantile_preserving,
+    resolve_dynamic_chunk_size,
+    resolve_module_batching_options,
+)
 
 
 def _compute_ets_raw(
@@ -98,6 +105,7 @@ def _calculate_ets_per_level(
     ds_prediction: xr.Dataset,
     thresholds: list[int],
     chunk_size: int = 20,
+    init_time_block_size: int | None = None,
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:
@@ -111,35 +119,55 @@ def _calculate_ets_per_level(
     # )
 
     jobs: list[dict[str, Any]] = []
+    split_specs = build_variable_level_lead_splits(
+        ds_target[variables_3d],
+        variables=[str(v) for v in variables_3d],
+        split_level=True,
+        split_lead_time=False,
+        split_init_time=True,
+        init_time_block_size=init_time_block_size,
+    )
 
-    for var in variables_3d:
-        da_target_full = ds_target[var]
-        # da_pred_full = ds_prediction[var] # Unused
+    for split_spec in split_specs:
+        var = str(split_spec["variable"])
+        lvl = split_spec["level"]
+        init_slice = split_spec.get("init_slice", slice(None))
 
-        # Safe access to levels
-        if "level" not in da_target_full.dims:
-            continue
+        ds_t_slice = xr.Dataset(
+            {
+                var: apply_split_to_dataarray(
+                    ds_target[var],
+                    level=lvl,
+                    lead_slice=slice(None),
+                    init_slice=init_slice,
+                ),
+            }
+        )
+        ds_p_slice = xr.Dataset(
+            {
+                var: apply_split_to_dataarray(
+                    ds_prediction[var],
+                    level=lvl,
+                    lead_slice=slice(None),
+                    init_slice=init_slice,
+                ),
+            }
+        )
 
-        levels = da_target_full["level"].values
-        for lvl in levels:
-            # Slice for single level
-            # Note: _compute_ets_raw expects Dataset input
-            ds_t_slice = ds_target[[var]].sel(level=lvl, drop=True)
-            ds_p_slice = ds_prediction[[var]].sel(level=lvl, drop=True)
-
-            # Compute ETS for this level (scaleless w.r.t level)
-            # The result from _compute_ets_raw is {var: DataArray(dims=[quantile])}
-            # We don't use preserve_dims=["level"] because we sliced it out.
-            raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
-
-            if var in raw_res_dict:
-                jobs.append({"var": var, "level": lvl, "lazy": raw_res_dict[var]})
+        raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
+        if var in raw_res_dict:
+            jobs.append(
+                {
+                    "var": var,
+                    "level": lvl,
+                    "init_start": int(split_spec.get("init_start", 0)),
+                    "init_len": int(split_spec.get("init_len", 1)),
+                    "lazy": raw_res_dict[var],
+                }
+            )
 
     if not jobs:
         return None
-
-    def _process_batch(batch_jobs: list[dict[str, Any]]):
-        pass
 
     compute_jobs(
         jobs,
@@ -148,17 +176,35 @@ def _calculate_ets_per_level(
         desc="Computing ETS per level",
     )
 
-    dfs = []
+    grouped: dict[tuple[str, Any], list[tuple[int, int, Any]]] = {}
     for job in jobs:
         var = job["var"]
         lvl = job["level"]
         if job.get("res") is None:
             continue
 
-        ets_score = job["res"]  # dims: [quantile] (level is dropped)
+        key = (str(var), lvl)
+        grouped.setdefault(key, []).append(
+            (int(job.get("init_start", 0)), int(job.get("init_len", 1)), job["res"])
+        )
 
+    dfs = []
+    for (var, lvl), parts in grouped.items():
+        parts_sorted = sorted(parts, key=lambda item: item[0])
+        weighted_sum = None
+        total_weight = 0
+        for _init_start, init_len, ets_score in parts_sorted:
+            weight = max(1, int(init_len))
+            weighted_part = ets_score * weight
+            weighted_sum = weighted_part if weighted_sum is None else (weighted_sum + weighted_part)
+            total_weight += weight
+
+        if weighted_sum is None:
+            continue
+
+        ets_merged = weighted_sum / max(1, total_weight)
         row = {"variable": var, "level": int(lvl) if hasattr(lvl, "item") else lvl}
-        vals = ets_score.values
+        vals = ets_merged.values
         for i, threshold in enumerate(thresholds):
             row[f"ETS {threshold}%"] = float(
                 vals[i].item() if hasattr(vals[i], "item") else vals[i]
@@ -184,17 +230,25 @@ def run(
     performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    batch_opts = resolve_module_batching_options(
+        performance_cfg=performance_cfg,
+        default_split_level=True,
+        default_split_lead_time=False,
+        default_split_init_time=True,
+        default_lead_time_block_size=12,
+        default_init_time_block_size=12,
+    )
+    ets_init_time_block_size = int(batch_opts["init_time_block_size"])
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
 
     # Compute metrics
     # n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
     n_points = None
     num_vars = len(ds_target.data_vars)
-    dynamic_chunk = calculate_dynamic_chunk_size(
+    dynamic_chunk = resolve_dynamic_chunk_size(
+        performance_cfg,
         n_points=n_points,
         num_vars=num_vars,
-        config_chunk_size=chunk_size_cfg,
         ds=ds_target,
     )
     report_per_level = bool(ets_cfg.get("report_per_level", True))
@@ -427,7 +481,11 @@ def run(
                             )
             if report_per_level:
                 per_level_df = _calculate_ets_per_level(
-                    ds_target, ds_prediction, thresholds, chunk_size=dynamic_chunk
+                    ds_target,
+                    ds_prediction,
+                    thresholds,
+                    chunk_size=dynamic_chunk,
+                    init_time_block_size=ets_init_time_block_size,
                 )
                 if per_level_df is not None:
                     out_csv_lvl = section_output / build_output_filename(
@@ -471,7 +529,12 @@ def run(
                 per_member_dfs.append(df_m)
 
                 if report_per_level:
-                    per_level_m = _calculate_ets_per_level(ds_tgt_m, ds_pred_m, thresholds)
+                    per_level_m = _calculate_ets_per_level(
+                        ds_tgt_m,
+                        ds_pred_m,
+                        thresholds,
+                        init_time_block_size=ets_init_time_block_size,
+                    )
                     if per_level_m is not None:
                         out_csv_m_lvl = section_output / build_output_filename(
                             metric="ets_metrics",

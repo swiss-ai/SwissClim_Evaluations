@@ -25,6 +25,31 @@ pytest -q
 
 Contributions welcome — keep changes chunk-aware (xarray/dask friendly) and small.
 
+### Performance tuning knobs (YAML)
+
+Use the `performance` section in your run config to control batching/splitting behavior:
+
+- `dask_scheduler`: `distributed` or `threaded`.
+- `chunk_size`: global Dask batch size (`"no-chunk"` disables batching).
+- `split_3d_by_level`: global level split toggle.
+- `split_lead_time`: global lead-time split toggle.
+- `split_init_time`: global init-time split toggle.
+- `lead_time_block_size`: global lead-time block size.
+- `init_time_block_size`: global init-time block size.
+
+Behavior and precedence:
+
+- Auto chunk tuning is ON when `chunk_size` is omitted.
+- If `chunk_size` is set, it supersedes auto tuning.
+- `chunk_size` controls how many prepared jobs are computed per Dask batch.
+- `split_*` flags and `*_block_size` control how those jobs are partitioned by dimensions first.
+- In practice: split settings determine number/shape of jobs; `chunk_size` determines how many run together.
+
+Optional advanced tuning:
+
+- `safe_points_per_batch` (default `200000000`)
+- `max_dynamic_chunk_size` (default `64`)
+
 ### Dev environment (linting & formatting)
 
 This project uses Ruff for both linting and formatting, managed via an optional "dev" extra

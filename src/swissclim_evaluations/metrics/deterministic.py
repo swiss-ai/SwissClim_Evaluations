@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import functools
+from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-import dask
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -18,10 +18,14 @@ from scores.spatial import fss_2d_single_field
 
 from .. import console as c
 from ..dask_utils import (
+    apply_split_to_dataarray,
+    build_variable_level_lead_splits,
     calculate_dynamic_chunk_size,
     compute_global_quantile,
     compute_jobs,
     compute_quantile_preserving,
+    resolve_dynamic_chunk_size,
+    resolve_module_batching_options,
 )
 from ..helpers import (
     format_variable_name,
@@ -97,6 +101,178 @@ def _finalize_metrics(
         return pd.DataFrame()
 
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
+
+
+def _compute_lazy_values_batched(
+    lazy_objects: list[Any],
+    chunk_size: int,
+    desc: str,
+) -> list[Any]:
+    """Compute lazy objects via shared dask batch helper and preserve order."""
+    if not lazy_objects:
+        return []
+
+    jobs = [{"lazy_obj": obj} for obj in lazy_objects]
+    compute_jobs(
+        jobs,
+        key_map={"lazy_obj": "res"},
+        chunk_size=max(1, int(chunk_size)),
+        desc=desc,
+    )
+    return [job["res"] for job in jobs]
+
+
+def _calculate_multi_lead_metrics_split(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    include: list[str] | None,
+    fss_cfg: dict[str, Any] | None,
+    seeps_climatology_path: str | None,
+    weights: xr.DataArray | None,
+    dynamic_chunk: int,
+    split_3d_by_level: bool,
+    split_lead_time: bool,
+    split_init_time: bool,
+    lead_time_block_size: int | None,
+    init_time_block_size: int | None,
+) -> pd.DataFrame:
+    """Compute multi-lead deterministic metrics with finer-grained splitting.
+
+    Splits work by:
+    - variable
+    - optional level (for 3D vars)
+    - optional lead_time blocks
+    - optional init_time blocks
+    """
+    jobs_meta: list[dict[str, Any]] = []
+    split_specs = build_variable_level_lead_splits(
+        ds_target,
+        split_level=split_3d_by_level,
+        split_lead_time=split_lead_time,
+        lead_time_block_size=lead_time_block_size,
+        split_init_time=split_init_time,
+        init_time_block_size=init_time_block_size,
+    )
+
+    for spec in split_specs:
+        variable = spec["variable"]
+        level_val = spec["level"]
+        lead_slice = spec["lead_slice"]
+        init_slice = spec.get("init_slice", slice(None))
+
+        da_t_blk = apply_split_to_dataarray(
+            ds_target[variable],
+            level=level_val,
+            lead_slice=lead_slice,
+            init_slice=init_slice,
+        )
+        da_p_blk = apply_split_to_dataarray(
+            ds_prediction[variable],
+            level=level_val,
+            lead_slice=lead_slice,
+            init_slice=init_slice,
+        )
+
+        ds_t_blk = xr.Dataset({str(variable): da_t_blk})
+        ds_p_blk = xr.Dataset({str(variable): da_p_blk})
+        _, lead_lazy = _calculate_all_metrics(
+            ds_t_blk,
+            ds_p_blk,
+            calc_relative=True,
+            include=include,
+            fss_cfg=fss_cfg,
+            seeps_climatology_path=seeps_climatology_path,
+            preserve_dims=["lead_time"],
+            compute=False,
+            weights=weights,
+        )
+
+        for _, metric_name, lazy_obj in lead_lazy:
+            jobs_meta.append(
+                {
+                    "variable": str(variable),
+                    "level": level_val,
+                    "lead_start": int(spec["lead_start"]),
+                    "init_start": int(spec.get("init_start", 0)),
+                    "init_len": int(spec.get("init_len", 1)),
+                    "metric": metric_name,
+                    "lazy": lazy_obj,
+                }
+            )
+
+    if not jobs_meta:
+        return pd.DataFrame()
+
+    results = _compute_lazy_values_batched(
+        [job["lazy"] for job in jobs_meta],
+        chunk_size=dynamic_chunk,
+        desc="Computing deterministic metrics",
+    )
+
+    by_var_metric_level: dict[tuple[str, str, Any], list[tuple[int, int, int, Any]]] = defaultdict(
+        list
+    )
+    for job, result in zip(jobs_meta, results, strict=False):
+        key = (job["variable"], job["metric"], job["level"])
+        by_var_metric_level[key].append(
+            (
+                int(job["lead_start"]),
+                int(job.get("init_start", 0)),
+                int(job.get("init_len", 1)),
+                result,
+            )
+        )
+
+    per_var_metric_levels: dict[str, dict[str, list[xr.DataArray]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for (variable, metric_name, _level), parts in by_var_metric_level.items():
+        by_lead_start: dict[int, list[tuple[int, int, Any]]] = defaultdict(list)
+        for lead_start, init_start, init_len, result in parts:
+            by_lead_start[int(lead_start)].append((int(init_start), int(init_len), result))
+
+        data_parts: list[Any] = []
+        for lead_start in sorted(by_lead_start.keys()):
+            init_parts = sorted(by_lead_start[lead_start], key=lambda item: item[0])
+            if len(init_parts) == 1:
+                data_parts.append(init_parts[0][2])
+                continue
+
+            weighted_sum = None
+            total_weight = 0
+            for _init_start, init_len, result in init_parts:
+                weight = max(1, int(init_len))
+                weighted_res = result * weight
+                weighted_sum = (
+                    weighted_res if weighted_sum is None else (weighted_sum + weighted_res)
+                )
+                total_weight += weight
+
+            if weighted_sum is None:
+                continue
+            data_parts.append(weighted_sum / max(1, total_weight))
+
+        merged = data_parts[0] if len(data_parts) == 1 else xr.concat(data_parts, dim="lead_time")
+        per_var_metric_levels[variable][metric_name].append(merged)
+
+    frames: list[pd.DataFrame] = []
+    for variable, metric_map in per_var_metric_levels.items():
+        ds_metrics: dict[str, xr.DataArray] = {}
+        for metric_name, arrays in metric_map.items():
+            if len(arrays) == 1:
+                ds_metrics[metric_name] = arrays[0]
+            else:
+                ds_metrics[metric_name] = xr.concat(arrays, dim="__split_level").mean(
+                    dim="__split_level", skipna=True
+                )
+        if ds_metrics:
+            df_var = xr.Dataset(ds_metrics).to_dataframe().reset_index()
+            df_var["variable"] = variable
+            frames.append(df_var)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def _calculate_all_metrics(
@@ -588,7 +764,20 @@ def run(
     fss_cfg = cfg.get("fss", {})
     seeps_climatology_path = cfg.get("seeps_climatology_path")
     report_per_level = bool(cfg.get("report_per_level", True))
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    perf_cfg = performance_cfg or {}
+    batch_opts = resolve_module_batching_options(
+        performance_cfg=perf_cfg,
+        default_split_level=True,
+        default_split_lead_time=True,
+        default_split_init_time=True,
+        default_lead_time_block_size=12,
+        default_init_time_block_size=12,
+    )
+    split_3d_by_level = bool(batch_opts["split_level"])
+    split_lead_time = bool(batch_opts["split_lead_time"])
+    split_init_time = bool(batch_opts["split_init_time"])
+    lead_time_block_size = int(batch_opts["lead_time_block_size"])
+    init_time_block_size = int(batch_opts["init_time_block_size"])
     reduce_ens_mean = True
     try:
         rem = cfg.get("reduce_ensemble_mean")
@@ -755,23 +944,13 @@ def run(
             if res_std is not None:
                 lvl_std_dict, lvl_std_lazy = res_std
 
-        # 4. Multi-lead metrics (all variables at once)
-        lead_dict, lead_lazy = ({}, [])
-        if multi_lead:
-            lead_dict, lead_lazy = _calculate_all_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                include=include,
-                fss_cfg=fss_cfg,
-                preserve_dims=["lead_time"],
-                compute=False,
-                weights=weights,
-            )
+        # 4. Multi-lead metrics (fine-grained split path)
+        lead_dict: dict[str, dict[str, Any]] = {}
+        lead_lazy: list[tuple[str, str, Any]] = []
 
         # Heuristic for chunk size: target ~1B points per batch to avoid OOM
-        dynamic_chunk = calculate_dynamic_chunk_size(
-            config_chunk_size=chunk_size_cfg,
+        dynamic_chunk = resolve_dynamic_chunk_size(
+            perf_cfg,
             ds=ds_target,
         )
 
@@ -810,19 +989,13 @@ def run(
             all_lazy_objs.extend(lazy_objs)
             category_boundaries.append(("lead", start, len(all_lazy_objs)))
 
-        # Compute ALL lazy objects in ONE call (or chunked for OOM protection)
-        # This allows dask to optimize the entire graph together
-        all_results: list[Any] = []
-        if all_lazy_objs:
-            # Use chunk_size for OOM protection, None means compute all at once (fastest)
-            chunk_size = dynamic_chunk if dynamic_chunk < 100 else None
-            if chunk_size is None or chunk_size >= len(all_lazy_objs):
-                all_results = list(dask.compute(*all_lazy_objs))
-            else:
-                # Chunked computation for OOM protection
-                for i in range(0, len(all_lazy_objs), chunk_size):
-                    chunk = all_lazy_objs[i : i + chunk_size]
-                    all_results.extend(dask.compute(*chunk))
+        # Compute ALL lazy objects through shared dask batch executor
+        # for consistent OOM protection and logging across modules.
+        all_results: list[Any] = _compute_lazy_values_batched(
+            all_lazy_objs,
+            chunk_size=dynamic_chunk,
+            desc="Computing deterministic metrics",
+        )
 
         # Dispatch results back to categories using boundaries
         reg_results: list[Any] = []
@@ -858,7 +1031,22 @@ def run(
             )
 
         df_all_lead = pd.DataFrame()
-        if lead_lazy or lead_dict:
+        if multi_lead:
+            df_all_lead = _calculate_multi_lead_metrics_split(
+                ds_target=ds_target,
+                ds_prediction=ds_prediction,
+                include=include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                weights=weights,
+                dynamic_chunk=dynamic_chunk,
+                split_3d_by_level=split_3d_by_level,
+                split_lead_time=split_lead_time,
+                split_init_time=split_init_time,
+                lead_time_block_size=lead_time_block_size,
+                init_time_block_size=init_time_block_size,
+            )
+        elif lead_lazy or lead_dict:
             df_all_lead = _finalize_metrics(lead_dict, lead_lazy, lead_results, ["lead_time"])
 
         # Ensure level column is int if present
@@ -944,8 +1132,8 @@ def run(
         first_reg_df: pd.DataFrame | None = None
         first_std_df: pd.DataFrame | None = None
         # Heuristic for chunk size also in members mode
-        dynamic_chunk = calculate_dynamic_chunk_size(
-            config_chunk_size=chunk_size_cfg,
+        dynamic_chunk = resolve_dynamic_chunk_size(
+            perf_cfg,
             ds=ds_target,
         )
 
@@ -1058,16 +1246,13 @@ def run(
                 m_all_lazy_objs.extend(lazy_objs)
                 m_category_boundaries.append(("lvl_std", start, len(m_all_lazy_objs)))
 
-            # Compute ALL lazy objects in ONE call (or chunked for OOM protection)
-            m_all_results = []
-            if m_all_lazy_objs:
-                chunk_size = dynamic_chunk if dynamic_chunk < 100 else None
-                if chunk_size is None or chunk_size >= len(m_all_lazy_objs):
-                    m_all_results = list(dask.compute(*m_all_lazy_objs))
-                else:
-                    for i in range(0, len(m_all_lazy_objs), chunk_size):
-                        chunk = m_all_lazy_objs[i : i + chunk_size]
-                        m_all_results.extend(dask.compute(*chunk))
+            # Compute ALL lazy objects through shared dask batch executor
+            # for consistent OOM protection and logging across modules.
+            m_all_results = _compute_lazy_values_batched(
+                m_all_lazy_objs,
+                chunk_size=dynamic_chunk,
+                desc="Computing deterministic metrics",
+            )
 
             # Dispatch results back to categories
             reg_results = []
@@ -1210,14 +1395,23 @@ def run(
         if "df_all_lead" in locals() and not df_all_lead.empty:
             df_all = df_all_lead
         else:
-            df_all = _calculate_all_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
+            dynamic_chunk_fallback = resolve_dynamic_chunk_size(
+                perf_cfg,
+                ds=ds_target,
+            )
+            df_all = _calculate_multi_lead_metrics_split(
+                ds_target=ds_target,
+                ds_prediction=ds_prediction,
                 include=include,
                 fss_cfg=fss_cfg,
-                preserve_dims=["lead_time"],
+                seeps_climatology_path=seeps_climatology_path,
                 weights=weights,
+                dynamic_chunk=dynamic_chunk_fallback,
+                split_3d_by_level=split_3d_by_level,
+                split_lead_time=split_lead_time,
+                split_init_time=split_init_time,
+                lead_time_block_size=lead_time_block_size,
+                init_time_block_size=init_time_block_size,
             )
 
         wide_df = pd.DataFrame()

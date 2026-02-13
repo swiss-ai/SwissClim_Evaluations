@@ -15,7 +15,7 @@ import xarray as xr
 import yaml
 
 from . import console as c, data as data_mod
-from .dask_utils import calculate_dynamic_chunk_size
+from .dask_utils import describe_chunk_size_mode, resolve_dynamic_chunk_size
 from .helpers import (
     format_ensemble_log,
     resolve_ensemble_mode,
@@ -1343,11 +1343,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
     performance_cfg = cfg.get("performance", {}) or {}
 
     # Calculate and print dynamic chunk size
-    chunk_size = calculate_dynamic_chunk_size(
-        config_chunk_size=performance_cfg.get("chunk_size"),
-        ds=ds_prediction,
-    )
-    msg = f"Dask Execution: Base Chunk Size: {chunk_size}"
+    chunk_size = resolve_dynamic_chunk_size(performance_cfg, ds=ds_prediction)
+    chunk_mode = describe_chunk_size_mode(performance_cfg)
+    msg = f"Dask Execution: Base Chunk Size: {chunk_size} (mode={chunk_mode})"
     if USE_RICH:
         c.print(f"[cyan][bold]{msg}[/]")
     else:
@@ -1725,7 +1723,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     # 2. Plots
                     plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
                     # 3. WBX Metrics
-                    run_probabilistic_wbx(ds_target, ds_prediction, out_root, plotting, cfg)
+                    run_probabilistic_wbx(
+                        ds_target,
+                        ds_prediction,
+                        out_root,
+                        plotting,
+                        cfg,
+                        performance_cfg=performance_cfg,
+                    )
 
                     dt = time.time() - _t
                     module_timings.append(("probabilistic", dt))

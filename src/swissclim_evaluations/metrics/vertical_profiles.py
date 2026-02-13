@@ -10,7 +10,11 @@ import xarray as xr
 from scores.functions import create_latitude_weights
 
 from .. import console as c
-from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs
+from ..dask_utils import (
+    compute_jobs,
+    resolve_dynamic_chunk_size,
+    resolve_module_batching_options,
+)
 from ..helpers import (
     COLOR_MODEL_PREDICTION,
     build_output_filename,
@@ -133,6 +137,64 @@ def _compute_nmae_per_lead(
     nmae = (nmae * 100.0).fillna(0.0).astype("float32")
     nmae.name = "nmae"
     return nmae
+
+
+def _compute_nmae_split_levels(
+    true_da: xr.DataArray,
+    pred_da: xr.DataArray,
+    lat_slice: slice,
+    level_values: Sequence[int | float],
+    weights: xr.DataArray | None = None,
+    preserve_dims: Sequence[str] | None = None,
+    split_levels: bool = True,
+) -> xr.DataArray:
+    """Compute NMAE with optional per-level split for robustness."""
+    levels = [lv.item() if hasattr(lv, "item") else lv for lv in level_values]
+    if (not split_levels) or len(levels) <= 1:
+        return _compute_nmae(
+            true_da,
+            pred_da,
+            lat_slice,
+            levels,
+            weights=weights,
+            preserve_dims=preserve_dims,
+        )
+
+    parts: list[xr.DataArray] = []
+    for lvl in levels:
+        part = _compute_nmae(
+            true_da,
+            pred_da,
+            lat_slice,
+            [lvl],
+            weights=weights,
+            preserve_dims=preserve_dims,
+        )
+        if "level" in part.dims and int(part.sizes.get("level", 0)) == 1:
+            part = part.assign_coords(level=[lvl])
+        parts.append(part)
+    return xr.concat(parts, dim="level")
+
+
+def _compute_nmae_per_lead_split_levels(
+    true_da: xr.DataArray,
+    pred_da: xr.DataArray,
+    level_values: Sequence[int | float],
+    weights: xr.DataArray | None = None,
+    split_levels: bool = True,
+) -> xr.DataArray:
+    """Compute per-lead NMAE with optional per-level split for robustness."""
+    levels = [lv.item() if hasattr(lv, "item") else lv for lv in level_values]
+    if (not split_levels) or len(levels) <= 1:
+        return _compute_nmae_per_lead(true_da, pred_da, levels, weights)
+
+    parts: list[xr.DataArray] = []
+    for lvl in levels:
+        part = _compute_nmae_per_lead(true_da, pred_da, [lvl], weights)
+        if "level" in part.dims and int(part.sizes.get("level", 0)) == 1:
+            part = part.assign_coords(level=[lvl])
+        parts.append(part)
+    return xr.concat(parts, dim="level")
 
 
 def _plot_vertical_profile_evolution(
@@ -299,7 +361,13 @@ def run(
     dpi = int(plotting_cfg.get("dpi", 48))
     section_output = out_root / "vertical_profiles"
 
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    vp_batch_opts = resolve_module_batching_options(
+        performance_cfg=performance_cfg,
+        default_split_level=True,
+        default_split_lead_time=False,
+        default_split_init_time=False,
+    )
+    split_3d_by_level = bool(vp_batch_opts["split_level"])
 
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     lat_bins, n_bands = _lat_bands()
@@ -420,12 +488,13 @@ def run(
             lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
             w_slice_neg = weights.sel(latitude=lat_slice_neg)
             south_curves.append(
-                _compute_nmae(
+                _compute_nmae_split_levels(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_neg,
                     level_values,
                     weights=w_slice_neg,
+                    split_levels=split_3d_by_level,
                 )
             )
             south_meta.append((lat_min_neg, lat_max_neg))
@@ -439,12 +508,13 @@ def run(
             lat_slice_pos = _lat_slice(low, high)
             w_slice_pos = weights.sel(latitude=lat_slice_pos)
             north_curves.append(
-                _compute_nmae(
+                _compute_nmae_split_levels(
                     ds_target[var],
                     ds_prediction[var],
                     lat_slice_pos,
                     level_values,
                     weights=w_slice_pos,
+                    split_levels=split_3d_by_level,
                 )
             )
             north_meta.append((lat_min_pos, lat_max_pos))
@@ -473,13 +543,14 @@ def run(
                 lat_slice_neg = _lat_slice(lat_min_neg, lat_max_neg)
                 w_slice_neg = weights.sel(latitude=lat_slice_neg)
                 south_curves_m.append(
-                    _compute_nmae(
+                    _compute_nmae_split_levels(
                         ds_target[var],
                         ds_prediction[var],
                         lat_slice_neg,
                         level_values,
                         weights=w_slice_neg,
                         preserve_dims=["ensemble"],
+                        split_levels=split_3d_by_level,
                     )
                 )
                 idx = -(i + 1)
@@ -490,13 +561,14 @@ def run(
                 lat_slice_pos = _lat_slice(low, high)
                 w_slice_pos = weights.sel(latitude=lat_slice_pos)
                 north_curves_m.append(
-                    _compute_nmae(
+                    _compute_nmae_split_levels(
                         ds_target[var],
                         ds_prediction[var],
                         lat_slice_pos,
                         level_values,
                         weights=w_slice_pos,
                         preserve_dims=["ensemble"],
+                        split_levels=split_3d_by_level,
                     )
                 )
             band_idx = xr.DataArray(np.arange(half), dims=["band"], name="band")
@@ -538,7 +610,13 @@ def run(
                     da_t = da_t.isel(lead_time=li)
                 if "lead_time" in da_p.dims:
                     da_p = da_p.isel(lead_time=li)
-                prof = _compute_nmae(da_t, da_p, _lat_slice(-90.0, 90.0), level_values)
+                prof = _compute_nmae_split_levels(
+                    da_t,
+                    da_p,
+                    _lat_slice(-90.0, 90.0),
+                    level_values,
+                    split_levels=split_3d_by_level,
+                )
                 evolve_profiles_lazy.append(prof)
             job["evolve_profiles_lazy"] = evolve_profiles_lazy
 
@@ -552,18 +630,23 @@ def run(
             job["evolve_info"]["hour_index_pairs"] = hour_index_pairs
 
         # Compute per-lead NMAE vertical profiles
-        nmae_lead = _compute_nmae_per_lead(
-            ds_target[var], ds_prediction[var], level_values, weights
+        nmae_lead = _compute_nmae_per_lead_split_levels(
+            ds_target[var],
+            ds_prediction[var],
+            level_values,
+            weights,
+            split_levels=split_3d_by_level,
         )
         job["nmae_lead_lazy"] = nmae_lead
 
         # Global profile (all latitudes, all times)
-        global_profile = _compute_nmae(
+        global_profile = _compute_nmae_split_levels(
             ds_target[var],
             ds_prediction[var],
             _lat_slice(-90, 90),
             level_values,
             weights=weights,
+            split_levels=split_3d_by_level,
         )
         job["global_profile_lazy"] = global_profile
 
@@ -571,7 +654,10 @@ def run(
 
     # Batch compute (All Variables)
     c.print("[vertical_profiles] computing all jobs...")
-    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+    dynamic_chunk = resolve_dynamic_chunk_size(
+        performance_cfg,
+        ds=ds_target,
+    )
 
     def _process_batch(batch_jobs: list[dict[str, Any]]):
         for job in batch_jobs:

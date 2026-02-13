@@ -51,6 +51,7 @@ For detailed installation instructions, including Podman, uenv, and conda setups
 The YAML config is the single source of truth.
 
 See [config/example_config.yaml](config/example_config.yaml) for a fully commented example explaining every key and valid value.
+For batching/memory tuning knobs (under `performance`), see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Dataset Requirements
 

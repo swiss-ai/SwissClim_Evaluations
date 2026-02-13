@@ -10,9 +10,9 @@ import xarray as xr
 from .. import console as c
 from ..dask_utils import (
     as_float_array,
-    calculate_dynamic_chunk_size,
     compute_jobs,
     dask_histogram,
+    resolve_dynamic_chunk_size,
     to_finite_array,
 )
 from ..helpers import (
@@ -59,9 +59,10 @@ def run(
     except Exception:
         max_samples = None
     base_seed = int(plotting_cfg.get("random_seed", 42))
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
-
-    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+    dynamic_chunk = resolve_dynamic_chunk_size(
+        performance_cfg,
+        ds=ds_target,
+    )
 
     section_output = out_root / "histograms"
 

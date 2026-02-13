@@ -12,7 +12,7 @@ from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
 
 from .. import console as c
-from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs
+from ..dask_utils import compute_jobs, resolve_dynamic_chunk_size
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -568,8 +568,10 @@ def _plot_energy_spectra(
     # Compute all
     n_points = int(spectrum_target.size + spectrum_pred.size)
     num_vars = 1
-    dynamic_chunk = calculate_dynamic_chunk_size(
-        n_points=n_points, num_vars=num_vars, config_chunk_size=chunk_size_cfg
+    dynamic_chunk = resolve_dynamic_chunk_size(
+        {"chunk_size": chunk_size_cfg},
+        n_points=n_points,
+        num_vars=num_vars,
     )
 
     wn = spectrum_target["wavenumber"].values
@@ -743,7 +745,8 @@ def run(
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
 
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    perf_cfg = performance_cfg or {}
+    chunk_size_cfg = perf_cfg.get("chunk_size")
 
     # Helper to place x-ticks exactly at selected lead hours (downsample if many)
     def _apply_lead_ticks(ax: Any, hours: np.ndarray) -> None:

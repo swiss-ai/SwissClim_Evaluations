@@ -243,11 +243,18 @@ def calculate_dynamic_chunk_size(
     n_points: int | None = None,
     num_vars: int | None = None,
     config_chunk_size: int | str | None = None,
-    safe_points_per_batch: int = 10**9,
+    safe_points_per_batch: int = 2 * 10**8,
+    max_dynamic_chunk_size: int = 64,
     ds: Any | None = None,
 ) -> int:
     """
-    Calculate a dynamic chunk size for dask computations to avoid OOM.
+    Resolve batch chunk size used for Dask job batching.
+
+    Precedence:
+    1) `config_chunk_size` is set and valid -> use it directly (manual mode).
+       - If set to "no-chunk", returns a very large value to effectively disable batching.
+    2) Otherwise derive automatically from dataset/point heuristics (auto mode).
+
     Uses a fast approximation if n_points is not provided.
     """
     # 1. Check for config override
@@ -262,12 +269,35 @@ def calculate_dynamic_chunk_size(
     # 2. Estimate n_points if not provided (Fast Approximation)
     if (n_points is None or num_vars is None) and ds is not None:
         try:
-            # Fast approximation: use size of first variable * num_vars
-            # Avoid creating a list of all data variables as it can be slow
+            # Fast approximation:
+            # prefer first-variable dask-chunk footprint (if available),
+            # otherwise fall back to full first-variable size.
             num_vars = len(ds.data_vars)
             if num_vars > 0:
                 first_var_name = next(iter(ds.data_vars))
-                n_points = int(ds[first_var_name].size * num_vars)
+                first_da = ds[first_var_name]
+                first_var_points: int | None = None
+
+                data = getattr(first_da, "data", first_da)
+                chunks = getattr(data, "chunks", None)
+                if chunks:
+                    try:
+                        first_var_points = int(
+                            np.prod(
+                                [
+                                    max(1, int(dim_chunks[0]))
+                                    for dim_chunks in chunks
+                                    if len(dim_chunks) > 0
+                                ]
+                            )
+                        )
+                    except Exception:
+                        first_var_points = None
+
+                if first_var_points is None:
+                    first_var_points = int(first_da.size)
+
+                n_points = int(first_var_points * num_vars)
             else:
                 n_points = 0
                 num_vars = 0
@@ -281,6 +311,238 @@ def calculate_dynamic_chunk_size(
         avg_points = n_points / num_vars
         if avg_points > 0:
             dynamic_chunk = int(safe_points_per_batch / avg_points)
-            dynamic_chunk = max(1, min(dynamic_chunk, 100))
+            dynamic_chunk = max(1, min(dynamic_chunk, int(max_dynamic_chunk_size)))
 
     return dynamic_chunk
+
+
+def resolve_dynamic_chunk_size(
+    performance_cfg: dict[str, Any] | None,
+    *,
+    ds: Any | None = None,
+    n_points: int | None = None,
+    num_vars: int | None = None,
+    safe_points_per_batch: int = 2 * 10**8,
+    max_dynamic_chunk_size: int = 64,
+) -> int:
+    """Resolve chunk size from shared `performance.*` settings.
+
+    `performance.chunk_size` takes precedence over auto-tuning.
+    Auto-tuning is used only when `chunk_size` is omitted or invalid.
+    """
+    perf = performance_cfg or {}
+    chunk_size_cfg = perf.get("chunk_size")
+    safe_points_cfg = perf.get("safe_points_per_batch", safe_points_per_batch)
+    max_chunk_cfg = perf.get("max_dynamic_chunk_size", max_dynamic_chunk_size)
+
+    return calculate_dynamic_chunk_size(
+        n_points=n_points,
+        num_vars=num_vars,
+        config_chunk_size=chunk_size_cfg,
+        safe_points_per_batch=int(safe_points_cfg),
+        max_dynamic_chunk_size=int(max_chunk_cfg),
+        ds=ds,
+    )
+
+
+def describe_chunk_size_mode(performance_cfg: dict[str, Any] | None) -> str:
+    """Return human-readable chunk-size mode used by shared resolver."""
+    perf = performance_cfg or {}
+    cfg_val = perf.get("chunk_size")
+    if cfg_val is None:
+        return "auto"
+    if isinstance(cfg_val, str) and cfg_val.lower() == "no-chunk":
+        return "manual (no-chunk)"
+    try:
+        int(cfg_val)
+        return "manual"
+    except Exception:
+        return "auto (invalid chunk_size fallback)"
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        out = int(value)
+        return out if out > 0 else default
+    except Exception:
+        return default
+
+
+def resolve_module_batching_options(
+    performance_cfg: dict[str, Any] | None,
+    *,
+    default_split_level: bool = True,
+    default_split_lead_time: bool = True,
+    default_split_init_time: bool = True,
+    default_lead_time_block_size: int = 12,
+    default_init_time_block_size: int = 12,
+) -> dict[str, Any]:
+    """Resolve module batching options from config.
+
+    Shared behavior contract:
+    - Batching/splitting is always applied across data variables (data_vars).
+    - Additional splits across level / lead_time / init_time are optional.
+    - Defaults are enabled for lead_time and init_time split flags.
+
+        Preferred keys live under `performance.*`:
+    - `split_3d_by_level`
+    - `split_lead_time`
+    - `split_init_time`
+    - `lead_time_block_size`
+    - `init_time_block_size`
+
+        Notes:
+        - These split/block options control how each variable is partitioned across
+            `level`, `lead_time`, and `init_time`.
+        - They are orthogonal to `chunk_size`, which controls how many prepared jobs
+            are executed per Dask batch.
+    """
+    perf = performance_cfg or {}
+
+    split_level = _coerce_bool(
+        perf.get("split_3d_by_level"),
+        default_split_level,
+    )
+    split_lead_time = _coerce_bool(
+        perf.get("split_lead_time"),
+        default_split_lead_time,
+    )
+    split_init_time = _coerce_bool(
+        perf.get("split_init_time"),
+        default_split_init_time,
+    )
+
+    lead_time_block_size = _coerce_positive_int(
+        perf.get("lead_time_block_size"),
+        default_lead_time_block_size,
+    )
+    init_time_block_size = _coerce_positive_int(
+        perf.get("init_time_block_size"),
+        default_init_time_block_size,
+    )
+
+    return {
+        "split_level": split_level,
+        "split_lead_time": split_lead_time,
+        "split_init_time": split_init_time,
+        "lead_time_block_size": lead_time_block_size,
+        "init_time_block_size": init_time_block_size,
+    }
+
+
+def build_variable_level_lead_splits(
+    ds: Any,
+    variables: list[str] | None = None,
+    split_level: bool = True,
+    split_lead_time: bool = True,
+    lead_time_block_size: int | None = None,
+    split_init_time: bool = False,
+    init_time_block_size: int | None = None,
+) -> list[dict[str, Any]]:
+    """Build common split specs across variable × level × lead_time × init_time blocks.
+
+    Returns a list of specs with keys:
+      - variable: str
+      - level: Any | None
+      - lead_slice: slice
+      - lead_start: int
+    - lead_len: int
+            - init_slice: slice
+            - init_start: int
+            - init_len: int
+    """
+    vars_to_use = [str(v) for v in (variables or list(getattr(ds, "data_vars", [])))]
+    splits: list[dict[str, Any]] = []
+
+    for variable in vars_to_use:
+        if variable not in ds.data_vars:
+            continue
+        da_var = ds[variable]
+
+        level_values: list[Any] = [None]
+        if split_level and ("level" in da_var.dims):
+            level_values = [v.item() if hasattr(v, "item") else v for v in da_var["level"].values]
+
+        for level_val in level_values:
+            lead_slices = [slice(None)]
+            if split_lead_time and ("lead_time" in da_var.dims):
+                lead_count = int(da_var.sizes.get("lead_time", 0))
+                if (
+                    lead_time_block_size is not None
+                    and lead_time_block_size > 0
+                    and lead_count > lead_time_block_size
+                ):
+                    lead_slices = [
+                        slice(i, min(i + int(lead_time_block_size), lead_count))
+                        for i in range(0, lead_count, int(lead_time_block_size))
+                    ]
+
+            init_slices = [slice(None)]
+            if split_init_time and ("init_time" in da_var.dims):
+                init_count = int(da_var.sizes.get("init_time", 0))
+                if (
+                    init_time_block_size is not None
+                    and init_time_block_size > 0
+                    and init_count > init_time_block_size
+                ):
+                    init_slices = [
+                        slice(i, min(i + int(init_time_block_size), init_count))
+                        for i in range(0, init_count, int(init_time_block_size))
+                    ]
+
+            for lead_slice in lead_slices:
+                lead_start = 0 if lead_slice.start is None else int(lead_slice.start)
+                lead_stop = (
+                    int(da_var.sizes.get("lead_time", 0))
+                    if lead_slice.stop is None
+                    else int(lead_slice.stop)
+                )
+                lead_len = max(1, lead_stop - lead_start)
+                for init_slice in init_slices:
+                    init_start = 0 if init_slice.start is None else int(init_slice.start)
+                    init_stop = (
+                        int(da_var.sizes.get("init_time", 0))
+                        if init_slice.stop is None
+                        else int(init_slice.stop)
+                    )
+                    init_len = max(1, init_stop - init_start)
+                    splits.append(
+                        {
+                            "variable": variable,
+                            "level": level_val,
+                            "lead_slice": lead_slice,
+                            "lead_start": lead_start,
+                            "lead_len": lead_len,
+                            "init_slice": init_slice,
+                            "init_start": init_start,
+                            "init_len": init_len,
+                        }
+                    )
+
+    return splits
+
+
+def apply_split_to_dataarray(
+    da: Any,
+    level: Any | None = None,
+    lead_slice: slice | None = None,
+    init_slice: slice | None = None,
+) -> Any:
+    """Apply a common split spec to a DataArray-like object."""
+    out = da
+    if (level is not None) and ("level" in out.dims):
+        out = out.sel(level=level, drop=True)
+    if (lead_slice is not None) and (lead_slice != slice(None)) and ("lead_time" in out.dims):
+        out = out.isel(lead_time=lead_slice)
+    if (init_slice is not None) and (init_slice != slice(None)) and ("init_time" in out.dims):
+        out = out.isel(init_time=init_slice)
+    return out

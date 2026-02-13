@@ -219,7 +219,7 @@ def intercompare_deterministic_metrics(
                     first = df.columns[0]
                     df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
-            frames_std.append(df)
+            frames_lvl_std.append(df)
 
     if frames:
         comb = pd.concat(frames, ignore_index=True)

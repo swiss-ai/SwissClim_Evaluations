@@ -9,7 +9,7 @@ import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from .. import console as c
-from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs, to_finite_array
+from ..dask_utils import compute_jobs, resolve_dynamic_chunk_size, to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -118,8 +118,10 @@ def run(
         ds_prediction_std_eff = ds_prediction_std
         ens_token_base = None  # per-member inside loop
 
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
-    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target_std)
+    dynamic_chunk = resolve_dynamic_chunk_size(
+        performance_cfg,
+        ds=ds_target_std,
+    )
 
     def _process_variable(
         var_name: str,
@@ -234,7 +236,7 @@ def run(
                 ax_g.set_xlabel(f"{format_variable_name(var_name)}")
 
             ax_g.set_title(
-                f"Global Normalized KDE — {format_variable_name(variable_name)}"
+                f"Global Normalized KDE — {format_variable_name(var_name)}"
                 f"{lev_part}{date_str}\nW-dist: {w_g:.3f}"
             )
             ax_g.legend()
