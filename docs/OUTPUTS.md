@@ -179,3 +179,47 @@ All modules print concise progress like:
 - [swissclim] Module: deterministic — variables=5
 - [histograms] variable: 10m_u_component_of_wind
 - [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_spectrum.png
+
+## Intercomparison Outputs
+
+Intercomparison outputs are written under `output/intercomparison/<module>/` and are consumed by `notebooks/model_intercomparison.ipynb` via folder-level display helpers.
+
+- **maps**
+	- `maps/*_compare.png`
+- **histograms**
+	- `histograms/*_compare.png`
+- **wd_kde**
+	- `wd_kde/*_compare.png`
+	- `wd_kde/wd_kde_wasserstein_averaged_combined.csv`
+- **energy_spectra**
+	- `energy_spectra/*_compare.png`
+	- `energy_spectra/*_ratio_compare.png`
+	- `energy_spectra/lsd_metrics_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_per_level_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_per_level_combined.csv`
+	- `energy_spectra/lsd_metrics_3d_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_lead_time_combined.csv`
+	- `energy_spectra/lsd_metrics_3d_lead_time_combined.csv`
+- **vertical_profiles**
+	- `vertical_profiles/*_compare.png`
+	- `vertical_profiles/*_summary.csv`
+- **deterministic**
+	- `deterministic/metrics_combined.csv`
+	- `deterministic/metrics_standardized_combined.csv`
+	- `deterministic/metrics_per_level_combined.csv`
+	- `deterministic/metrics_standardized_per_level_combined.csv`
+	- `deterministic/temporal_metrics_combined.csv`
+	- `deterministic/temporal_*_compare.png`
+- **ets**
+	- `ets/ets_metrics_combined.csv`
+	- `ets/ets_*_compare.png`
+- **probabilistic**
+	- `probabilistic/crps_summary_combined.csv`
+	- `probabilistic/crps_summary_per_level_combined.csv`
+	- `probabilistic/spread_skill_ratio_combined.csv`
+	- `probabilistic/crps_ensemble_combined.csv`
+	- `probabilistic/temporal_metrics_combined.csv`
+	- `probabilistic/temporal_*_compare.png`
+	- `probabilistic/pit_hist_*_compare.png`
+	- `probabilistic/crps_map_*_compare.png`
