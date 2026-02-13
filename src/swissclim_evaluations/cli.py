@@ -15,7 +15,11 @@ import xarray as xr
 import yaml
 
 from . import console as c, data as data_mod
-from .dask_utils import describe_chunk_size_mode, resolve_dynamic_chunk_size
+from .dask_utils import (
+    describe_chunk_size_mode,
+    resolve_dynamic_chunk_details,
+    resolve_dynamic_chunk_size,
+)
 from .helpers import (
     format_ensemble_log,
     resolve_ensemble_mode,
@@ -1350,6 +1354,24 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.print(f"[cyan][bold]{msg}[/]")
     else:
         c.print(msg)
+
+    if chunk_mode.startswith("auto"):
+        try:
+            chunk_details = resolve_dynamic_chunk_details(performance_cfg, ds=ds_prediction)
+            details_msg = (
+                "Dask Auto Chunk Details: "
+                f"vars={chunk_details.get('num_vars', 'n/a')} "
+                f"avg_points_per_var={chunk_details.get('avg_points_per_var', 'n/a')} "
+                f"effective_cap={chunk_details.get('effective_cap', 'n/a')} "
+                f"effective_safe_points_per_batch="
+                f"{chunk_details.get('effective_safe_points_per_batch', 'n/a')}"
+            )
+            if USE_RICH:
+                c.print(f"[cyan]{details_msg}[/]")
+            else:
+                c.print(details_msg)
+        except Exception:
+            pass
 
     # Import lazily to avoid import time if not needed
     if chapter_flags.get("maps"):

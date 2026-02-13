@@ -252,8 +252,9 @@ performance:
 
   # Optional auto-chunk tuning (active only when chunk_size is omitted).
   # safe_points_per_batch and max_dynamic_chunk_size do NOT override manual chunk_size.
-  # safe_points_per_batch: 200000000
-  # max_dynamic_chunk_size: 64
+  # By default both are auto-calculated from dataset chunk footprint.
+  # safe_points_per_batch: auto
+  # max_dynamic_chunk_size: auto
 
   # Shared split flags across all batching modules.
   # These control job partitioning dimensions before batch execution.

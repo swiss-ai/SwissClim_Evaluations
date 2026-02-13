@@ -47,8 +47,8 @@ Behavior and precedence:
 
 Optional advanced tuning:
 
-- `safe_points_per_batch` (default `200000000`)
-- `max_dynamic_chunk_size` (default `64`)
+- `safe_points_per_batch` (default `auto`, dataset-driven)
+- `max_dynamic_chunk_size` (default `auto`, dataset-driven)
 
 ### Dev environment (linting & formatting)
 

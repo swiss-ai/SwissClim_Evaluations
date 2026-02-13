@@ -243,8 +243,8 @@ def calculate_dynamic_chunk_size(
     n_points: int | None = None,
     num_vars: int | None = None,
     config_chunk_size: int | str | None = None,
-    safe_points_per_batch: int = 2 * 10**8,
-    max_dynamic_chunk_size: int = 64,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_chunk_size: int | None = None,
     ds: Any | None = None,
 ) -> int:
     """
@@ -268,52 +268,64 @@ def calculate_dynamic_chunk_size(
 
     # 2. Estimate n_points if not provided (Fast Approximation)
     if (n_points is None or num_vars is None) and ds is not None:
-        try:
-            # Fast approximation:
-            # prefer first-variable dask-chunk footprint (if available),
-            # otherwise fall back to full first-variable size.
-            num_vars = len(ds.data_vars)
-            if num_vars > 0:
-                first_var_name = next(iter(ds.data_vars))
-                first_da = ds[first_var_name]
-                first_var_points: int | None = None
-
-                data = getattr(first_da, "data", first_da)
-                chunks = getattr(data, "chunks", None)
-                if chunks:
-                    try:
-                        first_var_points = int(
-                            np.prod(
-                                [
-                                    max(1, int(dim_chunks[0]))
-                                    for dim_chunks in chunks
-                                    if len(dim_chunks) > 0
-                                ]
-                            )
-                        )
-                    except Exception:
-                        first_var_points = None
-
-                if first_var_points is None:
-                    first_var_points = int(first_da.size)
-
-                n_points = int(first_var_points * num_vars)
-            else:
-                n_points = 0
-                num_vars = 0
-        except Exception:
-            n_points = 0
-            num_vars = 0
+        n_points, num_vars = _estimate_dataset_points(ds)
 
     # 3. Heuristic
-    dynamic_chunk = 20
+    #    If tuning values are omitted, derive conservative defaults from dataset footprint.
+    dynamic_chunk = 12
     if num_vars and n_points and num_vars > 0 and n_points > 0:
         avg_points = n_points / num_vars
         if avg_points > 0:
-            dynamic_chunk = int(safe_points_per_batch / avg_points)
-            dynamic_chunk = max(1, min(dynamic_chunk, int(max_dynamic_chunk_size)))
+            if max_dynamic_chunk_size is None:
+                # Dataset-driven cap: larger per-variable chunk footprints -> fewer jobs per batch.
+                auto_cap = int(np.sqrt(1_000_000_000 / avg_points))
+                cap = max(4, min(auto_cap, 32))
+            else:
+                cap = max(1, int(max_dynamic_chunk_size))
+
+            if safe_points_per_batch is None:
+                # Default target corresponds to the chosen cap at the estimated avg_points.
+                safe_points = int(max(avg_points * cap, avg_points))
+            else:
+                safe_points = max(1, int(safe_points_per_batch))
+
+            dynamic_chunk = int(safe_points / avg_points)
+            dynamic_chunk = max(1, min(dynamic_chunk, cap))
 
     return dynamic_chunk
+
+
+def _estimate_dataset_points(ds: Any | None) -> tuple[int, int]:
+    """Estimate total points and variable count from dataset chunk footprint."""
+    if ds is None:
+        return 0, 0
+    try:
+        num_vars = len(ds.data_vars)
+        if num_vars <= 0:
+            return 0, 0
+
+        first_var_name = next(iter(ds.data_vars))
+        first_da = ds[first_var_name]
+        first_var_points: int | None = None
+
+        data = getattr(first_da, "data", first_da)
+        chunks = getattr(data, "chunks", None)
+        if chunks:
+            try:
+                first_var_points = int(
+                    np.prod(
+                        [max(1, int(dim_chunks[0])) for dim_chunks in chunks if len(dim_chunks) > 0]
+                    )
+                )
+            except Exception:
+                first_var_points = None
+
+        if first_var_points is None:
+            first_var_points = int(first_da.size)
+
+        return int(first_var_points * num_vars), int(num_vars)
+    except Exception:
+        return 0, 0
 
 
 def resolve_dynamic_chunk_size(
@@ -322,8 +334,8 @@ def resolve_dynamic_chunk_size(
     ds: Any | None = None,
     n_points: int | None = None,
     num_vars: int | None = None,
-    safe_points_per_batch: int = 2 * 10**8,
-    max_dynamic_chunk_size: int = 64,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_chunk_size: int | None = None,
 ) -> int:
     """Resolve chunk size from shared `performance.*` settings.
 
@@ -332,15 +344,21 @@ def resolve_dynamic_chunk_size(
     """
     perf = performance_cfg or {}
     chunk_size_cfg = perf.get("chunk_size")
+
     safe_points_cfg = perf.get("safe_points_per_batch", safe_points_per_batch)
+    if isinstance(safe_points_cfg, str) and safe_points_cfg.lower() == "auto":
+        safe_points_cfg = None
+
     max_chunk_cfg = perf.get("max_dynamic_chunk_size", max_dynamic_chunk_size)
+    if isinstance(max_chunk_cfg, str) and max_chunk_cfg.lower() == "auto":
+        max_chunk_cfg = None
 
     return calculate_dynamic_chunk_size(
         n_points=n_points,
         num_vars=num_vars,
         config_chunk_size=chunk_size_cfg,
-        safe_points_per_batch=int(safe_points_cfg),
-        max_dynamic_chunk_size=int(max_chunk_cfg),
+        safe_points_per_batch=(None if safe_points_cfg is None else int(safe_points_cfg)),
+        max_dynamic_chunk_size=(None if max_chunk_cfg is None else int(max_chunk_cfg)),
         ds=ds,
     )
 
@@ -358,6 +376,69 @@ def describe_chunk_size_mode(performance_cfg: dict[str, Any] | None) -> str:
         return "manual"
     except Exception:
         return "auto (invalid chunk_size fallback)"
+
+
+def resolve_dynamic_chunk_details(
+    performance_cfg: dict[str, Any] | None,
+    *,
+    ds: Any | None = None,
+    n_points: int | None = None,
+    num_vars: int | None = None,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_chunk_size: int | None = None,
+) -> dict[str, Any]:
+    """Return resolved chunk details for logging/debugging."""
+    perf = performance_cfg or {}
+    mode = describe_chunk_size_mode(performance_cfg)
+    resolved_chunk = resolve_dynamic_chunk_size(
+        performance_cfg,
+        ds=ds,
+        n_points=n_points,
+        num_vars=num_vars,
+        safe_points_per_batch=safe_points_per_batch,
+        max_dynamic_chunk_size=max_dynamic_chunk_size,
+    )
+
+    out: dict[str, Any] = {"mode": mode, "chunk_size": int(resolved_chunk)}
+    if not mode.startswith("auto"):
+        return out
+
+    if n_points is None or num_vars is None:
+        n_points, num_vars = _estimate_dataset_points(ds)
+
+    if not num_vars or not n_points:
+        return out
+
+    avg_points = float(n_points) / float(num_vars)
+
+    safe_cfg = perf.get("safe_points_per_batch", safe_points_per_batch)
+    if isinstance(safe_cfg, str) and safe_cfg.lower() == "auto":
+        safe_cfg = None
+
+    max_cfg = perf.get("max_dynamic_chunk_size", max_dynamic_chunk_size)
+    if isinstance(max_cfg, str) and max_cfg.lower() == "auto":
+        max_cfg = None
+
+    if max_cfg is None:
+        auto_cap = int(np.sqrt(1_000_000_000 / avg_points)) if avg_points > 0 else 12
+        cap = max(4, min(auto_cap, 32))
+    else:
+        cap = max(1, int(max_cfg))
+
+    if safe_cfg is None:
+        safe_points = int(max(avg_points * cap, avg_points))
+    else:
+        safe_points = max(1, int(safe_cfg))
+
+    out.update(
+        {
+            "num_vars": int(num_vars),
+            "avg_points_per_var": int(avg_points),
+            "effective_cap": int(cap),
+            "effective_safe_points_per_batch": int(safe_points),
+        }
+    )
+    return out
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
