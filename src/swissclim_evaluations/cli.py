@@ -1212,6 +1212,46 @@ def _setup_dask_logging(log_file: str = "logs/dask_distributed.log") -> None:
         c.print(f"Failed to setup dask logging: {e}")
 
 
+def _resolve_dask_performance_report(performance_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve optional Dask performance-report settings from performance config."""
+
+    def _as_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"1", "true", "yes", "y", "on"}:
+                return True
+            if v in {"0", "false", "no", "n", "off"}:
+                return False
+        try:
+            return bool(value)
+        except Exception:
+            return default
+
+    enabled = _as_bool(performance_cfg.get("dask_performance_report"), False)
+    path_template = str(
+        performance_cfg.get(
+            "dask_performance_report_path",
+            "logs/dask_performance_{job_id}_{timestamp}.html",
+        )
+    )
+
+    job_id = os.environ.get("SLURM_JOB_ID", "nojid")
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    try:
+        path = path_template.format(job_id=job_id, timestamp=timestamp)
+    except Exception:
+        path = path_template
+
+    return {
+        "enabled": enabled,
+        "path": path,
+    }
+
+
 def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
     """Resolve Dask worker/client settings from performance config.
 
@@ -1246,36 +1286,30 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
     profile = str(performance_cfg.get("dask_profile", "safe")).strip().lower()
 
     if is_gh200_class:
-        total_memory_gib = 440.0
-
-        def _per_worker_memory_limit(workers: int) -> str:
-            mem = total_memory_gib / max(1, int(workers))
-            return f"{mem:.2f}GiB"
-
-        safe_workers = max(1, min(cpu_count, 12))
-        balanced_workers = max(1, min(cpu_count, 18))
-        fast_workers = max(1, min(cpu_count, 24))
+        safe_workers = max(1, min(cpu_count, 96))
+        balanced_workers = max(1, min(cpu_count, 128))
+        fast_workers = max(1, min(cpu_count, 128))
         gh200_defaults = {
             "safe": {
                 "profile": "safe",
                 "n_workers": safe_workers,
-                "threads_per_worker": 1,
+                "threads_per_worker": 2,
                 "processes": True,
-                "memory_limit": _per_worker_memory_limit(safe_workers),
+                "memory_limit": "4GiB",
             },
             "balanced": {
                 "profile": "balanced",
                 "n_workers": balanced_workers,
-                "threads_per_worker": 1,
+                "threads_per_worker": 2,
                 "processes": True,
-                "memory_limit": _per_worker_memory_limit(balanced_workers),
+                "memory_limit": "3GiB",
             },
             "fast": {
                 "profile": "fast",
                 "n_workers": fast_workers,
-                "threads_per_worker": 1,
+                "threads_per_worker": 2,
                 "processes": True,
-                "memory_limit": _per_worker_memory_limit(fast_workers),
+                "memory_limit": "3GiB",
             },
         }
         defaults = gh200_defaults.get(profile, gh200_defaults["safe"])
@@ -1360,6 +1394,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
     _print_module_config_summary(cfg, chapter_flags)
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()
+    if mode not in {"plot", "npz", "both", "none"}:
+        c.warn(
+            f"Unsupported plotting.output_mode='{mode}'. Falling back to 'plot'. "
+            "Allowed: plot|npz|both|none."
+        )
+        mode = "plot"
+        plotting["output_mode"] = mode
     # Validate / normalize ensemble block early to surface typos (e.g. 'member').
     # Support ensemble block under either top-level or selection (example_config uses selection).
     raw_ensemble_top = cfg.get("ensemble", {}) or {}
@@ -1543,13 +1584,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Calculate and print dynamic batch size
     batch_size = resolve_dynamic_batch_size(performance_cfg, ds=ds_prediction)
     chunk_mode = describe_batch_size_mode(performance_cfg)
+    quiet_dask_logs = bool(performance_cfg.get("quiet_dask_logs", False))
     msg = f"Dask Execution: Base Batch Size: {batch_size} (mode={chunk_mode})"
-    if USE_RICH:
-        c.print(f"[cyan][bold]{msg}[/]")
-    else:
-        c.print(msg)
+    if not quiet_dask_logs:
+        if USE_RICH:
+            c.print(f"[cyan][bold]{msg}[/]")
+        else:
+            c.print(msg)
 
-    if chunk_mode.startswith("auto"):
+    if chunk_mode.startswith("auto") and not quiet_dask_logs:
         try:
             chunk_details = resolve_dynamic_batch_details(performance_cfg, ds=ds_prediction)
             avg_points = chunk_details.get("avg_points_per_var", "n/a")
@@ -1572,95 +1615,117 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("maps"):
         from .plots import maps as maps_mod
 
-        c.module_status("maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}")
-        if "ensemble" in ds_prediction.dims:
-            ens_full = int(ds_prediction.sizes.get("ensemble", 0))
-            ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
-            use_mode = resolved_modes.get("maps", "members")
-            msg = format_ensemble_log(
-                "maps",
-                use_mode,
-                ens_full,
-                None if ens_plot == ens_full else f"selected {ens_plot} of {ens_full}",
+        if mode == "none":
+            c.module_status("maps", "skip", "output_mode=none")
+            module_results.append(
+                {
+                    "name": "maps",
+                    "status": "skipped",
+                    "seconds": 0.0,
+                    "error": "output_mode=none",
+                }
             )
-            c.info(msg)
         else:
-            c.info("No ensemble dimension → deterministic inputs.")
-        _t = time.time()
-        try:
-            maps_mod.run(
-                ds_target_plot,
-                ds_prediction_plot,
-                out_root,
-                plotting,
-                ensemble_mode=ensemble_cfg.get("maps"),
-            )
-            dt = time.time() - _t
-            module_timings.append(("maps", dt))
-            module_results.append(
-                {
-                    "name": "maps",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
-        except Exception as ex:  # pragma: no cover - robustness
-            dt = time.time() - _t
-            c.error(f"maps failed: {ex}")
-            module_results.append(
-                {
-                    "name": "maps",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            c.module_status("maps", "run", f"vars_2d={len(vars_2d)}, vars_3d={len(vars_3d)}")
+            if "ensemble" in ds_prediction.dims:
+                ens_full = int(ds_prediction.sizes.get("ensemble", 0))
+                ens_plot = int(ds_prediction_plot.sizes.get("ensemble", ens_full))
+                use_mode = resolved_modes.get("maps", "members")
+                msg = format_ensemble_log(
+                    "maps",
+                    use_mode,
+                    ens_full,
+                    None if ens_plot == ens_full else f"selected {ens_plot} of {ens_full}",
+                )
+                c.info(msg)
+            else:
+                c.info("No ensemble dimension → deterministic inputs.")
+            _t = time.time()
+            try:
+                maps_mod.run(
+                    ds_target_plot,
+                    ds_prediction_plot,
+                    out_root,
+                    plotting,
+                    ensemble_mode=ensemble_cfg.get("maps"),
+                )
+                dt = time.time() - _t
+                module_timings.append(("maps", dt))
+                module_results.append(
+                    {
+                        "name": "maps",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    }
+                )
+            except Exception as ex:  # pragma: no cover - robustness
+                dt = time.time() - _t
+                c.error(f"maps failed: {ex}")
+                module_results.append(
+                    {
+                        "name": "maps",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    }
+                )
 
     if chapter_flags.get("histograms"):
         from .plots import histograms as hist_mod
 
-        c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
-        if "ensemble" in ds_prediction.dims:
-            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
-            c.info(
-                format_ensemble_log(
-                    "histograms", resolved_modes.get("histograms", "pooled"), ens_size
-                )
+        if mode == "none":
+            c.module_status("histograms", "skip", "output_mode=none")
+            module_results.append(
+                {
+                    "name": "histograms",
+                    "status": "skipped",
+                    "seconds": 0.0,
+                    "error": "output_mode=none",
+                }
             )
         else:
-            c.info("No ensemble dimension → deterministic inputs.")
-        _t = time.time()
-        try:
-            hist_mod.run(
-                ds_target,
-                ds_prediction,
-                out_root,
-                plotting,
-                ensemble_mode=ensemble_cfg.get("histograms"),
-                performance_cfg=performance_cfg,
-            )
-            dt = time.time() - _t
-            module_timings.append(("histograms", dt))
-            module_results.append(
-                {
-                    "name": "histograms",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
-        except Exception as ex:  # pragma: no cover
-            dt = time.time() - _t
-            c.error(f"histograms failed: {ex}")
-            module_results.append(
-                {
-                    "name": "histograms",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            c.module_status("histograms", "run", f"vars_2d={len(vars_2d)}")
+            if "ensemble" in ds_prediction.dims:
+                ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+                c.info(
+                    format_ensemble_log(
+                        "histograms", resolved_modes.get("histograms", "pooled"), ens_size
+                    )
+                )
+            else:
+                c.info("No ensemble dimension → deterministic inputs.")
+            _t = time.time()
+            try:
+                hist_mod.run(
+                    ds_target,
+                    ds_prediction,
+                    out_root,
+                    plotting,
+                    ensemble_mode=ensemble_cfg.get("histograms"),
+                    performance_cfg=performance_cfg,
+                )
+                dt = time.time() - _t
+                module_timings.append(("histograms", dt))
+                module_results.append(
+                    {
+                        "name": "histograms",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    }
+                )
+            except Exception as ex:  # pragma: no cover
+                dt = time.time() - _t
+                c.error(f"histograms failed: {ex}")
+                module_results.append(
+                    {
+                        "name": "histograms",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    }
+                )
 
     if chapter_flags.get("wd_kde"):
         from .plots import wd_kde as wd_mod
@@ -1755,49 +1820,62 @@ def run_selected(cfg: dict[str, Any]) -> None:
     if chapter_flags.get("vertical_profiles"):
         from .metrics import vertical_profiles as vp_mod
 
-        c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
-        if "ensemble" in ds_prediction.dims:
-            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
-            c.info(
-                format_ensemble_log(
-                    "vertical_profiles", resolved_modes.get("vertical_profiles", "mean"), ens_size
-                )
+        if mode == "none":
+            c.module_status("vertical_profiles", "skip", "output_mode=none")
+            module_results.append(
+                {
+                    "name": "vertical_profiles",
+                    "status": "skipped",
+                    "seconds": 0.0,
+                    "error": "output_mode=none",
+                }
             )
         else:
-            c.info("No ensemble dimension → deterministic inputs.")
-        _t = time.time()
-        try:
-            vp_mod.run(
-                ds_target,
-                ds_prediction,
-                out_root,
-                plotting,
-                cfg.get("selection", {}),
-                ensemble_mode=ensemble_cfg.get("vertical_profiles"),
-                metrics_cfg=cfg.get("metrics", {}),
-                performance_cfg=performance_cfg,
-            )
-            dt = time.time() - _t
-            module_timings.append(("vertical_profiles", dt))
-            module_results.append(
-                {
-                    "name": "vertical_profiles",
-                    "status": "success",
-                    "seconds": dt,
-                    "error": None,
-                }
-            )
-        except Exception as ex:  # pragma: no cover
-            dt = time.time() - _t
-            c.error(f"vertical_profiles failed: {ex}")
-            module_results.append(
-                {
-                    "name": "vertical_profiles",
-                    "status": "failed",
-                    "seconds": dt,
-                    "error": str(ex),
-                }
-            )
+            c.module_status("vertical_profiles", "run", f"vars_3d={len(vars_3d)}")
+            if "ensemble" in ds_prediction.dims:
+                ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+                c.info(
+                    format_ensemble_log(
+                        "vertical_profiles",
+                        resolved_modes.get("vertical_profiles", "mean"),
+                        ens_size,
+                    )
+                )
+            else:
+                c.info("No ensemble dimension → deterministic inputs.")
+            _t = time.time()
+            try:
+                vp_mod.run(
+                    ds_target,
+                    ds_prediction,
+                    out_root,
+                    plotting,
+                    cfg.get("selection", {}),
+                    ensemble_mode=ensemble_cfg.get("vertical_profiles"),
+                    metrics_cfg=cfg.get("metrics", {}),
+                    performance_cfg=performance_cfg,
+                )
+                dt = time.time() - _t
+                module_timings.append(("vertical_profiles", dt))
+                module_results.append(
+                    {
+                        "name": "vertical_profiles",
+                        "status": "success",
+                        "seconds": dt,
+                        "error": None,
+                    }
+                )
+            except Exception as ex:  # pragma: no cover
+                dt = time.time() - _t
+                c.error(f"vertical_profiles failed: {ex}")
+                module_results.append(
+                    {
+                        "name": "vertical_profiles",
+                        "status": "failed",
+                        "seconds": dt,
+                        "error": str(ex),
+                    }
+                )
 
     # Deterministic (previously called objective metrics)
     if chapter_flags.get("deterministic"):
@@ -1865,6 +1943,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 ds_prediction,
                 out_root,
                 cfg.get("metrics", {}),
+                plotting_cfg=plotting,
                 ensemble_mode=ensemble_cfg.get("ets"),
                 lead_policy=lead_policy,
                 performance_cfg=performance_cfg,
@@ -1927,21 +2006,28 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 # Combined probabilistic module
                 _t = time.time()
                 try:
-                    # 1. PIT diagnostics
-                    c.info("[probabilistic] Stage 1/3: PIT metric computation")
-                    run_probabilistic(
-                        ds_target,
-                        ds_prediction,
-                        out_root,
-                        plotting,
-                        cfg,
-                        ensemble_mode=ensemble_cfg.get("probabilistic"),
-                        performance_cfg=performance_cfg,
-                        include_wbx_outputs=False,
-                    )
+                    # 1. PIT diagnostics (computation + plotting)
+                    if mode != "none":
+                        c.info("[probabilistic] Stage 1/2: PIT metric computation + plotting")
+                        run_probabilistic(
+                            ds_target,
+                            ds_prediction,
+                            out_root,
+                            plotting,
+                            cfg,
+                            ensemble_mode=ensemble_cfg.get("probabilistic"),
+                            performance_cfg=performance_cfg,
+                            include_wbx_outputs=False,
+                        )
+                        plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
+                    else:
+                        c.info(
+                            "[probabilistic] Stage 1/2: PIT artifact computation skipped "
+                            "(output_mode=none)"
+                        )
 
                     # 2. WBX CRPS/SSR outputs
-                    c.info("[probabilistic] Stage 2/3: WBX CRPS/SSR aggregation and outputs")
+                    c.info("[probabilistic] Stage 2/2: WBX CRPS/SSR aggregation and outputs")
                     run_probabilistic_wbx(
                         ds_target,
                         ds_prediction,
@@ -1950,10 +2036,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         cfg,
                         performance_cfg=performance_cfg,
                     )
-
-                    # 3. PIT plots
-                    c.info("[probabilistic] Stage 3/3: PIT plotting artifacts")
-                    plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
 
                     dt = time.time() - _t
                     module_timings.append(("probabilistic", dt))
@@ -2122,10 +2204,37 @@ def main(argv: list[str] | None = None) -> None:
     with contextlib.suppress(Exception):
         cfg["_config_path"] = args.config
 
+    def _as_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"1", "true", "yes", "y", "on"}:
+                return True
+            if v in {"0", "false", "no", "n", "off"}:
+                return False
+        try:
+            return bool(value)
+        except Exception:
+            return default
+
     # Check if user wants to use distributed scheduler (default: True for backwards compat)
     performance_cfg = cfg.get("performance", {}) or {}
+    quiet_dask_logs = _as_bool(performance_cfg.get("quiet_dask_logs"), False)
+    callback_stride_default = 1
+    try:
+        batch_callback_stride = max(
+            1,
+            int(performance_cfg.get("batch_callback_stride", callback_stride_default)),
+        )
+    except Exception:
+        batch_callback_stride = callback_stride_default
+
     use_distributed = performance_cfg.get("dask_scheduler", "distributed").lower() != "threaded"
     dask_profile = _resolve_dask_profile(performance_cfg)
+    dask_perf_report = _resolve_dask_performance_report(performance_cfg)
 
     if use_distributed:
         # Initialize Dask Client if available to enable spillover and distributed scheduling
@@ -2140,6 +2249,8 @@ def main(argv: list[str] | None = None) -> None:
             c.print("Configuring Dask Client with timeouts and retry limits...")
             dask.config.set(
                 {
+                    "swissclim.quiet_dask_logs": bool(quiet_dask_logs),
+                    "swissclim.batch_callback_stride": int(batch_callback_stride),
                     "distributed.worker.profile.enabled": False,
                     "distributed.comm.timeouts.connect": "30s",
                     "distributed.comm.timeouts.tcp": "30s",
@@ -2152,7 +2263,7 @@ def main(argv: list[str] | None = None) -> None:
                 }
             )
 
-            from dask.distributed import Client
+            from dask.distributed import Client, performance_report
 
             _setup_dask_logging()
 
@@ -2199,7 +2310,23 @@ def main(argv: list[str] | None = None) -> None:
                     except Exception:
                         c.print(f"Dask dashboard available at: {client.dashboard_link}")
 
-                    run_selected(cfg)
+                    report_enabled = bool(dask_perf_report["enabled"])
+                    report_path = str(dask_perf_report["path"])
+                    if report_enabled:
+                        with contextlib.suppress(Exception):
+                            Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+                        c.print(f"Dask performance report enabled: {report_path}")
+
+                    report_ctx = (
+                        performance_report(filename=report_path)
+                        if report_enabled
+                        else contextlib.nullcontext()
+                    )
+                    with report_ctx:
+                        run_selected(cfg)
+
+                    if report_enabled:
+                        c.print(f"Dask performance report written to: {report_path}")
                     c.print("Evaluation finished, closing Dask Client...")
         except ImportError:
             run_selected(cfg)
@@ -2209,6 +2336,12 @@ def main(argv: list[str] | None = None) -> None:
         try:
             import dask.config
 
+            dask.config.set(
+                {
+                    "swissclim.quiet_dask_logs": bool(quiet_dask_logs),
+                    "swissclim.batch_callback_stride": int(batch_callback_stride),
+                }
+            )
             dask.config.set(
                 scheduler="threads",
                 num_workers=threaded_workers,

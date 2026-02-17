@@ -52,16 +52,29 @@ def compute_jobs(
     if not jobs:
         return
 
+    runtime_cfg: Any = {}
+    try:
+        runtime_cfg = dask.config.get("swissclim", {})
+    except Exception:
+        runtime_cfg = {}
+
+    quiet_logs = bool((runtime_cfg or {}).get("quiet_dask_logs", False))
+    callback_stride = int((runtime_cfg or {}).get("batch_callback_stride", 1) or 1)
+    callback_stride = max(1, callback_stride)
+
     if batch_size is None:
         batch_size = chunk_size if chunk_size is not None else 20
     batch_size = max(1, int(batch_size))
 
     num_batches = (len(jobs) + batch_size - 1) // batch_size
-    msg = f"Processing {len(jobs)} jobs in {num_batches} batches (batch_size={batch_size})..."
-    msg = f"[Dask] {desc}: {msg}" if desc else f"[Dask] {msg}"
-    c.print(msg)
+    if not quiet_logs:
+        msg = f"Processing {len(jobs)} jobs in {num_batches} batches (batch_size={batch_size})..."
+        msg = f"[Dask] {desc}: {msg}" if desc else f"[Dask] {msg}"
+        c.print(msg)
 
     # Chunk the jobs directly
+    pending_for_callback: list[dict[str, Any]] = []
+    callback_batches_seen = 0
     for i in range(0, len(jobs), batch_size):
         job_chunk = jobs[i : i + batch_size]
 
@@ -101,7 +114,15 @@ def compute_jobs(
         _fill_defaults(job_chunk, key_map, post_process, skip_existing=True)
 
         if batch_callback:
-            batch_callback(job_chunk)
+            pending_for_callback.extend(job_chunk)
+            callback_batches_seen += 1
+            if callback_batches_seen >= callback_stride:
+                batch_callback(pending_for_callback)
+                pending_for_callback = []
+                callback_batches_seen = 0
+
+    if batch_callback and pending_for_callback:
+        batch_callback(pending_for_callback)
 
 
 def _fill_defaults(
@@ -381,6 +402,19 @@ def resolve_dynamic_batch_size(
     if isinstance(max_batch_cfg, str) and max_batch_cfg.lower() == "auto":
         max_batch_cfg = None
 
+    profile = str(perf.get("dask_profile", "safe") or "safe").strip().lower()
+    profile_batch_defaults = {
+        "safe": 32,
+        "balanced": 32,
+        "fast": 48,
+    }
+
+    use_profile_batch_default = (
+        batch_size_cfg is None and safe_points_cfg is None and max_batch_cfg is None
+    )
+    if use_profile_batch_default:
+        return int(profile_batch_defaults.get(profile, profile_batch_defaults["safe"]))
+
     return calculate_dynamic_batch_size(
         n_points=n_points,
         num_vars=num_vars,
@@ -416,7 +450,24 @@ def describe_batch_size_mode(performance_cfg: dict[str, Any] | None) -> str:
     perf = performance_cfg or {}
     cfg_val = perf.get("batch_size", perf.get("chunk_size"))
     if cfg_val is None:
-        return "auto"
+        safe_points_cfg = perf.get("safe_points_per_batch")
+        max_batch_cfg = perf.get(
+            "max_dynamic_batch_size",
+            perf.get("max_dynamic_chunk_size"),
+        )
+
+        has_safe_points_override = not (
+            safe_points_cfg is None
+            or (isinstance(safe_points_cfg, str) and safe_points_cfg.lower() == "auto")
+        )
+        has_max_batch_override = not (
+            max_batch_cfg is None
+            or (isinstance(max_batch_cfg, str) and max_batch_cfg.lower() == "auto")
+        )
+
+        if has_safe_points_override or has_max_batch_override:
+            return "auto"
+        return "profile-default"
     if isinstance(cfg_val, str) and cfg_val.lower() == "no-chunk":
         return "manual (no-chunk)"
     try:
@@ -537,7 +588,12 @@ def _coerce_positive_int(value: Any, default: int) -> int:
         return default
 
 
-def _profile_default_block_size(perf: dict[str, Any], fallback_default: int) -> int:
+def _profile_default_block_size(
+    perf: dict[str, Any],
+    fallback_default: int,
+    *,
+    dimension: str,
+) -> int:
     """Return profile-aware default split block size.
 
     This applies only when the explicit `lead_time_block_size` / `init_time_block_size`
@@ -545,20 +601,31 @@ def _profile_default_block_size(perf: dict[str, Any], fallback_default: int) -> 
 
     Profile targets are tuned to keep memory pressure conservative by default.
 
-    To avoid overriding module-specific larger defaults, profile uplift is applied
-    only for legacy/small fallback defaults (<= 12).
+    To avoid overriding module-specific larger defaults, profile defaults are
+    applied only for legacy/small fallback defaults (<= 12).
     """
     profile = str(perf.get("dask_profile", "safe") or "safe").strip().lower()
-    profile_default = {
-        "safe": 128,
-        "balanced": 256,
-        "fast": 512,
-    }.get(profile)
+
+    lead_profile_defaults = {
+        "safe": 4,
+        "balanced": 4,
+        "fast": 4,
+    }
+    init_profile_defaults = {
+        "safe": 8,
+        "balanced": 8,
+        "fast": 8,
+    }
+
+    if str(dimension).lower() == "lead_time":
+        profile_default = lead_profile_defaults.get(profile)
+    else:
+        profile_default = init_profile_defaults.get(profile)
     if profile_default is None:
         return fallback_default
     if int(fallback_default) > 12:
         return int(fallback_default)
-    return max(int(fallback_default), int(profile_default))
+    return int(profile_default)
 
 
 def resolve_module_batching_options(
@@ -605,8 +672,16 @@ def resolve_module_batching_options(
         default_split_init_time,
     )
 
-    lead_default = _profile_default_block_size(perf, default_lead_time_block_size)
-    init_default = _profile_default_block_size(perf, default_init_time_block_size)
+    lead_default = _profile_default_block_size(
+        perf,
+        default_lead_time_block_size,
+        dimension="lead_time",
+    )
+    init_default = _profile_default_block_size(
+        perf,
+        default_init_time_block_size,
+        dimension="init_time",
+    )
     lead_time_block_size = _coerce_positive_int(perf.get("lead_time_block_size"), lead_default)
     init_time_block_size = _coerce_positive_int(perf.get("init_time_block_size"), init_default)
 

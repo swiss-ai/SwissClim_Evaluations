@@ -1368,6 +1368,8 @@ def run(
                 _kvals=kvals,
                 _var=str(var),
             ) -> None:
+                if not save_plot:
+                    return
                 fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
                 # log10 color scale with small epsilon to avoid -inf
                 eps = 1e-10
@@ -1406,35 +1408,36 @@ def run(
             logZt = np.log10(Zt + eps)
             logZp = np.log10(Zp + eps)
             Zdiff = (logZp - logZt).T  # shape (k, leads) for plotting convenience
-            fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-            vmax = np.nanmax(np.abs(Zdiff))
-            im = ax.pcolormesh(
-                x_hours,
-                kvals,
-                Zdiff,
-                shading="auto",
-                cmap="coolwarm",
-                vmin=-vmax,
-                vmax=vmax,
-            )
-            ax.set_xlabel("lead_time (h)")
-            ax.set_ylabel("wavenumber (cycles/km)")
-            _apply_lead_ticks(ax, x_hours)
-            cb = fig.colorbar(im, ax=ax, orientation="vertical")
-            cb.set_label("Δ log10 energy (model - target)")
-            out_png = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="difference",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            plt.tight_layout()
-            save_fig_helper(fig, out_png, module="energy_spectra")
-            plt.close(fig)
+            if save_plot:
+                fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+                vmax = np.nanmax(np.abs(Zdiff))
+                im = ax.pcolormesh(
+                    x_hours,
+                    kvals,
+                    Zdiff,
+                    shading="auto",
+                    cmap="coolwarm",
+                    vmin=-vmax,
+                    vmax=vmax,
+                )
+                ax.set_xlabel("lead_time (h)")
+                ax.set_ylabel("wavenumber (cycles/km)")
+                _apply_lead_ticks(ax, x_hours)
+                cb = fig.colorbar(im, ax=ax, orientation="vertical")
+                cb.set_label("Δ log10 energy (model - target)")
+                out_png = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier="difference",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                save_fig_helper(fig, out_png, module="energy_spectra")
+                plt.close(fig)
 
             # Also compute LSD versus lead_time and emit one plot per variable
             lsd_da = _compute_lsd_da(spec_t2, spec_p2)  # sqrt(mean((log Et - log Em)^2) over k)
@@ -1451,27 +1454,29 @@ def run(
                         "LSD": float(v),
                     }
                 )
-            fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
-            ax.plot(x_hours, lsd_vals, marker="o")
-            ax.set_xlabel("Lead Time [h]")
-            ax.set_ylabel("LSD")
-            display_var = str(var).split(".", 1)[1] if "." in str(var) else str(var)
-            ax.set_title(
-                f"{format_variable_name(display_var)} — LSD (Global) vs Lead Time", fontsize=10
-            )
-            out_png = section_output / build_output_filename(
-                metric="energy_ratios_line_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier=None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            plt.tight_layout()
-            save_fig_helper(fig, out_png, module="energy_spectra")
-            plt.close(fig)
+            if save_plot:
+                fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+                ax.plot(x_hours, lsd_vals, marker="o")
+                ax.set_xlabel("Lead Time [h]")
+                ax.set_ylabel("LSD")
+                display_var = str(var).split(".", 1)[1] if "." in str(var) else str(var)
+                ax.set_title(
+                    f"{format_variable_name(display_var)} — LSD (Global) vs Lead Time",
+                    fontsize=10,
+                )
+                out_png = section_output / build_output_filename(
+                    metric="energy_ratios_line_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier=None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                save_fig_helper(fig, out_png, module="energy_spectra")
+                plt.close(fig)
 
             # Compute Banded LSD versus lead_time
             lsd_bands_da = _compute_banded_lsd_da(spec_t2, spec_p2)
@@ -1495,169 +1500,183 @@ def run(
                         }
                     )
 
-                # Plot
-                fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
-                ax.plot(x_hours, lsd_vals_band, marker="o")
-                ax.set_xlabel("Lead Time [h]")
-                ax.set_ylabel("LSD")
-                formatted_bname = str(bname).replace("_", " ").title()
-                ax.set_title(
-                    f"{format_variable_name(display_var)} — LSD ({formatted_bname}) vs Lead Time",
-                    fontsize=10,
-                )
+                if save_plot:
+                    fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+                    ax.plot(x_hours, lsd_vals_band, marker="o")
+                    ax.set_xlabel("Lead Time [h]")
+                    ax.set_ylabel("LSD")
+                    formatted_bname = str(bname).replace("_", " ").title()
+                    ax.set_title(
+                        f"{format_variable_name(display_var)} — LSD ({formatted_bname}) vs Lead "
+                        "Time",
+                        fontsize=10,
+                    )
 
-                out_png_band = section_output / build_output_filename(
-                    metric="energy_ratios_line_per_lead",
+                    out_png_band = section_output / build_output_filename(
+                        metric="energy_ratios_line_per_lead",
+                        variable=str(var),
+                        level=None,
+                        qualifier=f"band_{bname}",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    plt.tight_layout()
+                    save_fig_helper(fig, out_png_band, module="energy_spectra")
+                    plt.close(fig)
+
+            # Save bundle NPZ for programmatic use
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
                     variable=str(var),
                     level=None,
-                    qualifier=f"band_{bname}",
+                    qualifier="bundle",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_data(
+                    out_npz,
+                    lead_hours=x_hours,
+                    wavenumber=kvals,
+                    energy_target=Zt,
+                    energy_prediction=Zp,
+                    log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
+                    variable=str(var),
+                    module="energy_spectra",
+                )
+
+            # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
+            if save_plot:
+                from matplotlib import gridspec as _gridspec
+
+                fig = plt.figure(figsize=(18, 5), dpi=dpi * 2, constrained_layout=True)
+                gs = _gridspec.GridSpec(
+                    1,
+                    4,
+                    figure=fig,
+                    width_ratios=[1.25, 1.25, 0.10, 1.25],
+                    wspace=0.08,
+                )
+                axs = [
+                    fig.add_subplot(gs[0, 0]),
+                    fig.add_subplot(gs[0, 1]),
+                    fig.add_subplot(gs[0, 2]),
+                    fig.add_subplot(gs[0, 3]),
+                ]
+                eps = 1e-10
+                logZt = np.log10(Zt.T + eps)
+                logZp = np.log10(Zp.T + eps)
+                vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
+                vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
+                diff = logZp - logZt
+                axs[0].pcolormesh(
+                    x_hours,
+                    kvals,
+                    logZt,
+                    shading="auto",
+                    cmap="viridis",
+                    vmin=vmin_shared,
+                    vmax=vmax_shared,
+                )
+                im1 = axs[1].pcolormesh(
+                    x_hours,
+                    kvals,
+                    logZp,
+                    shading="auto",
+                    cmap="viridis",
+                    vmin=vmin_shared,
+                    vmax=vmax_shared,
+                )
+                vmax_d = np.nanmax(np.abs(diff))
+                im2 = axs[3].pcolormesh(
+                    x_hours,
+                    kvals,
+                    diff,
+                    shading="auto",
+                    cmap="coolwarm",
+                    vmin=-vmax_d,
+                    vmax=vmax_d,
+                )
+                titles = ["Target log10 energy", "Model log10 energy", "Δ log10 energy (M-T)"]
+                for i, ax in enumerate([axs[0], axs[1], axs[3]]):
+                    ax.set_xlabel("lead_time (h)")
+                    ax.set_title(titles[i if i < 2 else 2], fontsize=11)
+                    _apply_lead_ticks(ax, x_hours)
+                ymin = float(np.nanmin(kvals))
+                ymax = float(np.nanmax(kvals))
+                for ax in [axs[0], axs[1], axs[3]]:
+                    ax.set_ylim(ymin, ymax)
+                axs[0].set_ylabel("wavenumber (cycles/km)")
+                axs[0].tick_params(axis="y", which="both", labelleft=True)
+                if not axs[0].get_yticklabels():
+                    locs = axs[0].get_yticks()
+                    axs[0].set_yticks(locs)
+                    axs[0].set_yticklabels([f"{v:g}" for v in locs])
+                cbar1 = fig.colorbar(
+                    im1,
+                    ax=axs[1],
+                    orientation="vertical",
+                    fraction=0.046,
+                    pad=0.02,
+                )
+                cbar1.set_label("log10 energy")
+                cbar2 = fig.colorbar(
+                    im2,
+                    ax=axs[3],
+                    orientation="vertical",
+                    fraction=0.046,
+                    pad=0.05,
+                )
+                cbar2.set_label("Δ log10 energy")
+                axs[1].set_ylabel("")
+                axs[1].tick_params(axis="y", labelleft=False)
+                axs[1].set_yticklabels([])
+                axs[3].set_ylabel("wavenumber (cycles/km)")
+                axs[3].tick_params(axis="y", labelleft=True)
+                div_ax = axs[2]
+                div_ax.set_xticks([])
+                div_ax.set_yticks([])
+                for sp in div_ax.spines.values():
+                    sp.set_visible(False)
+                div_ax.set_xlim(0, 1)
+                div_ax.set_ylim(0, 1)
+                div_ax.add_line(
+                    Line2D(
+                        [0.5, 0.5],
+                        [0.0, 1.0],
+                        transform=div_ax.transAxes,
+                        color="#666",
+                        linewidth=1.6,
+                        alpha=0.8,
+                    )
+                )
+
+                t_str = f"Energy Spectrogram — {format_variable_name(var)}"
+                if init_range:
+                    start_t, end_t = init_range
+                    if start_t == end_t:
+                        t_str += f" ({start_t})"
+                    else:
+                        t_str += f" ({start_t} — {end_t})"
+                fig.suptitle(t_str, fontsize=13)
+
+                out_tripanel = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier="tripanel",
                     init_time_range=init_range,
                     lead_time_range=lead_range,
                     ensemble=ens_token,
                     ext="png",
                 )
-                plt.tight_layout()
-                save_fig_helper(fig, out_png_band, module="energy_spectra")
+                c.print(f"[energy_spectra] Saved {out_tripanel}")
+                save_fig_helper(fig, out_tripanel, module="energy_spectra")
                 plt.close(fig)
-
-            # Save bundle NPZ for programmatic use
-            out_npz = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="bundle",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="npz",
-            )
-            save_data(
-                out_npz,
-                lead_hours=x_hours,
-                wavenumber=kvals,
-                energy_target=Zt,
-                energy_prediction=Zp,
-                log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
-                variable=str(var),
-                module="energy_spectra",
-            )
-
-            # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
-            from matplotlib import gridspec as _gridspec
-
-            fig = plt.figure(figsize=(18, 5), dpi=dpi * 2, constrained_layout=True)
-            gs = _gridspec.GridSpec(
-                1,
-                4,
-                figure=fig,
-                width_ratios=[1.25, 1.25, 0.10, 1.25],
-                wspace=0.08,
-            )
-            axs = [
-                fig.add_subplot(gs[0, 0]),  # target
-                fig.add_subplot(gs[0, 1]),  # model
-                fig.add_subplot(gs[0, 2]),  # divider axis
-                fig.add_subplot(gs[0, 3]),  # diff
-            ]
-            eps = 1e-10
-            logZt = np.log10(Zt.T + eps)
-            logZp = np.log10(Zp.T + eps)
-            vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
-            vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
-            diff = logZp - logZt
-            axs[0].pcolormesh(
-                x_hours,
-                kvals,
-                logZt,
-                shading="auto",
-                cmap="viridis",
-                vmin=vmin_shared,
-                vmax=vmax_shared,
-            )
-            im1 = axs[1].pcolormesh(
-                x_hours,
-                kvals,
-                logZp,
-                shading="auto",
-                cmap="viridis",
-                vmin=vmin_shared,
-                vmax=vmax_shared,
-            )
-            vmax_d = np.nanmax(np.abs(diff))
-            im2 = axs[3].pcolormesh(
-                x_hours,
-                kvals,
-                diff,
-                shading="auto",
-                cmap="coolwarm",
-                vmin=-vmax_d,
-                vmax=vmax_d,
-            )
-            titles = ["Target log10 energy", "Model log10 energy", "Δ log10 energy (M-T)"]
-            for i, ax in enumerate([axs[0], axs[1], axs[3]]):
-                ax.set_xlabel("lead_time (h)")
-                ax.set_title(titles[i if i < 2 else 2], fontsize=11)
-                _apply_lead_ticks(ax, x_hours)
-            ymin = float(np.nanmin(kvals))
-            ymax = float(np.nanmax(kvals))
-            for ax in [axs[0], axs[1], axs[3]]:
-                ax.set_ylim(ymin, ymax)
-            axs[0].set_ylabel("wavenumber (cycles/km)")
-            axs[0].tick_params(axis="y", which="both", labelleft=True)
-            if not axs[0].get_yticklabels():
-                locs = axs[0].get_yticks()
-                axs[0].set_yticks(locs)
-                axs[0].set_yticklabels([f"{v:g}" for v in locs])
-            cbar1 = fig.colorbar(im1, ax=axs[1], orientation="vertical", fraction=0.046, pad=0.02)
-            cbar1.set_label("log10 energy")
-            cbar2 = fig.colorbar(im2, ax=axs[3], orientation="vertical", fraction=0.046, pad=0.05)
-            cbar2.set_label("Δ log10 energy")
-            axs[1].set_ylabel("")
-            axs[1].tick_params(axis="y", labelleft=False)
-            axs[1].set_yticklabels([])
-            axs[3].set_ylabel("wavenumber (cycles/km)")
-            axs[3].tick_params(axis="y", labelleft=True)
-            div_ax = axs[2]
-            div_ax.set_xticks([])
-            div_ax.set_yticks([])
-            for sp in div_ax.spines.values():
-                sp.set_visible(False)
-            div_ax.set_xlim(0, 1)
-            div_ax.set_ylim(0, 1)
-            div_ax.add_line(
-                Line2D(
-                    [0.5, 0.5],
-                    [0.0, 1.0],
-                    transform=div_ax.transAxes,
-                    color="#666",
-                    linewidth=1.6,
-                    alpha=0.8,
-                )
-            )
-
-            # Add suptitle
-            t_str = f"Energy Spectrogram — {format_variable_name(var)}"
-            if init_range:
-                start_t, end_t = init_range
-                if start_t == end_t:
-                    t_str += f" ({start_t})"
-                else:
-                    t_str += f" ({start_t} — {end_t})"
-            fig.suptitle(t_str, fontsize=13)
-
-            out_tripanel = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="tripanel",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            c.print(f"[energy_spectra] Saved {out_tripanel}")
-            save_fig_helper(fig, out_tripanel, module="energy_spectra")
-            plt.close(fig)
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:

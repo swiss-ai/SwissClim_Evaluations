@@ -16,6 +16,22 @@ swissclim-evaluations-compare --config config/intercomparison.yaml
 
 Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
 
+Module selection notes:
+
+- `modules` accepts both short and long aliases:
+    - `maps`
+    - `hist` / `histograms`
+    - `kde` / `wd_kde`
+    - `spectra` / `energy_spectra` / `energy`
+    - `vprof` / `vertical_profiles` / `vertical`
+    - `metrics` / `deterministic` / `deterministic_metrics`
+    - `ets`
+    - `prob` / `probabilistic`
+- Unknown module names are ignored with a warning.
+- If a requested module has no matching source artifacts across all model folders, it is skipped automatically with a warning.
+
+This is especially useful for runs created with `plotting.output_mode: none`, where artifact-only modules (for example `maps`, `histograms`, `vertical_profiles`) may not produce files for intercomparison.
+
 What gets combined:
 
 *   **Maps**
@@ -79,10 +95,11 @@ What gets combined:
     *   **CSVs**:
         *   `crps_summary_combined.csv`: Combined CRPS summary.
         *   `crps_summary_per_level_combined.csv`: Combined per-level CRPS summary.
-        *   `temporal_metrics_combined.csv`: Combined temporal probabilistic metrics.
+        *   `temporal_metrics_combined.csv`: Combined temporal probabilistic metrics from `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv`.
         *   `spread_skill_ratio_combined.csv`: Combined Spread-Skill Ratio.
+        *   `spread_skill_ratio_per_level_combined.csv`: Combined per-level Spread-Skill Ratio.
         *   `crps_ensemble_combined.csv`: Combined CRPS ensemble metrics.
     *   **Plots**:
-        *   `temporal_<metric>_<variable>_compare.png`: Line plots of probabilistic metrics vs lead time.
+        *   `temporal_<metric>_<variable>[_level<lvl>]_compare.png`: Line plots of probabilistic metrics vs lead time.
         *   `crps_map_<var>_compare.png`: CRPS map panels.
         *   `pit_hist_<var>_compare.png`: PIT histogram comparison.

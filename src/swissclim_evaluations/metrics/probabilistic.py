@@ -283,7 +283,12 @@ def run_probabilistic(
     """
     section_output = out_root / "probabilistic"
     section_output.mkdir(parents=True, exist_ok=True)
-    # Always export numeric artifacts for reproducibility (output_mode does not affect data saves)
+    mode = str((cfg_plot or {}).get("output_mode", "plot")).lower()
+    legacy_save_plot_data = bool((cfg_plot or {}).get("save_plot_data", False))
+    save_npz = (mode in ("npz", "both")) or legacy_save_plot_data
+    if mode == "none":
+        c.print("[probabilistic] Skipping PIT artifacts: output_mode=none.")
+        return
 
     if "ensemble" not in ds_prediction.dims:
         c.print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
@@ -374,7 +379,7 @@ def run_probabilistic(
         key = (str(var), lvl)
 
         counts = pit_hist_counts_parts.pop(key, None)
-        if counts is not None:
+        if counts is not None and save_npz:
             width = np.diff(pit_hist_edges)
             total = counts.sum()
             density = counts / (total * width.mean()) if total > 0 else counts
@@ -460,7 +465,7 @@ def run_probabilistic(
                 init_slice=init_slice,
             )
 
-            collect_pit_hist = not is_multi_lead
+            collect_pit_hist = True
             needs_pit = collect_pit_hist
             pit_da = (
                 probability_integral_transform(
@@ -569,6 +574,7 @@ def plot_probabilistic(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     if not save_fig and not save_npz:
+        c.print("[probabilistic] Skipping plot_probabilistic: output_mode=none.")
         return
     dpi = int((plotting_cfg or {}).get("dpi", 48))
     section = out_root / "probabilistic"
@@ -1249,6 +1255,9 @@ def run_probabilistic_wbx(
     # Write WBX artifacts into the same probabilistic folder to avoid split outputs
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
 
     if "ensemble" not in ds_prediction.dims:
         c.print("[probabilistic] Skipping: model dataset has no 'ensemble' dimension.")
@@ -1348,41 +1357,14 @@ def run_probabilistic_wbx(
         )
         save_dataframe(ssr_df, ssr_csv, module="probabilistic")
 
-    def _default_regions() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
-        return {
-            "global": ((-90, 90), (0, 360)),
-            "tropics": ((-20, 20), (0, 360)),
-            "northern-hemisphere": ((20, 90), (0, 360)),
-            "southern-hemisphere": ((-90, -20), (0, 360)),
-            "europe": ((35, 75), (-12.5, 42.5)),
-            "north-america": ((25, 60), (360 - 120, 360 - 75)),
-            "north-atlantic": ((25, 65), (360 - 70, 360 - 10)),
-            "north-pacific": ((25, 60), (145, 360 - 130)),
-            "east-asia": ((25, 60), (102.5, 150)),
-            "ausnz": ((-45, -12.5), (120, 175)),
-            "arctic": ((60, 90), (0, 360)),
-            "antarctic": ((-90, -60), (0, 360)),
-        }
-
-    regions_cfg = (plotting_cfg or {}).get("regions") if isinstance(plotting_cfg, dict) else None
-    regions = regions_cfg or _default_regions()
-
-    # Aggregator that reduces spatial dimensions (lat/lon) -> Produces Temporal Results
-    spatial_aggregator = aggregation.Aggregator(
-        reduce_dims=["latitude", "longitude"],
-        bin_by=[binning.Regions(regions=regions)],
-        skipna=True,
-    )
-
+    # Single WBX aggregation pass: reduce init_time and retain lead_time + spatial fields.
     seasonal = (
         bool((plotting_cfg or {}).get("group_by_season", False))
         if isinstance(plotting_cfg, dict)
         else False
     )
     temporal_bin_by = [binning.ByTimeUnit("season", "init_time")] if seasonal else None
-
-    # Aggregator that reduces temporal dimensions (time) -> Produces Spatial Results (Maps)
-    temporal_aggregator = aggregation.Aggregator(
+    metric_aggregator = aggregation.Aggregator(
         reduce_dims=["init_time"],
         bin_by=temporal_bin_by,
         skipna=True,
@@ -1400,100 +1382,82 @@ def run_probabilistic_wbx(
         f"(batch_size={var_batch_size})..."
     )
 
-    temporal_parts: list[xr.Dataset] = []
     spatial_parts: list[xr.Dataset] = []
     for variable_batch in variable_batches:
         pred_map = {v: ds_pred[v] for v in variable_batch}
         targ_map = {v: ds_targ[v] for v in variable_batch}
 
-        temporal_chunk = aggregation.compute_metric_values_for_single_chunk(
-            metrics, spatial_aggregator, pred_map, targ_map
-        )
         spatial_chunk = aggregation.compute_metric_values_for_single_chunk(
-            metrics, temporal_aggregator, pred_map, targ_map
+            metrics, metric_aggregator, pred_map, targ_map
         )
-        temporal_parts.append(temporal_chunk)
         spatial_parts.append(spatial_chunk)
 
-    results_temporal = (
-        xr.merge(temporal_parts, compat="override") if temporal_parts else xr.Dataset()
-    )
     results_spatial = xr.merge(spatial_parts, compat="override") if spatial_parts else xr.Dataset()
+    results_temporal = results_spatial
 
-    # Save individual metric/variable combinations (like other modules)
-    # results_temporal has vars like "CRPS.2m_temperature", "SSR.2m_temperature", etc.
-    for var_name, _da in results_temporal.data_vars.items():
-        metric_name, variable = var_name.split(".", 1)
-        da_metric = results_temporal[var_name]
-        if "level" in da_metric.dims:
-            for lvl in da_metric["level"].values:
-                npz_path = section / build_output_filename(
-                    metric=f"{metric_name.lower()}_temporal_wbx",
-                    variable=variable,
-                    level=lvl,
-                    qualifier=None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token_prob,
-                    ext="npz",
-                )
-                _save_npz_with_coords(
-                    npz_path,
-                    da_metric.sel(level=lvl, drop=True),
-                    module="probabilistic",
-                    level=lvl,
-                )
-        else:
-            npz_path = section / build_output_filename(
-                metric=f"{metric_name.lower()}_temporal_wbx",
-                variable=variable,
+    if ssr_df.empty:
+        ssr_rows_fallback: list[dict[str, Any]] = []
+        for var_name, da_metric in results_temporal.data_vars.items():
+            if not str(var_name).startswith("SSR"):
+                continue
+            display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
+            red_dims = list(da_metric.dims)
+            da_global = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
+            ssr_rows_fallback.append({"variable": display_var, "SSR": _to_python_float(da_global)})
+
+        if ssr_rows_fallback:
+            ssr_df_fallback = (
+                pd.DataFrame(ssr_rows_fallback).groupby("variable", as_index=False).mean()
+            )
+            ssr_csv = section / build_output_filename(
+                metric="spread_skill_ratio",
+                variable=None,
                 level=None,
-                qualifier=None,
+                qualifier="averaged" if (init_range or lead_range) else None,
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=ens_token_prob,
-                ext="npz",
+                ext="csv",
             )
-            _save_npz_with_coords(npz_path, da_metric, module="probabilistic")
+            save_dataframe(ssr_df_fallback, ssr_csv, index=False, module="probabilistic")
 
-    for var_name, _da in results_spatial.data_vars.items():
-        metric_name, variable = var_name.split(".", 1)
-        da_metric = results_spatial[var_name]
-        if "level" in da_metric.dims:
-            for lvl in da_metric["level"].values:
+    # Save individual metric/variable combinations from the single WBX pass.
+    if save_npz:
+        for var_name, _da in results_spatial.data_vars.items():
+            metric_name, variable = var_name.split(".", 1)
+            da_metric = results_spatial[var_name]
+            if "level" in da_metric.dims:
+                for lvl in da_metric["level"].values:
+                    npz_path = section / build_output_filename(
+                        metric=f"{metric_name.lower()}_spatial_wbx",
+                        variable=variable,
+                        level=lvl,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token_prob,
+                        ext="npz",
+                    )
+                    _save_npz_with_coords(
+                        npz_path,
+                        da_metric.sel(level=lvl, drop=True),
+                        module="probabilistic",
+                        level=lvl,
+                    )
+            else:
                 npz_path = section / build_output_filename(
                     metric=f"{metric_name.lower()}_spatial_wbx",
                     variable=variable,
-                    level=lvl,
+                    level=None,
                     qualifier=None,
                     init_time_range=init_range,
                     lead_time_range=lead_range,
                     ensemble=ens_token_prob,
                     ext="npz",
                 )
-                _save_npz_with_coords(
-                    npz_path,
-                    da_metric.sel(level=lvl, drop=True),
-                    module="probabilistic",
-                    level=lvl,
-                )
-        else:
-            npz_path = section / build_output_filename(
-                metric=f"{metric_name.lower()}_spatial_wbx",
-                variable=variable,
-                level=None,
-                qualifier=None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token_prob,
-                ext="npz",
-            )
-            _save_npz_with_coords(npz_path, da_metric, module="probabilistic")
+                _save_npz_with_coords(npz_path, da_metric, module="probabilistic")
 
     dpi = int((plotting_cfg or {}).get("dpi", 48))
-    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
-    save_fig = mode in ("plot", "both")
-    save_npz = mode in ("npz", "both")
     date_str = extract_date_from_dataset(ds_target) if save_fig else ""
 
     # --- CRPS outputs from WBX (single CRPS computation path) ---
@@ -1535,6 +1499,26 @@ def run_probabilistic_wbx(
                         "CRPS": val,
                     }
                 )
+
+    if not crps_summary_rows:
+        try:
+            crps_df_fallback = _wbx_metric_to_df_batched(
+                CRPSEnsemble(ensemble_dim="ensemble"),
+                ds_prediction=ds_pred,
+                ds_target=ds_targ,
+                value_col="CRPS",
+                var_batch_size=var_batch_size,
+            )
+            if not crps_df_fallback.empty:
+                crps_summary_rows = [
+                    {
+                        "variable": str(var_name),
+                        "CRPS": float(row["CRPS"]),
+                    }
+                    for var_name, row in crps_df_fallback.iterrows()
+                ]
+        except Exception:
+            pass
 
     if crps_summary_rows:
         df_crps = pd.DataFrame(crps_summary_rows).groupby("variable", as_index=False).mean()
@@ -1616,19 +1600,6 @@ def run_probabilistic_wbx(
                     }
                 )
 
-                qualifier = "per_lead_time" if lvl is None else f"per_lead_time_level{lvl}"
-                out_csv_lead = section / build_output_filename(
-                    metric="temporal_probabilistic_metrics",
-                    variable=display_var,
-                    level=lvl,
-                    qualifier=qualifier,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token_prob,
-                    ext="csv",
-                )
-                save_dataframe(df_line, out_csv_lead, index=False, module="probabilistic")
-
                 out_csv_line = section / build_output_filename(
                     metric="crps_line",
                     variable=display_var,
@@ -1685,18 +1656,6 @@ def run_probabilistic_wbx(
                         ext="png",
                     )
                     save_figure(fig_line, out_png_line, module="probabilistic")
-
-                    out_png_temporal = section / build_output_filename(
-                        metric="temporal_probabilistic_metrics",
-                        variable=display_var,
-                        level=lvl,
-                        qualifier=qualifier,
-                        init_time_range=init_range,
-                        lead_time_range=lead_range,
-                        ensemble=ens_token_prob,
-                        ext="png",
-                    )
-                    save_figure(fig_line, out_png_temporal, module="probabilistic")
 
                     if not has_map_coords:
                         continue
@@ -1859,6 +1818,45 @@ def run_probabilistic_wbx(
         )
         save_dataframe(ssr_df_per_level, ssr_csv_per_level, index=False, module="probabilistic")
 
+    for var_name in results_temporal.data_vars:
+        if not str(var_name).startswith("SSR"):
+            continue
+
+        da_base = results_temporal[var_name]
+        display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
+        levels = [None]
+        if "level" in da_base.dims:
+            levels = list(da_base["level"].values)
+
+        for lvl in levels:
+            da = da_base.sel(level=lvl, drop=True) if lvl is not None else da_base
+
+            if "lead_time" not in da.dims or da.sizes["lead_time"] <= 1:
+                continue
+
+            reduce_dims = [d for d in da.dims if d != "lead_time"]
+            da_line = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+
+            leads = da_line["lead_time"].values
+            if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
+                lead_hours = (leads / np.timedelta64(1, "h")).astype(int)
+            else:
+                lead_hours = np.asarray(leads).astype(int)
+            values = np.asarray(da_line.values, dtype=float)
+
+            df_save = pd.DataFrame({"lead_time_hours": lead_hours, "SSR": values})
+            out_csv_line = section / build_output_filename(
+                metric="ssr_line",
+                variable=display_var,
+                level=lvl,
+                qualifier="by_lead",
+                init_time_range=init_range,
+                lead_time_range=lead_range,
+                ensemble=ens_token_prob,
+                ext="csv",
+            )
+            save_dataframe(df_save, out_csv_line, index=False, module="probabilistic")
+
     # --- Plotting SSR (Temporal and Spatial) ---
     if save_fig:
         # Plot Temporal (Time Series)
@@ -1880,16 +1878,8 @@ def run_probabilistic_wbx(
                 if "lead_time" in da.dims and da.sizes["lead_time"] <= 1:
                     continue
 
-                # Select global region if present, else average over regions
-                if "region" in da.dims:
-                    if "global" in da["region"].values:
-                        da = da.sel(region="global")
-                    else:
-                        da = da.mean(dim="region", skipna=True)
-
-                # Average over init_time if present (to show evolution over lead_time)
-                if "init_time" in da.dims:
-                    da = da.mean(dim="init_time", skipna=True)
+                reduce_dims = [d for d in da.dims if d != "lead_time"]
+                da = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
 
                 # Plot
                 fig, ax = plt.subplots(figsize=(10, 6))
@@ -1903,21 +1893,6 @@ def run_probabilistic_wbx(
                 # Convert timedelta to hours if needed
                 if pd.api.types.is_timedelta64_dtype(df[x_col]):
                     df[x_col] = (df[x_col] / pd.Timedelta(hours=1)).astype(int)
-
-                # Save CSV for intercomparison
-                out_csv_line = section / build_output_filename(
-                    metric="ssr_line",
-                    variable=display_var,
-                    level=lvl,
-                    qualifier="by_lead",
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token_prob,
-                    ext="csv",
-                )
-                # Ensure column name is standard for intercompare
-                df_save = df.rename(columns={x_col: "lead_time_hours"})
-                save_dataframe(df_save, out_csv_line, index=False, module="probabilistic")
 
                 # Plot line
                 ax.plot(df[x_col], df["SSR"], marker="o")

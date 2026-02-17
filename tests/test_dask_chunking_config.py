@@ -94,12 +94,12 @@ def test_resolve_module_batching_options_uses_profile_defaults_when_omitted() ->
         default_init_time_block_size=6,
     )
 
-    assert safe_opts["lead_time_block_size"] == 128
-    assert safe_opts["init_time_block_size"] == 128
-    assert balanced_opts["lead_time_block_size"] == 256
-    assert balanced_opts["init_time_block_size"] == 256
-    assert fast_opts["lead_time_block_size"] == 512
-    assert fast_opts["init_time_block_size"] == 512
+    assert safe_opts["lead_time_block_size"] == 4
+    assert safe_opts["init_time_block_size"] == 8
+    assert balanced_opts["lead_time_block_size"] == 4
+    assert balanced_opts["init_time_block_size"] == 8
+    assert fast_opts["lead_time_block_size"] == 4
+    assert fast_opts["init_time_block_size"] == 8
 
 
 def test_resolve_module_batching_options_prefers_explicit_block_sizes() -> None:

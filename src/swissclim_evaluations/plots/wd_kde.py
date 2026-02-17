@@ -229,75 +229,74 @@ def run(
 
         if ds_flat_g.size > 0 and prediction_flat_g.size > 0:
             w_g = wasserstein_distance(ds_flat_g, prediction_flat_g)
-            kde_ds_g = gaussian_kde(ds_flat_g)
-            kde_prediction_g = gaussian_kde(prediction_flat_g)
+            if save_fig or save_npz:
+                kde_ds_g = gaussian_kde(ds_flat_g)
+                kde_prediction_g = gaussian_kde(prediction_flat_g)
 
-            # Plot Global
-            fig_g, ax_g = plt.subplots(figsize=(10, 6), dpi=dpi)
-            x_eval_g = np.linspace(
-                min(ds_flat_g.min(), prediction_flat_g.min()),
-                max(ds_flat_g.max(), prediction_flat_g.max()),
-                100,
-            )
-            ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
-            ax_g.plot(
-                x_eval_g,
-                kde_prediction_g(x_eval_g),
-                color=COLOR_MODEL_PREDICTION,
-                label="Prediction",
-            )
-
-            # Check for single date
-            date_str = extract_date_from_dataset(da_t_std)
-            lev_part = format_level_label(level_val if level_val is not None else level_token)
-
-            if units:
-                ax_g.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
-            else:
-                ax_g.set_xlabel(f"{format_variable_name(var_name)}")
-
-            ax_g.set_title(
-                f"Global Normalized KDE — {format_variable_name(var_name)}"
-                f"{lev_part}{date_str}\nW-dist: {w_g:.3f}"
-            )
-            ax_g.legend()
-
-            if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_png_g = section_output / build_output_filename(
-                    metric="wd_kde",
-                    variable=var_name,
-                    level=level_token,
-                    qualifier="global",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="png",
+                fig_g, ax_g = plt.subplots(figsize=(10, 6), dpi=dpi)
+                x_eval_g = np.linspace(
+                    min(ds_flat_g.min(), prediction_flat_g.min()),
+                    max(ds_flat_g.max(), prediction_flat_g.max()),
+                    100,
                 )
-                save_figure(fig_g, out_png_g, module="wd_kde")
+                ax_g.plot(x_eval_g, kde_ds_g(x_eval_g), color=COLOR_GROUND_TRUTH, label="Target")
+                ax_g.plot(
+                    x_eval_g,
+                    kde_prediction_g(x_eval_g),
+                    color=COLOR_MODEL_PREDICTION,
+                    label="Prediction",
+                )
 
-            if save_npz:
-                out_npz_g = section_output / build_output_filename(
-                    metric="wd_kde",
-                    variable=var_name,
-                    level=level_token,
-                    qualifier="global",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token,
-                    ext="npz",
+                date_str = extract_date_from_dataset(da_t_std)
+                lev_part = format_level_label(level_val if level_val is not None else level_token)
+
+                if units:
+                    ax_g.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
+                else:
+                    ax_g.set_xlabel(f"{format_variable_name(var_name)}")
+
+                ax_g.set_title(
+                    f"Global Normalized KDE — {format_variable_name(var_name)}"
+                    f"{lev_part}{date_str}\nW-dist: {w_g:.3f}"
                 )
-                save_data(
-                    out_npz_g,
-                    w_dist=w_g,
-                    x=x_eval_g,
-                    kde_ds=kde_ds_g(x_eval_g),
-                    kde_prediction=kde_prediction_g(x_eval_g),
-                    units=units,
-                    allow_pickle=True,
-                    module="wd_kde",
-                )
-            plt.close(fig_g)
+                ax_g.legend()
+
+                if save_fig:
+                    section_output.mkdir(parents=True, exist_ok=True)
+                    out_png_g = section_output / build_output_filename(
+                        metric="wd_kde",
+                        variable=var_name,
+                        level=level_token,
+                        qualifier="global",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig_g, out_png_g, module="wd_kde")
+
+                if save_npz:
+                    out_npz_g = section_output / build_output_filename(
+                        metric="wd_kde",
+                        variable=var_name,
+                        level=level_token,
+                        qualifier="global",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="npz",
+                    )
+                    save_data(
+                        out_npz_g,
+                        w_dist=w_g,
+                        x=x_eval_g,
+                        kde_ds=kde_ds_g(x_eval_g),
+                        kde_prediction=kde_prediction_g(x_eval_g),
+                        units=units,
+                        allow_pickle=True,
+                        module="wd_kde",
+                    )
+                plt.close(fig_g)
 
             # Add to CSV rows
             wasserstein_rows.append(
@@ -313,7 +312,10 @@ def run(
         if not per_lat_band:
             return
 
-        fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
+        fig = None
+        axs = None
+        if save_fig:
+            fig, axs = plt.subplots(n_rows, 2, figsize=(16, 3 * n_rows), dpi=dpi)
         w_distances: list[float] = []
         combined: dict[str, list[np.ndarray | float]] = {
             "neg_x": [],
@@ -337,14 +339,15 @@ def run(
             j = job["j"]
 
             if job["type"] == "lat_neg":
-                ax = axs[j, 1]
+                ax = axs[j, 1] if axs is not None else None
                 key_prefix = "neg"
             else:
-                ax = axs[j, 0]
+                ax = axs[j, 0] if axs is not None else None
                 key_prefix = "pos"
 
             if ds_flat.size == 0 or prediction_flat.size == 0:
-                ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
+                if ax is not None:
+                    ax.set_title(f"Lat {lat_min}° to {lat_max}° (No data)")
                 continue
 
             w = wasserstein_distance(ds_flat, prediction_flat)
@@ -358,43 +361,49 @@ def run(
                     "wasserstein": float(w),
                 }
             )
-            kde_ds = gaussian_kde(ds_flat)
-            kde_prediction = gaussian_kde(prediction_flat)
-            x_eval = np.linspace(
-                min(ds_flat.min(), prediction_flat.min()),
-                max(ds_flat.max(), prediction_flat.max()),
-                100,
-            )
-            ax.plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
-            ax.plot(
-                x_eval, kde_prediction(x_eval), color=COLOR_MODEL_PREDICTION, label="Prediction"
-            )
-            if units:
-                ax.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
-            else:
-                ax.set_xlabel(f"{format_variable_name(var_name)}")
-            ax.set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
-            ax.legend()
-            if save_npz:
-                combined[f"{key_prefix}_x"].append(x_eval)
-                combined[f"{key_prefix}_kde_ds"].append(kde_ds(x_eval))
-                combined[f"{key_prefix}_kde_prediction"].append(kde_prediction(x_eval))
-                combined[f"{key_prefix}_lat_min"].append(float(lat_min))
-                combined[f"{key_prefix}_lat_max"].append(float(lat_max))
+            if save_fig or save_npz:
+                kde_ds = gaussian_kde(ds_flat)
+                kde_prediction = gaussian_kde(prediction_flat)
+                x_eval = np.linspace(
+                    min(ds_flat.min(), prediction_flat.min()),
+                    max(ds_flat.max(), prediction_flat.max()),
+                    100,
+                )
+                if ax is not None:
+                    ax.plot(x_eval, kde_ds(x_eval), color=COLOR_GROUND_TRUTH, label="Target")
+                    ax.plot(
+                        x_eval,
+                        kde_prediction(x_eval),
+                        color=COLOR_MODEL_PREDICTION,
+                        label="Prediction",
+                    )
+                    if units:
+                        ax.set_xlabel(f"{format_variable_name(var_name)} [{units}]")
+                    else:
+                        ax.set_xlabel(f"{format_variable_name(var_name)}")
+                    ax.set_title(f"Lat {lat_min}° to {lat_max}° (W-dist: {w:.3f})")
+                    ax.legend()
+                if save_npz:
+                    combined[f"{key_prefix}_x"].append(x_eval)
+                    combined[f"{key_prefix}_kde_ds"].append(kde_ds(x_eval))
+                    combined[f"{key_prefix}_kde_prediction"].append(kde_prediction(x_eval))
+                    combined[f"{key_prefix}_lat_min"].append(float(lat_min))
+                    combined[f"{key_prefix}_lat_max"].append(float(lat_max))
 
         mean_w = float(np.mean(w_distances)) if w_distances else float("nan")
 
         # Check for single date
         date_str = extract_date_from_dataset(da_t_std)
 
-        plt.suptitle(
-            "Normalized Distribution of "
-            f"{format_variable_name(var_name)} ({level_token}) by Latitude Bands{date_str}\n"
-            f"Mean Wasserstein distance: {mean_w:.3f}",
-            y=1.02,
-        )
-        plt.tight_layout()
-        if save_fig:
+        if fig is not None:
+            plt.suptitle(
+                "Normalized Distribution of "
+                f"{format_variable_name(var_name)} ({level_token}) by Latitude Bands{date_str}\n"
+                f"Mean Wasserstein distance: {mean_w:.3f}",
+                y=1.02,
+            )
+            plt.tight_layout()
+        if save_fig and fig is not None:
             section_output.mkdir(parents=True, exist_ok=True)
             out_png = section_output / build_output_filename(
                 metric="wd_kde",
@@ -434,7 +443,8 @@ def run(
                 allow_pickle=True,
                 module="wd_kde",
             )
-        plt.close(fig)
+        if fig is not None:
+            plt.close(fig)
 
     # 2D standardized variables (run once per variable; avoid prior recursion issue)
     has_multi_lead = (
@@ -501,7 +511,7 @@ def run(
                     )
 
     # Optional: Global KDE evolution over lead_time (3D perspective)
-    if has_multi_lead:
+    if has_multi_lead and (save_fig or save_npz):
         # Choose all eligible variables (2D and 3D)
         cand_vars = [
             v

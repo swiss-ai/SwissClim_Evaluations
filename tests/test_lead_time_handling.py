@@ -86,15 +86,16 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
 
     # Verify outputs exist
     prob_dir = out_root / "probabilistic"
-    # Must have CRPS summary with init/lead time ranges (simplified schema)
-    # For multi-lead, we expect temporal metrics per lead time instead of a global summary
+    # For multi-lead, expect dedicated by-lead line outputs for CRPS and SSR.
     assert any(
-        f.name.startswith("temporal_probabilistic_metrics")
-        and "lead" in f.name
-        and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("temporal_probabilistic_metrics_*.csv")
-    ), "Expected temporal probabilistic metrics file with init/lead time "
-    "tokens (ensprob) under new schema"
+        f.name.startswith("crps_line_") and "by_lead" in f.name and f.name.endswith("_ensprob.csv")
+        for f in prob_dir.glob("crps_line_*.csv")
+    ), "Expected CRPS by-lead CSV artifacts (ensprob)."
+
+    assert any(
+        f.name.startswith("ssr_line_") and "by_lead" in f.name and f.name.endswith("_ensprob.csv")
+        for f in prob_dir.glob("ssr_line_*.csv")
+    ), "Expected SSR by-lead CSV artifacts (ensprob)."
 
     # Full-field PIT/CRPS NPZ artifacts are disabled by default to keep output minimal.
     assert not list(prob_dir.glob("pit_field_2m_temperature_*.npz"))

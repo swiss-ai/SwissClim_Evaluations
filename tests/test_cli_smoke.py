@@ -59,3 +59,30 @@ def test_cli_main_smoke(monkeypatch, tmp_path: Path):
     assert (tmp_path / "output" / "maps").exists()
     # The used config should have been copied into the output root
     assert (tmp_path / "output" / cfg_file.name).exists()
+
+
+def test_cli_main_smoke_output_mode_none_skips_maps(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(cli_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
+    cfg_text = (
+        "paths:\n"
+        "  target: dummy.zarr\n"
+        "  prediction: dummy.zarr\n"
+        f"  output_root: {tmp_path / 'output'}\n"
+        "modules:\n"
+        "  maps: true\n"
+        "plotting:\n"
+        "  output_mode: none\n"
+    )
+    cfg_file = tmp_path / "config_none.yaml"
+    cfg_file.write_text(cfg_text)
+    argv = ["swissclim-evaluations", "--config", str(cfg_file)]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    try:
+        cli_mod.main()
+    except SystemExit as e:
+        assert e.code == 0
+
+    assert (tmp_path / "output").exists()
+    assert not (tmp_path / "output" / "maps").exists()
+    assert (tmp_path / "output" / cfg_file.name).exists()

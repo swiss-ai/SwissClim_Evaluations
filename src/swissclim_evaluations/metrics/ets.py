@@ -232,11 +232,15 @@ def run(
     ds_prediction: xr.Dataset,
     out_root: Path | None = None,
     metrics_cfg: dict[str, Any] | None = None,
+    plotting_cfg: dict[str, Any] | None = None,
     ensemble_mode: str | None = None,
     lead_policy: Any | None = None,
     performance_cfg: dict[str, Any] | None = None,
 ) -> None:
     ets_cfg = (metrics_cfg or {}).get("ets", {})
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
     batch_opts = resolve_module_batching_options(
         performance_cfg=performance_cfg,
         default_split_level=True,
@@ -382,11 +386,12 @@ def run(
                     save_dataframe(wide_df, out_wide, index=False, module="ets")
                     # Optional: line plot of thresholds vs lead_time per variable
                     # Default to True so ETS thresholds per lead are visualized
-                    do_plot = bool(ets_cfg.get("line_plot", True))
+                    do_plot = bool(ets_cfg.get("line_plot", True)) and (save_fig or save_npz)
                     if do_plot:
                         from ..helpers import build_output_filename
 
                         hours = wide_df["lead_time_hours"].values
+                        hours_arr = np.asarray(hours, dtype=float)
                         # For each variable present in columns, collect threshold series
                         var_cols = [col for col in wide_df.columns if col != "lead_time_hours"]
                         # Expect columns like "<var>_ETS 50%"
@@ -396,7 +401,6 @@ def run(
                                 v, rest = col.split("_ETS ", 1)
                                 by_var.setdefault(v, []).append((col, rest))
                         for v, pairs in by_var.items():
-                            fig, ax = plt.subplots(figsize=(10, 6))
                             pairs_sorted = sorted(pairs, key=lambda kv: int(kv[1].rstrip("%")))
 
                             # Use variable-specific colormap to distinguish thresholds
@@ -407,55 +411,59 @@ def run(
                             n_thresh = len(pairs_sorted)
                             colors = [cmap(i) for i in np.linspace(0.4, 1.0, n_thresh)]
 
-                            for i, (col, tlabel) in enumerate(pairs_sorted):
-                                ax.plot(
-                                    hours,
-                                    wide_df[col].values,
-                                    marker="o",
-                                    label=f"ETS {tlabel}",
-                                    color=colors[i],
+                            if save_fig:
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                for i, (col, tlabel) in enumerate(pairs_sorted):
+                                    ax.plot(
+                                        hours,
+                                        wide_df[col].values,
+                                        marker="o",
+                                        label=f"ETS {tlabel}",
+                                        color=colors[i],
+                                    )
+                                ax.set_xlabel("Lead Time [h]")
+                                ax.set_ylabel("ETS")
+                                display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
+                                ax.set_title(
+                                    f"{format_variable_name(display_var)} — ETS thresholds vs "
+                                    f"Lead Time",
+                                    fontsize=10,
                                 )
-                            ax.set_xlabel("Lead Time [h]")
-                            ax.set_ylabel("ETS")
-                            display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
-                            ax.set_title(
-                                f"{format_variable_name(display_var)} — ETS thresholds vs "
-                                f"Lead Time",
-                                fontsize=10,
-                            )
-                            ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=10)
-                            out_png = section_output / build_output_filename(
-                                metric="ets_line",
-                                variable=str(v),
-                                level=None,
-                                qualifier=None,
-                                init_time_range=init_range,
-                                lead_time_range=lead_range,
-                                ensemble=ens_token,
-                                ext="png",
-                            )
-                            plt.tight_layout()
-                            save_figure(fig, out_png, module="ets")
-                            from numpy import savez as _savez
+                                ax.legend(ncols=min(3, len(pairs_sorted)), fontsize=10)
+                                out_png = section_output / build_output_filename(
+                                    metric="ets_line",
+                                    variable=str(v),
+                                    level=None,
+                                    qualifier=None,
+                                    init_time_range=init_range,
+                                    lead_time_range=lead_range,
+                                    ensemble=ens_token,
+                                    ext="png",
+                                )
+                                plt.tight_layout()
+                                save_figure(fig, out_png, module="ets")
+                                plt.close(fig)
 
-                            hours_arr = np.asarray(hours, dtype=float)
-                            data = {"lead_hours": hours_arr}
-                            for col, tlabel in pairs_sorted:
-                                key = f"ETS_{tlabel.rstrip('%')}"
-                                data[key] = wide_df[col].values.astype(float)
-                            out_npz = section_output / build_output_filename(
-                                metric="ets_line",
-                                variable=str(v),
-                                level=None,
-                                qualifier="data",
-                                init_time_range=init_range,
-                                lead_time_range=lead_range,
-                                ensemble=ens_token,
-                                ext="npz",
-                            )
-                            # Cast to Any to bypass mypy strict kwargs check on numpy.savez
-                            _savez(str(out_npz), **data)
-                            c.print(f"[ets] Saved {out_npz}")
+                            if save_npz:
+                                from numpy import savez as _savez
+
+                                data = {"lead_hours": hours_arr}
+                                for col, tlabel in pairs_sorted:
+                                    key = f"ETS_{tlabel.rstrip('%')}"
+                                    data[key] = wide_df[col].values.astype(float)
+                                out_npz = section_output / build_output_filename(
+                                    metric="ets_line",
+                                    variable=str(v),
+                                    level=None,
+                                    qualifier="data",
+                                    init_time_range=init_range,
+                                    lead_time_range=lead_range,
+                                    ensemble=ens_token,
+                                    ext="npz",
+                                )
+                                # Cast to Any to bypass mypy strict kwargs check on numpy.savez
+                                _savez(str(out_npz), **data)
+                                c.print(f"[ets] Saved {out_npz}")
                             out_csv = section_output / build_output_filename(
                                 metric="ets_line",
                                 variable=str(v),

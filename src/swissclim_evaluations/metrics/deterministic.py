@@ -242,10 +242,8 @@ def _calculate_multi_lead_metrics_split(
             )
         )
 
-    per_var_metric_levels: dict[str, dict[str, list[xr.DataArray]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-    for (variable, metric_name, _level), parts in by_var_metric_level.items():
+    per_var_level_metric: dict[tuple[str, Any], dict[str, xr.DataArray]] = defaultdict(dict)
+    for (variable, metric_name, level_val), parts in by_var_metric_level.items():
         by_lead_start: dict[int, list[tuple[int, int, Any]]] = defaultdict(list)
         for lead_start, init_start, init_len, result in parts:
             by_lead_start[int(lead_start)].append((int(init_start), int(init_len), result))
@@ -272,21 +270,16 @@ def _calculate_multi_lead_metrics_split(
             data_parts.append(weighted_sum / max(1, total_weight))
 
         merged = data_parts[0] if len(data_parts) == 1 else xr.concat(data_parts, dim="lead_time")
-        per_var_metric_levels[variable][metric_name].append(merged)
+        per_var_level_metric[(variable, level_val)][metric_name] = merged
 
     frames: list[pd.DataFrame] = []
-    for variable, metric_map in per_var_metric_levels.items():
-        ds_metrics: dict[str, xr.DataArray] = {}
-        for metric_name, arrays in metric_map.items():
-            if len(arrays) == 1:
-                ds_metrics[metric_name] = arrays[0]
-            else:
-                ds_metrics[metric_name] = xr.concat(arrays, dim="__split_level").mean(
-                    dim="__split_level", skipna=True
-                )
-        if ds_metrics:
-            df_var = xr.Dataset(ds_metrics).to_dataframe().reset_index()
+    for (variable, level_val), metric_map in per_var_level_metric.items():
+        if metric_map:
+            df_var = xr.Dataset(metric_map).to_dataframe().reset_index()
             df_var["variable"] = variable
+            if level_val is not None and "level" not in df_var.columns:
+                level_py = int(level_val) if hasattr(level_val, "item") else level_val
+                df_var["level"] = level_py
             frames.append(df_var)
 
     if not frames:
@@ -786,6 +779,9 @@ def run(
     aggregated 'members_mean' CSV if aggregate_members_mean=True.
     """
     cfg = (metrics_cfg or {}).get("deterministic", {})
+    mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
+    save_fig = mode in ("plot", "both")
+    save_npz = mode in ("npz", "both")
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
@@ -1319,16 +1315,30 @@ def run(
             df_all = df_all.drop(columns=["lead_time"])
 
             # Prepare long_df
-            cols = ["lead_time_hours", "variable"] + [
-                c for c in df_all.columns if c not in ["lead_time_hours", "variable"]
-            ]
+            id_cols = ["lead_time_hours", "variable"]
+            if "level" in df_all.columns:
+                id_cols.append("level")
+            cols = id_cols + [c for c in df_all.columns if c not in id_cols]
             long_df = df_all[cols]
 
             # Prepare wide_df
-            melted = long_df.melt(
-                id_vars=["lead_time_hours", "variable"], var_name="metric", value_name="value"
-            )
-            melted["key"] = melted["variable"].astype(str) + "_" + melted["metric"].astype(str)
+            melted = long_df.melt(id_vars=id_cols, var_name="metric", value_name="value")
+            if "level" in melted.columns:
+                level_token = (
+                    pd.to_numeric(melted["level"], errors="coerce")
+                    .astype("Int64")
+                    .astype(str)
+                    .replace("<NA>", "")
+                )
+                level_suffix = np.where(level_token != "", "_" + level_token, "")
+                melted["key"] = (
+                    melted["variable"].astype(str)
+                    + level_suffix
+                    + "_"
+                    + melted["metric"].astype(str)
+                )
+            else:
+                melted["key"] = melted["variable"].astype(str) + "_" + melted["metric"].astype(str)
             wide_df = melted.pivot(
                 index="lead_time_hours", columns="key", values="value"
             ).reset_index()
@@ -1371,94 +1381,109 @@ def run(
             except Exception as e:
                 c.print(f"[deterministic] Failed to save {out_wide}: {e}")
 
-        # Optional quick line plots over lead_time
-        # Always generate one plot per (variable, metric): x=lead_time, y=value
+        # Optional quick line plots / NPZ over lead_time
+        # CSV-by-lead remains enabled for all modes; figure/NPZ follow output_mode.
         try:
             import matplotlib.pyplot as _plt
 
             if "long_df" in locals() and not long_df.empty:
                 # Melt to get (variable, metric, value) triplets
-                plot_df = long_df.melt(
-                    id_vars=["lead_time_hours", "variable"],
-                    var_name="metric",
-                    value_name="value",
-                )
+                plot_id_vars = ["lead_time_hours", "variable"]
+                if "level" in long_df.columns:
+                    plot_id_vars.append("level")
+                plot_df = long_df.melt(id_vars=plot_id_vars, var_name="metric", value_name="value")
 
                 for v in plot_df["variable"].unique():
                     v_df = plot_df[plot_df["variable"] == v]
-                    for m in v_df["metric"].unique():
-                        subset = v_df[v_df["metric"] == m].sort_values("lead_time_hours")
-                        if subset.empty:
-                            continue
+                    level_values: list[int | None] = [None]
+                    if "level" in v_df.columns:
+                        level_values = [
+                            int(level_item)
+                            for level_item in sorted(v_df["level"].dropna().unique().tolist())
+                        ]
+                        if v_df["level"].isna().any():
+                            level_values.insert(0, None)
+                        if not level_values:
+                            level_values = [None]
 
-                        fig, ax = _plt.subplots(figsize=(10, 6))
-                        x = subset["lead_time_hours"].values
-                        y = subset["value"].values
-                        ax.plot(x, y, marker="o")
-                        ax.set_xlabel("Lead Time [h]")
+                    for level_val in level_values:
+                        v_lvl = v_df if level_val is None else v_df[v_df["level"] == level_val]
+                        for m in v_lvl["metric"].unique():
+                            subset = v_lvl[v_lvl["metric"] == m].sort_values("lead_time_hours")
+                            if subset.empty:
+                                continue
 
-                        # Format y-label with units if applicable
-                        units = get_variable_units(ds_target, str(v))
-                        display_metric = str(m).replace("_", " ")
-                        ylabel = display_metric
-                        if units:
-                            if m in ["MAE", "RMSE", "Bias"]:
-                                ylabel += f" [{units}]"
-                            elif m == "MSE":
-                                ylabel += f" [{units}$^2$]"
+                            x = subset["lead_time_hours"].values
+                            y = subset["value"].values
+                            display_metric = str(m).replace("_", " ")
+                            if save_fig:
+                                fig, ax = _plt.subplots(figsize=(10, 6))
+                                ax.plot(x, y, marker="o")
+                                ax.set_xlabel("Lead Time [h]")
 
-                        ax.set_ylabel(ylabel)
-                        display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
-                        ax.set_title(
-                            f"{format_variable_name(display_var)} — {display_metric} vs Lead Time",
-                            fontsize=10,
-                        )
-                        out_png = section_output / build_output_filename(
-                            metric="det_line",
-                            variable=str(v),
-                            level=None,
-                            qualifier=str(m).replace(" ", "_"),
-                            init_time_range=init_range,
-                            lead_time_range=_extract_lead_range(ds_prediction),
-                            ensemble=ens_token,
-                            ext="png",
-                        )
-                        _plt.tight_layout()
-                        save_figure(fig, out_png, module="deterministic")
-                        # Save NPZ and CSV for the line plot
-                        out_npz = section_output / build_output_filename(
-                            metric="det_line",
-                            variable=str(v),
-                            level=None,
-                            qualifier=str(m).replace(" ", "_") + "_data",
-                            init_time_range=init_range,
-                            lead_time_range=_extract_lead_range(ds_prediction),
-                            ensemble=ens_token,
-                            ext="npz",
-                        )
-                        save_data(
-                            out_npz,
-                            lead_hours=x.astype(float),
-                            values=y.astype(float),
-                            metric=str(m),
-                            variable=str(v),
-                            module="deterministic",
-                        )
-                        out_csv = section_output / build_output_filename(
-                            metric="det_line",
-                            variable=str(v),
-                            level=None,
-                            qualifier=str(m).replace(" ", "_") + "_by_lead",
-                            init_time_range=init_range,
-                            lead_time_range=_extract_lead_range(ds_prediction),
-                            ensemble=ens_token,
-                            ext="csv",
-                        )
-                        save_dataframe(
-                            pd.DataFrame({"lead_time_hours": x, m: y}),
-                            out_csv,
-                            index=False,
-                            module="deterministic",
-                        )
+                                units = get_variable_units(ds_target, str(v))
+                                ylabel = display_metric
+                                if units:
+                                    if m in ["MAE", "RMSE", "Bias"]:
+                                        ylabel += f" [{units}]"
+                                    elif m == "MSE":
+                                        ylabel += f" [{units}$^2$]"
+
+                                ax.set_ylabel(ylabel)
+                                display_var = str(v).split(".", 1)[1] if "." in str(v) else str(v)
+                                lvl_str = f" @ {level_val}" if level_val is not None else ""
+                                ax.set_title(
+                                    f"{format_variable_name(display_var)}{lvl_str} — "
+                                    f"{display_metric} vs Lead Time",
+                                    fontsize=10,
+                                )
+                                out_png = section_output / build_output_filename(
+                                    metric="det_line",
+                                    variable=str(v),
+                                    level=level_val,
+                                    qualifier=str(m).replace(" ", "_"),
+                                    init_time_range=init_range,
+                                    lead_time_range=_extract_lead_range(ds_prediction),
+                                    ensemble=ens_token,
+                                    ext="png",
+                                )
+                                _plt.tight_layout()
+                                save_figure(fig, out_png, module="deterministic")
+                                _plt.close(fig)
+
+                            if save_npz:
+                                out_npz = section_output / build_output_filename(
+                                    metric="det_line",
+                                    variable=str(v),
+                                    level=level_val,
+                                    qualifier=str(m).replace(" ", "_") + "_data",
+                                    init_time_range=init_range,
+                                    lead_time_range=_extract_lead_range(ds_prediction),
+                                    ensemble=ens_token,
+                                    ext="npz",
+                                )
+                                save_data(
+                                    out_npz,
+                                    lead_hours=x.astype(float),
+                                    values=y.astype(float),
+                                    metric=str(m),
+                                    variable=str(v),
+                                    level=level_val,
+                                    module="deterministic",
+                                )
+                            out_csv = section_output / build_output_filename(
+                                metric="det_line",
+                                variable=str(v),
+                                level=level_val,
+                                qualifier=str(m).replace(" ", "_") + "_by_lead",
+                                init_time_range=init_range,
+                                lead_time_range=_extract_lead_range(ds_prediction),
+                                ensemble=ens_token,
+                                ext="csv",
+                            )
+                            df_out = pd.DataFrame({"lead_time_hours": x, m: y})
+                            if level_val is not None:
+                                df_out.insert(1, "level", int(level_val))
+                            save_dataframe(df_out, out_csv, index=False, module="deterministic")
         except Exception:
             pass

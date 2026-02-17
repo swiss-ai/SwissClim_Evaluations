@@ -68,7 +68,52 @@ MODULE_ALIASES: dict[str, str] = {
     "vertical_profiles": "vprof",
     "deterministic": "metrics",
     "probabilistic": "prob",
+    # additional aliases used in config/docs
+    "deterministic_metrics": "metrics",
+    "energy": "spectra",
+    "vertical": "vprof",
 }
+
+
+MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "maps": ("maps/map_*.npz",),
+    "hist": ("histograms/hist_*.npz",),
+    "kde": (
+        "wd_kde/wd_kde_*.npz",
+        "wd_kde/wd_kde_wasserstein_averaged_*.csv",
+    ),
+    "spectra": (
+        "energy_spectra/energy_spectrum_*.npz",
+        "energy_spectra/energy_spectra_per_lead_*.npz",
+        "energy_spectra/energy_ratios_*.csv",
+        "energy_spectra/energy_ratios_3d_*.csv",
+    ),
+    "vprof": ("vertical_profiles/vertical_profiles_nmae_*.npz",),
+    "metrics": ("deterministic/deterministic_metrics*.csv",),
+    "ets": (
+        "ets/ets_metrics*.csv",
+        "ets/ets_line*by_lead*.csv",
+    ),
+    "prob": (
+        "probabilistic/crps_summary*.csv",
+        "probabilistic/crps_line*.csv",
+        "probabilistic/spread_skill_ratio*.csv",
+        "probabilistic/ssr_line*.csv",
+        "probabilistic/pit_hist*.npz",
+        "probabilistic/crps_map_*.npz",
+    ),
+}
+
+
+def _module_has_inputs(module: str, models: list[Path]) -> bool:
+    patterns = MODULE_INPUT_PATTERNS.get(module, ())
+    if not patterns:
+        return True
+    for model_root in models:
+        for pattern in patterns:
+            if any(model_root.glob(pattern)):
+                return True
+    return False
 
 
 def _normalize_modules(modules: list[str]) -> set[str]:
@@ -204,6 +249,15 @@ def run_from_config(cfg: dict) -> None:
             c.print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
     mods = _normalize_modules(modules)
+    requested_mods = set(mods)
+    missing_inputs = sorted([m for m in requested_mods if not _module_has_inputs(m, models)])
+    if missing_inputs:
+        c.warn(
+            "[intercompare] Skipping modules with no matching source artifacts: "
+            + ", ".join(missing_inputs)
+        )
+        mods = requested_mods.difference(missing_inputs)
+
     _print_module_config_summary(mods, cfg)
     if "maps" in mods:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)

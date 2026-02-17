@@ -5,6 +5,8 @@
 # - labels: optional human-friendly labels (must match models length); if omitted, folder names are used
 # - output_root: where to write combined artifacts (PNG/CSV)
 # - modules: subset of modules to run: spectra, hist, kde, maps, metrics, ets, prob, vprof
+#            probabilistic temporal combines `crps_line_*_by_lead*.csv` and
+#            `ssr_line_*_by_lead*.csv` (including optional `_level<lvl>` variants)
 # - max_map_panels: limit number of map panels rendered
 # - max_crps_map_panels: limit CRPS map panels in probabilistic section
 

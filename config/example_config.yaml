@@ -188,8 +188,9 @@ plotting:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules
   #   - both: save PNGs and export NPZ
+  #   - none: disable PNG/NPZ artifact generation; keep CSV outputs only
   # Notes:
-  #   - Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+  #   - In 'none' mode, artifact-only modules are skipped and mixed modules emit CSV only.
   output_mode: both
 
 modules:
@@ -197,8 +198,8 @@ modules:
   maps: true                 # Global and per-level maps (Cartopy)
   histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
   wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
-  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
+  energy_spectra: true       # Zonal energy spectra + LSD table
+  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
@@ -274,27 +275,42 @@ performance:
   # - balanced: moderate parallelism.
   # - fast: higher parallelism and throughput.
   # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
-  #   safe=12x1 workers/threads, balanced=18x1, fast=24x1
-  #   with memory_limit 36.67GiB / 24.44GiB / 18.33GiB per worker
-  #   (≈440GiB total worker memory budget in all three profiles).
+  #   safe=96x2 workers/threads, balanced=128x2, fast=128x2
+  #   with memory_limit 4GiB / 3GiB / 3GiB per worker.
   dask_profile: safe
 
+  # Coalesce batch callbacks across N compute batches before calling writer logic.
+  # batch_callback_stride: 1
+  # quiet_dask_logs: false
+
   # Optional explicit overrides for the profile above:
-  # dask_n_workers: 24
-  # dask_threads_per_worker: 1
+  # dask_n_workers: 96
+  # dask_threads_per_worker: 2
   # dask_processes: true
-  # dask_memory_limit: 18.33GiB
+  # dask_memory_limit: 4GiB
+
+  # Optional Dask performance report (distributed scheduler only).
+  # When enabled, wraps the evaluation in dask.distributed.performance_report
+  # and writes an HTML report for post-run analysis.
+  # dask_performance_report: false
+
+  # Output path template for the performance report.
+  # Supported placeholders:
+  #   - {job_id}: SLURM job id (or 'nojid' if unavailable)
+  #   - {timestamp}: run timestamp (YYYYMMDD_HHMMSS)
+  # dask_performance_report_path: "logs/dask_performance_{job_id}_{timestamp}.html"
 
   # Global Dask batch size.
   # - Set an integer for manual mode.
   # - Set "no-chunk" to effectively disable batching.
-  # - Omit/comment out to enable auto batch tuning.
-  # batch_size: 20
+  # - Omit/comment out to use profile defaults:
+  #     safe=32, balanced=32, fast=48.
+  # batch_size: 32
 
-  # Optional auto-batch tuning (active only when batch_size is omitted).
+  # Optional auto-batch tuning (active when batch_size is omitted and one of these is set).
   # safe_points_per_batch and max_dynamic_batch_size do NOT override manual batch_size.
-  # By default both are auto-calculated in safety-first mode.
-  # Increase these for speed only if memory headroom is well understood.
+  # If both are omitted, profile defaults above are used.
+  # Increase these only if memory headroom is well understood.
   # safe_points_per_batch: auto
   # max_dynamic_batch_size: auto
 
@@ -309,9 +325,9 @@ performance:
   # - split flags + block sizes decide job shape/count
   # - batch_size decides how many jobs are executed per Dask batch
   # If omitted, profile-aware defaults are used to reduce tiny-job overhead:
-  # - safe: 128
-  # - balanced: 256
-  # - fast: 512
+  # - safe: lead_time_block_size=4, init_time_block_size=8
+  # - balanced: lead_time_block_size=4, init_time_block_size=8
+  # - fast: lead_time_block_size=4, init_time_block_size=8
   # Explicit values below always override profile defaults.
-  # lead_time_block_size: 128
-  # init_time_block_size: 128
+  # lead_time_block_size: 4
+  # init_time_block_size: 8

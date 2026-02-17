@@ -48,12 +48,12 @@ def intercompare_probabilistic(
     # Check for different types
     avg = [f for f in all_prob if "per_lead_time" not in f and "per_level" not in f]
     lvl = [f for f in all_prob if "per_level" in f]
-    lead = [f for f in all_prob if "per_lead_time" in f]
+    lead = common_files(models, "probabilistic/crps_line*by_lead*.csv")
 
     results["CRPS Summary"] = 1 if avg else 0
     results["CRPS Summary (Per Level)"] = 1 if lvl else 0
     if lead:
-        results["CRPS Summary (Per Lead)"] = len(lead)
+        results["CRPS Line (Per Lead)"] = len(lead)
 
     # Maps
     maps = common_files(models, "probabilistic/crps_map_*.npz")
@@ -148,10 +148,9 @@ def intercompare_probabilistic(
     # --- 3. Temporal Metrics ---
     temporal_rows: list[dict] = []
     for lab, m in zip(labels, models, strict=False):
-        # Find all per-lead CSVs
-        # Look for both legacy summary files and new line-plot data files
-        csv_files = list((m / "probabilistic").glob("crps_summary*per_lead_time*.csv"))
-        csv_files.extend((m / "probabilistic").glob("crps_line*by_lead*.csv"))
+        # Find all per-lead CSVs (CRPS + SSR)
+        csv_files = list((m / "probabilistic").glob("crps_line*by_lead*.csv"))
+        csv_files.extend((m / "probabilistic").glob("ssr_line*by_lead*.csv"))
         csv_files.extend((m / "probabilistic").glob("pit_hist*by_lead*.csv"))
 
         for f in csv_files:
@@ -189,19 +188,17 @@ def intercompare_probabilistic(
                     # Try to extract variable from filename
                     # Pattern: crps_line_<var>_by_lead...
                     fname = f.name
-                    if fname.startswith("crps_line_"):
+                    if fname.startswith("crps_line_") or fname.startswith("ssr_line_"):
+                        prefix = "crps_line_" if fname.startswith("crps_line_") else "ssr_line_"
                         # Remove prefix
-                        rest = fname[len("crps_line_") :]
+                        rest = fname[len(prefix) :]
                         # Remove suffix starting with _by_lead
                         if "_by_lead" in rest:
                             var_name = rest.split("_by_lead")[0]
-                            df["variable"] = var_name
-                    elif fname.startswith("crps_summary_"):
-                        # Remove prefix
-                        rest = fname[len("crps_summary_") :]
-                        # Remove suffix starting with _per_lead
-                        if "_per_lead" in rest:
-                            var_name = rest.split("_per_lead")[0]
+                            level_token = var_name.rsplit("_", 1)[-1]
+                            if level_token.isdigit():
+                                df["level"] = int(level_token)
+                                var_name = var_name.rsplit("_", 1)[0]
                             df["variable"] = var_name
                     elif fname.startswith("pit_hist_"):
                         # Remove prefix
@@ -216,8 +213,12 @@ def intercompare_probabilistic(
                 if "variable" not in df.columns:
                     continue
 
+                id_vars = ["model", "variable", "lead_time"]
+                if "level" in df.columns:
+                    id_vars.append("level")
+
                 melted = df.melt(
-                    id_vars=["model", "variable", "lead_time"],
+                    id_vars=id_vars,
                     value_vars=metric_cols,
                     var_name="metric",
                     value_name="value",
@@ -235,12 +236,28 @@ def intercompare_probabilistic(
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
             # Plot: group by lead_time and model
-            pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
+            pair_cols = ["metric", "variable"]
+            has_level = "level" in temporal_df.columns
+            if has_level:
+                pair_cols.append("level")
 
-            for metric, variable in pairs:
+            pairs = temporal_df[pair_cols].drop_duplicates().to_dict("records")
+
+            for pair in pairs:
+                metric = pair["metric"]
+                variable = pair["variable"]
                 subset = temporal_df[
                     (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
                 ].copy()
+                level_token = ""
+                if has_level:
+                    level_val = pair.get("level")
+                    if pd.notna(level_val):
+                        subset = subset[subset["level"] == level_val]
+                        level_int = int(level_val)
+                        level_token = f"_level{level_int}"
+                    else:
+                        subset = subset[subset["level"].isna()]
 
                 pivot = subset.pivot_table(
                     index="lead_time", columns="model", values="value", aggfunc="mean"
@@ -250,13 +267,17 @@ def intercompare_probabilistic(
                     fig, ax = plt.subplots(figsize=(10, 6))
                     pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
 
-                    ax.set_title(f"{metric} vs Lead Time — {format_variable_name(variable)}")
+                    level_has_value = has_level and pd.notna(pair.get("level"))
+                    level_title = f" @ {int(level_val)}" if level_has_value else ""
+                    ax.set_title(
+                        f"{metric} vs Lead Time — {format_variable_name(variable)}{level_title}"
+                    )
                     ax.set_ylabel(metric)
                     ax.set_xlabel("Lead Time (h)")
                     ax.grid(True, linestyle="--", alpha=0.6)
                     plt.tight_layout()
 
-                    out_png = dst_prob / f"temporal_{metric}_{variable}_compare.png"
+                    out_png = dst_prob / f"temporal_{metric}_{variable}{level_token}_compare.png"
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)

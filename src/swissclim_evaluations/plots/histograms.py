@@ -49,6 +49,9 @@ def run(
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
+    if not save_fig and not save_npz:
+        c.print("[histograms] Skipping module: output_mode=none (no PNG/NPZ outputs requested).")
+        return
     dpi = int(plotting_cfg.get("dpi", 48))
     # Optional subsampling to avoid loading full arrays.
     # Behavior:
