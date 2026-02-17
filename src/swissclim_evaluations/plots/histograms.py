@@ -12,7 +12,7 @@ from ..dask_utils import (
     as_float_array,
     compute_jobs,
     dask_histogram,
-    resolve_dynamic_chunk_size,
+    resolve_dynamic_batch_size,
     to_finite_array,
 )
 from ..helpers import (
@@ -50,19 +50,36 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
-    # Optional subsampling  to avoid loading full arrays.
-    max_samples = plotting_cfg.get("histogram_max_samples")
+    # Optional subsampling to avoid loading full arrays.
+    # Behavior:
+    # - missing key / "auto" => conservative default
+    # - null => disable subsampling (advanced; can be memory intensive)
+    raw_hist_samples = plotting_cfg.get("histogram_max_samples", "auto")
+    max_samples: int | None
     try:
-        max_samples = int(max_samples) if max_samples is not None else None
-        if max_samples is not None and max_samples <= 0:
+        if isinstance(raw_hist_samples, str) and raw_hist_samples.strip().lower() == "auto":
+            max_samples = 200_000
+        elif raw_hist_samples is None:
             max_samples = None
+        else:
+            max_samples = int(raw_hist_samples)
+            if max_samples <= 0:
+                max_samples = None
     except Exception:
-        max_samples = None
+        max_samples = 200_000
     base_seed = int(plotting_cfg.get("random_seed", 42))
-    dynamic_chunk = resolve_dynamic_chunk_size(
+    dynamic_batch = resolve_dynamic_batch_size(
         performance_cfg,
         ds=ds_target,
     )
+
+    perf = performance_cfg or {}
+    dask_profile = str(perf.get("dask_profile", "safe")).strip().lower()
+    if max_samples is None and dask_profile == "safe":
+        c.warn(
+            "[histograms] histogram_max_samples=null disables subsampling and can be memory "
+            "intensive. Consider histogram_max_samples=200000 for safer execution."
+        )
 
     section_output = out_root / "histograms"
 
@@ -198,7 +215,7 @@ def run(
                 jobs,
                 key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
                 post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
-                chunk_size=dynamic_chunk,
+                batch_size=dynamic_batch,
                 desc="Computing subsamples",
             )
             for job in jobs:
@@ -218,7 +235,7 @@ def run(
             compute_jobs(
                 jobs,
                 key_map={"quantile_lazy": "quantile_res"},
-                chunk_size=dynamic_chunk,
+                batch_size=dynamic_batch,
                 desc="Computing quantiles",
             )
             for job in jobs:
@@ -242,7 +259,7 @@ def run(
                 jobs,
                 key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
                 post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
-                chunk_size=dynamic_chunk,
+                batch_size=dynamic_batch,
                 desc="Computing histograms",
             )
         else:
@@ -563,7 +580,7 @@ def run(
             jobs,
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-            chunk_size=dynamic_chunk,
+            batch_size=dynamic_batch,
             desc="Computing global histograms",
         )
 
@@ -665,6 +682,7 @@ def run(
         )
         if not per_lead:
             for variable_name in variables_2d:
+                c.print(f"[histograms] 2D variable: {variable_name}")
                 _plot_global_hist(
                     ds_target_mean[variable_name],
                     ds_prediction_mean[variable_name],
@@ -689,6 +707,7 @@ def run(
         ) >= 1
         if do_grid:
             for variable_name in variables_2d:
+                c.print(f"[histograms] 2D grid variable: {variable_name}")
                 _plot_global_hist_gridded(
                     ds_target_mean[variable_name],
                     ds_prediction_mean[variable_name],
@@ -711,6 +730,7 @@ def run(
             # Suppress member per-lead globals; only grid
             if not per_lead:
                 for variable_name in variables_2d:
+                    c.print(f"[histograms] member={member_index} 2D variable: {variable_name}")
                     _plot_global_hist(
                         tgt_m[variable_name],
                         pred_m[variable_name],
@@ -733,6 +753,7 @@ def run(
             do_grid = ("lead_time" in pred_m.dims) and int(pred_m.lead_time.size) >= 1
             if do_grid:
                 for variable_name in variables_2d:
+                    c.print(f"[histograms] member={member_index} 2D grid variable: {variable_name}")
                     _plot_global_hist_gridded(
                         tgt_m[variable_name],
                         pred_m[variable_name],
@@ -751,6 +772,7 @@ def run(
         # removed unused variable lead_indices (ruff F841)
         if not per_lead:
             for variable_name in variables_2d:
+                c.print(f"[histograms] 2D variable: {variable_name}")
                 _plot_global_hist(
                     ds_target[variable_name],
                     ds_prediction[variable_name],
@@ -780,6 +802,7 @@ def run(
                 all_hours = list(range(int(ds_prediction.lead_time.size)))
             panel_hours = all_hours
             for variable_name in variables_2d:
+                c.print(f"[histograms] 2D grid variable: {variable_name}")
                 n_panels = len(panel_hours)
                 if n_panels == 0:
                     continue
@@ -935,6 +958,7 @@ def run(
             if max_levels is not None:
                 levels = levels[:max_levels]
             for lvl in levels:
+                c.print(f"[histograms] 3D variable: {variable_name} level={lvl}")
                 # Select single level slice (dropping level dimension for logic reuse)
                 da_t_lvl = da_t.sel(level=lvl)
                 da_p_lvl = da_p.sel(level=lvl)

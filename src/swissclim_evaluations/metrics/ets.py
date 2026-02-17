@@ -18,7 +18,7 @@ from ..dask_utils import (
     build_variable_level_lead_splits,
     compute_jobs,
     compute_quantile_preserving,
-    resolve_dynamic_chunk_size,
+    resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
 
@@ -32,8 +32,8 @@ def _compute_ets_raw(
     variables = list(ds_target.data_vars)
     computed_results = {}
     q_values = [t / 100.0 for t in thresholds]
-
     for var in variables:
+        c.print(f"[ets] variable: {var}")
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
 
@@ -65,33 +65,33 @@ def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    chunk_size: int = 20,
+    batch_size: int = 20,
 ) -> pd.DataFrame:
-    raw_results = _compute_ets_raw(ds_target, ds_prediction, thresholds)
-
-    # Compute all at once
-    if not raw_results:
+    variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
+    if not variables:
         return pd.DataFrame()
 
-    def _process_batch(batch_jobs: list[dict[str, Any]]):
-        # We don't save to disk here, but we could populate a shared list.
-        # However, passing a callback allows for potential memory clearing
-        # if job results were large.
-        pass
-
-    jobs = [{"var": var, "lazy": val} for var, val in raw_results.items()]
-    compute_jobs(
-        jobs,
-        key_map={"lazy": "res"},
-        chunk_size=chunk_size,
-        desc="Computing ETS scores",
-    )
-
     metrics_dict: dict[str, dict[str, float]] = {}
+    for var in variables:
+        c.print(f"[ets] variable: {var}")
 
-    for job in jobs:
-        var = job["var"]
-        ets_score = job["res"]
+        ds_t_var = ds_target[[var]]
+        ds_p_var = ds_prediction[[var]]
+        raw_results = _compute_ets_raw(ds_t_var, ds_p_var, thresholds)
+        if var not in raw_results:
+            continue
+
+        jobs = [{"var": var, "lazy": raw_results[var]}]
+        compute_jobs(
+            jobs,
+            key_map={"lazy": "res"},
+            batch_size=max(1, int(batch_size)),
+            desc=f"Computing ETS scores ({var})",
+        )
+
+        ets_score = jobs[0]["res"]
+        if ets_score is None:
+            continue
         metrics_dict[var] = {}
         ets_values = ets_score.values
         for i, threshold in enumerate(thresholds):
@@ -104,7 +104,7 @@ def _calculate_ets_per_level(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    chunk_size: int = 20,
+    batch_size: int = 20,
     init_time_block_size: int | None = None,
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
@@ -118,7 +118,7 @@ def _calculate_ets_per_level(
     #    ds_target[variables_3d], ds_prediction[variables_3d], thresholds, preserve_dims=["level"]
     # )
 
-    jobs: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, Any], list[tuple[int, int, Any]]] = {}
     split_specs = build_variable_level_lead_splits(
         ds_target[variables_3d],
         variables=[str(v) for v in variables_3d],
@@ -128,65 +128,80 @@ def _calculate_ets_per_level(
         init_time_block_size=init_time_block_size,
     )
 
+    specs_by_var: dict[str, list[dict[str, Any]]] = {}
     for split_spec in split_specs:
-        var = str(split_spec["variable"])
-        lvl = split_spec["level"]
-        init_slice = split_spec.get("init_slice", slice(None))
+        var_name = str(split_spec["variable"])
+        specs_by_var.setdefault(var_name, []).append(split_spec)
 
-        ds_t_slice = xr.Dataset(
-            {
-                var: apply_split_to_dataarray(
-                    ds_target[var],
-                    level=lvl,
-                    lead_slice=slice(None),
-                    init_slice=init_slice,
-                ),
-            }
-        )
-        ds_p_slice = xr.Dataset(
-            {
-                var: apply_split_to_dataarray(
-                    ds_prediction[var],
-                    level=lvl,
-                    lead_slice=slice(None),
-                    init_slice=init_slice,
-                ),
-            }
-        )
+    for var, var_specs in specs_by_var.items():
+        logged_levels: set[Any] = set()
 
-        raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
-        if var in raw_res_dict:
-            jobs.append(
+        jobs: list[dict[str, Any]] = []
+        for split_spec in var_specs:
+            lvl = split_spec["level"]
+            init_slice = split_spec.get("init_slice", slice(None))
+            if lvl not in logged_levels:
+                c.print(f"[ets] per-level variable: {var} level={lvl}")
+                logged_levels.add(lvl)
+
+            ds_t_slice = xr.Dataset(
                 {
-                    "var": var,
-                    "level": lvl,
-                    "init_start": int(split_spec.get("init_start", 0)),
-                    "init_len": int(split_spec.get("init_len", 1)),
-                    "lazy": raw_res_dict[var],
+                    var: apply_split_to_dataarray(
+                        ds_target[var],
+                        level=lvl,
+                        lead_slice=slice(None),
+                        init_slice=init_slice,
+                    ),
+                }
+            )
+            ds_p_slice = xr.Dataset(
+                {
+                    var: apply_split_to_dataarray(
+                        ds_prediction[var],
+                        level=lvl,
+                        lead_slice=slice(None),
+                        init_slice=init_slice,
+                    ),
                 }
             )
 
-    if not jobs:
-        return None
+            raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
+            if var in raw_res_dict:
+                jobs.append(
+                    {
+                        "var": var,
+                        "level": lvl,
+                        "init_start": int(split_spec.get("init_start", 0)),
+                        "init_len": int(split_spec.get("init_len", 1)),
+                        "lazy": raw_res_dict[var],
+                    }
+                )
 
-    compute_jobs(
-        jobs,
-        key_map={"lazy": "res"},
-        chunk_size=chunk_size,
-        desc="Computing ETS per level",
-    )
-
-    grouped: dict[tuple[str, Any], list[tuple[int, int, Any]]] = {}
-    for job in jobs:
-        var = job["var"]
-        lvl = job["level"]
-        if job.get("res") is None:
+        if not jobs:
             continue
 
-        key = (str(var), lvl)
-        grouped.setdefault(key, []).append(
-            (int(job.get("init_start", 0)), int(job.get("init_len", 1)), job["res"])
+        compute_jobs(
+            jobs,
+            key_map={"lazy": "res"},
+            batch_size=max(1, int(batch_size)),
+            desc=f"Computing ETS per level ({var})",
         )
+
+        for job in jobs:
+            lvl = job["level"]
+            if job.get("res") is None:
+                continue
+
+            key = (str(var), lvl)
+            grouped.setdefault(key, []).append(
+                (
+                    int(job.get("init_start", 0)),
+                    int(job.get("init_len", 1)),
+                    job["res"],
+                )
+            )
+    if not grouped:
+        return None
 
     dfs = []
     for (var, lvl), parts in grouped.items():
@@ -235,8 +250,8 @@ def run(
         default_split_level=True,
         default_split_lead_time=False,
         default_split_init_time=True,
-        default_lead_time_block_size=12,
-        default_init_time_block_size=12,
+        default_lead_time_block_size=6,
+        default_init_time_block_size=6,
     )
     ets_init_time_block_size = int(batch_opts["init_time_block_size"])
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
@@ -245,7 +260,7 @@ def run(
     # n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
     n_points = None
     num_vars = len(ds_target.data_vars)
-    dynamic_chunk = resolve_dynamic_chunk_size(
+    dynamic_batch = resolve_dynamic_batch_size(
         performance_cfg,
         n_points=n_points,
         num_vars=num_vars,
@@ -283,7 +298,7 @@ def run(
             ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
 
     df = _calculate_ets_for_thresholds(
-        ds_target, ds_prediction, thresholds, chunk_size=dynamic_chunk
+        ds_target, ds_prediction, thresholds, batch_size=dynamic_batch
     )
 
     c.print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
@@ -361,7 +376,7 @@ def run(
                     )
                     ds_p_i = ds_prediction.isel(lead_time=i, drop=False)
                     df_i = _calculate_ets_for_thresholds(
-                        ds_t_i, ds_p_i, thresholds, chunk_size=dynamic_chunk
+                        ds_t_i, ds_p_i, thresholds, batch_size=dynamic_batch
                     )
                     # Flatten columns with variable names to create a wide row
                     flat: dict[str, float] = {"lead_time_hours": float(hours)}
@@ -484,7 +499,7 @@ def run(
                     ds_target,
                     ds_prediction,
                     thresholds,
-                    chunk_size=dynamic_chunk,
+                    batch_size=dynamic_batch,
                     init_time_block_size=ets_init_time_block_size,
                 )
                 if per_level_df is not None:
@@ -512,7 +527,7 @@ def run(
                     ds_tgt_m = ds_target
 
                 df_m = _calculate_ets_for_thresholds(
-                    ds_tgt_m, ds_pred_m, thresholds, chunk_size=dynamic_chunk
+                    ds_tgt_m, ds_pred_m, thresholds, batch_size=dynamic_batch
                 )
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(

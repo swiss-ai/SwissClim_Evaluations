@@ -74,6 +74,18 @@
 
    Don't forget to adjust the path to your `config/my_run.yaml` in
    `launchscript_single.sh` if you placed it elsewhere.
+1. Run multiple configs in one batch allocation (CSCS Alps):
+
+   Populate `eval_configs.txt` with one config path per line (relative paths are supported), then submit:
+
+   ```bash
+   sbatch launchscript_multi.sh
+   ```
+
+   Notes:
+   - `launchscript_multi.sh` reads `eval_configs.txt` and spawns one task per config via `srun --multi-prog`.
+   - Keep `#SBATCH --ntasks-per-node` aligned with the number of configs you want to run concurrently.
+   - Each task writes its own logs under `logs/` and outputs under each config's `paths.output_root`.
 1. Here is a one-liner with `srun` instead of the `launchscript_single.sh`:
 
    ```bash

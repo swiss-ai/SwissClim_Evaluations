@@ -20,11 +20,10 @@ from .. import console as c
 from ..dask_utils import (
     apply_split_to_dataarray,
     build_variable_level_lead_splits,
-    calculate_dynamic_chunk_size,
     compute_global_quantile,
     compute_jobs,
     compute_quantile_preserving,
-    resolve_dynamic_chunk_size,
+    resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
 from ..helpers import (
@@ -105,7 +104,7 @@ def _finalize_metrics(
 
 def _compute_lazy_values_batched(
     lazy_objects: list[Any],
-    chunk_size: int,
+    batch_size: int,
     desc: str,
 ) -> list[Any]:
     """Compute lazy objects via shared dask batch helper and preserve order."""
@@ -116,7 +115,7 @@ def _compute_lazy_values_batched(
     compute_jobs(
         jobs,
         key_map={"lazy_obj": "res"},
-        chunk_size=max(1, int(chunk_size)),
+        batch_size=max(1, int(batch_size)),
         desc=desc,
     )
     return [job["res"] for job in jobs]
@@ -129,12 +128,13 @@ def _calculate_multi_lead_metrics_split(
     fss_cfg: dict[str, Any] | None,
     seeps_climatology_path: str | None,
     weights: xr.DataArray | None,
-    dynamic_chunk: int,
+    dynamic_batch: int,
     split_3d_by_level: bool,
     split_lead_time: bool,
     split_init_time: bool,
     lead_time_block_size: int | None,
     init_time_block_size: int | None,
+    performance_cfg: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Compute multi-lead deterministic metrics with finer-grained splitting.
 
@@ -153,12 +153,21 @@ def _calculate_multi_lead_metrics_split(
         split_init_time=split_init_time,
         init_time_block_size=init_time_block_size,
     )
+    logged_variable_levels: set[tuple[str, Any]] = set()
 
     for spec in split_specs:
         variable = spec["variable"]
         level_val = spec["level"]
         lead_slice = spec["lead_slice"]
         init_slice = spec.get("init_slice", slice(None))
+
+        log_key = (str(variable), level_val)
+        if log_key not in logged_variable_levels:
+            if level_val is None:
+                c.print(f"[deterministic] variable: {variable}")
+            else:
+                c.print(f"[deterministic] variable: {variable} level={level_val}")
+            logged_variable_levels.add(log_key)
 
         da_t_blk = apply_split_to_dataarray(
             ds_target[variable],
@@ -185,6 +194,8 @@ def _calculate_multi_lead_metrics_split(
             preserve_dims=["lead_time"],
             compute=False,
             weights=weights,
+            performance_cfg=performance_cfg,
+            log_variable_progress=False,
         )
 
         for _, metric_name, lazy_obj in lead_lazy:
@@ -205,7 +216,7 @@ def _calculate_multi_lead_metrics_split(
 
     results = _compute_lazy_values_batched(
         [job["lazy"] for job in jobs_meta],
-        chunk_size=dynamic_chunk,
+        batch_size=dynamic_batch,
         desc="Computing deterministic metrics",
     )
 
@@ -285,6 +296,8 @@ def _calculate_all_metrics(
     preserve_dims: list[str] | None = None,
     compute: bool = True,
     weights: xr.DataArray | None = None,
+    performance_cfg: dict[str, Any] | None = None,
+    log_variable_progress: bool = True,
 ) -> pd.DataFrame | tuple[dict[str, dict[str, Any]], list[tuple[str, str, Any]]]:
     """Compute scalar deterministic metrics per variable.
 
@@ -413,13 +426,13 @@ def _calculate_all_metrics(
             # Map lazy quantiles to a job structure
             quantile_jobs = [{"q_lazy": q} for q in lazy_quantiles]
 
-            # Determine chunk size dynamically
-            dyn_chunk = calculate_dynamic_chunk_size(ds=ds_target)
+            # Determine batch size via shared resolver so manual batch_size is always respected
+            dyn_batch = resolve_dynamic_batch_size(performance_cfg, ds=ds_target)
 
             compute_jobs(
                 quantile_jobs,
                 key_map={"q_lazy": "q_res"},
-                chunk_size=dyn_chunk,
+                batch_size=dyn_batch,
                 desc="Computing FSS quantiles",
             )
 
@@ -470,6 +483,10 @@ def _calculate_all_metrics(
     intermediate_lazy: dict[tuple[str, str], Any] = {}
 
     for var in variables:
+        if log_variable_progress:
+            with contextlib.suppress(Exception):
+                c.print(f"[deterministic] variable: {var}")
+
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
 
@@ -686,12 +703,12 @@ def _calculate_all_metrics(
         # Use compute_jobs to batch computation and avoid OOM
         metrics_jobs = [{"lazy": obj} for _, _, obj in lazy_metrics_to_compute]
 
-        dyn_chunk = calculate_dynamic_chunk_size(ds=ds_target)
+        dyn_batch = resolve_dynamic_batch_size(performance_cfg, ds=ds_target)
 
         compute_jobs(
             metrics_jobs,
             key_map={"lazy": "res"},
-            chunk_size=dyn_chunk,
+            batch_size=dyn_batch,
             desc="Computing deterministic metrics",
         )
 
@@ -712,6 +729,8 @@ def _calculate_per_level_metrics(
     fss_cfg: dict[str, Any] | None,
     compute: bool = True,
     weights: xr.DataArray | None = None,
+    performance_cfg: dict[str, Any] | None = None,
+    log_variable_progress: bool = True,
 ) -> pd.DataFrame | tuple[dict, list] | None:
     """Compute metrics per pressure level for 3D variables."""
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
@@ -734,6 +753,8 @@ def _calculate_per_level_metrics(
         preserve_dims=["level"],
         compute=compute,
         weights=weights,
+        performance_cfg=performance_cfg,
+        log_variable_progress=log_variable_progress,
     )
 
 
@@ -770,8 +791,8 @@ def run(
         default_split_level=True,
         default_split_lead_time=True,
         default_split_init_time=True,
-        default_lead_time_block_size=12,
-        default_init_time_block_size=12,
+        default_lead_time_block_size=6,
+        default_init_time_block_size=6,
     )
     split_3d_by_level = bool(batch_opts["split_level"])
     split_lead_time = bool(batch_opts["split_lead_time"])
@@ -883,152 +904,71 @@ def run(
         except Exception:
             multi_lead = False
 
-        # Build all lazy objects on full datasets (not per-variable) for better dask graph sharing
-        # This allows dask to optimize across variables and share intermediate computations
-        # IMPORTANT: All lazy objects are collected into ONE list and computed in ONE call
-        # to allow dask to optimize the entire graph together
-
-        # 1. Regular metrics (all variables at once)
-        reg_dict, reg_lazy = ({}, [])
-        if not multi_lead:
-            reg_dict, reg_lazy = _calculate_all_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                include=include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
-                compute=False,
-                weights=weights,
-            )
-
-        # 2. Standardized metrics (all variables at once)
-        std_dict, std_lazy = ({}, [])
-        if not multi_lead:
-            std_dict, std_lazy = _calculate_all_metrics(
-                ds_target_std,
-                ds_prediction_std,
-                calc_relative=False,
-                include=std_include,
-                fss_cfg=fss_cfg,
-                seeps_climatology_path=seeps_climatology_path,
-                compute=False,
-                weights=weights,
-            )
-
-        # 3. Per-level metrics (all 3D variables at once)
-        lvl_dict, lvl_lazy = ({}, [])
-        lvl_std_dict, lvl_std_lazy = ({}, [])
-        if report_per_level and not multi_lead:
-            res = _calculate_per_level_metrics(
-                ds_target,
-                ds_prediction,
-                calc_relative=True,
-                include=include,
-                fss_cfg=fss_cfg,
-                compute=False,
-                weights=weights,
-            )
-            if res is not None:
-                lvl_dict, lvl_lazy = res
-
-            res_std = _calculate_per_level_metrics(
-                ds_target_std,
-                ds_prediction_std,
-                calc_relative=False,
-                include=std_include,
-                fss_cfg=fss_cfg,
-                compute=False,
-                weights=weights,
-            )
-            if res_std is not None:
-                lvl_std_dict, lvl_std_lazy = res_std
-
-        # 4. Multi-lead metrics (fine-grained split path)
-        lead_dict: dict[str, dict[str, Any]] = {}
-        lead_lazy: list[tuple[str, str, Any]] = []
-
-        # Heuristic for chunk size: target ~1B points per batch to avoid OOM
-        dynamic_chunk = resolve_dynamic_chunk_size(
+        # Heuristic batch size used by split-based multi-lead path
+        dynamic_batch = resolve_dynamic_batch_size(
             perf_cfg,
             ds=ds_target,
         )
 
-        # Collect ALL lazy objects into one list for unified dask graph optimization
-        # Track the boundaries so we can dispatch results back to categories
-        all_lazy_objs: list[Any] = []
-        category_boundaries: list[tuple[str, int, int]] = []  # (name, start_idx, end_idx)
-
-        if reg_lazy:
-            _, _, lazy_objs = zip(*reg_lazy, strict=False)
-            start = len(all_lazy_objs)
-            all_lazy_objs.extend(lazy_objs)
-            category_boundaries.append(("reg", start, len(all_lazy_objs)))
-
-        if std_lazy:
-            _, _, lazy_objs = zip(*std_lazy, strict=False)
-            start = len(all_lazy_objs)
-            all_lazy_objs.extend(lazy_objs)
-            category_boundaries.append(("std", start, len(all_lazy_objs)))
-
-        if lvl_lazy:
-            _, _, lazy_objs = zip(*lvl_lazy, strict=False)
-            start = len(all_lazy_objs)
-            all_lazy_objs.extend(lazy_objs)
-            category_boundaries.append(("lvl", start, len(all_lazy_objs)))
-
-        if lvl_std_lazy:
-            _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
-            start = len(all_lazy_objs)
-            all_lazy_objs.extend(lazy_objs)
-            category_boundaries.append(("lvl_std", start, len(all_lazy_objs)))
-
-        if lead_lazy:
-            _, _, lazy_objs = zip(*lead_lazy, strict=False)
-            start = len(all_lazy_objs)
-            all_lazy_objs.extend(lazy_objs)
-            category_boundaries.append(("lead", start, len(all_lazy_objs)))
-
-        # Compute ALL lazy objects through shared dask batch executor
-        # for consistent OOM protection and logging across modules.
-        all_results: list[Any] = _compute_lazy_values_batched(
-            all_lazy_objs,
-            chunk_size=dynamic_chunk,
-            desc="Computing deterministic metrics",
-        )
-
-        # Dispatch results back to categories using boundaries
-        reg_results: list[Any] = []
-        std_results: list[Any] = []
-        lvl_results: list[Any] = []
-        lvl_std_results: list[Any] = []
-        lead_results: list[Any] = []
-
-        for name, start, end in category_boundaries:
-            if name == "reg":
-                reg_results = all_results[start:end]
-            elif name == "std":
-                std_results = all_results[start:end]
-            elif name == "lvl":
-                lvl_results = all_results[start:end]
-            elif name == "lvl_std":
-                lvl_std_results = all_results[start:end]
-            elif name == "lead":
-                lead_results = all_results[start:end]
-
-        # Finalize metrics
-        regular_metrics = _finalize_metrics(reg_dict, reg_lazy, reg_results, None)
-        standardized_metrics = _finalize_metrics(std_dict, std_lazy, std_results, None)
-
+        regular_metrics = pd.DataFrame()
+        standardized_metrics = pd.DataFrame()
         per_level_metrics = pd.DataFrame()
-        if lvl_lazy or lvl_dict:
-            per_level_metrics = _finalize_metrics(lvl_dict, lvl_lazy, lvl_results, ["level"])
-
         per_level_std = pd.DataFrame()
-        if lvl_std_lazy or lvl_std_dict:
-            per_level_std = _finalize_metrics(
-                lvl_std_dict, lvl_std_lazy, lvl_std_results, ["level"]
+
+        if not multi_lead:
+            regular_metrics = _calculate_all_metrics(
+                ds_target,
+                ds_prediction,
+                calc_relative=True,
+                include=include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=True,
+                weights=weights,
+                performance_cfg=perf_cfg,
+                log_variable_progress=True,
             )
+            standardized_metrics = _calculate_all_metrics(
+                ds_target_std,
+                ds_prediction_std,
+                calc_relative=False,
+                include=std_include,
+                fss_cfg=fss_cfg,
+                seeps_climatology_path=seeps_climatology_path,
+                compute=True,
+                weights=weights,
+                performance_cfg=perf_cfg,
+                log_variable_progress=False,
+            )
+
+            if report_per_level:
+                res_lvl = _calculate_per_level_metrics(
+                    ds_target,
+                    ds_prediction,
+                    calc_relative=True,
+                    include=include,
+                    fss_cfg=fss_cfg,
+                    compute=True,
+                    weights=weights,
+                    performance_cfg=perf_cfg,
+                    log_variable_progress=False,
+                )
+                if isinstance(res_lvl, pd.DataFrame):
+                    per_level_metrics = res_lvl
+
+                res_lvl_std = _calculate_per_level_metrics(
+                    ds_target_std,
+                    ds_prediction_std,
+                    calc_relative=False,
+                    include=std_include,
+                    fss_cfg=fss_cfg,
+                    compute=True,
+                    weights=weights,
+                    performance_cfg=perf_cfg,
+                    log_variable_progress=False,
+                )
+                if isinstance(res_lvl_std, pd.DataFrame):
+                    per_level_std = res_lvl_std
 
         df_all_lead = pd.DataFrame()
         if multi_lead:
@@ -1039,15 +979,14 @@ def run(
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
                 weights=weights,
-                dynamic_chunk=dynamic_chunk,
+                dynamic_batch=dynamic_batch,
                 split_3d_by_level=split_3d_by_level,
                 split_lead_time=split_lead_time,
                 split_init_time=split_init_time,
                 lead_time_block_size=lead_time_block_size,
                 init_time_block_size=init_time_block_size,
+                performance_cfg=perf_cfg,
             )
-        elif lead_lazy or lead_dict:
-            df_all_lead = _finalize_metrics(lead_dict, lead_lazy, lead_results, ["lead_time"])
 
         # Ensure level column is int if present
         if not per_level_metrics.empty and "level" in per_level_metrics.columns:
@@ -1131,8 +1070,8 @@ def run(
         pooled_metrics: list[pd.DataFrame] = []
         first_reg_df: pd.DataFrame | None = None
         first_std_df: pd.DataFrame | None = None
-        # Heuristic for chunk size also in members mode
-        dynamic_chunk = resolve_dynamic_chunk_size(
+        # Heuristic for batch size also in members mode
+        dynamic_batch = resolve_dynamic_batch_size(
             perf_cfg,
             ds=ds_target,
         )
@@ -1163,36 +1102,40 @@ def run(
             else:
                 ds_tgt_m_std = ds_target_std
 
-            # Build all lazy objects on full member datasets (not per-variable)
-            # for better dask graph sharing - ALL categories computed in ONE call
-
-            # 1. Regular metrics (all variables at once)
-            reg_dict, reg_lazy = _calculate_all_metrics(
+            # 1. Regular metrics
+            reg_m = _calculate_all_metrics(
                 ds_tgt_m,
                 ds_pred_m,
                 calc_relative=True,
                 include=include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                compute=False,
+                compute=True,
                 weights=weights,
+                performance_cfg=perf_cfg,
+                log_variable_progress=True,
             )
 
-            # 2. Standardized metrics (all variables at once)
-            std_dict, std_lazy = _calculate_all_metrics(
+            # 2. Standardized metrics
+            std_m = _calculate_all_metrics(
                 ds_tgt_m_std,
                 ds_pred_m_std,
                 calc_relative=False,
                 include=std_include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                compute=False,
+                compute=True,
                 weights=weights,
+                performance_cfg=perf_cfg,
+                log_variable_progress=False,
             )
 
-            # 3. Per-level metrics (all 3D variables at once)
-            lvl_dict, lvl_lazy = ({}, [])
-            lvl_std_dict, lvl_std_lazy = ({}, [])
+            if not isinstance(reg_m, pd.DataFrame) or not isinstance(std_m, pd.DataFrame):
+                raise TypeError("Expected DataFrame metrics when compute=True")
+
+            # 3. Per-level metrics
+            per_level_m = None
+            per_level_m_std = None
             if report_per_level:
                 res = _calculate_per_level_metrics(
                     ds_tgt_m,
@@ -1200,11 +1143,13 @@ def run(
                     calc_relative=True,
                     include=include,
                     fss_cfg=fss_cfg,
-                    compute=False,
+                    compute=True,
                     weights=weights,
+                    performance_cfg=perf_cfg,
+                    log_variable_progress=False,
                 )
-                if res is not None:
-                    lvl_dict, lvl_lazy = res
+                if isinstance(res, pd.DataFrame):
+                    per_level_m = res
 
                 res_std = _calculate_per_level_metrics(
                     ds_tgt_m_std,
@@ -1212,77 +1157,13 @@ def run(
                     calc_relative=False,
                     include=std_include,
                     fss_cfg=fss_cfg,
-                    compute=False,
+                    compute=True,
                     weights=weights,
+                    performance_cfg=perf_cfg,
+                    log_variable_progress=False,
                 )
-                if res_std is not None:
-                    lvl_std_dict, lvl_std_lazy = res_std
-
-            # Collect ALL lazy objects into one list for unified dask graph optimization
-            m_all_lazy_objs: list = []
-            m_category_boundaries = []
-
-            if reg_lazy:
-                _, _, lazy_objs = zip(*reg_lazy, strict=False)
-                start = len(m_all_lazy_objs)
-                m_all_lazy_objs.extend(lazy_objs)
-                m_category_boundaries.append(("reg", start, len(m_all_lazy_objs)))
-
-            if std_lazy:
-                _, _, lazy_objs = zip(*std_lazy, strict=False)
-                start = len(m_all_lazy_objs)
-                m_all_lazy_objs.extend(lazy_objs)
-                m_category_boundaries.append(("std", start, len(m_all_lazy_objs)))
-
-            if lvl_lazy:
-                _, _, lazy_objs = zip(*lvl_lazy, strict=False)
-                start = len(m_all_lazy_objs)
-                m_all_lazy_objs.extend(lazy_objs)
-                m_category_boundaries.append(("lvl", start, len(m_all_lazy_objs)))
-
-            if lvl_std_lazy:
-                _, _, lazy_objs = zip(*lvl_std_lazy, strict=False)
-                start = len(m_all_lazy_objs)
-                m_all_lazy_objs.extend(lazy_objs)
-                m_category_boundaries.append(("lvl_std", start, len(m_all_lazy_objs)))
-
-            # Compute ALL lazy objects through shared dask batch executor
-            # for consistent OOM protection and logging across modules.
-            m_all_results = _compute_lazy_values_batched(
-                m_all_lazy_objs,
-                chunk_size=dynamic_chunk,
-                desc="Computing deterministic metrics",
-            )
-
-            # Dispatch results back to categories
-            reg_results = []
-            std_results = []
-            lvl_results = []
-            lvl_std_results = []
-
-            for name, start, end in m_category_boundaries:
-                if name == "reg":
-                    reg_results = m_all_results[start:end]
-                elif name == "std":
-                    std_results = m_all_results[start:end]
-                elif name == "lvl":
-                    lvl_results = m_all_results[start:end]
-                elif name == "lvl_std":
-                    lvl_std_results = m_all_results[start:end]
-
-            # Finalize metrics
-            reg_m = _finalize_metrics(reg_dict, reg_lazy, reg_results, None)
-            std_m = _finalize_metrics(std_dict, std_lazy, std_results, None)
-
-            per_level_m = None
-            if lvl_lazy or lvl_dict:
-                per_level_m = _finalize_metrics(lvl_dict, lvl_lazy, lvl_results, ["level"])
-
-            per_level_m_std = None
-            if lvl_std_lazy or lvl_std_dict:
-                per_level_m_std = _finalize_metrics(
-                    lvl_std_dict, lvl_std_lazy, lvl_std_results, ["level"]
-                )
+                if isinstance(res_std, pd.DataFrame):
+                    per_level_m_std = res_std
 
             if first_reg_df is None:
                 first_reg_df = reg_m.copy()
@@ -1395,7 +1276,7 @@ def run(
         if "df_all_lead" in locals() and not df_all_lead.empty:
             df_all = df_all_lead
         else:
-            dynamic_chunk_fallback = resolve_dynamic_chunk_size(
+            dynamic_batch_fallback = resolve_dynamic_batch_size(
                 perf_cfg,
                 ds=ds_target,
             )
@@ -1406,12 +1287,13 @@ def run(
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
                 weights=weights,
-                dynamic_chunk=dynamic_chunk_fallback,
+                dynamic_batch=dynamic_batch_fallback,
                 split_3d_by_level=split_3d_by_level,
                 split_lead_time=split_lead_time,
                 split_init_time=split_init_time,
                 lead_time_block_size=lead_time_block_size,
                 init_time_block_size=init_time_block_size,
+                performance_cfg=perf_cfg,
             )
 
         wide_df = pd.DataFrame()

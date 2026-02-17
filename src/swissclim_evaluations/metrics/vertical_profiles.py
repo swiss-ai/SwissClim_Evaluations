@@ -12,7 +12,7 @@ from scores.functions import create_latitude_weights
 from .. import console as c
 from ..dask_utils import (
     compute_jobs,
-    resolve_dynamic_chunk_size,
+    resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
 from ..helpers import (
@@ -370,6 +370,9 @@ def run(
     split_3d_by_level = bool(vp_batch_opts["split_level"])
 
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    if not variables_3d:
+        c.print("[vertical_profiles] No 3D variables found – skipping.")
+        return
     lat_bins, n_bands = _lat_bands()
 
     if "latitude" not in ds_target.dims:
@@ -452,11 +455,10 @@ def run(
     else:
         ens_token = None
 
-    # Collect all lazy computations
-    all_jobs: list[dict[str, Any]] = []
+    prepared_jobs: list[dict[str, Any]] = []
 
     for var in variables_3d:
-        c.print(f"[vertical_profiles] preparing {var}...")
+        c.print(f"[vertical_profiles] preparing variable: {var}")
         level_values = ds_target[var].level.values
         south_curves: list[xr.DataArray] = []
         north_curves: list[xr.DataArray] = []
@@ -530,6 +532,7 @@ def run(
             "south_meta": south_meta,
             "north_meta": north_meta,
             "combined_lazy": combined,
+            "level_values": np.asarray(level_values),
             "half": half,
             "ens_token_local": ens_token,
         }
@@ -650,18 +653,23 @@ def run(
         )
         job["global_profile_lazy"] = global_profile
 
-        all_jobs.append(job)
+        prepared_jobs.append(job)
 
-    # Batch compute (All Variables)
-    c.print("[vertical_profiles] computing all jobs...")
-    dynamic_chunk = resolve_dynamic_chunk_size(
+    # Batch compute (Per Variable Job)
+    c.print("[vertical_profiles] computing per-variable jobs...")
+    dynamic_batch = resolve_dynamic_batch_size(
         performance_cfg,
         ds=ds_target,
+    )
+    c.print(
+        "[vertical_profiles] Dask batching: "
+        f"batch_size={dynamic_batch}, split_3d_by_level={split_3d_by_level}"
     )
 
     def _process_batch(batch_jobs: list[dict[str, Any]]):
         for job in batch_jobs:
             var = job["var"]
+            level_values = np.asarray(job.get("level_values", []))
             # Process results (Inline)
             c.print(f"[vertical_profiles] post-processing {var}...")
 
@@ -956,16 +964,19 @@ def run(
             # Explicitly release memory
             job.clear()
 
-    compute_jobs(
-        all_jobs,
-        key_map={
-            "combined_lazy": "combined",
-            "combined_all_lazy": "combined_all",
-            "evolve_profiles_lazy": "evolve_profiles",
-            "nmae_lead_lazy": "nmae_lead",
-            "global_profile_lazy": "global_profile",
-        },
-        chunk_size=dynamic_chunk,
-        desc="Computing vertical profiles",
-        batch_callback=_process_batch,
-    )
+    for job in prepared_jobs:
+        var_name = str(job.get("var", "unknown"))
+        c.print(f"[vertical_profiles] compute variable: {var_name}")
+        compute_jobs(
+            [job],
+            key_map={
+                "combined_lazy": "combined",
+                "combined_all_lazy": "combined_all",
+                "evolve_profiles_lazy": "evolve_profiles",
+                "nmae_lead_lazy": "nmae_lead",
+                "global_profile_lazy": "global_profile",
+            },
+            batch_size=max(1, int(dynamic_batch)),
+            desc=f"Computing vertical profiles ({var_name})",
+            batch_callback=_process_batch,
+        )

@@ -25,7 +25,7 @@ from ..dask_utils import (
     build_variable_level_lead_splits,
     compute_jobs,
     dask_histogram,
-    resolve_dynamic_chunk_size,
+    resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
 from ..helpers import (
@@ -329,8 +329,8 @@ def run_probabilistic(
         default_split_level=True,
         default_split_lead_time=True,
         default_split_init_time=True,
-        default_lead_time_block_size=12,
-        default_init_time_block_size=12,
+        default_lead_time_block_size=6,
+        default_init_time_block_size=6,
     )
     split_lead_time = bool(batch_opts["split_lead_time"])
     split_init_time = bool(batch_opts["split_init_time"])
@@ -340,7 +340,6 @@ def run_probabilistic(
     crps_rows_per_level: list[dict[str, Any]] = []
 
     # --- Use Batching Logic (Variable by Variable) ---
-    all_jobs: list[dict[str, Any]] = []
     is_multi_lead = (
         split_lead_time
         and ("lead_time" in ds_prediction.dims)
@@ -352,7 +351,134 @@ def run_probabilistic(
         and ds_prediction.sizes["init_time"] > 1
     )
 
+    dynamic_batch = resolve_dynamic_batch_size(
+        performance_cfg,
+        ds=ds_target,
+    )
+
+    # Accumulators for aggregate metrics
+    # var -> list of (level, value)
+    crps_level_aggs: dict[str, list[tuple[int, int, float]]] = {}
+    # var -> list of crps values (for global mean reconstruction of 3D vars)
+    crps_global_accumulators: dict[str, list[tuple[int, float]]] = {}
+
+    # Accumulators for split artifacts to avoid filename collisions across lead blocks
+    crps_per_lead_parts: dict[tuple[str, Any], list[tuple[int, int, int, xr.DataArray]]] = {}
+    crps_field_parts: dict[tuple[str, Any], list[tuple[int, int, xr.DataArray]]] = {}
+    pit_field_parts: dict[tuple[str, Any], list[tuple[int, int, xr.DataArray]]] = {}
+
+    # Define callback to process results incrementally and free memory
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        for job in batch_jobs:
+            var = job["var"]
+            lvl = job["level"]
+            is_3d = job["is_3d"]
+            lead_start = int(job.get("lead_start", 0))
+            lead_len = int(job.get("lead_len", 1))
+            init_start = int(job.get("init_start", 0))
+            init_len = int(job.get("init_len", 1))
+
+            # 1. CRPS Mean
+            # For 3D vars, we accumulate per-level means and aggregate later
+            if job.get("crps_mean_res") is not None:
+                try:
+                    val = float(
+                        job["crps_mean_res"].item()
+                        if hasattr(job["crps_mean_res"], "item")
+                        else job["crps_mean_res"]
+                    )
+                except Exception:
+                    val = float(job["crps_mean_res"])
+
+                if is_3d:
+                    if var not in crps_global_accumulators:
+                        crps_global_accumulators[var] = []
+                    crps_global_accumulators[var].append((max(1, init_len * lead_len), val))
+                else:
+                    crps_rows.append({"variable": var, "CRPS": val})
+
+            # 2. Per Lead Time CRPS
+            if job.get("crps_per_lead_res") is not None:
+                crps_per_lead = job["crps_per_lead_res"]
+                key = (str(var), lvl)
+                crps_per_lead_parts.setdefault(key, []).append(
+                    (
+                        lead_start,
+                        init_start,
+                        init_len,
+                        crps_per_lead,
+                    )
+                )
+
+            # 3. Per Level CRPS (Scalar Aggregation)
+            if job.get("crps_per_level_scalar_lazy_res") is not None:
+                val = float(job["crps_per_level_scalar_lazy_res"].item())
+                if var not in crps_level_aggs:
+                    crps_level_aggs[var] = []
+                crps_level_aggs[var].append((int(lvl), max(1, init_len * lead_len), val))
+
+            # 4. PIT Global Histogram
+            if job.get("pit_counts_res") is not None:
+                # 3D: Save per-level histogram
+                # 2D: Save global histogram
+                counts = job["pit_counts_res"].astype(np.float64)
+                edges = job["pit_edges"]
+                width = np.diff(edges)
+                bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
+                counts = counts / bin_area
+
+                pit_npz = section_output / build_output_filename(
+                    metric="pit_hist",
+                    variable=str(var),
+                    level=lvl,
+                    qualifier=f"level{lvl}" if lvl is not None else None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_data(
+                    pit_npz,
+                    counts=counts,
+                    edges=edges,
+                    module="probabilistic",
+                )
+
+            # 6. Save Full Fields (Sliced)
+            if job.get("crps_field_res") is not None:
+                crps_res = job["crps_field_res"]
+                if job.get("is_split"):
+                    # Concatenate if we got a list of chunks
+                    # Use xr.concat to preserve DataArray type and coordinates
+                    crps_res = xr.concat(crps_res, dim=job["split_dim"])
+                key = (str(var), lvl)
+                crps_field_parts.setdefault(key, []).append((lead_start, init_start, crps_res))
+
+            if job.get("pit_field_res") is not None:
+                pit_res = job["pit_field_res"]
+                if job.get("is_split"):
+                    # Concatenate if we got a list of chunks
+                    # Use xr.concat to preserve DataArray type and coordinates
+                    pit_res = xr.concat(pit_res, dim=job["split_dim"])
+                key = (str(var), lvl)
+                pit_field_parts.setdefault(key, []).append((lead_start, init_start, pit_res))
+
+            # Release memory
+            keys_to_clear = [
+                "crps_mean_res",
+                "crps_per_lead_res",
+                "crps_per_level_scalar_lazy_res",
+                "pit_counts_res",
+                "crps_field_res",
+                "pit_field_res",
+            ]
+            for k in keys_to_clear:
+                if k in job:
+                    job[k] = None
+
     for var in variables:
+        c.print(f"[probabilistic] variable: {var}")
+        var_jobs: list[dict[str, Any]] = []
         # Slice per variable to decouple dask graphs
         ds_p_var = ds_prediction[[var]]
         ds_t_var = ds_target[[var]]
@@ -361,15 +487,7 @@ def run_probabilistic(
             ds_t_var = ds_t_var.isel(ensemble=0, drop=True)
         if "ensemble" in ds_t_var.coords:
             ds_t_var = ds_t_var.drop_vars("ensemble")
-
-        # Compute CRPS and PIT for this single variable
-        ds_crps_var = compute_wbx_crps(ds_p_var, ds_t_var, ensemble_dim="ensemble")
-        ds_pit_var = probability_integral_transform(
-            ds_t_var, ds_p_var, ensemble_dim="ensemble", name_prefix=None
-        )
-
-        crps_da_full = ds_crps_var[var]
-        pit_da_full = ds_pit_var[var]
+        is_3d = "level" in ds_p_var[var].dims
 
         split_specs = build_variable_level_lead_splits(
             ds_p_var,
@@ -385,19 +503,33 @@ def run_probabilistic(
             level_val = split_spec["level"]
             lead_slice = split_spec["lead_slice"]
             init_slice = split_spec.get("init_slice", slice(None))
-            crps_da = apply_split_to_dataarray(
-                crps_da_full,
+
+            pred_slice = apply_split_to_dataarray(
+                ds_p_var[var],
                 level=level_val,
                 lead_slice=lead_slice,
                 init_slice=init_slice,
             )
-            pit_da = apply_split_to_dataarray(
-                pit_da_full,
+            targ_slice = apply_split_to_dataarray(
+                ds_t_var[var],
                 level=level_val,
                 lead_slice=lead_slice,
                 init_slice=init_slice,
             )
-            is_3d = "level" in crps_da_full.dims
+
+            ds_p_slice = xr.Dataset({str(var): pred_slice})
+            ds_t_slice = xr.Dataset({str(var): targ_slice})
+
+            # Build small per-split lazy graphs (deterministic-style) instead of
+            # slicing a single full-variable graph, which can become too large.
+            ds_crps_slice = compute_wbx_crps(ds_p_slice, ds_t_slice, ensemble_dim="ensemble")
+            crps_da = ds_crps_slice[var]
+            pit_da = probability_integral_transform(
+                targ_slice,
+                pred_slice,
+                ensemble_dim="ensemble",
+                name_prefix=None,
+            )
 
             job: dict[str, Any] = {
                 "var": var,
@@ -479,151 +611,35 @@ def run_probabilistic(
                 job["crps_field_lazy"] = crps_da
                 job["pit_field_lazy"] = pit_da
 
-            all_jobs.append(job)
+            var_jobs.append(job)
 
-    # --- Batch Compute (All Variables) ---
-    dynamic_chunk = resolve_dynamic_chunk_size(
-        performance_cfg,
-        ds=ds_target,
-    )
-
-    # Accumulators for aggregate metrics
-    # var -> list of (level, value)
-    crps_level_aggs: dict[str, list[tuple[int, int, float]]] = {}
-    # var -> list of crps values (for global mean reconstruction of 3D vars)
-    crps_global_accumulators: dict[str, list[tuple[int, float]]] = {}
-
-    # Accumulators for split artifacts to avoid filename collisions across lead blocks
-    crps_per_lead_parts: dict[tuple[str, Any], list[tuple[int, int, int, xr.DataArray]]] = {}
-    crps_field_parts: dict[tuple[str, Any], list[tuple[int, int, xr.DataArray]]] = {}
-    pit_field_parts: dict[tuple[str, Any], list[tuple[int, int, xr.DataArray]]] = {}
-
-    # Define callback to process results incrementally and free memory
-    def _process_batch(batch_jobs: list[dict[str, Any]]):
-        for job in batch_jobs:
-            var = job["var"]
-            lvl = job["level"]
-            is_3d = job["is_3d"]
-            lead_start = int(job.get("lead_start", 0))
-            lead_len = int(job.get("lead_len", 1))
-            init_start = int(job.get("init_start", 0))
-            init_len = int(job.get("init_len", 1))
-
-            # 1. CRPS Mean
-            # For 3D vars, we accumulate per-level means and aggregate later
-            if job.get("crps_mean_res") is not None:
-                try:
-                    val = float(
-                        job["crps_mean_res"].item()
-                        if hasattr(job["crps_mean_res"], "item")
-                        else job["crps_mean_res"]
-                    )
-                except Exception:
-                    val = float(job["crps_mean_res"])
-
-                if is_3d:
-                    if var not in crps_global_accumulators:
-                        crps_global_accumulators[var] = []
-                    crps_global_accumulators[var].append((max(1, init_len * lead_len), val))
-                else:
-                    crps_rows.append({"variable": var, "CRPS": val})
-
-            # 2. Per Lead Time CRPS
-            if job.get("crps_per_lead_res") is not None:
-                crps_per_lead = job["crps_per_lead_res"]
-                key = (str(var), lvl)
-                crps_per_lead_parts.setdefault(key, []).append(
-                    (lead_start, init_start, init_len, crps_per_lead)
-                )
-
-            # 3. Per Level CRPS (Scalar Aggregation)
-            if job.get("crps_per_level_scalar_lazy_res") is not None:
-                val = float(job["crps_per_level_scalar_lazy_res"].item())
-                if var not in crps_level_aggs:
-                    crps_level_aggs[var] = []
-                crps_level_aggs[var].append((int(lvl), max(1, init_len * lead_len), val))
-
-            # 4. PIT Global Histogram
-            if job.get("pit_counts_res") is not None:
-                # 3D: Save per-level histogram
-                # 2D: Save global histogram
-                counts = job["pit_counts_res"].astype(np.float64)
-                edges = job["pit_edges"]
-                width = np.diff(edges)
-                bin_area = counts.sum() * width.mean() if counts.sum() > 0 else 1.0
-                counts = counts / bin_area
-
-                pit_npz = section_output / build_output_filename(
-                    metric="pit_hist",
-                    variable=str(var),
-                    level=lvl,
-                    qualifier=f"level{lvl}" if lvl is not None else None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="npz",
-                )
-                save_data(
-                    pit_npz,
-                    counts=counts,
-                    edges=edges,
-                    module="probabilistic",
-                )
-
-            # 6. Save Full Fields (Sliced)
-            if job.get("crps_field_res") is not None:
-                crps_res = job["crps_field_res"]
-                if job.get("is_split"):
-                    # Concatenate if we got a list of chunks
-                    # Use xr.concat to preserve DataArray type and coordinates
-                    crps_res = xr.concat(crps_res, dim=job["split_dim"])
-                key = (str(var), lvl)
-                crps_field_parts.setdefault(key, []).append((lead_start, init_start, crps_res))
-
-            if job.get("pit_field_res") is not None:
-                pit_res = job["pit_field_res"]
-                if job.get("is_split"):
-                    # Concatenate if we got a list of chunks
-                    # Use xr.concat to preserve DataArray type and coordinates
-                    pit_res = xr.concat(pit_res, dim=job["split_dim"])
-                key = (str(var), lvl)
-                pit_field_parts.setdefault(key, []).append((lead_start, init_start, pit_res))
-
-            # Release memory
-            keys_to_clear = [
-                "crps_mean_res",
-                "crps_per_lead_res",
-                "crps_per_level_scalar_lazy_res",
-                "pit_counts_res",
-                "crps_field_res",
-                "pit_field_res",
-            ]
-            for k in keys_to_clear:
-                if k in job:
-                    job[k] = None
-
-    compute_jobs(
-        all_jobs,
-        key_map={
-            "crps_mean_lazy": "crps_mean_res",
-            "crps_per_lead_lazy": "crps_per_lead_res",
-            # Not used directly in new flow but kept for safety
-            "crps_per_level_lazy": "crps_per_level_res",
-            "crps_per_level_scalar_lazy": "crps_per_level_scalar_lazy_res",
-            "pit_counts_lazy": "pit_counts_res",
-            "crps_field_lazy": "crps_field_res",
-            "pit_field_lazy": "pit_field_res",
-        },
-        chunk_size=dynamic_chunk,
-        desc="Computing CRPS and PIT metrics",
-        batch_callback=_process_batch,
-    )
+        if var_jobs:
+            compute_jobs(
+                var_jobs,
+                key_map={
+                    "crps_mean_lazy": "crps_mean_res",
+                    "crps_per_lead_lazy": "crps_per_lead_res",
+                    # Not used directly in new flow but kept for safety
+                    "crps_per_level_lazy": "crps_per_level_res",
+                    "crps_per_level_scalar_lazy": "crps_per_level_scalar_lazy_res",
+                    "pit_counts_lazy": "pit_counts_res",
+                    "crps_field_lazy": "crps_field_res",
+                    "pit_field_lazy": "pit_field_res",
+                },
+                batch_size=dynamic_batch,
+                desc=f"Computing CRPS and PIT metrics ({var})",
+                batch_callback=_process_batch,
+            )
 
     for (var, lvl), lead_parts_group in crps_per_lead_parts.items():
         by_lead_start: dict[int, list[tuple[int, int, xr.DataArray]]] = {}
         for lead_start, init_start, init_len, part in lead_parts_group:
             by_lead_start.setdefault(int(lead_start), []).append(
-                (int(init_start), int(init_len), part)
+                (
+                    int(init_start),
+                    int(init_len),
+                    part,
+                )
             )
 
         lead_parts: list[xr.DataArray] = []
@@ -1422,10 +1438,10 @@ def _wbx_metric_to_df(
     return df
 
 
-def _iter_variable_chunks(variables: list[str], chunk_size: int) -> list[list[str]]:
+def _iter_variable_batches(variables: list[str], batch_size: int) -> list[list[str]]:
     if not variables:
         return []
-    size = max(1, int(chunk_size))
+    size = max(1, int(batch_size))
     return [variables[i : i + size] for i in range(0, len(variables), size)]
 
 
@@ -1434,26 +1450,26 @@ def _wbx_metric_to_df_batched(
     ds_prediction: xr.Dataset,
     ds_target: xr.Dataset,
     value_col: str,
-    var_chunk_size: int,
+    var_batch_size: int,
 ) -> pd.DataFrame:
     variables = [v for v in ds_prediction.data_vars if v in ds_target.data_vars]
     if not variables:
         return pd.DataFrame()
 
-    chunks = _iter_variable_chunks([str(v) for v in variables], var_chunk_size)
+    batches = _iter_variable_batches([str(v) for v in variables], var_batch_size)
     rows: list[pd.DataFrame] = []
-    if len(chunks) > 1:
+    if len(batches) > 1:
         c.print(
             "[Dask] Computing WBX metric "
-            f"{value_col}: Processing {len(variables)} variables in {len(chunks)} chunks "
-            f"(chunk_size={max(1, int(var_chunk_size))})..."
+            f"{value_col}: Processing {len(variables)} variables in {len(batches)} batches "
+            f"(batch_size={max(1, int(var_batch_size))})..."
         )
 
-    for chunk in chunks:
+    for batch in batches:
         df_chunk = _wbx_metric_to_df(
             metric,
-            ds_prediction=ds_prediction[chunk],
-            ds_target=ds_target[chunk],
+            ds_prediction=ds_prediction[batch],
+            ds_target=ds_target[batch],
             value_col=value_col,
         )
         if not df_chunk.empty:
@@ -1501,11 +1517,11 @@ def run_probabilistic_wbx(
     ds_pred = ds_prediction[common_vars]
     ds_targ = ds_target[common_vars]
 
-    dynamic_chunk = resolve_dynamic_chunk_size(
+    dynamic_batch = resolve_dynamic_batch_size(
         performance_cfg,
         ds=ds_targ,
     )
-    var_chunk_size = max(1, min(int(dynamic_chunk), max(1, len(common_vars))))
+    var_batch_size = max(1, min(int(dynamic_batch), max(1, len(common_vars))))
 
     # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
@@ -1526,7 +1542,7 @@ def run_probabilistic_wbx(
                 ds_prediction=ds_pred,
                 ds_target=ds_targ,
                 value_col="SSR",
-                var_chunk_size=var_chunk_size,
+                var_batch_size=var_batch_size,
             )
         except Exception as e:  # pragma: no cover - defensive clarity wrapper
             raise RuntimeError(
@@ -1630,18 +1646,18 @@ def run_probabilistic_wbx(
     metrics["CRPS"] = CRPSEnsemble(ensemble_dim="ensemble")
 
     variables = [str(v) for v in ds_pred.data_vars]
-    variable_chunks = _iter_variable_chunks(variables, var_chunk_size)
+    variable_batches = _iter_variable_batches(variables, var_batch_size)
     c.print(
         "[Dask] Computing WBX probabilistic metrics: "
-        f"Processing {len(variables)} variables in {len(variable_chunks)} chunks "
-        f"(chunk_size={var_chunk_size})..."
+        f"Processing {len(variables)} variables in {len(variable_batches)} batches "
+        f"(batch_size={var_batch_size})..."
     )
 
     temporal_parts: list[xr.Dataset] = []
     spatial_parts: list[xr.Dataset] = []
-    for variable_chunk in variable_chunks:
-        pred_map = {v: ds_pred[v] for v in variable_chunk}
-        targ_map = {v: ds_targ[v] for v in variable_chunk}
+    for variable_batch in variable_batches:
+        pred_map = {v: ds_pred[v] for v in variable_batch}
+        targ_map = {v: ds_targ[v] for v in variable_batch}
 
         temporal_chunk = aggregation.compute_metric_values_for_single_chunk(
             metrics, spatial_aggregator, pred_map, targ_map

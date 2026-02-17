@@ -12,7 +12,7 @@ from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
 
 from .. import console as c
-from ..dask_utils import compute_jobs, resolve_dynamic_chunk_size
+from ..dask_utils import compute_jobs, resolve_dynamic_batch_size
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -388,7 +388,7 @@ def _plot_energy_spectra(
     save_plot_data: bool = False,
     save_figure: bool = True,
     override_ensemble_token: str | None = None,
-    chunk_size_cfg: int | str | None = None,
+    performance_cfg: dict[str, Any] | None = None,
     weights: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
@@ -568,10 +568,11 @@ def _plot_energy_spectra(
     # Compute all
     n_points = int(spectrum_target.size + spectrum_pred.size)
     num_vars = 1
-    dynamic_chunk = resolve_dynamic_chunk_size(
-        {"chunk_size": chunk_size_cfg},
+    dynamic_batch = resolve_dynamic_batch_size(
+        performance_cfg,
         n_points=n_points,
         num_vars=num_vars,
+        ds=ds_target,
     )
 
     wn = spectrum_target["wavenumber"].values
@@ -607,7 +608,7 @@ def _plot_energy_spectra(
     compute_jobs(
         jobs,
         key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
-        chunk_size=dynamic_chunk,
+        batch_size=dynamic_batch,
         desc="Computing energy spectra",
         batch_callback=_process_batch,
     )
@@ -746,7 +747,6 @@ def run(
     section_output.mkdir(parents=True, exist_ok=True)
 
     perf_cfg = performance_cfg or {}
-    chunk_size_cfg = perf_cfg.get("chunk_size")
 
     # Helper to place x-ticks exactly at selected lead hours (downsample if many)
     def _apply_lead_ticks(ax: Any, hours: np.ndarray) -> None:
@@ -1031,6 +1031,7 @@ def run(
     # Generate plots and NPZ for 2D variables
     if save_plot or save_npz:
         for var in variables_2d:
+            c.print(f"[energy_spectra] outputs variable: {var}")
             for ens_idx in ensemble_members:
                 t_p = tgt_plot
                 p_p = pred_plot
@@ -1056,7 +1057,7 @@ def run(
                     save_plot_data=save_npz,
                     save_figure=save_plot,
                     override_ensemble_token=curr_ens_token,
-                    chunk_size_cfg=chunk_size_cfg,
+                    performance_cfg=perf_cfg,
                     weights=weights,
                 )
 
@@ -1285,6 +1286,7 @@ def run(
         dpi = int((plotting_cfg or {}).get("dpi", 48))
 
         for var in variables_2d:
+            c.print(f"[energy_spectra] member NPZ variable: {var}")
             for mi in range(int(pred_plot.sizes["ensemble"])):
                 token = ensemble_mode_to_token("members", mi)
                 ds_t_m = tgt_plot.isel(ensemble=mi) if "ensemble" in tgt_plot.dims else tgt_plot
@@ -1299,6 +1301,7 @@ def run(
                     save_plot_data=True,
                     save_figure=False,
                     override_ensemble_token=token,
+                    performance_cfg=perf_cfg,
                 )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
@@ -1319,6 +1322,7 @@ def run(
 
         dpi = int((plotting_cfg or {}).get("dpi", 48))
         for var in variables_2d:
+            c.print(f"[energy_spectra] spectrogram variable: {var}")
             # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
             spec_t, spec_p = _compute_spectra_pair(
                 tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights

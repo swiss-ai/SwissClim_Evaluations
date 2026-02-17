@@ -9,7 +9,7 @@ import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from .. import console as c
-from ..dask_utils import compute_jobs, resolve_dynamic_chunk_size, to_finite_array
+from ..dask_utils import compute_jobs, resolve_dynamic_batch_size, to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -40,8 +40,23 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     dpi = int(plotting_cfg.get("dpi", 48))
-    # Limit number of samples drawn from each band to avoid loading all data into memory
-    max_samples = int(plotting_cfg.get("kde_max_samples", 200_000))
+    # Limit number of samples drawn from each band to avoid loading all data into memory.
+    # Behavior:
+    # - missing key / "auto" => conservative default
+    # - null => disable subsampling (advanced; can be memory intensive)
+    raw_kde_samples = plotting_cfg.get("kde_max_samples", "auto")
+    max_samples: int | None
+    try:
+        if isinstance(raw_kde_samples, str) and raw_kde_samples.strip().lower() == "auto":
+            max_samples = 200_000
+        elif raw_kde_samples is None:
+            max_samples = None
+        else:
+            max_samples = int(raw_kde_samples)
+            if max_samples <= 0:
+                max_samples = None
+    except Exception:
+        max_samples = 200_000
     # Global random seed from config for reproducible subsampling
     base_seed = int(plotting_cfg.get("random_seed", 42))
     # Target/prediction always use identical subsamples so that if underlying
@@ -118,10 +133,18 @@ def run(
         ds_prediction_std_eff = ds_prediction_std
         ens_token_base = None  # per-member inside loop
 
-    dynamic_chunk = resolve_dynamic_chunk_size(
+    dynamic_batch = resolve_dynamic_batch_size(
         performance_cfg,
         ds=ds_target_std,
     )
+
+    perf = performance_cfg or {}
+    dask_profile = str(perf.get("dask_profile", "safe")).strip().lower()
+    if max_samples is None and dask_profile == "safe":
+        c.warn(
+            "[wd_kde] kde_max_samples=null disables subsampling and can be memory intensive. "
+            "Consider kde_max_samples=200000 for safer execution."
+        )
 
     def _process_variable(
         var_name: str,
@@ -196,7 +219,7 @@ def run(
             jobs,
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-            chunk_size=dynamic_chunk,
+            batch_size=dynamic_batch,
             desc="Computing KDE subsamples",
         )
 
@@ -581,7 +604,7 @@ def run(
                     "sub_t_q": to_finite_array,
                     "sub_p_q": to_finite_array,
                 },
-                chunk_size=dynamic_chunk,
+                batch_size=dynamic_batch,
                 desc="Computing KDE evolution",
             )
 

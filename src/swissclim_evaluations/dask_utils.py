@@ -23,7 +23,8 @@ def compute_jobs(
     jobs: list[dict[str, Any]],
     key_map: dict[str, str],
     post_process: dict[str, Callable[[Any], Any]] | None = None,
-    chunk_size: int = 20,
+    batch_size: int | None = None,
+    chunk_size: int | None = None,
     optimize_graph: bool | None = None,
     desc: str | None = None,
     batch_callback: Callable[[list[dict[str, Any]]], None] | None = None,
@@ -38,8 +39,9 @@ def compute_jobs(
         post_process: Optional mapping from result key name to a function
                       that processes the computed result.
                       e.g. {"sub_t": to_finite_array}
-        chunk_size: Number of jobs to compute in one batch.
-                    Default is 20.
+        batch_size: Number of jobs to compute in one batch.
+                Default is 20.
+        chunk_size: Deprecated alias for `batch_size`.
         optimize_graph: Whether to optimize the dask graph.
         desc: Optional description to prepend to the log message.
         batch_callback: Optional function to call with the list of jobs
@@ -50,14 +52,18 @@ def compute_jobs(
     if not jobs:
         return
 
-    num_batches = (len(jobs) + chunk_size - 1) // chunk_size
-    msg = f"Processing {len(jobs)} jobs in {num_batches} batches (chunk_size={chunk_size})..."
+    if batch_size is None:
+        batch_size = chunk_size if chunk_size is not None else 20
+    batch_size = max(1, int(batch_size))
+
+    num_batches = (len(jobs) + batch_size - 1) // batch_size
+    msg = f"Processing {len(jobs)} jobs in {num_batches} batches (batch_size={batch_size})..."
     msg = f"[Dask] {desc}: {msg}" if desc else f"[Dask] {msg}"
     c.print(msg)
 
     # Chunk the jobs directly
-    for i in range(0, len(jobs), chunk_size):
-        job_chunk = jobs[i : i + chunk_size]
+    for i in range(0, len(jobs), batch_size):
+        job_chunk = jobs[i : i + batch_size]
 
         # Collect lazy objects for this chunk of jobs
         lazy_flat = []
@@ -239,30 +245,30 @@ def compute_quantile_preserving(da: Any, q: list[float], preserve_dims: list[str
     return da_sub.quantile(q, dim="sample", skipna=True)
 
 
-def calculate_dynamic_chunk_size(
+def calculate_dynamic_batch_size(
     n_points: int | None = None,
     num_vars: int | None = None,
-    config_chunk_size: int | str | None = None,
+    config_batch_size: int | str | None = None,
     safe_points_per_batch: int | None = None,
-    max_dynamic_chunk_size: int | None = None,
+    max_dynamic_batch_size: int | None = None,
     ds: Any | None = None,
 ) -> int:
     """
-    Resolve batch chunk size used for Dask job batching.
+    Resolve batch size used for Dask job batching.
 
     Precedence:
-    1) `config_chunk_size` is set and valid -> use it directly (manual mode).
+    1) `config_batch_size` is set and valid -> use it directly (manual mode).
        - If set to "no-chunk", returns a very large value to effectively disable batching.
     2) Otherwise derive automatically from dataset/point heuristics (auto mode).
 
     Uses a fast approximation if n_points is not provided.
     """
     # 1. Check for config override
-    if config_chunk_size is not None:
-        if isinstance(config_chunk_size, str) and config_chunk_size.lower() == "no-chunk":
+    if config_batch_size is not None:
+        if isinstance(config_batch_size, str) and config_batch_size.lower() == "no-chunk":
             return 10**9
         try:
-            return int(config_chunk_size)
+            return max(1, int(config_batch_size))
         except (ValueError, TypeError):
             pass
 
@@ -272,17 +278,17 @@ def calculate_dynamic_chunk_size(
 
     # 3. Heuristic
     #    If tuning values are omitted, derive conservative defaults from dataset footprint.
-    dynamic_chunk = 12
+    dynamic_batch = 12
     if num_vars and n_points and num_vars > 0 and n_points > 0:
         avg_points = n_points / num_vars
         if avg_points > 0:
-            if max_dynamic_chunk_size is None:
+            if max_dynamic_batch_size is None:
                 # Dataset-driven conservative cap: larger per-variable chunk footprints
-                # -> fewer jobs per batch. Tuned to prefer more batches by default.
-                auto_cap = int(np.sqrt(250_000_000 / avg_points))
-                cap = max(2, min(auto_cap, 16))
+                # -> fewer jobs per batch. Tuned for safety-first behavior.
+                auto_cap = int(np.sqrt(64_000_000 / avg_points))
+                cap = max(1, min(auto_cap, 8))
             else:
-                cap = max(1, int(max_dynamic_chunk_size))
+                cap = max(1, int(max_dynamic_batch_size))
 
             if safe_points_per_batch is None:
                 # Default target corresponds to the chosen cap at the estimated avg_points.
@@ -290,10 +296,29 @@ def calculate_dynamic_chunk_size(
             else:
                 safe_points = max(1, int(safe_points_per_batch))
 
-            dynamic_chunk = int(safe_points / avg_points)
-            dynamic_chunk = max(1, min(dynamic_chunk, cap))
+            dynamic_batch = int(safe_points / avg_points)
+            dynamic_batch = max(1, min(dynamic_batch, cap))
 
-    return dynamic_chunk
+    return dynamic_batch
+
+
+def calculate_dynamic_chunk_size(
+    n_points: int | None = None,
+    num_vars: int | None = None,
+    config_chunk_size: int | str | None = None,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_chunk_size: int | None = None,
+    ds: Any | None = None,
+) -> int:
+    """Backward-compatible alias for `calculate_dynamic_batch_size`."""
+    return calculate_dynamic_batch_size(
+        n_points=n_points,
+        num_vars=num_vars,
+        config_batch_size=config_chunk_size,
+        safe_points_per_batch=safe_points_per_batch,
+        max_dynamic_batch_size=max_dynamic_chunk_size,
+        ds=ds,
+    )
 
 
 def _estimate_dataset_points(ds: Any | None) -> tuple[int, int]:
@@ -329,6 +354,47 @@ def _estimate_dataset_points(ds: Any | None) -> tuple[int, int]:
         return 0, 0
 
 
+def resolve_dynamic_batch_size(
+    performance_cfg: dict[str, Any] | None,
+    *,
+    ds: Any | None = None,
+    n_points: int | None = None,
+    num_vars: int | None = None,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_batch_size: int | None = None,
+) -> int:
+    """Resolve batch size from shared `performance.*` settings.
+
+    `performance.batch_size` takes precedence over auto-tuning.
+    Auto-tuning is used only when `batch_size` is omitted or invalid.
+
+    Legacy `performance.chunk_size` and `performance.max_dynamic_chunk_size`
+    are still accepted for backward compatibility.
+    """
+    perf = performance_cfg or {}
+    batch_size_cfg = perf.get("batch_size", perf.get("chunk_size"))
+
+    safe_points_cfg = perf.get("safe_points_per_batch", safe_points_per_batch)
+    if isinstance(safe_points_cfg, str) and safe_points_cfg.lower() == "auto":
+        safe_points_cfg = None
+
+    max_batch_cfg = perf.get(
+        "max_dynamic_batch_size",
+        perf.get("max_dynamic_chunk_size", max_dynamic_batch_size),
+    )
+    if isinstance(max_batch_cfg, str) and max_batch_cfg.lower() == "auto":
+        max_batch_cfg = None
+
+    return calculate_dynamic_batch_size(
+        n_points=n_points,
+        num_vars=num_vars,
+        config_batch_size=batch_size_cfg,
+        safe_points_per_batch=(None if safe_points_cfg is None else int(safe_points_cfg)),
+        max_dynamic_batch_size=(None if max_batch_cfg is None else int(max_batch_cfg)),
+        ds=ds,
+    )
+
+
 def resolve_dynamic_chunk_size(
     performance_cfg: dict[str, Any] | None,
     *,
@@ -338,36 +404,21 @@ def resolve_dynamic_chunk_size(
     safe_points_per_batch: int | None = None,
     max_dynamic_chunk_size: int | None = None,
 ) -> int:
-    """Resolve chunk size from shared `performance.*` settings.
-
-    `performance.chunk_size` takes precedence over auto-tuning.
-    Auto-tuning is used only when `chunk_size` is omitted or invalid.
-    """
-    perf = performance_cfg or {}
-    chunk_size_cfg = perf.get("chunk_size")
-
-    safe_points_cfg = perf.get("safe_points_per_batch", safe_points_per_batch)
-    if isinstance(safe_points_cfg, str) and safe_points_cfg.lower() == "auto":
-        safe_points_cfg = None
-
-    max_chunk_cfg = perf.get("max_dynamic_chunk_size", max_dynamic_chunk_size)
-    if isinstance(max_chunk_cfg, str) and max_chunk_cfg.lower() == "auto":
-        max_chunk_cfg = None
-
-    return calculate_dynamic_chunk_size(
+    """Backward-compatible alias for `resolve_dynamic_batch_size`."""
+    return resolve_dynamic_batch_size(
+        performance_cfg,
+        ds=ds,
         n_points=n_points,
         num_vars=num_vars,
-        config_chunk_size=chunk_size_cfg,
-        safe_points_per_batch=(None if safe_points_cfg is None else int(safe_points_cfg)),
-        max_dynamic_chunk_size=(None if max_chunk_cfg is None else int(max_chunk_cfg)),
-        ds=ds,
+        safe_points_per_batch=safe_points_per_batch,
+        max_dynamic_batch_size=max_dynamic_chunk_size,
     )
 
 
-def describe_chunk_size_mode(performance_cfg: dict[str, Any] | None) -> str:
-    """Return human-readable chunk-size mode used by shared resolver."""
+def describe_batch_size_mode(performance_cfg: dict[str, Any] | None) -> str:
+    """Return human-readable batch-size mode used by shared resolver."""
     perf = performance_cfg or {}
-    cfg_val = perf.get("chunk_size")
+    cfg_val = perf.get("batch_size", perf.get("chunk_size"))
     if cfg_val is None:
         return "auto"
     if isinstance(cfg_val, str) and cfg_val.lower() == "no-chunk":
@@ -376,31 +427,40 @@ def describe_chunk_size_mode(performance_cfg: dict[str, Any] | None) -> str:
         int(cfg_val)
         return "manual"
     except Exception:
-        return "auto (invalid chunk_size fallback)"
+        return "auto (invalid batch_size fallback)"
 
 
-def resolve_dynamic_chunk_details(
+def describe_chunk_size_mode(performance_cfg: dict[str, Any] | None) -> str:
+    """Backward-compatible alias for `describe_batch_size_mode`."""
+    return describe_batch_size_mode(performance_cfg)
+
+
+def resolve_dynamic_batch_details(
     performance_cfg: dict[str, Any] | None,
     *,
     ds: Any | None = None,
     n_points: int | None = None,
     num_vars: int | None = None,
     safe_points_per_batch: int | None = None,
-    max_dynamic_chunk_size: int | None = None,
+    max_dynamic_batch_size: int | None = None,
 ) -> dict[str, Any]:
-    """Return resolved chunk details for logging/debugging."""
+    """Return resolved batch details for logging/debugging."""
     perf = performance_cfg or {}
-    mode = describe_chunk_size_mode(performance_cfg)
-    resolved_chunk = resolve_dynamic_chunk_size(
+    mode = describe_batch_size_mode(performance_cfg)
+    resolved_batch = resolve_dynamic_batch_size(
         performance_cfg,
         ds=ds,
         n_points=n_points,
         num_vars=num_vars,
         safe_points_per_batch=safe_points_per_batch,
-        max_dynamic_chunk_size=max_dynamic_chunk_size,
+        max_dynamic_batch_size=max_dynamic_batch_size,
     )
 
-    out: dict[str, Any] = {"mode": mode, "chunk_size": int(resolved_chunk)}
+    out: dict[str, Any] = {
+        "mode": mode,
+        "batch_size": int(resolved_batch),
+        "chunk_size": int(resolved_batch),
+    }
     if not mode.startswith("auto"):
         return out
 
@@ -416,13 +476,15 @@ def resolve_dynamic_chunk_details(
     if isinstance(safe_cfg, str) and safe_cfg.lower() == "auto":
         safe_cfg = None
 
-    max_cfg = perf.get("max_dynamic_chunk_size", max_dynamic_chunk_size)
+    max_cfg = perf.get(
+        "max_dynamic_batch_size", perf.get("max_dynamic_chunk_size", max_dynamic_batch_size)
+    )
     if isinstance(max_cfg, str) and max_cfg.lower() == "auto":
         max_cfg = None
 
     if max_cfg is None:
-        auto_cap = int(np.sqrt(250_000_000 / avg_points)) if avg_points > 0 else 8
-        cap = max(2, min(auto_cap, 16))
+        auto_cap = int(np.sqrt(64_000_000 / avg_points)) if avg_points > 0 else 4
+        cap = max(1, min(auto_cap, 8))
     else:
         cap = max(1, int(max_cfg))
 
@@ -442,6 +504,26 @@ def resolve_dynamic_chunk_details(
     return out
 
 
+def resolve_dynamic_chunk_details(
+    performance_cfg: dict[str, Any] | None,
+    *,
+    ds: Any | None = None,
+    n_points: int | None = None,
+    num_vars: int | None = None,
+    safe_points_per_batch: int | None = None,
+    max_dynamic_chunk_size: int | None = None,
+) -> dict[str, Any]:
+    """Backward-compatible alias for `resolve_dynamic_batch_details`."""
+    return resolve_dynamic_batch_details(
+        performance_cfg,
+        ds=ds,
+        n_points=n_points,
+        num_vars=num_vars,
+        safe_points_per_batch=safe_points_per_batch,
+        max_dynamic_batch_size=max_dynamic_chunk_size,
+    )
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -457,6 +539,31 @@ def _coerce_positive_int(value: Any, default: int) -> int:
         return out if out > 0 else default
     except Exception:
         return default
+
+
+def _profile_default_block_size(perf: dict[str, Any], fallback_default: int) -> int:
+    """Return profile-aware default split block size.
+
+    This applies only when the explicit `lead_time_block_size` / `init_time_block_size`
+    keys are omitted (or invalid) in `performance`.
+
+    Profile targets are tuned to reduce tiny-job overhead on large nodes while still
+    preserving conservative behavior for `safe`.
+
+    To avoid overriding module-specific larger defaults, profile uplift is applied
+    only for legacy/small fallback defaults (<= 12).
+    """
+    profile = str(perf.get("dask_profile", "safe") or "safe").strip().lower()
+    profile_default = {
+        "safe": 128,
+        "balanced": 256,
+        "fast": 512,
+    }.get(profile)
+    if profile_default is None:
+        return fallback_default
+    if int(fallback_default) > 12:
+        return int(fallback_default)
+    return max(int(fallback_default), int(profile_default))
 
 
 def resolve_module_batching_options(
@@ -485,7 +592,7 @@ def resolve_module_batching_options(
         Notes:
         - These split/block options control how each variable is partitioned across
             `level`, `lead_time`, and `init_time`.
-        - They are orthogonal to `chunk_size`, which controls how many prepared jobs
+        - They are orthogonal to `batch_size`, which controls how many prepared jobs
             are executed per Dask batch.
     """
     perf = performance_cfg or {}
@@ -503,14 +610,10 @@ def resolve_module_batching_options(
         default_split_init_time,
     )
 
-    lead_time_block_size = _coerce_positive_int(
-        perf.get("lead_time_block_size"),
-        default_lead_time_block_size,
-    )
-    init_time_block_size = _coerce_positive_int(
-        perf.get("init_time_block_size"),
-        default_init_time_block_size,
-    )
+    lead_default = _profile_default_block_size(perf, default_lead_time_block_size)
+    init_default = _profile_default_block_size(perf, default_init_time_block_size)
+    lead_time_block_size = _coerce_positive_int(perf.get("lead_time_block_size"), lead_default)
+    init_time_block_size = _coerce_positive_int(perf.get("init_time_block_size"), init_default)
 
     return {
         "split_level": split_level,

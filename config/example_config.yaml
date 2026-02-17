@@ -147,13 +147,22 @@ plotting:
 
   # Maximum number of samples per latitude band used for KDE/Wasserstein in wd_kde.
   # Larger values improve smoothness but increase compute and memory. Typical: 50_000–200_000.
+  # Accepts:
+  #   - integer: explicit cap
+  #   - auto: conservative default (recommended)
+  #   - null: disable subsampling (advanced; can increase memory strongly)
   # Note: Provide as a plain integer (no underscores) in YAML.
-  kde_max_samples: 200000
+  kde_max_samples: auto
 
   # Maximum number of samples per latitude band for histograms.
   # When provided, histograms are built from a deterministic subsample (mirrors wd_kde logic)
-  # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
-  histogram_max_samples: 200000
+  # rather than the full arrays.
+  # Accepts:
+  #   - integer: explicit cap
+  #   - auto: conservative default (recommended)
+  #   - null: disable subsampling (advanced; can increase memory strongly)
+  # Typical: 50000–200000.
+  histogram_max_samples: auto
 
   # If true, generate histograms for each latitude band in addition to the global histogram.
   # Global histograms are always produced.
@@ -235,26 +244,43 @@ metrics:
     report_per_level: true
 
 performance:
-  # Dask scheduler choice. Controls how parallel computation is managed.
-  #   - distributed: Use distributed scheduler with LocalCluster (default).
-  #                  Provides dashboard, memory spillover to disk, and better for large data.
-  #   - threaded:    Use default threaded scheduler (no distributed overhead).
-  #                  Faster for single-machine/smaller workloads, but no spillover or dashboard.
-  # Recommendation: Use "threaded" for fast testing and smaller datasets.
-  #                 Use "distributed" for production runs with large data to avoid OOM.
+  # Dask scheduler choice.
+  #   - distributed: LocalCluster + spill-over controls (recommended default).
+  #   - threaded:    In-process threaded scheduler.
+  #                  Note: in threaded mode, distributed-only profile knobs are ignored
+  #                  (`dask_threads_per_worker`, `dask_processes`, `dask_memory_limit`).
+  #                  `dask_profile` still affects the derived worker count used as
+  #                  `num_workers`, and profile-aware batching/splitting defaults still apply.
   dask_scheduler: distributed
+
+  # Dask execution profile (new): safe | balanced | fast
+  # - safe (default): conservative parallelism.
+  # - balanced: moderate parallelism.
+  # - fast: higher parallelism and throughput.
+  # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
+  #   safe=6x1 workers/threads, balanced=12x1, fast=24x1
+  #   with memory_limit 73.33GiB / 36.67GiB / 18.33GiB per worker
+  #   (≈440GiB total worker memory budget in all three profiles).
+  dask_profile: safe
+
+  # Optional explicit overrides for the profile above:
+  # dask_n_workers: 24
+  # dask_threads_per_worker: 1
+  # dask_processes: true
+  # dask_memory_limit: 18.33GiB
 
   # Global Dask batch size.
   # - Set an integer for manual mode.
   # - Set "no-chunk" to effectively disable batching.
-  # - Omit/comment out to enable auto chunk tuning.
-  # chunk_size: 20
+  # - Omit/comment out to enable auto batch tuning.
+  # batch_size: 20
 
-  # Optional auto-chunk tuning (active only when chunk_size is omitted).
-  # safe_points_per_batch and max_dynamic_chunk_size do NOT override manual chunk_size.
-  # By default both are auto-calculated conservatively from dataset chunk footprint.
+  # Optional auto-batch tuning (active only when batch_size is omitted).
+  # safe_points_per_batch and max_dynamic_batch_size do NOT override manual batch_size.
+  # By default both are auto-calculated in safety-first mode.
+  # Increase these for speed only if memory headroom is well understood.
   # safe_points_per_batch: auto
-  # max_dynamic_chunk_size: auto
+  # max_dynamic_batch_size: auto
 
   # Shared split flags across all batching modules.
   # These control job partitioning dimensions before batch execution.
@@ -263,8 +289,13 @@ performance:
   # split_init_time: true
 
   # Shared split block sizes.
-  # These DO NOT compete with chunk_size:
+  # These DO NOT compete with batch_size:
   # - split flags + block sizes decide job shape/count
-  # - chunk_size decides how many jobs are executed per Dask batch
-  # lead_time_block_size: 12
-  # init_time_block_size: 12
+  # - batch_size decides how many jobs are executed per Dask batch
+  # If omitted, profile-aware defaults are used to reduce tiny-job overhead:
+  # - safe: 128
+  # - balanced: 256
+  # - fast: 512
+  # Explicit values below always override profile defaults.
+  # lead_time_block_size: 128
+  # init_time_block_size: 128

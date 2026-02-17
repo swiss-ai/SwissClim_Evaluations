@@ -16,9 +16,9 @@ import yaml
 
 from . import console as c, data as data_mod
 from .dask_utils import (
-    describe_chunk_size_mode,
-    resolve_dynamic_chunk_details,
-    resolve_dynamic_chunk_size,
+    describe_batch_size_mode,
+    resolve_dynamic_batch_details,
+    resolve_dynamic_batch_size,
 )
 from .helpers import (
     format_ensemble_log,
@@ -1117,7 +1117,7 @@ def _setup_dask_logging(log_file: str = "logs/dask_distributed.log") -> None:
         if dask_logger.hasHandlers():
             dask_logger.handlers.clear()
 
-        fh = logging.FileHandler(log_path)
+        fh = logging.FileHandler(log_path, mode="w")
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         fh.setFormatter(formatter)
         dask_logger.addHandler(fh)
@@ -1131,6 +1131,120 @@ def _setup_dask_logging(log_file: str = "logs/dask_distributed.log") -> None:
         warnings_logger.addHandler(fh)
     except Exception as e:
         c.print(f"Failed to setup dask logging: {e}")
+
+
+def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve Dask worker/client settings from performance config.
+
+    Safety-first defaults are used unless explicitly overridden in YAML.
+    """
+
+    def _as_int(value: Any, default: int) -> int:
+        try:
+            out = int(value)
+            return out if out > 0 else default
+        except Exception:
+            return default
+
+    def _as_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"1", "true", "yes", "y", "on"}:
+                return True
+            if v in {"0", "false", "no", "n", "off"}:
+                return False
+        try:
+            return bool(value)
+        except Exception:
+            return default
+
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    is_gh200_class = cpu_count >= 192
+    profile = str(performance_cfg.get("dask_profile", "safe")).strip().lower()
+
+    if is_gh200_class:
+        total_memory_gib = 440.0
+
+        def _per_worker_memory_limit(workers: int) -> str:
+            mem = total_memory_gib / max(1, int(workers))
+            return f"{mem:.2f}GiB"
+
+        safe_workers = max(1, min(cpu_count, 6))
+        balanced_workers = max(1, min(cpu_count, 12))
+        fast_workers = max(1, min(cpu_count, 24))
+        gh200_defaults = {
+            "safe": {
+                "profile": "safe",
+                "n_workers": safe_workers,
+                "threads_per_worker": 1,
+                "processes": True,
+                "memory_limit": _per_worker_memory_limit(safe_workers),
+            },
+            "balanced": {
+                "profile": "balanced",
+                "n_workers": balanced_workers,
+                "threads_per_worker": 1,
+                "processes": True,
+                "memory_limit": _per_worker_memory_limit(balanced_workers),
+            },
+            "fast": {
+                "profile": "fast",
+                "n_workers": fast_workers,
+                "threads_per_worker": 1,
+                "processes": True,
+                "memory_limit": _per_worker_memory_limit(fast_workers),
+            },
+        }
+        defaults = gh200_defaults.get(profile, gh200_defaults["safe"])
+    else:
+        if profile == "fast":
+            defaults = {
+                "profile": "fast",
+                "n_workers": max(1, min(cpu_count, 8)),
+                "threads_per_worker": 1,
+                "processes": True,
+                "memory_limit": "auto",
+            }
+        elif profile == "balanced":
+            defaults = {
+                "profile": "balanced",
+                "n_workers": max(1, min(cpu_count, 2)),
+                "threads_per_worker": 1,
+                "processes": True,
+                "memory_limit": "auto",
+            }
+        else:
+            defaults = {
+                "profile": "safe",
+                "n_workers": 1,
+                "threads_per_worker": 1,
+                "processes": False,
+                "memory_limit": "auto",
+            }
+
+    default_n_workers = _as_int(defaults.get("n_workers"), 1)
+    default_threads_per_worker = _as_int(defaults.get("threads_per_worker"), 1)
+    default_processes = _as_bool(defaults.get("processes"), False)
+
+    n_workers = _as_int(performance_cfg.get("dask_n_workers"), default_n_workers)
+    threads_per_worker = _as_int(
+        performance_cfg.get("dask_threads_per_worker"),
+        default_threads_per_worker,
+    )
+    processes = _as_bool(performance_cfg.get("dask_processes"), default_processes)
+    memory_limit = performance_cfg.get("dask_memory_limit", defaults["memory_limit"])
+
+    return {
+        "profile": defaults["profile"],
+        "n_workers": n_workers,
+        "threads_per_worker": threads_per_worker,
+        "processes": processes,
+        "memory_limit": memory_limit,
+    }
 
 
 def run_selected(cfg: dict[str, Any]) -> None:
@@ -1346,10 +1460,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
     # Get performance configuration
     performance_cfg = cfg.get("performance", {}) or {}
 
-    # Calculate and print dynamic chunk size
-    chunk_size = resolve_dynamic_chunk_size(performance_cfg, ds=ds_prediction)
-    chunk_mode = describe_chunk_size_mode(performance_cfg)
-    msg = f"Dask Execution: Base Chunk Size: {chunk_size} (mode={chunk_mode})"
+    # Calculate and print dynamic batch size
+    batch_size = resolve_dynamic_batch_size(performance_cfg, ds=ds_prediction)
+    chunk_mode = describe_batch_size_mode(performance_cfg)
+    msg = f"Dask Execution: Base Batch Size: {batch_size} (mode={chunk_mode})"
     if USE_RICH:
         c.print(f"[cyan][bold]{msg}[/]")
     else:
@@ -1357,12 +1471,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
 
     if chunk_mode.startswith("auto"):
         try:
-            chunk_details = resolve_dynamic_chunk_details(performance_cfg, ds=ds_prediction)
+            chunk_details = resolve_dynamic_batch_details(performance_cfg, ds=ds_prediction)
             avg_points = chunk_details.get("avg_points_per_var", "n/a")
             avg_points_text = f"{avg_points:,}" if isinstance(avg_points, int) else str(avg_points)
             details_msg = (
-                "Dask Auto Chunk: "
-                f"{chunk_details.get('chunk_size', 'n/a')} jobs/batch "
+                "Dask Auto Batch: "
+                f"{chunk_details.get('batch_size', 'n/a')} jobs/batch "
                 f"(cap {chunk_details.get('effective_cap', 'n/a')}, "
                 f"vars {chunk_details.get('num_vars', 'n/a')}, "
                 f"~{avg_points_text} points/var)"
@@ -1925,6 +2039,7 @@ def main(argv: list[str] | None = None) -> None:
     # Check if user wants to use distributed scheduler (default: True for backwards compat)
     performance_cfg = cfg.get("performance", {}) or {}
     use_distributed = performance_cfg.get("dask_scheduler", "distributed").lower() != "threaded"
+    dask_profile = _resolve_dask_profile(performance_cfg)
 
     if use_distributed:
         # Initialize Dask Client if available to enable spillover and distributed scheduling
@@ -1944,6 +2059,10 @@ def main(argv: list[str] | None = None) -> None:
                     "distributed.comm.timeouts.tcp": "30s",
                     "distributed.comm.retry.count": 3,
                     "distributed.scheduler.allowed-failures": 3,
+                    "distributed.worker.memory.target": 0.60,
+                    "distributed.worker.memory.spill": 0.70,
+                    "distributed.worker.memory.pause": 0.80,
+                    "distributed.worker.memory.terminate": 0.95,
                 }
             )
 
@@ -1956,7 +2075,20 @@ def main(argv: list[str] | None = None) -> None:
                 run_selected(cfg)
             except (ValueError, OSError):
                 c.print("Initializing Dask Client for distributed scheduling and spillover...")
-                with Client() as client:
+                c.print(
+                    "Dask profile: "
+                    f"{dask_profile['profile']} "
+                    f"(workers={dask_profile['n_workers']}, "
+                    f"threads/worker={dask_profile['threads_per_worker']}, "
+                    f"processes={dask_profile['processes']}, "
+                    f"memory_limit={dask_profile['memory_limit']})"
+                )
+                with Client(
+                    n_workers=int(dask_profile["n_workers"]),
+                    threads_per_worker=int(dask_profile["threads_per_worker"]),
+                    processes=bool(dask_profile["processes"]),
+                    memory_limit=dask_profile["memory_limit"],
+                ) as client:
                     # Retrieve dashboard port and hostname for tunneling instructions
                     try:
                         dask_info = client.scheduler_info()
@@ -1986,8 +2118,21 @@ def main(argv: list[str] | None = None) -> None:
         except ImportError:
             run_selected(cfg)
     else:
-        # Use default threaded scheduler - faster for single-machine workloads
-        c.print("Using default threaded Dask scheduler (no distributed client)...")
+        # Use threaded scheduler with conservative worker count by default
+        threaded_workers = max(1, int(dask_profile["n_workers"]))
+        try:
+            import dask.config
+
+            dask.config.set(
+                scheduler="threads",
+                num_workers=threaded_workers,
+            )
+        except Exception:
+            pass
+        c.print(
+            "Using threaded Dask scheduler (no distributed client), "
+            f"num_workers={threaded_workers}."
+        )
         run_selected(cfg)
 
 
