@@ -168,9 +168,21 @@ plotting:
   # Global histograms are always produced.
   histograms_per_lat_band: false
 
+  # 3D histogram handling defaults:
+  # - 3D variables are included by default (per level)
+  # - all available selected levels are processed by default
+  # histograms_include_3d: true
+  # histograms_max_levels: null
+
   # If true, generate KDE plots for each latitude band in addition to the global KDE.
   # Global KDEs are always produced.
   wd_kde_per_lat_band: false
+
+  # 3D WD/KDE handling defaults:
+  # - 3D variables are included by default (per level)
+  # - all available selected levels are processed by default
+  # wd_kde_include_3d: true
+  # wd_kde_max_levels: null
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only
@@ -199,6 +211,7 @@ metrics:
   #   "SEEPS" (only for precipitation)
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report metrics per pressure level (for 3D variables).
     report_per_level: true
 
@@ -229,6 +242,7 @@ metrics:
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report ETS per pressure level (for 3D variables).
     report_per_level: true
 
@@ -236,11 +250,13 @@ metrics:
 
   # Energy Spectra configuration.
   energy_spectra:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
 
   probabilistic:
-    # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+    # Per-level reporting for 3D variables is enabled by default.
+    # If true, compute and report CRPS/SSR summaries per pressure level (for 3D variables).
     report_per_level: true
 
 performance:
@@ -258,8 +274,8 @@ performance:
   # - balanced: moderate parallelism.
   # - fast: higher parallelism and throughput.
   # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
-  #   safe=6x1 workers/threads, balanced=12x1, fast=24x1
-  #   with memory_limit 73.33GiB / 36.67GiB / 18.33GiB per worker
+  #   safe=12x1 workers/threads, balanced=18x1, fast=24x1
+  #   with memory_limit 36.67GiB / 24.44GiB / 18.33GiB per worker
   #   (≈440GiB total worker memory budget in all three profiles).
   dask_profile: safe
 

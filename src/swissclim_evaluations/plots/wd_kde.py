@@ -154,8 +154,6 @@ def run(
         ens_token: str | None,
         level_val: Any = None,
     ):
-        c.print(f"[wd_kde] variable: {var_name} level={level_token}")
-
         # Collect all jobs
         jobs = []
 
@@ -220,7 +218,7 @@ def run(
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
             batch_size=dynamic_batch,
-            desc="Computing KDE subsamples",
+            desc=f"Computing KDE subsamples variable={var_name} level={level_token}",
         )
 
         # --- Process Global KDE ---
@@ -605,7 +603,11 @@ def run(
                     "sub_p_q": to_finite_array,
                 },
                 batch_size=dynamic_batch,
-                desc="Computing KDE evolution",
+                desc=(
+                    f"Computing KDE evolution variable={base_var}"
+                    if lvl is None
+                    else f"Computing KDE evolution variable={base_var} level={lvl}"
+                ),
             )
 
             # Process quantiles

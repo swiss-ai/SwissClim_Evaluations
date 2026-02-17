@@ -4,6 +4,7 @@ import numpy as np
 import xarray as xr
 
 from swissclim_evaluations.dask_utils import (
+    compute_jobs,
     resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
@@ -125,3 +126,22 @@ def test_resolve_module_batching_options_respects_larger_module_defaults() -> No
 
     assert opts["lead_time_block_size"] == 20
     assert opts["init_time_block_size"] == 16
+
+
+def test_compute_jobs_uses_stable_optimize_graph_default(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    def _fake_dask_compute(*args, optimize_graph=None, **kwargs):
+        calls.append(bool(optimize_graph))
+        return tuple(1.0 for _ in args)
+
+    monkeypatch.setattr("swissclim_evaluations.dask_utils.dask.compute", _fake_dask_compute)
+
+    jobs = [{"lazy": object()}, {"lazy": object()}, {"lazy": object()}]
+    compute_jobs(jobs, key_map={"lazy": "res"}, batch_size=2)
+    assert calls == [True, True]
+
+    calls.clear()
+    jobs2 = [{"lazy": object()}]
+    compute_jobs(jobs2, key_map={"lazy": "res"}, batch_size=1, optimize_graph=False)
+    assert calls == [False]

@@ -52,13 +52,14 @@ Behavior and precedence:
 - `split_*` flags and `*_block_size` control how those jobs are partitioned by dimensions first.
 - In practice: split settings determine number/shape of jobs; `batch_size` determines how many run together.
 - When `*_block_size` is omitted, defaults are profile-aware (`safe`/`balanced`/`fast`) to avoid too many tiny jobs.
+- In probabilistic plotting, `plotting.output_mode: npz` now skips figure/map preparation work and only writes numeric artifacts.
 
 Safety-first defaults:
 
 - `dask_profile` defaults to `safe`.
 - On GH200-class nodes (`>=192` CPUs), profile defaults are tuned for the node:
-	- `safe`: 6 workers × 1 thread, `73.33GiB` per worker (≈440GiB total)
-	- `balanced`: 12 workers × 1 thread, `36.67GiB` per worker (≈440GiB total)
+	- `safe`: 12 workers × 1 thread, `36.67GiB` per worker (≈440GiB total)
+	- `balanced`: 18 workers × 1 thread, `24.44GiB` per worker (≈440GiB total)
 	- `fast`: 24 workers × 1 thread, `18.33GiB` per worker (≈440GiB total)
 - Split block size defaults are also profile-aware (applied only when omitted):
 	- `safe`: `lead_time_block_size=128`, `init_time_block_size=128`

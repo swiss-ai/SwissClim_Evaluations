@@ -45,6 +45,85 @@ EXPECTED_SUBDIRS: set[str] = {
 }
 
 
+def _compact_cfg_value(value: Any, max_len: int = 120) -> str:
+    text = "default" if value is None else repr(value)
+    text = text.replace("\n", " ")
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[str, str]:
+    metrics_cfg = (cfg.get("metrics", {}) or {}) if isinstance(cfg, dict) else {}
+    module_cfg = metrics_cfg.get(module, {}) if isinstance(metrics_cfg, dict) else {}
+
+    if module == "deterministic":
+        include = module_cfg.get("include") if isinstance(module_cfg, dict) else None
+        std_include = (
+            module_cfg.get("standardized_include") if isinstance(module_cfg, dict) else None
+        )
+        if include is None and std_include is None:
+            metrics_sel = "default"
+        else:
+            metrics_sel = (
+                f"include={_compact_cfg_value(include)}; "
+                f"standardized_include={_compact_cfg_value(std_include)}"
+            )
+
+        fss_cfg = module_cfg.get("fss", {}) if isinstance(module_cfg, dict) else {}
+        if isinstance(fss_cfg, dict):
+            if "thresholds" in fss_cfg:
+                thresholds_sel = f"fss.thresholds={_compact_cfg_value(fss_cfg.get('thresholds'))}"
+            elif "threshold" in fss_cfg:
+                thresholds_sel = f"fss.threshold={_compact_cfg_value(fss_cfg.get('threshold'))}"
+            elif "quantile" in fss_cfg:
+                thresholds_sel = f"fss.quantile={_compact_cfg_value(fss_cfg.get('quantile'))}"
+            else:
+                thresholds_sel = "default"
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
+    if module == "ets":
+        metrics_sel = "ETS"
+        if isinstance(module_cfg, dict) and "thresholds" in module_cfg:
+            thresholds_sel = _compact_cfg_value(module_cfg.get("thresholds"))
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
+    if module == "probabilistic":
+        return "CRPS, PIT, SSR", "n/a"
+
+    if module == "vertical_profiles":
+        return "NMAE", "n/a"
+
+    if module == "energy_spectra":
+        return "LSD", "n/a"
+
+    return "n/a", "n/a"
+
+
+def _print_module_config_summary(cfg: dict[str, Any], chapter_flags: dict[str, Any]) -> None:
+    module_order = [
+        "maps",
+        "histograms",
+        "wd_kde",
+        "energy_spectra",
+        "vertical_profiles",
+        "deterministic",
+        "ets",
+        "probabilistic",
+    ]
+    c.section("Configured Metrics/Thresholds")
+    for module in module_order:
+        enabled = bool(chapter_flags.get(module))
+        metrics_sel, thresholds_sel = _module_metric_threshold_summary(module, cfg)
+        c.info(
+            f"[{module}] enabled={enabled} | metrics={metrics_sel} | thresholds={thresholds_sel}"
+        )
+
+
 def _ensemble_handling_message(
     ds_prediction: xr.Dataset, cfg: dict[str, Any], resolved_modes: dict[str, str] | None = None
 ) -> str:
@@ -1173,8 +1252,8 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
             mem = total_memory_gib / max(1, int(workers))
             return f"{mem:.2f}GiB"
 
-        safe_workers = max(1, min(cpu_count, 6))
-        balanced_workers = max(1, min(cpu_count, 12))
+        safe_workers = max(1, min(cpu_count, 12))
+        balanced_workers = max(1, min(cpu_count, 18))
         fast_workers = max(1, min(cpu_count, 24))
         gh200_defaults = {
             "safe": {
@@ -1204,7 +1283,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         if profile == "fast":
             defaults = {
                 "profile": "fast",
-                "n_workers": max(1, min(cpu_count, 8)),
+                "n_workers": max(1, min(cpu_count, 24)),
                 "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "auto",
@@ -1212,7 +1291,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         elif profile == "balanced":
             defaults = {
                 "profile": "balanced",
-                "n_workers": max(1, min(cpu_count, 2)),
+                "n_workers": max(1, min(cpu_count, 18)),
                 "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "auto",
@@ -1220,9 +1299,9 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         else:
             defaults = {
                 "profile": "safe",
-                "n_workers": 1,
+                "n_workers": max(1, min(cpu_count, 8)),
                 "threads_per_worker": 1,
-                "processes": False,
+                "processes": True,
                 "memory_limit": "auto",
             }
 
@@ -1278,6 +1357,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
     ds_prediction_plot, _ = _select_plot_ensemble(ds_prediction_plot, ds_prediction_std, cfg)
 
     chapter_flags = cfg.get("modules", {})
+    _print_module_config_summary(cfg, chapter_flags)
     plotting = cfg.get("plotting", {})
     mode = str(plotting.get("output_mode", "plot")).lower()
     # Validate / normalize ensemble block early to surface typos (e.g. 'member').
@@ -1811,7 +1891,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 }
             )
 
-    # Combined probabilistic: run both xarray (CRPS/PIT) and WBX (SSR/CRPS) when enabled
+    # Combined probabilistic: run PIT diagnostics plus WBX CRPS/SSR when enabled
     if chapter_flags.get("probabilistic"):
         from .metrics.probabilistic import (
             plot_probabilistic,
@@ -1822,7 +1902,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         c.module_status(
             "probabilistic",
             "run",
-            "PIT (xarray) + WBX SSR/CRPS",
+            "PIT + WBX CRPS/SSR",
         )
         if "ensemble" in ds_prediction.dims:
             ens_size = int(ds_prediction.sizes.get("ensemble", 0))
@@ -1847,7 +1927,8 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 # Combined probabilistic module
                 _t = time.time()
                 try:
-                    # 1. Xarray-based CRPS/PIT
+                    # 1. PIT diagnostics
+                    c.info("[probabilistic] Stage 1/3: PIT metric computation")
                     run_probabilistic(
                         ds_target,
                         ds_prediction,
@@ -1856,10 +1937,11 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         cfg,
                         ensemble_mode=ensemble_cfg.get("probabilistic"),
                         performance_cfg=performance_cfg,
+                        include_wbx_outputs=False,
                     )
-                    # 2. Plots
-                    plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
-                    # 3. WBX Metrics
+
+                    # 2. WBX CRPS/SSR outputs
+                    c.info("[probabilistic] Stage 2/3: WBX CRPS/SSR aggregation and outputs")
                     run_probabilistic_wbx(
                         ds_target,
                         ds_prediction,
@@ -1868,6 +1950,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
                         cfg,
                         performance_cfg=performance_cfg,
                     )
+
+                    # 3. PIT plots
+                    c.info("[probabilistic] Stage 3/3: PIT plotting artifacts")
+                    plot_probabilistic(ds_target, ds_prediction, out_root, plotting)
 
                     dt = time.time() - _t
                     module_timings.append(("probabilistic", dt))

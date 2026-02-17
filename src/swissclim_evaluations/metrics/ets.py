@@ -33,7 +33,6 @@ def _compute_ets_raw(
     computed_results = {}
     q_values = [t / 100.0 for t in thresholds]
     for var in variables:
-        c.print(f"[ets] variable: {var}")
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
 
@@ -73,8 +72,6 @@ def _calculate_ets_for_thresholds(
 
     metrics_dict: dict[str, dict[str, float]] = {}
     for var in variables:
-        c.print(f"[ets] variable: {var}")
-
         ds_t_var = ds_target[[var]]
         ds_p_var = ds_prediction[[var]]
         raw_results = _compute_ets_raw(ds_t_var, ds_p_var, thresholds)
@@ -86,7 +83,7 @@ def _calculate_ets_for_thresholds(
             jobs,
             key_map={"lazy": "res"},
             batch_size=max(1, int(batch_size)),
-            desc=f"Computing ETS scores ({var})",
+            desc=f"Computing ETS scores variable={var}",
         )
 
         ets_score = jobs[0]["res"]
@@ -134,15 +131,10 @@ def _calculate_ets_per_level(
         specs_by_var.setdefault(var_name, []).append(split_spec)
 
     for var, var_specs in specs_by_var.items():
-        logged_levels: set[Any] = set()
-
         jobs: list[dict[str, Any]] = []
         for split_spec in var_specs:
             lvl = split_spec["level"]
             init_slice = split_spec.get("init_slice", slice(None))
-            if lvl not in logged_levels:
-                c.print(f"[ets] per-level variable: {var} level={lvl}")
-                logged_levels.add(lvl)
 
             ds_t_slice = xr.Dataset(
                 {
@@ -184,7 +176,7 @@ def _calculate_ets_per_level(
             jobs,
             key_map={"lazy": "res"},
             batch_size=max(1, int(batch_size)),
-            desc=f"Computing ETS per level ({var})",
+            desc=f"Computing ETS per level variable={var}",
         )
 
         for job in jobs:

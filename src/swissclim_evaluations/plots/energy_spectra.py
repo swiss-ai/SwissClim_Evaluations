@@ -609,7 +609,11 @@ def _plot_energy_spectra(
         jobs,
         key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
         batch_size=dynamic_batch,
-        desc="Computing energy spectra",
+        desc=(
+            f"Computing energy spectra variable={var}"
+            if level is None
+            else f"Computing energy spectra variable={var} level={level}"
+        ),
         batch_callback=_process_batch,
     )
 

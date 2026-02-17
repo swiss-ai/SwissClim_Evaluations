@@ -61,8 +61,12 @@ def intercompare_probabilistic(
 
     # SSR
     ssr = common_files(models, "probabilistic/spread_skill_ratio*.csv")
+    ssr_lvl = [f for f in ssr if "per_level" in f]
+    ssr_avg = [f for f in ssr if "per_level" not in f]
     ssr_line = common_files(models, "probabilistic/ssr_line_*.csv")
-    results["Spread Skill Ratio"] = 1 if (ssr or ssr_line) else 0
+    results["Spread Skill Ratio"] = 1 if (ssr_avg or ssr_line) else 0
+    if ssr_lvl:
+        results["Spread Skill Ratio (Per Level)"] = 1
     if ssr_line:
         results["SSR Line Plots"] = len(ssr_line)
 
@@ -357,13 +361,30 @@ def intercompare_probabilistic(
 
     # --- 5. Spread Skill Ratio (SSR) ---
     frames_ssr: list[pd.DataFrame] = []
+    frames_ssr_lvl: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
-        candidates = sorted((m / "probabilistic").glob("spread_skill_ratio*.csv"))
-        if candidates:
+        candidates_avg = sorted(
+            c
+            for c in (m / "probabilistic").glob("spread_skill_ratio*.csv")
+            if "per_level" not in c.name
+        )
+        candidates_lvl = sorted(
+            c
+            for c in (m / "probabilistic").glob("spread_skill_ratio*per_level*.csv")
+            if "per_level" in c.name
+        )
+        if candidates_avg:
             try:
-                df = pd.read_csv(candidates[0])
+                df = pd.read_csv(candidates_avg[0])
                 df.insert(0, "model", lab)
                 frames_ssr.append(df)
+            except Exception:
+                pass
+        if candidates_lvl:
+            try:
+                df = pd.read_csv(candidates_lvl[0])
+                df.insert(0, "model", lab)
+                frames_ssr_lvl.append(df)
             except Exception:
                 pass
 
@@ -372,6 +393,13 @@ def intercompare_probabilistic(
         if combined_ssr["model"].nunique() >= 2:
             out_csv = dst_prob / "spread_skill_ratio_combined.csv"
             combined_ssr.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    if frames_ssr_lvl:
+        combined_ssr_lvl = pd.concat(frames_ssr_lvl, ignore_index=True)
+        if combined_ssr_lvl["model"].nunique() >= 2:
+            out_csv = dst_prob / "spread_skill_ratio_per_level_combined.csv"
+            combined_ssr_lvl.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
     # --- 5b. SSR Line Plots (Multi-Lead) ---

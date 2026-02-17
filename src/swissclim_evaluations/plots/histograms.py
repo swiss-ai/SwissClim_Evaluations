@@ -132,6 +132,7 @@ def run(
     ):
         if not per_lat_band:
             return
+        level_desc = "" if level_val is None else f" level={level_val}"
 
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         c.print(f"[histograms] lat_bands: {variable_name}")
@@ -216,7 +217,7 @@ def run(
                 key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
                 post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
                 batch_size=dynamic_batch,
-                desc="Computing subsamples",
+                desc=f"Computing histogram subsamples variable={variable_name}{level_desc}",
             )
             for job in jobs:
                 # Calculate edges immediately (fast in memory)
@@ -236,7 +237,7 @@ def run(
                 jobs,
                 key_map={"quantile_lazy": "quantile_res"},
                 batch_size=dynamic_batch,
-                desc="Computing quantiles",
+                desc=f"Computing histogram quantiles variable={variable_name}{level_desc}",
             )
             for job in jobs:
                 q = job.get("quantile_res")
@@ -260,7 +261,7 @@ def run(
                 key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
                 post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
                 batch_size=dynamic_batch,
-                desc="Computing histograms",
+                desc=f"Computing histograms variable={variable_name}{level_desc}",
             )
         else:
             for job in jobs:
@@ -505,6 +506,7 @@ def run(
         level_token: str,
         ens_token: str | None,
         lead_time_range: tuple[str, str] | None,
+        level_val: Any = None,
     ) -> None:
         """Plot global histograms gridded by lead_time (one subplot per lead)."""
         if "lead_time" not in da_pred_var.dims:
@@ -581,7 +583,11 @@ def run(
             key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
             post_process={"val_t": to_finite_array, "val_p": to_finite_array},
             batch_size=dynamic_batch,
-            desc="Computing global histograms",
+            desc=(
+                f"Computing global histograms variable={variable_name}"
+                if level_val is None
+                else f"Computing global histograms variable={variable_name} level={level_val}"
+            ),
         )
 
         # Calculate edges from edge_job
@@ -682,7 +688,6 @@ def run(
         )
         if not per_lead:
             for variable_name in variables_2d:
-                c.print(f"[histograms] 2D variable: {variable_name}")
                 _plot_global_hist(
                     ds_target_mean[variable_name],
                     ds_prediction_mean[variable_name],
@@ -707,7 +712,6 @@ def run(
         ) >= 1
         if do_grid:
             for variable_name in variables_2d:
-                c.print(f"[histograms] 2D grid variable: {variable_name}")
                 _plot_global_hist_gridded(
                     ds_target_mean[variable_name],
                     ds_prediction_mean[variable_name],
@@ -730,7 +734,6 @@ def run(
             # Suppress member per-lead globals; only grid
             if not per_lead:
                 for variable_name in variables_2d:
-                    c.print(f"[histograms] member={member_index} 2D variable: {variable_name}")
                     _plot_global_hist(
                         tgt_m[variable_name],
                         pred_m[variable_name],
@@ -753,7 +756,6 @@ def run(
             do_grid = ("lead_time" in pred_m.dims) and int(pred_m.lead_time.size) >= 1
             if do_grid:
                 for variable_name in variables_2d:
-                    c.print(f"[histograms] member={member_index} 2D grid variable: {variable_name}")
                     _plot_global_hist_gridded(
                         tgt_m[variable_name],
                         pred_m[variable_name],
@@ -772,7 +774,6 @@ def run(
         # removed unused variable lead_indices (ruff F841)
         if not per_lead:
             for variable_name in variables_2d:
-                c.print(f"[histograms] 2D variable: {variable_name}")
                 _plot_global_hist(
                     ds_target[variable_name],
                     ds_prediction[variable_name],
@@ -802,7 +803,6 @@ def run(
                 all_hours = list(range(int(ds_prediction.lead_time.size)))
             panel_hours = all_hours
             for variable_name in variables_2d:
-                c.print(f"[histograms] 2D grid variable: {variable_name}")
                 n_panels = len(panel_hours)
                 if n_panels == 0:
                     continue
@@ -958,7 +958,6 @@ def run(
             if max_levels is not None:
                 levels = levels[:max_levels]
             for lvl in levels:
-                c.print(f"[histograms] 3D variable: {variable_name} level={lvl}")
                 # Select single level slice (dropping level dimension for logic reuse)
                 da_t_lvl = da_t.sel(level=lvl)
                 da_p_lvl = da_p.sel(level=lvl)

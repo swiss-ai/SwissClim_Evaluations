@@ -153,7 +153,8 @@ def _calculate_multi_lead_metrics_split(
         split_init_time=split_init_time,
         init_time_block_size=init_time_block_size,
     )
-    logged_variable_levels: set[tuple[str, Any]] = set()
+    prepared_groups: list[str] = []
+    prepared_seen: set[str] = set()
 
     for spec in split_specs:
         variable = spec["variable"]
@@ -161,13 +162,10 @@ def _calculate_multi_lead_metrics_split(
         lead_slice = spec["lead_slice"]
         init_slice = spec.get("init_slice", slice(None))
 
-        log_key = (str(variable), level_val)
-        if log_key not in logged_variable_levels:
-            if level_val is None:
-                c.print(f"[deterministic] variable: {variable}")
-            else:
-                c.print(f"[deterministic] variable: {variable} level={level_val}")
-            logged_variable_levels.add(log_key)
+        group_label = f"{variable}" if level_val is None else f"{variable} level={level_val}"
+        if group_label not in prepared_seen:
+            prepared_seen.add(group_label)
+            prepared_groups.append(group_label)
 
         da_t_blk = apply_split_to_dataarray(
             ds_target[variable],
@@ -214,11 +212,21 @@ def _calculate_multi_lead_metrics_split(
     if not jobs_meta:
         return pd.DataFrame()
 
-    results = _compute_lazy_values_batched(
-        [job["lazy"] for job in jobs_meta],
-        batch_size=dynamic_batch,
-        desc="Computing deterministic metrics",
-    )
+    results: list[Any] = [None] * len(jobs_meta)
+    jobs_by_variable_level: dict[tuple[str, Any], list[int]] = defaultdict(list)
+    for job_idx, job in enumerate(jobs_meta):
+        jobs_by_variable_level[(str(job["variable"]), job.get("level"))].append(job_idx)
+
+    for (var_name, level_val), job_indices in jobs_by_variable_level.items():
+        level_suffix = "" if level_val is None else f" level={level_val}"
+        desc = f"Computing deterministic metrics variable={var_name}{level_suffix}"
+        block_results = _compute_lazy_values_batched(
+            [jobs_meta[idx]["lazy"] for idx in job_indices],
+            batch_size=dynamic_batch,
+            desc=desc,
+        )
+        for idx, result in zip(job_indices, block_results, strict=False):
+            results[idx] = result
 
     by_var_metric_level: dict[tuple[str, str, Any], list[tuple[int, int, int, Any]]] = defaultdict(
         list
@@ -483,10 +491,6 @@ def _calculate_all_metrics(
     intermediate_lazy: dict[tuple[str, str], Any] = {}
 
     for var in variables:
-        if log_variable_progress:
-            with contextlib.suppress(Exception):
-                c.print(f"[deterministic] variable: {var}")
-
         y_true = ds_target[var]
         y_pred = ds_prediction[var]
 
@@ -704,12 +708,14 @@ def _calculate_all_metrics(
         metrics_jobs = [{"lazy": obj} for _, _, obj in lazy_metrics_to_compute]
 
         dyn_batch = resolve_dynamic_batch_size(performance_cfg, ds=ds_target)
+        var_list = ",".join(str(v) for v in variables)
+        desc = f"Computing deterministic metrics variables={var_list}"
 
         compute_jobs(
             metrics_jobs,
             key_map={"lazy": "res"},
             batch_size=dyn_batch,
-            desc="Computing deterministic metrics",
+            desc=desc,
         )
 
         computed_results = [j["res"] for j in metrics_jobs]

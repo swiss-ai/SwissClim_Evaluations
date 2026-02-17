@@ -96,23 +96,6 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
     ), "Expected temporal probabilistic metrics file with init/lead time "
     "tokens (ensprob) under new schema"
 
-    # Load suffixed PIT/CRPS NPZ files (pick first match)
-    # Updated to NPZ format for memory efficiency (no OOM during write)
-    pit_npz = next(prob_dir.glob("pit_field_2m_temperature_*.npz"))
-    crps_npz = next(prob_dir.glob("crps_field_2m_temperature_*.npz"))
-    assert pit_npz.exists() and crps_npz.exists()
-
-    # Load NPZ files and reconstruct basic shape info
-    with np.load(pit_npz) as pit_data:
-        assert "lead_time" in pit_data
-        pit_lead = pit_data["lead_time"]
-        assert len(pit_lead) == 3
-        # Check that the lead_times equal the input lead times
-        expected_leads = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
-
-    with np.load(crps_npz) as crps_data:
-        assert "lead_time" in crps_data
-        crps_lead = crps_data["lead_time"]
-        assert len(crps_lead) == 3
-    assert np.all(pit_lead == expected_leads)
-    assert np.all(crps_lead == expected_leads)
+    # Full-field PIT/CRPS NPZ artifacts are disabled by default to keep output minimal.
+    assert not list(prob_dir.glob("pit_field_2m_temperature_*.npz"))
+    assert not list(prob_dir.glob("crps_field_2m_temperature_*.npz"))

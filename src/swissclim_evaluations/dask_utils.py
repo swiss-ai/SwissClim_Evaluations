@@ -84,11 +84,7 @@ def compute_jobs(
             continue
 
         # Compute this chunk
-        # Auto-tune graph optimization: for small batches the rewrite cost
-        # can dominate, so skip it when the batch is tiny.
-        do_optimize = optimize_graph
-        if do_optimize is None:
-            do_optimize = len(lazy_flat) > 4
+        do_optimize = True if optimize_graph is None else bool(optimize_graph)
 
         results = dask.compute(*lazy_flat, optimize_graph=do_optimize)
 
@@ -547,8 +543,7 @@ def _profile_default_block_size(perf: dict[str, Any], fallback_default: int) -> 
     This applies only when the explicit `lead_time_block_size` / `init_time_block_size`
     keys are omitted (or invalid) in `performance`.
 
-    Profile targets are tuned to reduce tiny-job overhead on large nodes while still
-    preserving conservative behavior for `safe`.
+    Profile targets are tuned to keep memory pressure conservative by default.
 
     To avoid overriding module-specific larger defaults, profile uplift is applied
     only for legacy/small fallback defaults (<= 12).

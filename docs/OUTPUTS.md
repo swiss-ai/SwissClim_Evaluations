@@ -33,6 +33,8 @@ The ensemble dimension is always present (size 1 for deterministic datasets). Fo
 
 Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
 
+For modules where 3D variables are applicable, outputs are reported per level by default.
+
 ### Deterministic Metrics
 
 Filenames encode only information that is actually present:
@@ -139,13 +141,13 @@ Per-variable artifacts (NPZ/CSV/PNG):
 
 ```text
 pit_hist_2m_temperature_ensprob.npz
-pit_evolution_2m_temperature_ensprob.png
-pit_evolution_2m_temperature_data_ensprob.npz
-pit_field_2m_temperature_ensprob.npz
-crps_field_2m_temperature_ensprob.npz
-crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
-probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv
-probabilistic_metrics_2m_temperature_per_lead_time_ensprob.png
+pit_hist_2m_temperature_grid_ensprob.png   # optional (if plotting enabled, multi-lead)
+crps_map_2m_temperature_ensprob.png         # optional (if plotting enabled)
+crps_line_2m_temperature_by_lead_ensprob.csv
+crps_line_2m_temperature_ensprob.png
+crps_line_2m_temperature_data_ensprob.npz   # optional (if output_mode includes npz)
+temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv
+temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.png
 ```
 
 WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
@@ -153,16 +155,23 @@ WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
 ```text
 crps_temporal_wbx_2m_temperature_ensprob.npz
 crps_spatial_wbx_2m_temperature_ensprob.npz
+crps_temporal_wbx_temperature_500_ensprob.npz
+crps_spatial_wbx_temperature_500_ensprob.npz
 ssr_temporal_wbx_2m_temperature_ensprob.npz
 ssr_spatial_wbx_2m_temperature_ensprob.npz
+ssr_temporal_wbx_temperature_500_ensprob.npz
+ssr_spatial_wbx_temperature_500_ensprob.npz
 wbx_temporal_SSR.2m_temperature_ensprob.png # SSR temporal plot
 wbx_spatial_SSR.2m_temperature_ensprob.png  # SSR spatial plot
+wbx_temporal_SSR.temperature_500_ensprob.png # SSR temporal plot (3D per-level)
+wbx_spatial_SSR.temperature_500_ensprob.png  # SSR spatial plot (3D per-level)
 ```
 
 Summary tables:
 
 ```text
 spread_skill_ratio_ensprob.csv
+spread_skill_ratio_per_level_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv
@@ -172,7 +181,9 @@ crps_summary_per_level_ensprob.csv
 
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
-- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NPZ.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility.
+- Full PIT/CRPS fields are not written to keep output size manageable.
+- For 3D variables, level-resolved outputs are produced by default where supported.
 
 All modules print concise progress like:
 
@@ -218,6 +229,7 @@ Intercomparison outputs are written under `output/intercomparison/<module>/` and
 	- `probabilistic/crps_summary_combined.csv`
 	- `probabilistic/crps_summary_per_level_combined.csv`
 	- `probabilistic/spread_skill_ratio_combined.csv`
+	- `probabilistic/spread_skill_ratio_per_level_combined.csv`
 	- `probabilistic/crps_ensemble_combined.csv`
 	- `probabilistic/temporal_metrics_combined.csv`
 	- `probabilistic/temporal_*_compare.png`

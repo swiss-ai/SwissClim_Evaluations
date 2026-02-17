@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -87,6 +88,87 @@ def _normalize_modules(modules: list[str]) -> set[str]:
     return normalized
 
 
+def _compact_cfg_value(value: Any, max_len: int = 120) -> str:
+    text = "default" if value is None else repr(value)
+    text = text.replace("\n", " ")
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[str, str]:
+    metrics_cfg = (cfg.get("metrics", {}) or {}) if isinstance(cfg, dict) else {}
+
+    if module == "metrics":
+        det_cfg = metrics_cfg.get("deterministic", {}) if isinstance(metrics_cfg, dict) else {}
+        include = det_cfg.get("include") if isinstance(det_cfg, dict) else None
+        std_include = det_cfg.get("standardized_include") if isinstance(det_cfg, dict) else None
+        report_per_level = (
+            bool(det_cfg.get("report_per_level", True)) if isinstance(det_cfg, dict) else True
+        )
+        if include is None and std_include is None:
+            metrics_sel = f"default; report_per_level={report_per_level}"
+        else:
+            metrics_sel = (
+                f"include={_compact_cfg_value(include)}; "
+                f"standardized_include={_compact_cfg_value(std_include)}; "
+                f"report_per_level={report_per_level}"
+            )
+
+        fss_cfg = det_cfg.get("fss", {}) if isinstance(det_cfg, dict) else {}
+        if isinstance(fss_cfg, dict):
+            if "thresholds" in fss_cfg:
+                thresholds_sel = f"fss.thresholds={_compact_cfg_value(fss_cfg.get('thresholds'))}"
+            elif "threshold" in fss_cfg:
+                thresholds_sel = f"fss.threshold={_compact_cfg_value(fss_cfg.get('threshold'))}"
+            elif "quantile" in fss_cfg:
+                thresholds_sel = f"fss.quantile={_compact_cfg_value(fss_cfg.get('quantile'))}"
+            else:
+                thresholds_sel = "default"
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
+    if module == "ets":
+        ets_cfg = metrics_cfg.get("ets", {}) if isinstance(metrics_cfg, dict) else {}
+        report_per_level = (
+            bool(ets_cfg.get("report_per_level", True)) if isinstance(ets_cfg, dict) else True
+        )
+        metrics_sel = f"ETS; report_per_level={report_per_level}"
+        if isinstance(ets_cfg, dict) and "thresholds" in ets_cfg:
+            thresholds_sel = _compact_cfg_value(ets_cfg.get("thresholds"))
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
+    if module == "prob":
+        prob_cfg = metrics_cfg.get("probabilistic", {}) if isinstance(metrics_cfg, dict) else {}
+        report_per_level = (
+            bool(prob_cfg.get("report_per_level", True)) if isinstance(prob_cfg, dict) else True
+        )
+        return f"CRPS, PIT, SSR; report_per_level={report_per_level}", "n/a"
+    if module == "vprof":
+        return "NMAE", "n/a"
+    if module == "spectra":
+        spec_cfg = metrics_cfg.get("energy_spectra", {}) if isinstance(metrics_cfg, dict) else {}
+        report_per_level = (
+            bool(spec_cfg.get("report_per_level", True)) if isinstance(spec_cfg, dict) else True
+        )
+        return f"LSD; report_per_level={report_per_level}", "n/a"
+    return "n/a", "n/a"
+
+
+def _print_module_config_summary(mods: set[str], cfg: dict[str, Any]) -> None:
+    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "prob"]
+    c.section("Configured Metrics/Thresholds")
+    for module in module_order:
+        enabled = module in mods
+        metrics_sel, thresholds_sel = _module_metric_threshold_summary(module, cfg)
+        c.info(
+            f"[{module}] enabled={enabled} | metrics={metrics_sel} | thresholds={thresholds_sel}"
+        )
+
+
 def run_from_config(cfg: dict) -> None:
     # Resolve models
     model_strs = cfg.get("models") or []
@@ -122,6 +204,7 @@ def run_from_config(cfg: dict) -> None:
             c.print(f"[intercompare] WARNING: model folder does not exist: {m}")
 
     mods = _normalize_modules(modules)
+    _print_module_config_summary(mods, cfg)
     if "maps" in mods:
         intercompare_maps(models, labels, out_root, max_panels=max_map_panels)
     if "hist" in mods:

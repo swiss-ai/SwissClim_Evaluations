@@ -458,7 +458,6 @@ def run(
     prepared_jobs: list[dict[str, Any]] = []
 
     for var in variables_3d:
-        c.print(f"[vertical_profiles] preparing variable: {var}")
         level_values = ds_target[var].level.values
         south_curves: list[xr.DataArray] = []
         north_curves: list[xr.DataArray] = []
@@ -966,7 +965,6 @@ def run(
 
     for job in prepared_jobs:
         var_name = str(job.get("var", "unknown"))
-        c.print(f"[vertical_profiles] compute variable: {var_name}")
         compute_jobs(
             [job],
             key_map={
@@ -977,6 +975,6 @@ def run(
                 "global_profile_lazy": "global_profile",
             },
             batch_size=max(1, int(dynamic_batch)),
-            desc=f"Computing vertical profiles ({var_name})",
+            desc=f"Computing vertical profiles variable={var_name}",
             batch_callback=_process_batch,
         )
