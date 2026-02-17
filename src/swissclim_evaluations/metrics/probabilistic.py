@@ -130,19 +130,28 @@ def compute_wbx_crps(
 
 
 def _save_npz_with_coords(path: Path, da: xr.DataArray, module: str | None = None, **kwargs):
-    """Save DataArray to NPZ with coordinates, handling missing ones gracefully."""
-    coords = {}
-    # Standard coordinates we care about
-    for coord_name in ["latitude", "longitude", "init_time", "lead_time", "level", "region"]:
-        if coord_name in da.coords:
-            coords[coord_name] = da.coords[coord_name].values
-        else:
-            coords[coord_name] = np.array([])
+    """Save DataArray to NPZ with compact coordinate payload.
 
-    # Add any extra kwargs
+    To reduce NPZ I/O overhead, only coordinates that align with DataArray
+    dimensions are stored by default; optional explicit extras are merged from
+    kwargs.
+    """
+    coords: dict[str, Any] = {}
+
+    # Keep only dimension-bearing coordinates to avoid serializing large,
+    # unrelated auxiliary coordinates repeatedly across many files.
+    for dim_name in da.dims:
+        if dim_name in da.coords:
+            coords[dim_name] = np.asarray(da.coords[dim_name].values)
+
+    # Add explicit extras passed by caller (e.g., scalar level token).
     coords.update(kwargs)
 
-    save_data(path, module=module, data=da.values, **coords)
+    data_obj = da.data
+    data_arr = (
+        np.asarray(data_obj.compute()) if hasattr(data_obj, "compute") else np.asarray(da.values)
+    )
+    save_data(path, module=module, data=data_arr, **coords)
 
 
 def _pit(da_target, da_prediction):
@@ -1168,6 +1177,21 @@ def _iter_variable_batches(variables: list[str], batch_size: int) -> list[list[s
     return [variables[i : i + size] for i in range(0, len(variables), size)]
 
 
+def _to_python_float(x: xr.DataArray | Any) -> float:
+    """Convert scalar-like xarray/dask values to Python float safely."""
+    if isinstance(x, xr.DataArray):
+        xa = x
+        if xa.ndim > 0:
+            xa = xa.squeeze(drop=True)
+        data = xa.data
+        if hasattr(data, "compute"):
+            return float(data.compute())
+        return float(xa.values)
+    if hasattr(x, "compute"):
+        return float(x.compute())
+    return float(x)
+
+
 def _wbx_metric_to_df_batched(
     metric: Any,
     ds_prediction: xr.Dataset,
@@ -1493,7 +1517,7 @@ def run_probabilistic_wbx(
         crps_summary_rows.append(
             {
                 "variable": display_var,
-                "CRPS": float(global_val.item()),
+                "CRPS": _to_python_float(global_val),
             }
         )
 
@@ -1503,7 +1527,7 @@ def run_probabilistic_wbx(
                 da_global.mean(dim=red_dims_level, skipna=True) if red_dims_level else da_global
             )
             for lvl in da_per_level["level"].values:
-                val = float(da_per_level.sel(level=lvl).item())
+                val = _to_python_float(da_per_level.sel(level=lvl))
                 crps_summary_rows_per_level.append(
                     {
                         "variable": display_var,
@@ -1540,7 +1564,11 @@ def run_probabilistic_wbx(
         )
         save_dataframe(df_crps_lvl, out_csv_lvl, index=False, module="probabilistic")
 
-    for var_name, da_metric in results_spatial.data_vars.items():
+    crps_plot_source = results_spatial
+    if not any(str(name).startswith("CRPS") for name in crps_plot_source.data_vars):
+        crps_plot_source = results_temporal
+
+    for var_name, da_metric in crps_plot_source.data_vars.items():
         if not str(var_name).startswith("CRPS"):
             continue
 
@@ -1551,13 +1579,19 @@ def run_probabilistic_wbx(
 
         for lvl in levels:
             da = da_metric.sel(level=lvl, drop=True) if lvl is not None else da_metric
+
+            if "region" in da.dims:
+                if "global" in da["region"].values:
+                    da = da.sel(region="global")
+                else:
+                    da = da.mean(dim="region", skipna=True)
+
             lat_name = next((n for n in da.dims if n in ("latitude", "lat", "y")), None)
             lon_name = next((n for n in da.dims if n in ("longitude", "lon", "x")), None)
 
-            if lat_name is None or lon_name is None:
-                continue
+            has_map_coords = (lat_name is not None) and (lon_name is not None)
 
-            if save_fig:
+            if save_fig and lat_name is not None and lon_name is not None:
                 lat_vals = da[lat_name].values
                 if lat_vals.size > 1 and lat_vals[0] > lat_vals[-1]:
                     da = da.sortby(lat_name)
@@ -1664,6 +1698,9 @@ def run_probabilistic_wbx(
                     )
                     save_figure(fig_line, out_png_temporal, module="probabilistic")
 
+                    if not has_map_coords:
+                        continue
+
                     reduce_for_map = [
                         d for d in da.dims if d not in ("lead_time", lat_name, lon_name)
                     ]
@@ -1742,7 +1779,7 @@ def run_probabilistic_wbx(
                         )
                         save_figure(fig_grid, out_png_grid, module="probabilistic")
 
-            elif save_fig:
+            elif save_fig and has_map_coords:
                 reduce_for_map = [d for d in da.dims if d not in (lat_name, lon_name)]
                 crps_map = da.mean(dim=reduce_for_map, skipna=True) if reduce_for_map else da
 
@@ -1797,7 +1834,7 @@ def run_probabilistic_wbx(
         red_dims = [d for d in da_metric.dims if d != "level"]
         da_level = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
         for lvl in da_level["level"].values:
-            val = da_level.sel(level=lvl).item()
+            val = _to_python_float(da_level.sel(level=lvl))
             if val is None:
                 continue
             ssr_rows_per_level.append(
