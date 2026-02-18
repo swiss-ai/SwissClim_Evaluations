@@ -1408,12 +1408,6 @@ def run_probabilistic_wbx(
         )
         use_init_time_batches = False
 
-    c.print(
-        "[Dask] Computing WBX probabilistic metrics: "
-        f"Processing {len(variables)} variables in {len(variable_batches)} batches "
-        f"(batch_size={var_batch_size})..."
-    )
-
     jobs_meta: list[dict[str, Any]] = []
     for variable_batch in variable_batches:
         ds_pred_batch = ds_pred[variable_batch]
@@ -1469,6 +1463,8 @@ def run_probabilistic_wbx(
                         "result": batch_result,
                     }
                 )
+
+    c.print("[Dask] Computing WBX probabilistic metrics: " f"prepared_jobs={len(jobs_meta)}.")
 
     by_var_level: dict[tuple[str, Any], list[tuple[int, int, int, xr.Dataset]]] = {}
     for job in jobs_meta:
