@@ -276,7 +276,7 @@ performance:
   # - fast: higher parallelism and throughput.
   # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
   #   safe=16x1 workers/threads, balanced=32x1, fast=64x1
-  #   with memory_limit 4GiB / 3GiB / 3GiB per worker.
+  #   with memory_limit 24GiB / 12GiB / 8GiB per worker.
   dask_profile: safe
 
   # Coalesce batch callbacks across N compute batches before calling writer logic.
@@ -287,7 +287,7 @@ performance:
   # dask_n_workers: 16
   # dask_threads_per_worker: 1
   # dask_processes: true
-  # dask_memory_limit: 4GiB
+  # dask_memory_limit: 24GiB
 
   # Optional Dask performance report (distributed scheduler only).
   # When enabled, wraps the evaluation in dask.distributed.performance_report

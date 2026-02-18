@@ -1295,21 +1295,21 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
                 "n_workers": safe_workers,
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "4GiB",
+                "memory_limit": "24GiB",
             },
             "balanced": {
                 "profile": "balanced",
                 "n_workers": balanced_workers,
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "3GiB",
+                "memory_limit": "12GiB",
             },
             "fast": {
                 "profile": "fast",
                 "n_workers": fast_workers,
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "3GiB",
+                "memory_limit": "8GiB",
             },
         }
         defaults = gh200_defaults.get(profile, gh200_defaults["safe"])
@@ -1320,7 +1320,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
                 "n_workers": max(1, min(cpu_count, 64)),
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "auto",
+                "memory_limit": "8GiB",
             }
         elif profile == "balanced":
             defaults = {
@@ -1328,7 +1328,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
                 "n_workers": max(1, min(cpu_count, 32)),
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "auto",
+                "memory_limit": "12GiB",
             }
         else:
             defaults = {
@@ -1336,7 +1336,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
                 "n_workers": max(1, min(cpu_count, 16)),
                 "threads_per_worker": 1,
                 "processes": True,
-                "memory_limit": "auto",
+                "memory_limit": "24GiB",
             }
 
     default_n_workers = _as_int(defaults.get("n_workers"), 1)

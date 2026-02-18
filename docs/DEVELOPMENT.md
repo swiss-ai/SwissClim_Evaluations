@@ -70,9 +70,9 @@ Safety-first defaults:
 
 - `dask_profile` defaults to `safe`.
 - On GH200-class nodes (`>=192` CPUs), profile defaults are tuned for the node:
-	- `safe`: 16 workers × 1 thread, `4GiB` per worker
-	- `balanced`: 32 workers × 1 thread, `3GiB` per worker
-	- `fast`: 64 workers × 1 thread, `3GiB` per worker
+	- `safe`: 16 workers × 1 thread, `24GiB` per worker
+	- `balanced`: 32 workers × 1 thread, `12GiB` per worker
+	- `fast`: 64 workers × 1 thread, `8GiB` per worker
 - Profile-default batch sizes (when `batch_size` is omitted and no auto knobs are set):
 	- `safe`: `batch_size=32`
 	- `balanced`: `batch_size=32`
