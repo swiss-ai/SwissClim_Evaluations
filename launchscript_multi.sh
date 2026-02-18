@@ -63,10 +63,12 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
+    out_log="logs/${job_name}.out"
+    err_log="logs/${job_name}.err"
 
     # Map task ID to command.
-    # We append the exit code to the log file to avoid creating separate status files
-    echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > logs/${job_name}.log 2>&1; echo \"SWISSCLIM_JOB_EXIT_CODE: \$?\" >> logs/${job_name}.log'" >> "$MP_CONF"
+    # We append the exit code to the .out file to avoid creating separate status files
+    echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > \"${out_log}\" 2> \"${err_log}\"; echo \"SWISSCLIM_JOB_EXIT_CODE: \$?\" >> \"${out_log}\"'" >> "$MP_CONF"
     ((idx++))
 done
 
@@ -89,13 +91,14 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    log_file="logs/${job_name}.log"
+    out_log="logs/${job_name}.out"
+    err_log="logs/${job_name}.err"
 
     # Check status from log file
     status_code=""
-    if [ -f "$log_file" ]; then
+    if [ -f "$out_log" ]; then
         # Extract exit code from the specific line
-        status_line=$(grep "SWISSCLIM_JOB_EXIT_CODE:" "$log_file" | tail -n 1)
+        status_line=$(grep "SWISSCLIM_JOB_EXIT_CODE:" "$out_log" | tail -n 1)
         if [ -n "$status_line" ]; then
             status_code=$(echo "$status_line" | awk -F': ' '{print $2}')
         fi
@@ -107,12 +110,19 @@ for config in "${EVAL_CONFIGS[@]}"; do
     else
         FAILURES=1
         echo "ERROR: Job $job_name failed (Exit code: ${status_code:-UNKNOWN})"
-        if [ -f "$log_file" ]; then
-            echo "=== TAIL OF LOG: $log_file ==="
-            tail -n 20 "$log_file"
+        if [ -f "$out_log" ]; then
+            echo "=== TAIL OF OUT LOG: $out_log ==="
+            tail -n 20 "$out_log"
             echo "========================================="
         else
-            echo "Log file not found: $log_file"
+            echo "Out log not found: $out_log"
+        fi
+        if [ -f "$err_log" ]; then
+            echo "=== TAIL OF ERR LOG: $err_log ==="
+            tail -n 20 "$err_log"
+            echo "========================================="
+        else
+            echo "Err log not found: $err_log"
         fi
     fi
 done
@@ -124,15 +134,22 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    log_file="logs/${job_name}.log"
+    out_log="logs/${job_name}.out"
+    err_log="logs/${job_name}.err"
 
-    if [ -f "$log_file" ]; then
+    if [ -f "$out_log" ] || [ -f "$err_log" ]; then
         # Extract output_root
         outdir=$(python -c "import yaml; cfg=yaml.safe_load(open('$config')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
 
         if [ -n "$outdir" ] && [ -d "$outdir" ]; then
-            cp "$log_file" "$outdir/"
-            echo "Copied $log_file to $outdir/"
+            if [ -f "$out_log" ]; then
+                cp "$out_log" "$outdir/"
+                echo "Copied $out_log to $outdir/"
+            fi
+            if [ -f "$err_log" ]; then
+                cp "$err_log" "$outdir/"
+                echo "Copied $err_log to $outdir/"
+            fi
 
             # Copy dask log if it exists (using idx as PROCID)
             dask_log="logs/dask_distributed_${SLURM_JOB_ID}_${idx}.log"
