@@ -1219,14 +1219,14 @@ def _wbx_metric_to_df_batched(
         )
 
     for batch in batches:
-        df_chunk = _wbx_metric_to_df(
+        df_batch = _wbx_metric_to_df(
             metric,
             ds_prediction=ds_prediction[batch],
             ds_target=ds_target[batch],
             value_col=value_col,
         )
-        if not df_chunk.empty:
-            rows.append(df_chunk)
+        if not df_batch.empty:
+            rows.append(df_batch)
 
     if not rows:
         return pd.DataFrame()
@@ -1376,21 +1376,169 @@ def run_probabilistic_wbx(
 
     variables = [str(v) for v in ds_pred.data_vars]
     variable_batches = _iter_variable_batches(variables, var_batch_size)
+
+    batch_opts = resolve_module_batching_options(
+        performance_cfg=performance_cfg,
+        default_split_level=True,
+        default_split_lead_time=True,
+        default_split_init_time=True,
+        default_lead_time_block_size=6,
+        default_init_time_block_size=6,
+    )
+    split_lead_time = bool(batch_opts["split_lead_time"])
+    lead_time_block_size = int(batch_opts["lead_time_block_size"])
+    split_init_time = bool(batch_opts["split_init_time"])
+    init_time_block_size = int(batch_opts["init_time_block_size"])
+    use_lead_time_batches = (
+        split_lead_time
+        and ("lead_time" in ds_pred.dims)
+        and int(ds_pred.sizes.get("lead_time", 0)) > 1
+        and lead_time_block_size > 0
+    )
+    use_init_time_batches = (
+        split_init_time
+        and ("init_time" in ds_pred.dims)
+        and int(ds_pred.sizes.get("init_time", 0)) > 1
+        and init_time_block_size > 0
+    )
+    if seasonal and use_init_time_batches:
+        c.print(
+            "[probabilistic] Seasonal binning enabled: disabling init_time batching "
+            "for WBX aggregation to preserve seasonal weighting."
+        )
+        use_init_time_batches = False
+
     c.print(
         "[Dask] Computing WBX probabilistic metrics: "
         f"Processing {len(variables)} variables in {len(variable_batches)} batches "
         f"(batch_size={var_batch_size})..."
     )
 
-    spatial_parts: list[xr.Dataset] = []
+    jobs_meta: list[dict[str, Any]] = []
     for variable_batch in variable_batches:
-        pred_map = {v: ds_pred[v] for v in variable_batch}
-        targ_map = {v: ds_targ[v] for v in variable_batch}
+        ds_pred_batch = ds_pred[variable_batch]
+        ds_targ_batch = ds_targ[variable_batch]
 
-        spatial_chunk = aggregation.compute_metric_values_for_single_chunk(
-            metrics, metric_aggregator, pred_map, targ_map
+        for variable in variable_batch:
+            split_specs = build_variable_level_lead_splits(
+                ds_pred_batch,
+                variables=[str(variable)],
+                split_level=True,
+                split_lead_time=use_lead_time_batches,
+                lead_time_block_size=lead_time_block_size,
+                split_init_time=use_init_time_batches,
+                init_time_block_size=init_time_block_size,
+            )
+
+            for spec in split_specs:
+                level_val = spec.get("level")
+                lead_slice = spec.get("lead_slice", slice(None))
+                init_slice = spec.get("init_slice", slice(None))
+
+                pred_da = ds_pred_batch[str(variable)]
+                targ_da = ds_targ_batch[str(variable)]
+
+                if level_val is not None and "level" in pred_da.dims:
+                    pred_da = pred_da.sel(level=[level_val])
+                if level_val is not None and "level" in targ_da.dims:
+                    targ_da = targ_da.sel(level=[level_val])
+
+                if lead_slice != slice(None) and "lead_time" in pred_da.dims:
+                    pred_da = pred_da.isel(lead_time=lead_slice)
+                if lead_slice != slice(None) and "lead_time" in targ_da.dims:
+                    targ_da = targ_da.isel(lead_time=lead_slice)
+
+                if init_slice != slice(None) and "init_time" in pred_da.dims:
+                    pred_da = pred_da.isel(init_time=init_slice)
+                if init_slice != slice(None) and "init_time" in targ_da.dims:
+                    targ_da = targ_da.isel(init_time=init_slice)
+
+                pred_map = {str(variable): pred_da}
+                targ_map = {str(variable): targ_da}
+                batch_result = aggregation.compute_metric_values_for_single_chunk(
+                    metrics, metric_aggregator, pred_map, targ_map
+                )
+
+                jobs_meta.append(
+                    {
+                        "variable": str(variable),
+                        "level": level_val,
+                        "lead_start": int(spec.get("lead_start", 0)),
+                        "init_start": int(spec.get("init_start", 0)),
+                        "init_len": int(spec.get("init_len", 1)),
+                        "result": batch_result,
+                    }
+                )
+
+    by_var_level: dict[tuple[str, Any], list[tuple[int, int, int, xr.Dataset]]] = {}
+    for job in jobs_meta:
+        key = (str(job["variable"]), job.get("level"))
+        by_var_level.setdefault(key, []).append(
+            (
+                int(job.get("lead_start", 0)),
+                int(job.get("init_start", 0)),
+                int(job.get("init_len", 1)),
+                job["result"],
+            )
         )
-        spatial_parts.append(spatial_chunk)
+
+    per_variable_parts: dict[str, list[xr.Dataset]] = {}
+    for (variable, level_val), parts in by_var_level.items():
+        by_lead_start: dict[int, list[tuple[int, int, xr.Dataset]]] = {}
+        for lead_start, init_start, init_len, result in parts:
+            by_lead_start.setdefault(int(lead_start), []).append(
+                (int(init_start), int(init_len), result)
+            )
+
+        lead_parts: list[xr.Dataset] = []
+        for lead_start in sorted(by_lead_start.keys()):
+            init_parts = sorted(by_lead_start[lead_start], key=lambda item: item[0])
+            if len(init_parts) == 1:
+                lead_parts.append(init_parts[0][2])
+                continue
+
+            weighted_sum: xr.Dataset | None = None
+            total_weight = 0
+            for _init_start, init_len, result in init_parts:
+                weight = max(1, int(init_len))
+                weighted_result = result * weight
+                weighted_sum = (
+                    weighted_result if weighted_sum is None else (weighted_sum + weighted_result)
+                )
+                total_weight += weight
+
+            if weighted_sum is None:
+                continue
+            lead_parts.append(weighted_sum / max(1, total_weight))
+
+        if not lead_parts:
+            continue
+        merged = lead_parts[0] if len(lead_parts) == 1 else xr.concat(lead_parts, dim="lead_time")
+        if "lead_time" in merged.dims:
+            merged = merged.sortby("lead_time")
+
+        if level_val is not None and "level" not in merged.dims:
+            merged = merged.expand_dims(level=[level_val])
+
+        per_variable_parts.setdefault(str(variable), []).append(merged)
+
+    spatial_parts: list[xr.Dataset] = []
+    for variable in variables:
+        var_parts = per_variable_parts.get(str(variable), [])
+        if not var_parts:
+            continue
+        if len(var_parts) == 1:
+            spatial_parts.append(var_parts[0])
+            continue
+
+        all_have_level = all("level" in ds_part.dims for ds_part in var_parts)
+        if all_have_level:
+            var_merged = xr.concat(var_parts, dim="level")
+            if "level" in var_merged.dims:
+                var_merged = var_merged.sortby("level")
+            spatial_parts.append(var_merged)
+        else:
+            spatial_parts.append(xr.merge(var_parts, compat="override"))
 
     results_spatial = xr.merge(spatial_parts, compat="override") if spatial_parts else xr.Dataset()
     results_temporal = results_spatial
