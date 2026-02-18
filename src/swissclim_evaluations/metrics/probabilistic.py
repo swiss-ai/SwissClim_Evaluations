@@ -6,6 +6,7 @@ from typing import Any
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -149,7 +150,9 @@ def _save_npz_with_coords(path: Path, da: xr.DataArray, module: str | None = Non
 
     data_obj = da.data
     data_arr = (
-        np.asarray(data_obj.compute()) if hasattr(data_obj, "compute") else np.asarray(da.values)
+        np.asarray(dask.compute(data_obj, optimize_graph=False)[0])
+        if hasattr(data_obj, "compute")
+        else np.asarray(da.values)
     )
     save_data(path, module=module, data=data_arr, **coords)
 
@@ -516,6 +519,7 @@ def run_probabilistic(
                     },
                     batch_size=dynamic_batch,
                     desc=desc,
+                    optimize_graph=False,
                     batch_callback=_process_batch,
                 )
 
@@ -1191,11 +1195,22 @@ def _to_python_float(x: xr.DataArray | Any) -> float:
             xa = xa.squeeze(drop=True)
         data = xa.data
         if hasattr(data, "compute"):
-            return float(data.compute())
+            return float(dask.compute(data, optimize_graph=False)[0])
         return float(xa.values)
     if hasattr(x, "compute"):
-        return float(x.compute())
+        return float(dask.compute(x, optimize_graph=False)[0])
     return float(x)
+
+
+def _persist_if_lazy_dataarray(da: xr.DataArray) -> xr.DataArray:
+    """Persist DataArray only when backed by a lazy dask array."""
+    data = getattr(da, "data", None)
+    if data is not None and hasattr(data, "chunks"):
+        try:
+            return da.persist()
+        except Exception:
+            return da
+    return da
 
 
 def _wbx_metric_to_df_batched(
@@ -1521,14 +1536,57 @@ def run_probabilistic_wbx(
     results_spatial = xr.merge(spatial_parts, compat="override") if spatial_parts else xr.Dataset()
     results_temporal = results_spatial
 
+    crps_summary_rows: list[dict[str, Any]] = []
+    crps_summary_rows_per_level: list[dict[str, Any]] = []
     ssr_rows_summary: list[dict[str, Any]] = []
+    ssr_rows_per_level: list[dict[str, Any]] = []
+    crps_by_lead_cache: dict[str, xr.DataArray] = {}
+    ssr_by_lead_cache: dict[str, xr.DataArray] = {}
+
     for var_name, da_metric in results_temporal.data_vars.items():
-        if not str(var_name).startswith("SSR"):
+        metric_name = str(var_name).split(".", 1)[0]
+        if metric_name not in {"CRPS", "SSR"}:
             continue
+
         display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
-        red_dims = list(da_metric.dims)
-        da_global = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
-        ssr_rows_summary.append({"variable": display_var, "SSR": _to_python_float(da_global)})
+        metric_col = "CRPS" if metric_name == "CRPS" else "SSR"
+
+        red_dims_global = list(da_metric.dims)
+        da_global = (
+            da_metric.mean(dim=red_dims_global, skipna=True) if red_dims_global else da_metric
+        )
+        global_row = {"variable": display_var, metric_col: _to_python_float(da_global)}
+        if metric_name == "CRPS":
+            crps_summary_rows.append(global_row)
+        else:
+            ssr_rows_summary.append(global_row)
+
+        if "level" in da_metric.dims:
+            red_dims_level = [d for d in da_metric.dims if d != "level"]
+            da_per_level = (
+                da_metric.mean(dim=red_dims_level, skipna=True) if red_dims_level else da_metric
+            )
+            da_per_level = _persist_if_lazy_dataarray(da_per_level)
+            for lvl in da_per_level["level"].values:
+                val = _to_python_float(da_per_level.sel(level=lvl))
+                row = {
+                    "variable": display_var,
+                    "level": int(lvl) if hasattr(lvl, "item") else lvl,
+                    metric_col: val,
+                }
+                if metric_name == "CRPS":
+                    crps_summary_rows_per_level.append(row)
+                else:
+                    ssr_rows_per_level.append(row)
+
+        if "lead_time" in da_metric.dims and int(da_metric.sizes.get("lead_time", 0)) > 1:
+            reduce_dims = [d for d in da_metric.dims if d not in ("lead_time", "level")]
+            da_line = da_metric.mean(dim=reduce_dims, skipna=True) if reduce_dims else da_metric
+            da_line = _persist_if_lazy_dataarray(da_line)
+            if metric_name == "CRPS":
+                crps_by_lead_cache[display_var] = da_line
+            else:
+                ssr_by_lead_cache[display_var] = da_line
 
     if ssr_rows_summary:
         ssr_df_summary = pd.DataFrame(ssr_rows_summary).groupby("variable", as_index=False).mean()
@@ -1585,44 +1643,9 @@ def run_probabilistic_wbx(
     date_str = extract_date_from_dataset(ds_target) if save_fig else ""
 
     # --- CRPS outputs from WBX (single CRPS computation path) ---
-    crps_summary_rows: list[dict[str, Any]] = []
-    crps_summary_rows_per_level: list[dict[str, Any]] = []
-
     crps_summary_source = results_spatial
     if not any(str(name).startswith("CRPS") for name in crps_summary_source.data_vars):
         crps_summary_source = results_temporal
-
-    for var_name, da_metric in crps_summary_source.data_vars.items():
-        if not str(var_name).startswith("CRPS"):
-            continue
-
-        display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
-        da_global = da_metric
-        red_dims_global = list(da_global.dims)
-        global_val = (
-            da_global.mean(dim=red_dims_global, skipna=True) if red_dims_global else da_global
-        )
-        crps_summary_rows.append(
-            {
-                "variable": display_var,
-                "CRPS": _to_python_float(global_val),
-            }
-        )
-
-        if "level" in da_global.dims:
-            red_dims_level = [d for d in da_global.dims if d != "level"]
-            da_per_level = (
-                da_global.mean(dim=red_dims_level, skipna=True) if red_dims_level else da_global
-            )
-            for lvl in da_per_level["level"].values:
-                val = _to_python_float(da_per_level.sel(level=lvl))
-                crps_summary_rows_per_level.append(
-                    {
-                        "variable": display_var,
-                        "level": int(lvl) if hasattr(lvl, "item") else lvl,
-                        "CRPS": val,
-                    }
-                )
 
     if not crps_summary_rows:
         try:
@@ -1707,8 +1730,16 @@ def run_probabilistic_wbx(
 
             # Per-lead line and optional map grid
             if "lead_time" in da.dims and int(da.sizes.get("lead_time", 0)) > 1:
-                reduce_for_line = [d for d in da.dims if d not in ("lead_time",)]
-                crps_line = da.mean(dim=reduce_for_line, skipna=True) if reduce_for_line else da
+                if display_var in crps_by_lead_cache:
+                    da_cached = crps_by_lead_cache[display_var]
+                    crps_line = (
+                        da_cached.sel(level=lvl, drop=True)
+                        if lvl is not None and "level" in da_cached.dims
+                        else da_cached
+                    )
+                else:
+                    reduce_for_line = [d for d in da.dims if d not in ("lead_time",)]
+                    crps_line = da.mean(dim=reduce_for_line, skipna=True) if reduce_for_line else da
 
                 leads = crps_line["lead_time"].values
                 if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
@@ -1909,25 +1940,6 @@ def run_probabilistic_wbx(
                 )
                 save_figure(fig, out_png, module="probabilistic")
 
-    ssr_rows_per_level: list[dict[str, Any]] = []
-    for var_name, da_metric in results_temporal.data_vars.items():
-        if not str(var_name).startswith("SSR") or "level" not in da_metric.dims:
-            continue
-        variable = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
-        red_dims = [d for d in da_metric.dims if d != "level"]
-        da_level = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
-        for lvl in da_level["level"].values:
-            val = _to_python_float(da_level.sel(level=lvl))
-            if val is None:
-                continue
-            ssr_rows_per_level.append(
-                {
-                    "variable": variable,
-                    "level": int(lvl) if hasattr(lvl, "item") else lvl,
-                    "SSR": float(val),
-                }
-            )
-
     if ssr_rows_per_level:
         ssr_df_per_level = pd.DataFrame(ssr_rows_per_level)
         ssr_csv_per_level = section / build_output_filename(
@@ -1942,24 +1954,17 @@ def run_probabilistic_wbx(
         )
         save_dataframe(ssr_df_per_level, ssr_csv_per_level, index=False, module="probabilistic")
 
-    for var_name in results_temporal.data_vars:
-        if not str(var_name).startswith("SSR"):
-            continue
-
-        da_base = results_temporal[var_name]
-        display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
+    for display_var, da_line_base in ssr_by_lead_cache.items():
         levels = [None]
-        if "level" in da_base.dims:
-            levels = list(da_base["level"].values)
+        if "level" in da_line_base.dims:
+            levels = list(da_line_base["level"].values)
 
         for lvl in levels:
-            da = da_base.sel(level=lvl, drop=True) if lvl is not None else da_base
-
-            if "lead_time" not in da.dims or da.sizes["lead_time"] <= 1:
-                continue
-
-            reduce_dims = [d for d in da.dims if d != "lead_time"]
-            da_line = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+            da_line = (
+                da_line_base.sel(level=lvl, drop=True)
+                if lvl is not None and "level" in da_line_base.dims
+                else da_line_base
+            )
 
             leads = da_line["lead_time"].values
             if np.issubdtype(np.asarray(leads).dtype, np.timedelta64):
@@ -1984,26 +1989,14 @@ def run_probabilistic_wbx(
     # --- Plotting SSR (Temporal and Spatial) ---
     if save_fig:
         # Plot Temporal (Time Series)
-        # We use results_temporal because it preserves the time dimension
-        for var_name in results_temporal.data_vars:
-            if not str(var_name).startswith("SSR"):
-                continue
-
-            da_base = results_temporal[var_name]
-            display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
+        # Reuse pre-reduced by-lead cache from the single WBX pass.
+        for display_var, da_base in ssr_by_lead_cache.items():
             levels = [None]
             if "level" in da_base.dims:
                 levels = list(da_base["level"].values)
 
             for lvl in levels:
                 da = da_base.sel(level=lvl, drop=True) if lvl is not None else da_base
-
-                # Skip if lead_time dimension is size <= 1
-                if "lead_time" in da.dims and da.sizes["lead_time"] <= 1:
-                    continue
-
-                reduce_dims = [d for d in da.dims if d != "lead_time"]
-                da = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
 
                 # Plot
                 fig, ax = plt.subplots(figsize=(10, 6))
