@@ -1279,7 +1279,6 @@ def run_probabilistic_wbx(
     )
     var_batch_size = max(1, min(int(dynamic_batch), max(1, len(common_vars))))
 
-    # CSV summaries using WBX metrics (UnbiasedSpreadSkillRatio)
     # Use .sizes (preferred) instead of .dims.get for forward compatibility
     m_ens = int(getattr(ds_pred, "sizes", {}).get("ensemble", 0))
     is_multi_lead = "lead_time" in ds_pred.dims and ds_pred.sizes["lead_time"] > 1
@@ -1289,25 +1288,6 @@ def run_probabilistic_wbx(
             "WBX probabilistic metrics require ensemble size >=2 (UnbiasedSpreadSkillRatio). "
             f"Found ensemble size {m_ens}."
         )
-
-    if not is_multi_lead:
-        ssr_metric = RobustUnbiasedSpreadSkillRatio(ensemble_dim="ensemble")
-        try:
-            ssr_df = _wbx_metric_to_df_batched(
-                ssr_metric,
-                ds_prediction=ds_pred,
-                ds_target=ds_targ,
-                value_col="SSR",
-                var_batch_size=var_batch_size,
-            )
-        except Exception as e:  # pragma: no cover - defensive clarity wrapper
-            raise RuntimeError(
-                "Failed computing UnbiasedSpreadSkillRatio via WeatherBenchX. "
-                "Ensure ensemble size >=2 and variables overlap. Original error: " + str(e)
-            ) from e
-    else:
-        c.print("[probabilistic] Skipping average SSR summary (lead_time > 1 present).")
-        ssr_df = pd.DataFrame()
 
     # Extract time ranges for naming
     def _extract_init_range(ds: xr.Dataset):
@@ -1343,19 +1323,6 @@ def run_probabilistic_wbx(
     lead_range = _extract_lead_range(ds_prediction)
 
     ens_token_prob = ensemble_mode_to_token("prob")
-
-    if not ssr_df.empty:
-        ssr_csv = section / build_output_filename(
-            metric="spread_skill_ratio",
-            variable=None,
-            level=None,
-            qualifier=None,
-            init_time_range=init_range,
-            lead_time_range=lead_range,
-            ensemble=ens_token_prob,
-            ext="csv",
-        )
-        save_dataframe(ssr_df, ssr_csv, module="probabilistic")
 
     # Single WBX aggregation pass: reduce init_time and retain lead_time + spatial fields.
     seasonal = (
@@ -1409,6 +1376,7 @@ def run_probabilistic_wbx(
         use_init_time_batches = False
 
     jobs_meta: list[dict[str, Any]] = []
+    jobs_per_group: dict[tuple[str, Any], int] = {}
     for variable_batch in variable_batches:
         ds_pred_batch = ds_pred[variable_batch]
         ds_targ_batch = ds_targ[variable_batch]
@@ -1463,6 +1431,20 @@ def run_probabilistic_wbx(
                         "result": batch_result,
                     }
                 )
+                group_key = (str(variable), level_val)
+                jobs_per_group[group_key] = jobs_per_group.get(group_key, 0) + 1
+
+    sorted_groups = sorted(
+        jobs_per_group.items(),
+        key=lambda item: (str(item[0][0]), "" if item[0][1] is None else str(item[0][1])),
+    )
+    total_groups = len(sorted_groups)
+    for idx, ((var_name, level_val), group_jobs) in enumerate(sorted_groups, start=1):
+        level_suffix = "" if level_val is None else f" level={level_val}"
+        c.print(
+            "[Dask] WBX progress "
+            f"{idx}/{total_groups}: variable={var_name}{level_suffix} jobs={group_jobs}."
+        )
 
     c.print("[Dask] Computing WBX probabilistic metrics: " f"prepared_jobs={len(jobs_meta)}.")
 
@@ -1539,31 +1521,29 @@ def run_probabilistic_wbx(
     results_spatial = xr.merge(spatial_parts, compat="override") if spatial_parts else xr.Dataset()
     results_temporal = results_spatial
 
-    if ssr_df.empty:
-        ssr_rows_fallback: list[dict[str, Any]] = []
-        for var_name, da_metric in results_temporal.data_vars.items():
-            if not str(var_name).startswith("SSR"):
-                continue
-            display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
-            red_dims = list(da_metric.dims)
-            da_global = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
-            ssr_rows_fallback.append({"variable": display_var, "SSR": _to_python_float(da_global)})
+    ssr_rows_summary: list[dict[str, Any]] = []
+    for var_name, da_metric in results_temporal.data_vars.items():
+        if not str(var_name).startswith("SSR"):
+            continue
+        display_var = str(var_name).split(".", 1)[1] if "." in str(var_name) else str(var_name)
+        red_dims = list(da_metric.dims)
+        da_global = da_metric.mean(dim=red_dims, skipna=True) if red_dims else da_metric
+        ssr_rows_summary.append({"variable": display_var, "SSR": _to_python_float(da_global)})
 
-        if ssr_rows_fallback:
-            ssr_df_fallback = (
-                pd.DataFrame(ssr_rows_fallback).groupby("variable", as_index=False).mean()
-            )
-            ssr_csv = section / build_output_filename(
-                metric="spread_skill_ratio",
-                variable=None,
-                level=None,
-                qualifier="averaged" if (init_range or lead_range) else None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token_prob,
-                ext="csv",
-            )
-            save_dataframe(ssr_df_fallback, ssr_csv, index=False, module="probabilistic")
+    if ssr_rows_summary:
+        ssr_df_summary = pd.DataFrame(ssr_rows_summary).groupby("variable", as_index=False).mean()
+        ssr_qualifier = "averaged" if (is_multi_lead and (init_range or lead_range)) else None
+        ssr_csv = section / build_output_filename(
+            metric="spread_skill_ratio",
+            variable=None,
+            level=None,
+            qualifier=ssr_qualifier,
+            init_time_range=init_range,
+            lead_time_range=lead_range,
+            ensemble=ens_token_prob,
+            ext="csv",
+        )
+        save_dataframe(ssr_df_summary, ssr_csv, index=False, module="probabilistic")
 
     # Save individual metric/variable combinations from the single WBX pass.
     if save_npz:
