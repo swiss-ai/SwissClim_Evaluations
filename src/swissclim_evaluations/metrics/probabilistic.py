@@ -1244,7 +1244,7 @@ def run_probabilistic_wbx(
     """Compute WBX temporal/spatial metrics and CSV summaries.
 
     Outputs (under out_root/probabilistic):
-    - spread_skill_ratio.csv
+    - ssr.csv
     - crps_ensemble.csv
     - prob_metrics_temporal.npz
     - prob_metrics_spatial.npz
@@ -1534,7 +1534,7 @@ def run_probabilistic_wbx(
         ssr_df_summary = pd.DataFrame(ssr_rows_summary).groupby("variable", as_index=False).mean()
         ssr_qualifier = "averaged" if (is_multi_lead and (init_range or lead_range)) else None
         ssr_csv = section / build_output_filename(
-            metric="spread_skill_ratio",
+            metric="ssr",
             variable=None,
             level=None,
             qualifier=ssr_qualifier,
@@ -1931,7 +1931,7 @@ def run_probabilistic_wbx(
     if ssr_rows_per_level:
         ssr_df_per_level = pd.DataFrame(ssr_rows_per_level)
         ssr_csv_per_level = section / build_output_filename(
-            metric="spread_skill_ratio",
+            metric="ssr",
             variable=None,
             level=None,
             qualifier="per_level",

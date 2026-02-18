@@ -97,7 +97,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
     "prob": (
         "probabilistic/crps_summary*.csv",
         "probabilistic/crps_line*.csv",
-        "probabilistic/spread_skill_ratio*.csv",
+        "probabilistic/ssr*.csv",
         "probabilistic/ssr_line*.csv",
         "probabilistic/pit_hist*.npz",
         "probabilistic/crps_map_*.npz",

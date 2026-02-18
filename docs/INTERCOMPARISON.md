@@ -96,8 +96,8 @@ What gets combined:
         *   `crps_summary_combined.csv`: Combined CRPS summary.
         *   `crps_summary_per_level_combined.csv`: Combined per-level CRPS summary.
         *   `temporal_metrics_combined.csv`: Combined temporal probabilistic metrics from `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv`.
-        *   `spread_skill_ratio_combined.csv`: Combined Spread-Skill Ratio.
-        *   `spread_skill_ratio_per_level_combined.csv`: Combined per-level Spread-Skill Ratio.
+        *   `ssr_combined.csv`: Combined Spread-Skill Ratio.
+        *   `ssr_per_level_combined.csv`: Combined per-level Spread-Skill Ratio.
         *   `crps_ensemble_combined.csv`: Combined CRPS ensemble metrics.
     *   **Plots**:
         *   `temporal_<metric>_<variable>[_level<lvl>]_compare.png`: Line plots of probabilistic metrics vs lead time.

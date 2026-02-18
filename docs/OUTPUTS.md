@@ -186,8 +186,8 @@ ssr_line_temperature_500_by_lead_ensprob.csv        # 3D variable with level tok
 Summary tables:
 
 ```text
-spread_skill_ratio_ensprob.csv
-spread_skill_ratio_per_level_ensprob.csv
+ssr_ensprob.csv
+ssr_per_level_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 crps_summary_per_level_ensprob.csv
@@ -247,8 +247,8 @@ Intercomparison outputs are written under `output/intercomparison/<module>/` and
 - **probabilistic**
 	- `probabilistic/crps_summary_combined.csv`
 	- `probabilistic/crps_summary_per_level_combined.csv`
-	- `probabilistic/spread_skill_ratio_combined.csv`
-	- `probabilistic/spread_skill_ratio_per_level_combined.csv`
+	- `probabilistic/ssr_combined.csv`
+	- `probabilistic/ssr_per_level_combined.csv`
 	- `probabilistic/crps_ensemble_combined.csv`
 	- `probabilistic/temporal_metrics_combined.csv`
 	- `probabilistic/temporal_*_compare.png`
