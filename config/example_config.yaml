@@ -275,7 +275,7 @@ performance:
   # - balanced: moderate parallelism.
   # - fast: higher parallelism and throughput.
   # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
-  #   safe=96x2 workers/threads, balanced=128x2, fast=128x2
+  #   safe=16x1 workers/threads, balanced=32x1, fast=64x1
   #   with memory_limit 4GiB / 3GiB / 3GiB per worker.
   dask_profile: safe
 
@@ -284,8 +284,8 @@ performance:
   # quiet_dask_logs: false
 
   # Optional explicit overrides for the profile above:
-  # dask_n_workers: 96
-  # dask_threads_per_worker: 2
+  # dask_n_workers: 16
+  # dask_threads_per_worker: 1
   # dask_processes: true
   # dask_memory_limit: 4GiB
 
@@ -325,9 +325,9 @@ performance:
   # - split flags + block sizes decide job shape/count
   # - batch_size decides how many jobs are executed per Dask batch
   # If omitted, profile-aware defaults are used to reduce tiny-job overhead:
-  # - safe: lead_time_block_size=4, init_time_block_size=8
-  # - balanced: lead_time_block_size=4, init_time_block_size=8
-  # - fast: lead_time_block_size=4, init_time_block_size=8
+  # - safe: lead_time_block_size=32, init_time_block_size=64
+  # - balanced: lead_time_block_size=32, init_time_block_size=64
+  # - fast: lead_time_block_size=32, init_time_block_size=64
   # Explicit values below always override profile defaults.
-  # lead_time_block_size: 4
-  # init_time_block_size: 8
+  # lead_time_block_size: 32
+  # init_time_block_size: 64

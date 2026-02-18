@@ -1286,28 +1286,28 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
     profile = str(performance_cfg.get("dask_profile", "safe")).strip().lower()
 
     if is_gh200_class:
-        safe_workers = max(1, min(cpu_count, 96))
-        balanced_workers = max(1, min(cpu_count, 128))
-        fast_workers = max(1, min(cpu_count, 128))
+        safe_workers = max(1, min(cpu_count, 16))
+        balanced_workers = max(1, min(cpu_count, 32))
+        fast_workers = max(1, min(cpu_count, 64))
         gh200_defaults = {
             "safe": {
                 "profile": "safe",
                 "n_workers": safe_workers,
-                "threads_per_worker": 2,
+                "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "4GiB",
             },
             "balanced": {
                 "profile": "balanced",
                 "n_workers": balanced_workers,
-                "threads_per_worker": 2,
+                "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "3GiB",
             },
             "fast": {
                 "profile": "fast",
                 "n_workers": fast_workers,
-                "threads_per_worker": 2,
+                "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "3GiB",
             },
@@ -1317,7 +1317,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         if profile == "fast":
             defaults = {
                 "profile": "fast",
-                "n_workers": max(1, min(cpu_count, 24)),
+                "n_workers": max(1, min(cpu_count, 64)),
                 "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "auto",
@@ -1325,7 +1325,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         elif profile == "balanced":
             defaults = {
                 "profile": "balanced",
-                "n_workers": max(1, min(cpu_count, 18)),
+                "n_workers": max(1, min(cpu_count, 32)),
                 "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "auto",
@@ -1333,7 +1333,7 @@ def _resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
         else:
             defaults = {
                 "profile": "safe",
-                "n_workers": max(1, min(cpu_count, 8)),
+                "n_workers": max(1, min(cpu_count, 16)),
                 "threads_per_worker": 1,
                 "processes": True,
                 "memory_limit": "auto",

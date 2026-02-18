@@ -607,14 +607,14 @@ def _profile_default_block_size(
     profile = str(perf.get("dask_profile", "safe") or "safe").strip().lower()
 
     lead_profile_defaults = {
-        "safe": 4,
-        "balanced": 4,
-        "fast": 4,
+        "safe": 32,
+        "balanced": 32,
+        "fast": 32,
     }
     init_profile_defaults = {
-        "safe": 8,
-        "balanced": 8,
-        "fast": 8,
+        "safe": 64,
+        "balanced": 64,
+        "fast": 64,
     }
 
     if str(dimension).lower() == "lead_time":
