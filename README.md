@@ -39,6 +39,7 @@ We recommend the container workflow for fastest, reproducible setup.
 
     1.  List your config files in `eval_configs.txt` (one absolute path per line).
     1.  Adjust `--nodes` in the SBATCH directives to number of config files / 4.
+    1.  Practical tuning: running 2–3 evals concurrently on one node usually works well; the main bottleneck is system RAM, so reduce concurrency if jobs spill or OOM.
     1.  Submit: `sbatch launchscript_multi.sh`
 
     Both scripts automatically handle container setup, Dask spillover directories, and will render

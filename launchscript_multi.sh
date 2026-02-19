@@ -5,15 +5,26 @@
 #SBATCH --time=06:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=32
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=64
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
 # 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
+# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+LOG_DIR="${PROJECT_ROOT}/logs"
+
+cd "$PROJECT_ROOT" || {
+    echo "ERROR: Failed to change directory to project root: $PROJECT_ROOT"
+    exit 1
+}
+
 # Override PYTHONPATH to include src directory (latest code changes)
 # export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
 
@@ -24,26 +35,23 @@ EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 export DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
 mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 
-# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
-
 # Disable rich/ANSI output so SLURM log files remain clean
 export SWISSCLIM_COLOR=never
 export PYTHONUNBUFFERED=1
 
 # Create logs directory if it doesn't exist
-mkdir -p logs
+mkdir -p "$LOG_DIR"
 
 # --- Step 1: Parallel Evaluation Jobs ---
 echo "Starting parallel evaluation jobs..."
 
 # List of evaluation configs
 # Read from shared file
-if [ ! -f "eval_configs.txt" ]; then
+if [ ! -f "${PROJECT_ROOT}/eval_configs.txt" ]; then
     echo "Error: eval_configs.txt not found!"
     exit 1
 fi
-mapfile -t EVAL_CONFIGS < eval_configs.txt
+mapfile -t EVAL_CONFIGS < "${PROJECT_ROOT}/eval_configs.txt"
 
 # Filter out empty lines
 VALID_CONFIGS=()
@@ -52,8 +60,40 @@ for config in "${EVAL_CONFIGS[@]}"; do
 done
 EVAL_CONFIGS=("${VALID_CONFIGS[@]}")
 
+# Resolve config paths robustly (absolute or relative to submit directory)
+RESOLVED_CONFIGS=()
+for config in "${EVAL_CONFIGS[@]}"; do
+    [ -z "$config" ] && continue
+    resolved=""
+    if [ -f "$config" ]; then
+        resolved=$(python - <<'PY' "$config"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)
+    elif [ -f "${SUBMIT_DIR}/${config}" ]; then
+        resolved=$(python - <<'PY' "${SUBMIT_DIR}/${config}"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)
+    elif [ -f "${PROJECT_ROOT}/${config}" ]; then
+        resolved=$(python - <<'PY' "${PROJECT_ROOT}/${config}"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)
+    else
+        echo "ERROR: Config file not found: $config"
+        echo "Checked: '$config', '${SUBMIT_DIR}/${config}', '${PROJECT_ROOT}/${config}'"
+        exit 1
+    fi
+    RESOLVED_CONFIGS+=("$resolved")
+done
+EVAL_CONFIGS=("${RESOLVED_CONFIGS[@]}")
+
 # Create multi-prog config file
-MP_CONF="eval_multiprog.conf"
+MP_CONF="${PROJECT_ROOT}/eval_multiprog.conf"
 rm -f "$MP_CONF"
 
 idx=0
@@ -63,8 +103,8 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    out_log="logs/${job_name}.out"
-    err_log="logs/${job_name}.err"
+    out_log="${LOG_DIR}/${job_name}.out"
+    err_log="${LOG_DIR}/${job_name}.err"
 
     # Map task ID to command.
     # We append the exit code to the .out file to avoid creating separate status files
@@ -91,8 +131,8 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    out_log="logs/${job_name}.out"
-    err_log="logs/${job_name}.err"
+    out_log="${LOG_DIR}/${job_name}.out"
+    err_log="${LOG_DIR}/${job_name}.err"
 
     # Check status from log file
     status_code=""
@@ -134,8 +174,8 @@ for config in "${EVAL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    out_log="logs/${job_name}.out"
-    err_log="logs/${job_name}.err"
+    out_log="${LOG_DIR}/${job_name}.out"
+    err_log="${LOG_DIR}/${job_name}.err"
 
     if [ -f "$out_log" ] || [ -f "$err_log" ]; then
         # Extract output_root
@@ -152,7 +192,7 @@ for config in "${EVAL_CONFIGS[@]}"; do
             fi
 
             # Copy dask log if it exists (using idx as PROCID)
-            dask_log="logs/dask_distributed_${SLURM_JOB_ID}_${idx}.log"
+            dask_log="${LOG_DIR}/dask_distributed_${SLURM_JOB_ID}_${idx}.log"
             if [ -f "$dask_log" ]; then
                 cp "$dask_log" "$outdir/${job_name}_dask.log"
                 echo "Copied $dask_log to $outdir/"
@@ -175,8 +215,7 @@ cat <<'EOF' > render_single_notebook.sh
 
 config=$1
 logfile=$2
-shift 2
-notebooks=("$@")
+project_root=$3
 
 # Redirect all output to logfile
 exec > "$logfile" 2>&1
@@ -204,9 +243,50 @@ fi
 
 echo "Processing notebooks for config: $config -> $outdir"
 
+# Select notebooks based on available outputs
+notebooks_raw=$(python - <<'PY' "$config"
+import yaml
+from pathlib import Path
+import sys
+
+cfg_path = Path(sys.argv[1])
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+outdir_val = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+outdir = Path(outdir_val)
+
+def has_files(p: Path) -> bool:
+    return p.exists() and any(x.is_file() for x in p.rglob("*"))
+
+notebooks: list[str] = []
+if has_files(outdir / "deterministic"):
+    notebooks.append("deterministic_verification.ipynb")
+if has_files(outdir / "probabilistic"):
+    notebooks.append("probabilistic_verification.ipynb")
+
+has_intercompare = (
+    has_files(outdir / "intercomparison")
+    or any(outdir.rglob("*_combined*.csv"))
+    or any(outdir.rglob("*_compare*.png"))
+)
+if has_intercompare:
+    notebooks.append("model_intercomparison.ipynb")
+
+print(" ".join(notebooks))
+PY
+)
+
+if [ -z "$notebooks_raw" ]; then
+    echo "No matching deterministic/probabilistic/intercomparison outputs found; skipping notebook rendering."
+    echo "NOTEBOOK_RENDER_STATUS: SUCCESS"
+    exit 0
+fi
+
+read -r -a notebooks <<< "$notebooks_raw"
+echo "Selected notebooks: ${notebooks[*]}"
+
 failed_notebooks=()
 for nb_name in "${notebooks[@]}"; do
-    nb="notebooks/${nb_name}"
+    nb="${project_root}/notebooks/${nb_name}"
     if [ ! -f "$nb" ]; then
         echo "Notebook not found: $nb"
         continue
@@ -239,6 +319,7 @@ EOF
 
 # Create multi-prog config for notebooks
 MP_NB_CONF="notebook_multiprog.conf"
+MP_NB_CONF="${PROJECT_ROOT}/notebook_multiprog.conf"
 rm -f "$MP_NB_CONF"
 
 task_id=0
@@ -249,7 +330,7 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
 
-    echo "$task_id bash render_single_notebook.sh $config logs/notebook_${job_name}.log deterministic_verification.ipynb" >> "$MP_NB_CONF"
+    echo "$task_id bash render_single_notebook.sh $config ${LOG_DIR}/notebook_${job_name}.log ${PROJECT_ROOT}" >> "$MP_NB_CONF"
     ((task_id++))
 done
 
@@ -270,7 +351,7 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
-    log_file="logs/notebook_${job_name}.log"
+    log_file="${LOG_DIR}/notebook_${job_name}.log"
 
     if [ -f "$log_file" ]; then
         status_line=$(grep "NOTEBOOK_RENDER_STATUS:" "$log_file" | tail -n 1)

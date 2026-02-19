@@ -1,1 +1,2 @@
-/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml
+config/example_config.yaml
+config/debug_run.yaml

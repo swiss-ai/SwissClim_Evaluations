@@ -83,6 +83,8 @@
    ```
 
    Notes:
+   - A good starting point is 2–3 concurrent eval runs per node with `launchscript_multi.sh`; increase only if memory headroom is clear.
+   - The dominant bottleneck is typically system memory (RAM), not CPU.
    - `launchscript_multi.sh` reads `eval_configs.txt` and spawns one task per config via `srun --multi-prog`.
    - Keep `#SBATCH --ntasks-per-node` aligned with the number of configs you want to run concurrently.
    - Each task writes its own logs under `logs/` and outputs under each config's `paths.output_root`.

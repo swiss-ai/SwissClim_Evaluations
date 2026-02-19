@@ -2,7 +2,7 @@
 #SBATCH --job-name=swissclim-eval-single
 #SBATCH --output=logs/swissclim_single_%j.out
 #SBATCH --error=logs/swissclim_single_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=06:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
 #SBATCH --nodes=1
@@ -10,10 +10,55 @@
 
 # Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+LOG_DIR="${PROJECT_ROOT}/logs"
+
+cd "$PROJECT_ROOT" || {
+    echo "ERROR: Failed to change directory to project root: $PROJECT_ROOT"
+    exit 1
+}
 
 # -------------------------------------------------------------
 # CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml"
+CONFIG_FILE="SwissClim_Evaluations/config/example_config.yaml"
+
+# Resolve CONFIG_FILE robustly (absolute or relative to submit directory)
+resolve_config_path() {
+    local cfg="$1"
+    if [ -z "$cfg" ]; then
+        return 1
+    fi
+    if [ -f "$cfg" ]; then
+        python - <<'PY' "$cfg"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+        return 0
+    fi
+    if [ -f "${SUBMIT_DIR}/${cfg}" ]; then
+        python - <<'PY' "${SUBMIT_DIR}/${cfg}"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+        return 0
+    fi
+    if [ -f "${PROJECT_ROOT}/${cfg}" ]; then
+        python - <<'PY' "${PROJECT_ROOT}/${cfg}"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+        return 0
+    fi
+    return 1
+}
+
+if ! CONFIG_FILE_RESOLVED="$(resolve_config_path "$CONFIG_FILE")"; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
+    echo "Checked: '$CONFIG_FILE', '${SUBMIT_DIR}/${CONFIG_FILE}', '${PROJECT_ROOT}/${CONFIG_FILE}'"
+    exit 1
+fi
+CONFIG_FILE="$CONFIG_FILE_RESOLVED"
 
 # -------------------------------------------------------------
 # Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
@@ -36,7 +81,7 @@ export PYTHONUNBUFFERED=1
 
 
 # Create logs directory if it doesn't exist
-mkdir -p logs
+mkdir -p "$LOG_DIR"
 
 
 # Generate robust job name from config (parent_dir + filename)
@@ -60,9 +105,9 @@ OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_FILE')); print
 
 if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
     echo "Copying logs to $OUTDIR"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
-    cp "logs/dask_distributed_${SLURM_JOB_ID}_0.log" "$OUTDIR/${job_name}_dask.log" 2>/dev/null || \
+    cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
+    cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
+    cp "${LOG_DIR}/dask_distributed_${SLURM_JOB_ID}_0.log" "$OUTDIR/${job_name}_dask.log" 2>/dev/null || \
     echo "Could not copy dask log"
 fi
 
@@ -81,6 +126,7 @@ cat <<'EOF' > render_single_notebook.sh
 # Install missing dependencies for notebook rendering
 
 CONFIG_PATH="$1"
+PROJECT_ROOT="$2"
 
 # Extract output_root using python
 OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_PATH')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
@@ -97,11 +143,49 @@ fi
 
 echo "Output directory: $OUTDIR"
 
-# List of notebooks to render
-NOTEBOOKS=("deterministic_verification.ipynb" "probabilistic_verification.ipynb")
+# Select notebooks based on available outputs
+NOTEBOOKS_RAW=$(python - <<'PY' "$CONFIG_PATH"
+import yaml
+from pathlib import Path
+import sys
+
+cfg_path = Path(sys.argv[1])
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+outdir_val = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+outdir = Path(outdir_val)
+
+def has_files(p: Path) -> bool:
+    return p.exists() and any(x.is_file() for x in p.rglob("*"))
+
+notebooks: list[str] = []
+if has_files(outdir / "deterministic"):
+    notebooks.append("deterministic_verification.ipynb")
+if has_files(outdir / "probabilistic"):
+    notebooks.append("probabilistic_verification.ipynb")
+
+# Intercomparison artifacts are typically combined/compare outputs.
+has_intercompare = (
+    has_files(outdir / "intercomparison")
+    or any(outdir.rglob("*_combined*.csv"))
+    or any(outdir.rglob("*_compare*.png"))
+)
+if has_intercompare:
+    notebooks.append("model_intercomparison.ipynb")
+
+print(" ".join(notebooks))
+PY
+)
+
+if [ -z "$NOTEBOOKS_RAW" ]; then
+    echo "No matching deterministic/probabilistic/intercomparison outputs found; skipping notebook rendering."
+    exit 0
+fi
+
+read -r -a NOTEBOOKS <<< "$NOTEBOOKS_RAW"
+echo "Selected notebooks: ${NOTEBOOKS[*]}"
 
 for nb_name in "${NOTEBOOKS[@]}"; do
-    nb="notebooks/${nb_name}"
+    nb="${PROJECT_ROOT}/notebooks/${nb_name}"
     if [ ! -f "$nb" ]; then
         echo "Notebook not found: $nb"
         continue
@@ -126,7 +210,7 @@ EOF
 
 # Run the rendering script
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    bash render_single_notebook.sh "$CONFIG_FILE"
+    bash render_single_notebook.sh "$CONFIG_FILE" "$PROJECT_ROOT"
 
 # Cleanup
 rm render_single_notebook.sh
