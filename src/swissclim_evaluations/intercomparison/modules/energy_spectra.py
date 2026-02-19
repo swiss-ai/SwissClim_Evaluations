@@ -533,4 +533,72 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
                 plt.close(fig)
 
+            # Optional compact compare: one delta spectrogram panel per model
+            # Δlog10 energy = log10(model) - log10(target)
+            if "energy_target" in payloads[0]:
+                try:
+                    x_hours = np.asarray(lead_hours, dtype=float)
+                except Exception:
+                    x_hours = np.arange(len(lead_hours), dtype=float)
+
+                target_energy = np.asarray(payloads[0]["energy_target"])
+                if target_energy.ndim == 2 and target_energy.shape[1] == len(wavenumber):
+                    eps = 1e-10
+                    diffs: list[np.ndarray] = []
+                    for pay in payloads:
+                        pred_energy = np.asarray(pay["energy_prediction"])
+                        if pred_energy.shape != target_energy.shape:
+                            continue
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            diff = np.log10(pred_energy + eps) - np.log10(target_energy + eps)
+                        diffs.append(diff)
+
+                    if diffs:
+                        vmax = float(np.nanmax(np.abs(np.stack(diffs, axis=0))))
+                        if np.isfinite(vmax) and vmax > 0:
+                            ncols = len(diffs)
+                            fig, axes = plt.subplots(
+                                1,
+                                ncols,
+                                figsize=(max(5, 4 * ncols), 4.5),
+                                dpi=160,
+                                squeeze=False,
+                                sharey=True,
+                            )
+                            plotted = False
+                            for j, (ax, lab, diff) in enumerate(
+                                zip(axes[0], labels, diffs, strict=False)
+                            ):
+                                im = ax.pcolormesh(
+                                    x_hours,
+                                    wavenumber,
+                                    diff.T,
+                                    shading="auto",
+                                    cmap="coolwarm",
+                                    vmin=-vmax,
+                                    vmax=vmax,
+                                )
+                                ax.set_title(lab, fontsize=9)
+                                ax.set_xlabel("Lead Time [h]")
+                                if j == 0:
+                                    ax.set_ylabel("Wavenumber (cycles/km)")
+                                plotted = plotted or im is not None
+
+                            if plotted:
+                                cbar = fig.colorbar(
+                                    im, ax=axes.ravel().tolist(), orientation="vertical"
+                                )
+                                cbar.set_label("Δ log10 energy (model - target)")
+                                fig.suptitle(
+                                    f"Energy Spectrogram Δ — {format_variable_name(str(variable))}",
+                                    fontsize=11,
+                                )
+                                out_spec = dst / base.replace(
+                                    ".npz", "_spectrogram_delta_compare.png"
+                                )
+                                plt.tight_layout()
+                                plt.savefig(out_spec, bbox_inches="tight", dpi=200)
+                                c.success(f"Saved {out_spec.relative_to(out_root)}")
+                            plt.close(fig)
+
         c.success(f"Saved per-lead energy spectra plots to {dst.relative_to(out_root)}")

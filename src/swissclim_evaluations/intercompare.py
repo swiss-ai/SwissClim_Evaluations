@@ -80,11 +80,13 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
     "hist": ("histograms/hist_*.npz",),
     "kde": (
         "wd_kde/wd_kde_*.npz",
+        "wd_kde/wd_kde_evolve_*_ridgeline_data*.npz",
         "wd_kde/wd_kde_wasserstein_averaged_*.csv",
     ),
     "spectra": (
         "energy_spectra/energy_spectrum_*.npz",
         "energy_spectra/energy_spectra_per_lead_*.npz",
+        "energy_spectra/energy_spectra_per_lead_*_bundle*.npz",
         "energy_spectra/energy_ratios_*.csv",
         "energy_spectra/energy_ratios_3d_*.csv",
     ),
@@ -199,7 +201,7 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
         report_per_level = (
             bool(spec_cfg.get("report_per_level", True)) if isinstance(spec_cfg, dict) else True
         )
-        return f"LSD; report_per_level={report_per_level}", "n/a"
+        return f"LSD (+ Δ spectrogram compare); report_per_level={report_per_level}", "n/a"
     return "n/a", "n/a"
 
 

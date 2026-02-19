@@ -47,6 +47,7 @@ What gets combined:
     *   **Plots**:
         *   `wd_kde_*global*_compare.png`: Global normalized KDE comparison.
         *   `wd_kde_*latbands*_compare.png`: Standardized KDE overlays by latitude band (DS + models).
+        *   `wd_kde_evolve_*_ridgeline_compare.png`: Multi-model ridgeline KDE evolution compare (target + models).
     *   **CSVs**:
         *   `wd_kde_wasserstein_averaged_combined.csv`: Averaged Wasserstein distance metrics.
 
@@ -55,6 +56,7 @@ What gets combined:
         *   `*_compare.png`: Overlays of DS baseline + model spectra per variable (and per level).
         *   `*_compare_ratio.png`: Ratio of Model/Target energy density vs wavenumber.
         *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
+        *   `energy_spectra_per_lead_*_bundle*_spectrogram_delta_compare.png`: Multi-model Δlog10(model-target) spectrogram compare.
     *   **CSVs**:
         *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
         *   `lsd_metrics_lead_time_combined.csv`: LSD metrics per lead time.

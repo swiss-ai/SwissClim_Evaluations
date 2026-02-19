@@ -232,10 +232,12 @@ Intercomparison outputs are written under `output/intercomparison/<module>/` and
 	- `histograms/*_compare.png`
 - **wd_kde**
 	- `wd_kde/*_compare.png`
+	- `wd_kde/*_ridgeline_compare.png`
 	- `wd_kde/wd_kde_wasserstein_averaged_combined.csv`
 - **energy_spectra**
 	- `energy_spectra/*_compare.png`
 	- `energy_spectra/*_ratio_compare.png`
+	- `energy_spectra/*_spectrogram_delta_compare.png`
 	- `energy_spectra/lsd_metrics_averaged_combined.csv`
 	- `energy_spectra/lsd_metrics_banded_averaged_combined.csv`
 	- `energy_spectra/lsd_metrics_per_level_combined.csv`
