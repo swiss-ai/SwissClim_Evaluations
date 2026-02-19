@@ -8,10 +8,14 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 
-# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
+# Resolve paths relative to the job submission directory when running under Slurm.
+# Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+PROJECT_ROOT="$SUBMIT_DIR"
+if [ ! -d "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+fi
 LOG_DIR="${PROJECT_ROOT}/logs"
 
 cd "$PROJECT_ROOT" || {
@@ -21,7 +25,7 @@ cd "$PROJECT_ROOT" || {
 
 # -------------------------------------------------------------
 # CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="SwissClim_Evaluations/config/example_config.yaml"
+CONFIG_FILE="config/example_config.yaml"
 
 # Resolve CONFIG_FILE robustly (absolute or relative to submit directory)
 resolve_config_path() {

@@ -14,10 +14,14 @@
 # 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
 # -------------------------------------------------------------
-# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
+# Resolve paths relative to the job submission directory when running under Slurm.
+# Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+PROJECT_ROOT="$SUBMIT_DIR"
+if [ ! -d "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+fi
 LOG_DIR="${PROJECT_ROOT}/logs"
 
 cd "$PROJECT_ROOT" || {
@@ -26,7 +30,7 @@ cd "$PROJECT_ROOT" || {
 }
 
 # Override PYTHONPATH to include src directory (latest code changes)
-# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH}"
 
 # -------------------------------------------------------------
 # DASK SCRATCH CONFIGURATION
