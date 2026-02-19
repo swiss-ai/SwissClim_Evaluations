@@ -686,12 +686,20 @@ def run(
                 # Filled model ridge (fallback to line if fill_between not available in test stubs)
                 if hasattr(ax_r, "fill_between"):
                     ax_r.fill_between(
-                        Y, i * offset, y_model, color=color, alpha=0.55, linewidth=0.0
+                        Y,
+                        i * offset,
+                        y_model,
+                        color=color,
+                        alpha=0.55,
+                        linewidth=0.0,
+                        label="Prediction" if i == 0 else None,
                     )
                 else:
-                    ax_r.plot(Y, y_model, color=color, lw=1.0)
+                    ax_r.plot(
+                        Y, y_model, color=color, lw=1.0, label="Prediction" if i == 0 else None
+                    )
                 # Target outline as thin black line for contrast
-                ax_r.plot(Y, y_target, color="black", lw=0.7)
+                ax_r.plot(Y, y_target, color="black", lw=0.7, label="Target" if i == 0 else None)
                 # Lead hour label
                 ax_r.text(Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8)
                 if hasattr(ax_r, "set_yticks"):
@@ -703,6 +711,7 @@ def run(
             ax_r.set_title(
                 f"KDE Evolution (Ridgeline): {format_variable_name(base_var)}{level_str}"
             )
+            ax_r.legend(loc="upper right", frameon=False)
 
             if save_fig:
                 qual = f"ridgeline{'_level' + str(lvl) if lvl is not None else ''}"

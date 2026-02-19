@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 
 from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
@@ -108,7 +109,7 @@ def intercompare_wd_kde(
                     ax.plot(y_eval, base_y + density_target[i], color=COLOR_GROUND_TRUTH, lw=1.1)
 
                 # Models in color with transparency
-                for mi, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                for mi, (_, pay) in enumerate(zip(labels, payloads, strict=False)):
                     dm = np.asarray(pay.get("density_model", []), dtype=float)
                     if dm.ndim == 2 and i < dm.shape[0]:
                         ax.plot(
@@ -117,7 +118,6 @@ def intercompare_wd_kde(
                             color=colors[mi],
                             alpha=0.35,
                             lw=0.9,
-                            label=lab if i == 0 else None,
                         )
 
                 ax.text(y_eval[-1] + (y_eval[1] - y_eval[0]) * 0.5, base_y + 0.02, f"{int(h)}h")
@@ -132,19 +132,15 @@ def intercompare_wd_kde(
             ax.set_yticks([])
 
             # Legend: target + models
-            handles, labels_leg = ax.get_legend_handles_labels()
-            if labels_leg:
-                target_proxy = plt.Line2D(
-                    [0], [0], color=COLOR_GROUND_TRUTH, lw=1.1, label="Target"
-                )
-                uniq = []
-                seen = set()
-                for hnd, lab in zip(handles, labels_leg, strict=False):
-                    if lab not in seen:
-                        uniq.append((hnd, lab))
-                        seen.add(lab)
-                legend_handles = [target_proxy] + [hnd for hnd, _ in uniq[:max_models_in_legend]]
-                legend_labels = ["Target"] + [lab for _, lab in uniq[:max_models_in_legend]]
+            n_legend_models = min(len(labels), max_models_in_legend)
+            if n_legend_models > 0:
+                target_proxy = Line2D([0], [0], color=COLOR_GROUND_TRUTH, lw=1.1)
+                model_proxies = [
+                    Line2D([0], [0], color=colors[i], lw=1.2, alpha=0.8)
+                    for i in range(n_legend_models)
+                ]
+                legend_handles = [target_proxy, *model_proxies]
+                legend_labels = ["Target", *labels[:n_legend_models]]
                 ax.legend(legend_handles, legend_labels, loc="upper right", frameon=False)
 
             out_png = dst / base.replace("_ridgeline_data.npz", "_ridgeline_compare.png")
