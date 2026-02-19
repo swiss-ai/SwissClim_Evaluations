@@ -97,22 +97,10 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
         for f in prob_dir.glob("ssr_line_*.csv")
     ), "Expected SSR by-lead CSV artifacts (ensprob)."
 
-    assert any(
-        f.name.startswith("prob_crps_by_lead_long") and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("prob_crps_by_lead_long*.csv")
-    ), "Expected CRPS complete long table (ensprob)."
-    assert any(
-        f.name.startswith("prob_crps_by_lead_wide") and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("prob_crps_by_lead_wide*.csv")
-    ), "Expected CRPS complete wide table (ensprob)."
-    assert any(
-        f.name.startswith("prob_ssr_by_lead_long") and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("prob_ssr_by_lead_long*.csv")
-    ), "Expected SSR complete long table (ensprob)."
-    assert any(
-        f.name.startswith("prob_ssr_by_lead_wide") and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("prob_ssr_by_lead_wide*.csv")
-    ), "Expected SSR complete wide table (ensprob)."
+    assert not list(prob_dir.glob("prob_crps_by_lead_long*.csv"))
+    assert not list(prob_dir.glob("prob_crps_by_lead_wide*.csv"))
+    assert not list(prob_dir.glob("prob_ssr_by_lead_long*.csv"))
+    assert not list(prob_dir.glob("prob_ssr_by_lead_wide*.csv"))
 
     # Full-field PIT/CRPS NPZ artifacts are disabled by default to keep output minimal.
     assert not list(prob_dir.glob("pit_field_2m_temperature_*.npz"))

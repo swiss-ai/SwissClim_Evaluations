@@ -148,6 +148,7 @@ def run(
         per_level_std = pd.DataFrame()
 
         if not multi_lead:
+            c.info("[deterministic] Phase 1/4: regular metrics (full-field reduction)")
             regular_metrics = calc.calculate_all_metrics(
                 ds_target,
                 ds_prediction,
@@ -160,6 +161,7 @@ def run(
                 performance_cfg=perf_cfg,
                 log_variable_progress=True,
             )
+            c.info("[deterministic] Phase 2/4: standardized metrics")
             standardized_metrics = calc.calculate_all_metrics(
                 ds_target_std,
                 ds_prediction_std,
@@ -174,6 +176,7 @@ def run(
             )
 
             if report_per_level:
+                c.info("[deterministic] Phase 3/4: per-level metrics")
                 res_lvl = calc.calculate_per_level_metrics(
                     ds_target,
                     ds_prediction,
@@ -188,6 +191,7 @@ def run(
                 if isinstance(res_lvl, pd.DataFrame):
                     per_level_metrics = res_lvl
 
+                c.info("[deterministic] Phase 4/4: standardized per-level metrics")
                 res_lvl_std = calc.calculate_per_level_metrics(
                     ds_target_std,
                     ds_prediction_std,
@@ -204,6 +208,7 @@ def run(
 
         df_all_lead = pd.DataFrame()
         if multi_lead:
+            c.info("[deterministic] Multi-lead mode: computing lead-resolved metrics")
             df_all_lead = calc.calculate_multi_lead_metrics_split(
                 ds_target=ds_target,
                 ds_prediction=ds_prediction,

@@ -201,8 +201,12 @@ def calculate_all_metrics(
                 quantile_meta.append((var, None))
 
         if lazy_quantiles:
-            # Replaced manual batching with single dask.compute or allow full graph
-            computed_quantiles = dask.compute(lazy_quantiles)[0]
+            if log_variable_progress:
+                c.info(
+                    "[deterministic] Preparing FSS quantile thresholds "
+                    f"for {len(quantile_meta)} variable/level slice(s)."
+                )
+            computed_quantiles = list(dask.compute(*lazy_quantiles))
 
             reconstruction = defaultdict(list)
             for (var, lvl), res in zip(quantile_meta, computed_quantiles, strict=False):
@@ -396,8 +400,17 @@ def calculate_all_metrics(
         return metrics_dict, lazy_metrics_to_compute
 
     if lazy_metrics_to_compute:
+        if log_variable_progress:
+            c.info(
+                "[deterministic] Metric graph built: "
+                f"{len(lazy_metrics_to_compute)} task(s) across {len(variables)} variable(s)."
+            )
         lazy_objects = [obj for _, _, obj in lazy_metrics_to_compute]
+        if log_variable_progress:
+            c.info("[deterministic] Submitting metric graph to dask scheduler...")
         computed_results = list(dask.compute(*lazy_objects))
+        if log_variable_progress:
+            c.info("[deterministic] Dask metric graph completed.")
 
         return _finalize_metrics(
             metrics_dict, lazy_metrics_to_compute, computed_results, preserve_dims

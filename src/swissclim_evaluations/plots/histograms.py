@@ -444,8 +444,9 @@ def run(
             a_true = subsample_values(da_target_var, max_samples, base_seed + 9001)
             a_pred = subsample_values(da_pred_var, max_samples, base_seed + 9001)
         else:
-            a_true = np.asarray(da_target_var.compute().values).ravel()
-            a_pred = np.asarray(da_pred_var.compute().values).ravel()
+            da_true_comp, da_pred_comp = dask.compute(da_target_var, da_pred_var)
+            a_true = np.asarray(da_true_comp.values).ravel()
+            a_pred = np.asarray(da_pred_comp.values).ravel()
             a_true = a_true[np.isfinite(a_true)]
             a_pred = a_pred[np.isfinite(a_pred)]
         edges = _choose_edges_arr(a_true, a_pred, bins=400)
@@ -872,8 +873,9 @@ def run(
                             np.ndarray, subsample_values(da_p, max_samples, base_seed + 9001 + i)
                         )
                     else:
-                        a_true = np.asarray(da_t.compute().values).ravel()
-                        a_pred = np.asarray(da_p.compute().values).ravel()
+                        da_t_comp, da_p_comp = dask.compute(da_t, da_p)
+                        a_true = np.asarray(da_t_comp.values).ravel()
+                        a_pred = np.asarray(da_p_comp.values).ravel()
                         a_true = a_true[np.isfinite(a_true)]
                         a_pred = a_pred[np.isfinite(a_pred)]
                     both = (

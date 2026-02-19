@@ -68,6 +68,7 @@ def _calculate_ets_for_thresholds(
         return pd.DataFrame()
 
     metrics_dict: dict[str, dict[str, float]] = {}
+    lazy_jobs: list[tuple[str, Any]] = []
     for var in variables:
         ds_t_var = ds_target[[var]]
         ds_p_var = ds_prediction[[var]]
@@ -75,9 +76,16 @@ def _calculate_ets_for_thresholds(
         if var not in raw_results:
             continue
 
-        c.print(f"Computing ETS scores variable={var}...")
-        ets_score = dask.compute(raw_results[var])[0]
+        c.print(f"Preparing ETS scores variable={var}...")
+        lazy_jobs.append((var, raw_results[var]))
 
+    if not lazy_jobs:
+        return pd.DataFrame()
+
+    c.print(f"Computing ETS scores for {len(lazy_jobs)} variable(s) in one dask graph...")
+    computed = dask.compute(*[lazy for _, lazy in lazy_jobs])
+
+    for (var, _lazy), ets_score in zip(lazy_jobs, computed, strict=False):
         if ets_score is None:
             continue
         metrics_dict[var] = {}
@@ -159,7 +167,7 @@ def _calculate_ets_per_level(
             continue
 
         c.print(f"Computing ETS per level variable={var}")
-        results = dask.compute([j["lazy"] for j in jobs])[0]
+        results = list(dask.compute(*[j["lazy"] for j in jobs]))
         for idx, res in enumerate(results):
             jobs[idx]["res"] = res
 

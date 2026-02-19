@@ -243,22 +243,9 @@ def _save_probabilistic_summaries(
         )
         df.to_csv(section / summary_filename, index=False)
 
-        # Save "long" format
-        long_filename = build_output_filename(
-            metric=f"prob_{metric.lower()}_by_lead_long", ensemble=ensemble_token, ext="csv"
-        )
-        df.to_csv(section / long_filename, index=False)
-
         # Save "line" format (by lead time)
         # Expected: crps_line_{var}_by_lead...
         if "lead_time" in df.columns:
-            # Also save "wide" format
-            wide_filename = build_output_filename(
-                metric=f"prob_{metric.lower()}_by_lead_wide", ensemble=ensemble_token, ext="csv"
-            )
-            # Pivot if needed or just save
-            df.to_csv(section / wide_filename, index=False)
-
             # Save per variable/level line plots data
             # crps_line_{var}_by_lead...
             for var in ds_metric.data_vars:
