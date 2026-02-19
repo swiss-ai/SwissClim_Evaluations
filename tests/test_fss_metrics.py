@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from swissclim_evaluations.metrics import deterministic as det
+from swissclim_evaluations.metrics.deterministic import calc
 
 
 def _make_ds(shape=(4, 6), seed=0, dims=("latitude", "longitude")):
@@ -19,7 +19,7 @@ def test_fss_not_nan_default_dims(tmp_path: Path):
     ds_p = ds_t.copy(deep=True)
     ds_p["var"] = ds_p["var"] * 1.05
     cfg = {"deterministic": {"fss": {"quantile": 0.8}}}
-    df = det._calculate_all_metrics(  # noqa: SLF001
+    df = calc.calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
         calc_relative=True,
@@ -33,7 +33,7 @@ def test_fss_not_nan_latlon_dims(tmp_path: Path):
     ds_t = _make_ds(dims=("latitude", "longitude"))
     ds_p = ds_t * 0.9
     cfg = {"deterministic": {"fss": {"quantile": 90}}}
-    df = det._calculate_all_metrics(  # noqa: SLF001
+    df = calc.calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
         calc_relative=True,
@@ -48,7 +48,7 @@ def test_fss_no_event_defaults_to_one(tmp_path: Path):
     ds_t = xr.Dataset({"var": (("latitude", "longitude"), np.zeros((3, 3)))})
     ds_p = ds_t.copy(deep=True)
     cfg = {"deterministic": {"fss": {"thresholds": {"var": [0.5]}}}}
-    df = det._calculate_all_metrics(  # noqa: SLF001
+    df = calc.calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
         calc_relative=True,
@@ -65,7 +65,7 @@ def test_fss_with_nans(tmp_path: Path):
     ds_p = ds_t.copy(deep=True)
 
     cfg = {"deterministic": {"fss": {"quantile": 0.8}}}
-    df = det._calculate_all_metrics(  # noqa: SLF001
+    df = calc.calculate_all_metrics(  # noqa: SLF001
         ds_t,
         ds_p,
         calc_relative=True,
@@ -84,7 +84,7 @@ def test_fss_with_extra_dims(tmp_path: Path):
 
     # preserve_dims=["time"]
     cfg = {"deterministic": {"fss": {"quantile": 0.8}}}
-    df = det._calculate_all_metrics(
+    df = calc.calculate_all_metrics(
         ds_t,
         ds_p,
         calc_relative=True,

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,7 +13,6 @@ from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
 
 from .. import console as c
-from ..dask_utils import compute_jobs, resolve_dynamic_batch_size
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -26,6 +26,7 @@ from ..helpers import (
     save_data,
     save_dataframe,
     save_figure as save_fig_helper,
+    save_metric_by_lead_tables,
 )
 
 EARTH_RADIUS_KM = 6371.0
@@ -565,16 +566,6 @@ def _plot_energy_spectra(
             }
         )
 
-    # Compute all
-    n_points = int(spectrum_target.size + spectrum_pred.size)
-    num_vars = 1
-    dynamic_batch = resolve_dynamic_batch_size(
-        performance_cfg,
-        n_points=n_points,
-        num_vars=num_vars,
-        ds=ds_target,
-    )
-
     wn = spectrum_target["wavenumber"].values
 
     def _process_batch(batch_jobs: list[dict[str, Any]]):
@@ -605,17 +596,31 @@ def _plot_energy_spectra(
             job["arr_t"] = None
             job["arr_p"] = None
 
-    compute_jobs(
-        jobs,
-        key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
-        batch_size=dynamic_batch,
-        desc=(
-            f"Computing energy spectra variable={var}"
-            if level is None
-            else f"Computing energy spectra variable={var} level={level}"
-        ),
-        batch_callback=_process_batch,
+    c.print(
+        f"[energy_spectra] Computing spectra for {var}"
+        f"{'' if level is None else f' level={level}'}..."
     )
+
+    # Collect all lazy arrays
+    lazy_work = []
+    job_indices = []
+
+    for i, job in enumerate(jobs):
+        lazy_work.extend([job["t_lazy"], job["p_lazy"], job["lsd_lazy"]])
+        job_indices.append(i)
+
+    if lazy_work:
+        results = dask.compute(lazy_work)[0]
+
+        # Unpack results: each job has 3 items
+        for i, idx in enumerate(job_indices):
+            job = jobs[idx]
+            job["arr_t"] = results[3 * i]
+            job["arr_p"] = results[3 * i + 1]
+            job["lsd_val"] = results[3 * i + 2]
+
+        # Process plots after computation
+        _process_batch(jobs)
 
     return lsd_da  # shape: time dims only (no wavenumber)
 
@@ -1683,30 +1688,15 @@ def run(
             import pandas as _pd
 
             ldf = _pd.DataFrame(lsd_long_rows)
-            out_long = section_output / build_output_filename(
+            save_metric_by_lead_tables(
+                long_df=ldf,
+                section_output=section_output,
                 metric="energy_ratios_per_lead",
-                variable=None,
-                level=None,
-                qualifier="by_lead_long",
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=ens_token,
-                ext="csv",
+                module="energy_spectra",
             )
-            save_dataframe(ldf, out_long, index=False, module="energy_spectra")
-            wdf = ldf.pivot_table(index="lead_time_hours", columns="variable", values="LSD")
-            wdf = wdf.reset_index()
-            out_wide = section_output / build_output_filename(
-                metric="energy_ratios_per_lead",
-                variable=None,
-                level=None,
-                qualifier="by_lead_wide",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="csv",
-            )
-            save_dataframe(wdf, out_wide, index=False, module="energy_spectra")
 
         if lsd_banded_long_rows:
             bdf = _pd.DataFrame(lsd_banded_long_rows)

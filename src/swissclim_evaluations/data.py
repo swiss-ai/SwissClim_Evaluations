@@ -1,6 +1,5 @@
 import contextlib
 import logging
-import warnings
 from collections.abc import Sequence
 from typing import cast
 
@@ -465,7 +464,6 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
@@ -474,28 +472,6 @@ def apply_ensemble_policy(
           * int: select that single member (keeping 'ensemble' dimension).
           * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
-    # Backward compatibility: allow legacy 'ensemble_member' kw
-    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
-        ensemble_members = legacy_kwargs.pop("ensemble_member")
-        warnings.warn(
-            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
-    if "probabilistic_enabled" in legacy_kwargs:
-        legacy_kwargs.pop("probabilistic_enabled")
-    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
-    if "preserve_ensemble_dimension" in legacy_kwargs:
-        legacy_kwargs.pop("preserve_ensemble_dimension")
-
-    if legacy_kwargs:
-        warnings.warn(
-            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
     if "ensemble" not in ds.dims:
         return ds
 

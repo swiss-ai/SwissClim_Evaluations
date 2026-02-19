@@ -7,6 +7,7 @@ import numpy as np
 import xarray as xr
 
 import swissclim_evaluations.cli as cli_mod
+import swissclim_evaluations.core.data_selection as data_selection_mod
 
 # Revised CLI smoke: the real parser only accepts --config. We create a minimal
 # YAML config file and monkeypatch prepare_datasets so we avoid any I/O on zarr stores.
@@ -33,7 +34,7 @@ def _synthetic_prepared():  # returns (ds_target, ds_prediction, ds_target_std, 
 
 def test_cli_main_smoke(monkeypatch, tmp_path: Path):
     # Monkeypatch the heavy dataset preparation to return tiny in-memory datasets.
-    monkeypatch.setattr(cli_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
+    monkeypatch.setattr(data_selection_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
     # Create minimal config enabling only maps (which is stubbed by tests/conftest.py)
     cfg_text = (
         "paths:\n"  # paths are ignored due to monkeypatch
@@ -62,7 +63,7 @@ def test_cli_main_smoke(monkeypatch, tmp_path: Path):
 
 
 def test_cli_main_smoke_output_mode_none_skips_maps(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(cli_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
+    monkeypatch.setattr(data_selection_mod, "prepare_datasets", lambda cfg: _synthetic_prepared())
     cfg_text = (
         "paths:\n"
         "  target: dummy.zarr\n"

@@ -68,6 +68,21 @@ det_line_2m_temperature_MAE_data_ensmean.npz
 det_line_temperature_500_MAE_by_lead_ensmean.csv   # 3D variable with level token
 ```
 
+### Spread-Skill Ratio (SSR)
+
+SSR filenames follow a similar pattern:
+
+```text
+ssr_averaged_init2023010200-2023010412_ensprob.csv
+ssr_per_level_ensprob.csv
+ssr_line_2m_temperature_by_lead_ensprob.csv
+ssr_temporal_2m_temperature_ensprob.png      # Temporal evolution plot
+ssr_map_2m_temperature_ensprob.png           # Spatial map plot
+ssr_regions_2m_temperature_ensprob.png       # Regional bar chart
+prob_ssr_by_lead_long_ensprob.csv            # Combined long-form table
+prob_ssr_by_lead_wide_ensprob.csv            # Combined wide-form table
+```
+
 ### Extreme Threshold Statistics (ETS)
 
 ETS filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
@@ -164,23 +179,30 @@ crps_line_2m_temperature_by_lead_ensprob.csv
 crps_line_2m_temperature_ensprob.png
 crps_line_2m_temperature_data_ensprob.npz   # optional (if output_mode includes npz)
 crps_line_temperature_500_by_lead_ensprob.csv       # 3D variable with level token
+ssr_line_2m_temperature_by_lead_ensprob.csv
+ssr_line_temperature_500_by_lead_ensprob.csv        # 3D variable with level token
+ssr_temporal_2m_temperature_ensprob.png             # optional (SSR temporal plot)
+ssr_map_2m_temperature_ensprob.png                  # optional (SSR map plot)
+ssr_regions_2m_temperature_ensprob.png              # optional (SSR regional plot)
 ```
 
 WeatherBenchX per-variable spatial aggregations (NPZ format):
 
 ```text
-crps_spatial_wbx_2m_temperature_ensprob.npz
-crps_spatial_wbx_temperature_500_ensprob.npz
-ssr_spatial_wbx_2m_temperature_ensprob.npz
-ssr_spatial_wbx_temperature_500_ensprob.npz
+crps_spatial_2m_temperature_ensprob.npz
+crps_spatial_temperature_500_ensprob.npz
+ssr_spatial_2m_temperature_ensprob.npz
+ssr_spatial_temperature_500_ensprob.npz
 
 ```
 
-Additional SSR-by-lead table:
+Aggregated by-lead tables:
 
 ```text
-ssr_line_2m_temperature_by_lead_ensprob.csv
-ssr_line_temperature_500_by_lead_ensprob.csv        # 3D variable with level token
+prob_crps_by_lead_long_ensprob.csv
+prob_crps_by_lead_wide_ensprob.csv
+prob_ssr_by_lead_long_ensprob.csv
+prob_ssr_by_lead_wide_ensprob.csv
 ```
 
 Summary tables:
@@ -198,7 +220,10 @@ crps_summary_per_level_ensprob.csv
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
 - WBX CRPS/SSR fields are computed once per variable batch and reused for summaries/by-lead exports.
 - `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv` are written for multi-lead runs independent of plot mode.
-- Spatial WBX NPZ artifacts (`*_spatial_wbx_*.npz`) are emitted when `plotting.output_mode` includes `npz` (`npz` or `both`).
+- Aggregated multi-lead tables are exported as `prob_crps_by_lead_{long,wide}_*.csv` and `prob_ssr_by_lead_{long,wide}_*.csv`.
+- The `long` tables keep columns like `lead_time_hours`, `variable`, optional `level`, and metric value; `wide` pivots to one column per `variable[_level]_metric`.
+- SSR figures are written as `ssr_temporal_*`, `ssr_map_*`, and `ssr_regions_*` when `plotting.output_mode` includes plots (`plot` or `both`).
+- Spatial NPZ artifacts (`*_spatial_*.npz`) are emitted when `plotting.output_mode` includes `npz` (`npz` or `both`).
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
 - PIT histograms are stored as NPZ (counts, edges) for reproducibility.
 - Full PIT/CRPS fields are not written to keep output size manageable.

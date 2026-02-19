@@ -300,34 +300,17 @@ performance:
   #   - {timestamp}: run timestamp (YYYYMMDD_HHMMSS)
   # dask_performance_report_path: "logs/dask_performance_{job_id}_{timestamp}.html"
 
-  # Global Dask batch size.
-  # - Set an integer for manual mode.
-  # - Set "no-chunk" to effectively disable batching.
-  # - Omit/comment out to use profile defaults:
-  #     safe=32, balanced=32, fast=48.
+  # Batch-size compatibility override (legacy/future hook).
+  # Current metrics/plots modules execute direct dask graphs via dask.compute(...)
+  # and do not use per-module manual batching. Keep this commented unless you are
+  # developing experimental batching paths.
   # batch_size: 32
 
-  # Optional auto-batch tuning (active when batch_size is omitted and one of these is set).
-  # safe_points_per_batch and max_dynamic_batch_size do NOT override manual batch_size.
-  # If both are omitted, profile defaults above are used.
-  # Increase these only if memory headroom is well understood.
+  # Optional compatibility auto-batch tuning knobs (legacy/future hooks).
+  # Retained for backwards compatibility and experimentation.
   # safe_points_per_batch: auto
   # max_dynamic_batch_size: auto
 
   # Shared split flags across all batching modules.
-  # These control job partitioning dimensions before batch execution.
+  # This controls job partitioning by pressure level (for 3D variables) before batch execution.
   # split_3d_by_level: true
-  # split_lead_time: true
-  # split_init_time: true
-
-  # Shared split block sizes.
-  # These DO NOT compete with batch_size:
-  # - split flags + block sizes decide job shape/count
-  # - batch_size decides how many jobs are executed per Dask batch
-  # If omitted, profile-aware defaults are used to reduce tiny-job overhead:
-  # - safe: lead_time_block_size=32, init_time_block_size=64
-  # - balanced: lead_time_block_size=32, init_time_block_size=64
-  # - fast: lead_time_block_size=32, init_time_block_size=64
-  # Explicit values below always override profile defaults.
-  # lead_time_block_size: 32
-  # init_time_block_size: 64

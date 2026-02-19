@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -10,9 +11,7 @@ import xarray as xr
 from .. import console as c
 from ..dask_utils import (
     as_float_array,
-    compute_jobs,
     dask_histogram,
-    resolve_dynamic_batch_size,
     to_finite_array,
 )
 from ..helpers import (
@@ -71,10 +70,6 @@ def run(
     except Exception:
         max_samples = 200_000
     base_seed = int(plotting_cfg.get("random_seed", 42))
-    dynamic_batch = resolve_dynamic_batch_size(
-        performance_cfg,
-        ds=ds_target,
-    )
 
     perf = performance_cfg or {}
     dask_profile = str(perf.get("dask_profile", "safe")).strip().lower()
@@ -215,13 +210,26 @@ def run(
 
         # Step 1: Compute subsamples or quantiles
         if max_samples is not None:
-            compute_jobs(
-                jobs,
-                key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
-                post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
-                batch_size=dynamic_batch,
-                desc=f"Computing histogram subsamples variable={variable_name}{level_desc}",
-            )
+            # Remove manual batching
+            lazy_true = []
+            lazy_pred = []
+            job_indices = []
+            for i, job in enumerate(jobs):
+                lazy_true.append(job["sub_true_lazy"])
+                lazy_pred.append(job["sub_pred_lazy"])
+                job_indices.append(i)
+
+            if lazy_true:
+                c.print(f"Computing histogram subsamples variable={variable_name}{level_desc}...")
+                results_true, results_pred = dask.compute(lazy_true, lazy_pred)
+
+                for idx, r_true, r_pred in zip(
+                    job_indices, results_true, results_pred, strict=False
+                ):
+                    job = jobs[idx]
+                    job["sub_true"] = to_finite_array(r_true)
+                    job["sub_pred"] = to_finite_array(r_pred)
+
             for job in jobs:
                 # Calculate edges immediately (fast in memory)
                 if job["sub_true"].size == 0 or job["sub_pred"].size == 0:
@@ -236,12 +244,19 @@ def run(
                         qlow, qhigh = -1.0, 1.0
                     job["edges"] = np.linspace(qlow, qhigh, 1001)
         else:
-            compute_jobs(
-                jobs,
-                key_map={"quantile_lazy": "quantile_res"},
-                batch_size=dynamic_batch,
-                desc=f"Computing histogram quantiles variable={variable_name}{level_desc}",
-            )
+            lazy_quantiles = []
+            job_indices = []
+            for i, job in enumerate(jobs):
+                if "quantile_lazy" in job:
+                    lazy_quantiles.append(job["quantile_lazy"])
+                    job_indices.append(i)
+
+            if lazy_quantiles:
+                c.print(f"Computing histogram quantiles variable={variable_name}{level_desc}...")
+                results_quantiles = dask.compute(*lazy_quantiles)
+                for idx, r_q in zip(job_indices, results_quantiles, strict=False):
+                    jobs[idx]["quantile_res"] = r_q
+
             for job in jobs:
                 q = job.get("quantile_res")
                 if q is not None:
@@ -255,17 +270,26 @@ def run(
 
         # Step 2: Compute histograms
         if max_samples is None:
-            for job in jobs:
-                job["hist_true_lazy"] = dask_histogram(job["da_true"], job["edges"])
-                job["hist_pred_lazy"] = dask_histogram(job["da_pred"], job["edges"])
+            lazy_true = []
+            lazy_pred = []
+            job_indices = []
 
-            compute_jobs(
-                jobs,
-                key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
-                post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
-                batch_size=dynamic_batch,
-                desc=f"Computing histograms variable={variable_name}{level_desc}",
-            )
+            for i, job in enumerate(jobs):
+                ht = dask_histogram(job["da_true"], job["edges"])
+                hp = dask_histogram(job["da_pred"], job["edges"])
+                lazy_true.append(ht)
+                lazy_pred.append(hp)
+                job_indices.append(i)
+
+            if lazy_true:
+                c.print(f"Computing histograms variable={variable_name}{level_desc}...")
+                results_true, results_pred = dask.compute(lazy_true, lazy_pred)
+
+                for idx, r_true, r_pred in zip(
+                    job_indices, results_true, results_pred, strict=False
+                ):
+                    jobs[idx]["counts_ds"] = as_float_array(r_true)
+                    jobs[idx]["counts_prediction"] = as_float_array(r_pred)
         else:
             for job in jobs:
                 # Compute histogram on in-memory subsamples
@@ -581,17 +605,23 @@ def run(
             jobs.append(job)
 
         # Compute all
-        compute_jobs(
-            jobs,
-            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
-            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-            batch_size=dynamic_batch,
-            desc=(
+        lazy_t = []
+        lazy_p = []
+        for job in jobs:
+            lazy_t.append(job["sub_t_lazy"])
+            lazy_p.append(job["sub_p_lazy"])
+
+        if lazy_t:
+            desc = (
                 f"Computing global histograms variable={variable_name}"
                 if level_val is None
                 else f"Computing global histograms variable={variable_name} level={level_val}"
-            ),
-        )
+            )
+            c.print(f"{desc}...")
+            results_t, results_p = dask.compute(lazy_t, lazy_p)
+            for i, (r_t, r_p) in enumerate(zip(results_t, results_p, strict=False)):
+                jobs[i]["val_t"] = to_finite_array(r_t)
+                jobs[i]["val_p"] = to_finite_array(r_p)
 
         # Calculate edges from edge_job
         edge_job = jobs[0]

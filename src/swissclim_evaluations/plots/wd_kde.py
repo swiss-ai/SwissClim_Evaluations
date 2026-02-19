@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from scipy.stats import gaussian_kde, wasserstein_distance
 
 from .. import console as c
-from ..dask_utils import compute_jobs, resolve_dynamic_batch_size, to_finite_array
+from ..dask_utils import to_finite_array
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -133,11 +134,6 @@ def run(
         ds_prediction_std_eff = ds_prediction_std
         ens_token_base = None  # per-member inside loop
 
-    dynamic_batch = resolve_dynamic_batch_size(
-        performance_cfg,
-        ds=ds_target_std,
-    )
-
     perf = performance_cfg or {}
     dask_profile = str(perf.get("dask_profile", "safe")).strip().lower()
     if max_samples is None and dask_profile == "safe":
@@ -213,13 +209,19 @@ def run(
 
         # Compute all
         # Compute all
-        compute_jobs(
-            jobs,
-            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
-            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-            batch_size=dynamic_batch,
-            desc=f"Computing KDE subsamples variable={var_name} level={level_token}",
-        )
+        lazy_t = []
+        lazy_p = []
+        for job in jobs:
+            lazy_t.append(job["sub_t_lazy"])
+            lazy_p.append(job["sub_p_lazy"])
+
+        if lazy_t:
+            c.print(f"Computing KDE subsamples variable={var_name} level={level_token}...")
+            results_t, results_p = dask.compute(lazy_t, lazy_p)
+
+            for i, (r_t, r_p) in enumerate(zip(results_t, results_p, strict=False)):
+                jobs[i]["val_t"] = to_finite_array(r_t)
+                jobs[i]["val_p"] = to_finite_array(r_p)
 
         # --- Process Global KDE ---
         global_job = jobs[0]
@@ -598,27 +600,32 @@ def run(
                     )
 
             # Compute all
-            compute_jobs(
-                jobs,
-                key_map={
-                    "sub_t_q_lazy": "sub_t_q",
-                    "sub_p_q_lazy": "sub_p_q",
-                    "sub_t_lazy": "sub_t",
-                    "sub_p_lazy": "sub_p",
-                },
-                post_process={
-                    "sub_t": to_finite_array,
-                    "sub_p": to_finite_array,
-                    "sub_t_q": to_finite_array,
-                    "sub_p_q": to_finite_array,
-                },
-                batch_size=dynamic_batch,
-                desc=(
+            lazy_list = []
+            # Map index in lazy_list back to (job_idx, key)
+            meta_list: list[tuple[int, str]] = []
+
+            for idx, job in enumerate(jobs):
+                for k_lazy, k_res in [
+                    ("sub_t_q_lazy", "sub_t_q"),
+                    ("sub_p_q_lazy", "sub_p_q"),
+                    ("sub_t_lazy", "sub_t"),
+                    ("sub_p_lazy", "sub_p"),
+                ]:
+                    if k_lazy in job:
+                        lazy_list.append(job[k_lazy])
+                        meta_list.append((idx, k_res))
+
+            if lazy_list:
+                desc = (
                     f"Computing KDE evolution variable={base_var}"
                     if lvl is None
                     else f"Computing KDE evolution variable={base_var} level={lvl}"
-                ),
-            )
+                )
+                c.print(f"{desc}...")
+                results = dask.compute(*lazy_list)
+
+                for (j_idx, k_res), res_val in zip(meta_list, results, strict=False):
+                    jobs[j_idx][k_res] = to_finite_array(res_val)
 
             # Process quantiles
             sub_t_q = np.asarray(jobs[0]["sub_t_q"])

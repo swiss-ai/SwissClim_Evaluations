@@ -34,36 +34,22 @@ def test_resolve_dynamic_batch_size_clamps_non_positive_manual_value() -> None:
     assert resolve_dynamic_batch_size({"chunk_size": 0}) == 1
 
 
-def test_deterministic_compute_path_respects_manual_batch_size(monkeypatch) -> None:
-    batch_sizes: list[int] = []
+def test_deterministic_compute_path_uses_direct_dask_compute(monkeypatch) -> None:
+    compute_calls: list[int] = []
 
-    def _fake_compute_jobs(
-        jobs,
-        key_map,
-        post_process=None,
-        batch_size=None,
-        chunk_size=None,
-        optimize_graph=None,
-        desc=None,
-        batch_callback=None,
-    ):
-        effective_batch_size = batch_size if batch_size is not None else chunk_size
-        batch_sizes.append(int(effective_batch_size))
-        for job in jobs:
-            for lazy_key, res_key in key_map.items():
-                if lazy_key in job and job[lazy_key] is not None:
-                    job[res_key] = 0.0
-                elif lazy_key in job:
-                    job[res_key] = None
-        if batch_callback:
-            batch_callback(jobs)
-
-    monkeypatch.setattr(det_mod, "compute_jobs", _fake_compute_jobs)
+    def _fake_dask_compute(*args, **kwargs):
+        compute_calls.append(len(args))
+        return tuple(0.0 for _ in args)
 
     ds_target = _tiny_dataset(1.0)
-    ds_prediction = _tiny_dataset(0.9)
+    ds_prediction = _tiny_dataset(2.0)
 
-    metrics_df = det_mod._calculate_all_metrics(
+    monkeypatch.setattr(
+        "swissclim_evaluations.metrics.deterministic.calc.dask.compute",
+        _fake_dask_compute,
+    )
+
+    metrics_df = det_mod.calc.calculate_all_metrics(
         ds_target=ds_target,
         ds_prediction=ds_prediction,
         calc_relative=False,
@@ -73,59 +59,32 @@ def test_deterministic_compute_path_respects_manual_batch_size(monkeypatch) -> N
     )
 
     assert not metrics_df.empty
-    assert batch_sizes
-    assert all(bs == 1 for bs in batch_sizes)
+    assert compute_calls
+    assert all(call_size >= 1 for call_size in compute_calls)
 
 
-def test_resolve_module_batching_options_uses_profile_defaults_when_omitted() -> None:
-    safe_opts = resolve_module_batching_options(
-        performance_cfg={"dask_profile": "safe"},
-        default_lead_time_block_size=6,
-        default_init_time_block_size=6,
-    )
-    balanced_opts = resolve_module_batching_options(
-        performance_cfg={"dask_profile": "balanced"},
-        default_lead_time_block_size=6,
-        default_init_time_block_size=6,
-    )
-    fast_opts = resolve_module_batching_options(
-        performance_cfg={"dask_profile": "fast"},
-        default_lead_time_block_size=6,
-        default_init_time_block_size=6,
-    )
-
-    assert safe_opts["lead_time_block_size"] == 32
-    assert safe_opts["init_time_block_size"] == 64
-    assert balanced_opts["lead_time_block_size"] == 32
-    assert balanced_opts["init_time_block_size"] == 64
-    assert fast_opts["lead_time_block_size"] == 32
-    assert fast_opts["init_time_block_size"] == 64
+def test_resolve_module_batching_options_defaults_to_split_level_true() -> None:
+    opts = resolve_module_batching_options(performance_cfg={})
+    assert opts["split_level"] is True
 
 
-def test_resolve_module_batching_options_prefers_explicit_block_sizes() -> None:
+def test_resolve_module_batching_options_respects_split_level_override() -> None:
+    opts = resolve_module_batching_options(performance_cfg={"split_3d_by_level": False})
+    assert opts["split_level"] is False
+
+
+def test_resolve_module_batching_options_ignores_legacy_lead_init_keys() -> None:
     opts = resolve_module_batching_options(
         performance_cfg={
-            "dask_profile": "fast",
+            "split_lead_time": True,
+            "split_init_time": True,
             "lead_time_block_size": 9,
             "init_time_block_size": 7,
         },
-        default_lead_time_block_size=6,
-        default_init_time_block_size=6,
+        default_split_level=False,
     )
 
-    assert opts["lead_time_block_size"] == 9
-    assert opts["init_time_block_size"] == 7
-
-
-def test_resolve_module_batching_options_respects_larger_module_defaults() -> None:
-    opts = resolve_module_batching_options(
-        performance_cfg={"dask_profile": "safe"},
-        default_lead_time_block_size=20,
-        default_init_time_block_size=16,
-    )
-
-    assert opts["lead_time_block_size"] == 20
-    assert opts["init_time_block_size"] == 16
+    assert opts == {"split_level": False}
 
 
 def test_compute_jobs_uses_stable_optimize_graph_default(monkeypatch) -> None:

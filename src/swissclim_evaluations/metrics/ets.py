@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -16,10 +17,7 @@ from .. import console as c
 from ..dask_utils import (
     apply_split_to_dataarray,
     build_variable_level_lead_splits,
-    compute_jobs,
     compute_quantile_preserving,
-    resolve_dynamic_batch_size,
-    resolve_module_batching_options,
 )
 
 
@@ -64,7 +62,6 @@ def _calculate_ets_for_thresholds(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    batch_size: int = 20,
 ) -> pd.DataFrame:
     variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
     if not variables:
@@ -78,15 +75,9 @@ def _calculate_ets_for_thresholds(
         if var not in raw_results:
             continue
 
-        jobs = [{"var": var, "lazy": raw_results[var]}]
-        compute_jobs(
-            jobs,
-            key_map={"lazy": "res"},
-            batch_size=max(1, int(batch_size)),
-            desc=f"Computing ETS scores variable={var}",
-        )
+        c.print(f"Computing ETS scores variable={var}...")
+        ets_score = dask.compute(raw_results[var])[0]
 
-        ets_score = jobs[0]["res"]
         if ets_score is None:
             continue
         metrics_dict[var] = {}
@@ -101,8 +92,6 @@ def _calculate_ets_per_level(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
-    batch_size: int = 20,
-    init_time_block_size: int | None = None,
 ) -> pd.DataFrame | None:
     variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
     if not variables_3d:
@@ -120,9 +109,6 @@ def _calculate_ets_per_level(
         ds_target[variables_3d],
         variables=[str(v) for v in variables_3d],
         split_level=True,
-        split_lead_time=False,
-        split_init_time=True,
-        init_time_block_size=init_time_block_size,
     )
 
     specs_by_var: dict[str, list[dict[str, Any]]] = {}
@@ -172,17 +158,20 @@ def _calculate_ets_per_level(
         if not jobs:
             continue
 
-        compute_jobs(
-            jobs,
-            key_map={"lazy": "res"},
-            batch_size=max(1, int(batch_size)),
-            desc=f"Computing ETS per level variable={var}",
-        )
+        c.print(f"Computing ETS per level variable={var}")
+        results = dask.compute([j["lazy"] for j in jobs])[0]
+        for idx, res in enumerate(results):
+            jobs[idx]["res"] = res
 
         for job in jobs:
             lvl = job["level"]
             if job.get("res") is None:
                 continue
+
+            # The lazy item was raw_res_dict[var] for all jobs in var_specs?
+            # Wait, raw_res_dict comes from _compute_ets_raw call inside loop.
+            # yes, raw_res_dict = _compute_ets_raw(ds_t_slice, ds_p_slice, thresholds)
+            # So each job has a unique lazy object.
 
             key = (str(var), lvl)
             grouped.setdefault(key, []).append(
@@ -241,27 +230,8 @@ def run(
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
-    batch_opts = resolve_module_batching_options(
-        performance_cfg=performance_cfg,
-        default_split_level=True,
-        default_split_lead_time=False,
-        default_split_init_time=True,
-        default_lead_time_block_size=6,
-        default_init_time_block_size=6,
-    )
-    ets_init_time_block_size = int(batch_opts["init_time_block_size"])
     thresholds = ets_cfg.get("thresholds", [50, 60, 70, 80, 90])
 
-    # Compute metrics
-    # n_points = int(sum(ds_target[v].size for v in ds_target.data_vars))
-    n_points = None
-    num_vars = len(ds_target.data_vars)
-    dynamic_batch = resolve_dynamic_batch_size(
-        performance_cfg,
-        n_points=n_points,
-        num_vars=num_vars,
-        ds=ds_target,
-    )
     report_per_level = bool(ets_cfg.get("report_per_level", True))
     reduce_ens_mean = True
     rem = ets_cfg.get("reduce_ensemble_mean")
@@ -277,6 +247,7 @@ def run(
         resolve_ensemble_mode,
         save_dataframe,
         save_figure,
+        save_metric_by_lead_tables,
     )
 
     resolved_mode = resolve_ensemble_mode("ets", ensemble_mode, ds_target, ds_prediction)
@@ -293,9 +264,7 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
 
-    df = _calculate_ets_for_thresholds(
-        ds_target, ds_prediction, thresholds, batch_size=dynamic_batch
-    )
+    df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
 
     c.print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
     c.print(df.head())
@@ -371,17 +340,28 @@ def run(
                         else ds_target
                     )
                     ds_p_i = ds_prediction.isel(lead_time=i, drop=False)
-                    df_i = _calculate_ets_for_thresholds(
-                        ds_t_i, ds_p_i, thresholds, batch_size=dynamic_batch
-                    )
-                    # Flatten columns with variable names to create a wide row
-                    flat: dict[str, float] = {"lead_time_hours": float(hours)}
+                    df_i = _calculate_ets_for_thresholds(ds_t_i, ds_p_i, thresholds)
                     for var, row in df_i.iterrows():
+                        flat: dict[str, float | str] = {
+                            "lead_time_hours": float(hours),
+                            "variable": str(var),
+                        }
                         for col, val in row.items():
-                            flat[f"{var}_{col}"] = float(val)
-                    rows.append(flat)
+                            flat[str(col)] = float(val)
+                        rows.append(flat)
                 if rows:
-                    wide_df = pd.DataFrame(rows)
+                    long_df = pd.DataFrame(rows)
+                    long_df, wide_df = save_metric_by_lead_tables(
+                        long_df=long_df,
+                        section_output=section_output,
+                        metric="ets_metrics",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        module="ets",
+                    )
+
+                    # Backward-compatible legacy filename used by tests/intercomparison.
                     out_wide = section_output / "ets_metrics_by_lead_wide.csv"
                     save_dataframe(wide_df, out_wide, index=False, module="ets")
                     # Optional: line plot of thresholds vs lead_time per variable
@@ -499,8 +479,6 @@ def run(
                     ds_target,
                     ds_prediction,
                     thresholds,
-                    batch_size=dynamic_batch,
-                    init_time_block_size=ets_init_time_block_size,
                 )
                 if per_level_df is not None:
                     out_csv_lvl = section_output / build_output_filename(
@@ -526,9 +504,7 @@ def run(
                 else:
                     ds_tgt_m = ds_target
 
-                df_m = _calculate_ets_for_thresholds(
-                    ds_tgt_m, ds_pred_m, thresholds, batch_size=dynamic_batch
-                )
+                df_m = _calculate_ets_for_thresholds(ds_tgt_m, ds_pred_m, thresholds)
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(
                     metric="ets_metrics",
@@ -548,7 +524,6 @@ def run(
                         ds_tgt_m,
                         ds_pred_m,
                         thresholds,
-                        init_time_block_size=ets_init_time_block_size,
                     )
                     if per_level_m is not None:
                         out_csv_m_lvl = section_output / build_output_filename(

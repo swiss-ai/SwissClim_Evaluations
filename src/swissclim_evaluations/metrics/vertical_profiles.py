@@ -4,15 +4,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
-import numpy as np  # retained only for final serialization (NPZ) and minimal list ops
+import numpy as np
 import xarray as xr
 from scores.functions import create_latitude_weights
 
 from .. import console as c
 from ..dask_utils import (
-    compute_jobs,
-    resolve_dynamic_batch_size,
     resolve_module_batching_options,
 )
 from ..helpers import (
@@ -360,8 +359,7 @@ def run(
     save_npz = mode in ("npz", "both")
     if not save_fig and not save_npz:
         c.print(
-            "[vertical_profiles] Skipping module: output_mode=none "
-            "(no PNG/NPZ outputs requested)."
+            "[vertical_profiles] Skipping module: output_mode=none (no PNG/NPZ outputs requested)."
         )
         return
     dpi = int(plotting_cfg.get("dpi", 48))
@@ -370,8 +368,6 @@ def run(
     vp_batch_opts = resolve_module_batching_options(
         performance_cfg=performance_cfg,
         default_split_level=True,
-        default_split_lead_time=False,
-        default_split_init_time=False,
     )
     split_3d_by_level = bool(vp_batch_opts["split_level"])
 
@@ -660,16 +656,9 @@ def run(
 
         prepared_jobs.append(job)
 
-    # Batch compute (Per Variable Job)
+    # Compute per-variable lazy graphs directly with dask.compute
     c.print("[vertical_profiles] computing per-variable jobs...")
-    dynamic_batch = resolve_dynamic_batch_size(
-        performance_cfg,
-        ds=ds_target,
-    )
-    c.print(
-        "[vertical_profiles] Dask batching: "
-        f"batch_size={dynamic_batch}, split_3d_by_level={split_3d_by_level}"
-    )
+    c.print("[vertical_profiles] Dask graph execution: " f"split_3d_by_level={split_3d_by_level}")
 
     def _process_batch(batch_jobs: list[dict[str, Any]]):
         for job in batch_jobs:
@@ -971,16 +960,31 @@ def run(
 
     for job in prepared_jobs:
         var_name = str(job.get("var", "unknown"))
-        compute_jobs(
-            [job],
-            key_map={
-                "combined_lazy": "combined",
-                "combined_all_lazy": "combined_all",
-                "evolve_profiles_lazy": "evolve_profiles",
-                "nmae_lead_lazy": "nmae_lead",
-                "global_profile_lazy": "global_profile",
-            },
-            batch_size=max(1, int(dynamic_batch)),
-            desc=f"Computing vertical profiles variable={var_name}",
-            batch_callback=_process_batch,
-        )
+        c.print(f"[vertical_profiles] Computing metrics for {var_name}...")
+
+        # Keys that store lazy objects
+        lazy_mapping = {
+            "combined_lazy": "combined",
+            "combined_all_lazy": "combined_all",
+            "evolve_profiles_lazy": "evolve_profiles",
+            "nmae_lead_lazy": "nmae_lead",
+            "global_profile_lazy": "global_profile",
+        }
+
+        lazy_values = []
+        result_keys = []
+
+        for lazy_k, res_k in lazy_mapping.items():
+            if lazy_k in job:
+                lazy_values.append(job[lazy_k])
+                result_keys.append(res_k)
+
+        if lazy_values:
+            results = dask.compute(lazy_values)[0]
+
+            # Map results back to result keys
+            for key, res in zip(result_keys, results, strict=False):
+                job[key] = res
+
+            # Process the computed results (saving/plotting)
+            _process_batch([job])
