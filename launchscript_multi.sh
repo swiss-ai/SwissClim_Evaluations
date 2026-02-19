@@ -7,7 +7,7 @@
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=144
 
 # -------------------------------------------------------------
 # EDIT THESE TWO LINES FOR YOUR SETUP
