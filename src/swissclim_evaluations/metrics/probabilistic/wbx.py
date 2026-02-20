@@ -176,6 +176,53 @@ def _save_probabilistic_summaries(
     import pandas as pd
     from scores.functions import create_latitude_weights
 
+    def _lead_time_to_hours(series: pd.Series) -> pd.Series:
+        vals = pd.to_timedelta(series, errors="coerce")
+        if vals.notna().any():
+            hours = vals.dt.total_seconds() / 3600.0
+            return hours.round().astype("Int64")
+        return pd.to_numeric(series, errors="coerce").round().astype("Int64")
+
+    def _format_prob_line_df(
+        df_sub: pd.DataFrame,
+        metric_name: str,
+        variable: str,
+        level: Any | None = None,
+    ) -> pd.DataFrame:
+        if "lead_time_hours" not in df_sub.columns:
+            if "lead_time" in df_sub.columns:
+                df_sub["lead_time_hours"] = _lead_time_to_hours(df_sub["lead_time"])
+            else:
+                df_sub["lead_time_hours"] = pd.Series(dtype="Int64")
+
+        metric_col = str(metric_name).upper()
+        if metric_col not in df_sub.columns:
+            if "value" in df_sub.columns:
+                df_sub = df_sub.rename(columns={"value": metric_col})
+            else:
+                value_cols = [
+                    c
+                    for c in df_sub.columns
+                    if c not in {"lead_time", "lead_time_hours", "variable", "level"}
+                ]
+                if value_cols:
+                    df_sub = df_sub.rename(columns={value_cols[0]: metric_col})
+                else:
+                    df_sub[metric_col] = np.nan
+
+        df_sub["variable"] = str(variable)
+        if level is not None:
+            df_sub["level"] = int(level)
+
+        keep_cols = ["lead_time_hours", "variable"]
+        if "level" in df_sub.columns:
+            keep_cols.append("level")
+        keep_cols.append(metric_col)
+
+        out = df_sub[keep_cols].copy()
+        out = out.dropna(subset=["lead_time_hours"]).sort_values("lead_time_hours")
+        return out.reset_index(drop=True)
+
     # Identify metrics present
     metrics_found = set()
     for var_name in results_spatial.data_vars:
@@ -258,6 +305,12 @@ def _save_probabilistic_summaries(
                         sub = ds_metric[var].sel(level=lvl)
                         # Use Series path to avoid potential column name conflicts.
                         df_sub = sub.to_series().reset_index(name="value")
+                        df_sub = _format_prob_line_df(
+                            df_sub=df_sub,
+                            metric_name=metric,
+                            variable=str(var),
+                            level=lvl,
+                        )
 
                         line_filename = build_output_filename(
                             metric=f"{metric.lower()}_line",
@@ -268,9 +321,25 @@ def _save_probabilistic_summaries(
                             ext="csv",
                         )
                         df_sub.to_csv(section / line_filename, index=False)
+
+                        if str(metric).upper() == "CRPS":
+                            legacy_filename = build_output_filename(
+                                metric="temporal_probabilistic_metrics",
+                                variable=str(var),
+                                level=lvl,
+                                qualifier="per_lead_time",
+                                ensemble=ensemble_token,
+                                ext="csv",
+                            )
+                            df_sub.to_csv(section / legacy_filename, index=False)
                 else:
                     sub = ds_metric[var]
                     df_sub = sub.to_series().reset_index(name="value")
+                    df_sub = _format_prob_line_df(
+                        df_sub=df_sub,
+                        metric_name=metric,
+                        variable=str(var),
+                    )
                     line_filename = build_output_filename(
                         metric=f"{metric.lower()}_line",
                         variable=str(var),
@@ -279,5 +348,15 @@ def _save_probabilistic_summaries(
                         ext="csv",
                     )
                     df_sub.to_csv(section / line_filename, index=False)
+
+                    if str(metric).upper() == "CRPS":
+                        legacy_filename = build_output_filename(
+                            metric="temporal_probabilistic_metrics",
+                            variable=str(var),
+                            qualifier="per_lead_time",
+                            ensemble=ensemble_token,
+                            ext="csv",
+                        )
+                        df_sub.to_csv(section / legacy_filename, index=False)
         else:
             continue

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from swissclim_evaluations.metrics.probabilistic import run_probabilistic
@@ -105,3 +106,40 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
     # Full-field PIT/CRPS NPZ artifacts are disabled by default to keep output minimal.
     assert not list(prob_dir.glob("pit_field_2m_temperature_*.npz"))
     assert not list(prob_dir.glob("crps_field_2m_temperature_*.npz"))
+
+
+def test_probabilistic_by_lead_tables_match_retrieval_schema(tmp_path: Path):
+    ds_target, ds_prediction = _make_multi_lead_datasets()
+
+    out_root = tmp_path / "out"
+    run_probabilistic(
+        ds_target=ds_target,
+        ds_prediction=ds_prediction,
+        out_root=out_root,
+        cfg_plot={"save_plot_data": True},
+        cfg_all={
+            "probabilistic": {
+                "init_time_chunk_size": None,
+                "lead_time_chunk_size": None,
+            }
+        },
+    )
+
+    prob_dir = out_root / "probabilistic"
+
+    crps_line = next(prob_dir.glob("crps_line_2m_temperature_by_lead_ensprob.csv"))
+    df_crps_line = pd.read_csv(crps_line)
+    assert {"lead_time_hours", "variable", "CRPS"}.issubset(df_crps_line.columns)
+    assert set(df_crps_line["lead_time_hours"].tolist()) == {0, 6, 12}
+    assert set(df_crps_line["variable"].tolist()) == {"2m_temperature"}
+    assert len(df_crps_line) == 3
+
+    temporal_alias = next(
+        prob_dir.glob("temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv")
+    )
+    df_temporal = pd.read_csv(temporal_alias)
+    assert {"lead_time_hours", "variable", "CRPS"}.issubset(df_temporal.columns)
+    assert "SSR" not in df_temporal.columns
+    assert set(df_temporal["lead_time_hours"].tolist()) == {0, 6, 12}
+    assert set(df_temporal["variable"].tolist()) == {"2m_temperature"}
+    assert len(df_temporal) == 3

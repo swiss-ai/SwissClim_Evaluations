@@ -179,6 +179,7 @@ crps_line_2m_temperature_data_ensprob.npz   # optional (if output_mode includes 
 crps_line_temperature_500_by_lead_ensprob.csv       # 3D variable with level token
 ssr_line_2m_temperature_by_lead_ensprob.csv
 ssr_line_temperature_500_by_lead_ensprob.csv        # 3D variable with level token
+temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv  # legacy-compatible alias
 ssr_temporal_2m_temperature_ensprob.png             # optional (SSR temporal plot)
 ssr_map_2m_temperature_ensprob.png                  # optional (SSR map plot)
 ssr_regions_2m_temperature_ensprob.png              # optional (SSR regional plot)
@@ -209,6 +210,7 @@ crps_summary_per_level_ensprob.csv
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
 - WBX CRPS/SSR fields are computed once per variable batch and reused for summary and by-lead line outputs.
 - `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv` are written for multi-lead runs independent of plot mode.
+- Legacy CRPS aliases `temporal_probabilistic_metrics_*_per_lead_time*.csv` are also written to preserve older analysis scripts.
 - SSR figures are written as `ssr_temporal_*`, `ssr_map_*`, and `ssr_regions_*` when `plotting.output_mode` includes plots (`plot` or `both`).
 - Spatial NPZ artifacts (`*_spatial_*.npz`) are emitted when `plotting.output_mode` includes `npz` (`npz` or `both`).
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
