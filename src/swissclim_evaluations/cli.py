@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import console as c
-from .core import config as config_mod, runner as runner_mod
+from .core import config as config_mod, data_selection, runner as runner_mod
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -223,6 +223,36 @@ def main(argv: list[str] | None = None) -> None:
 def run_selected(cfg: dict[str, Any]) -> None:
     """Compatibility shim for historical callers/tests importing cli.run_selected."""
     runner_mod.run_selected(cfg)
+
+
+def _load_yaml(path: str) -> dict[str, Any]:
+    """Compatibility shim for historical notebook imports."""
+    return config_mod.load_config(path)
+
+
+def prepare_datasets(
+    cfg: dict[str, Any],
+) -> tuple[Any, Any, Any, Any]:
+    """Compatibility shim for historical notebook imports."""
+    return data_selection.prepare_datasets(cfg)
+
+
+def _select_plot_datetime(
+    ds_target: Any,
+    ds_prediction: Any,
+    cfg: dict[str, Any],
+) -> tuple[Any, Any]:
+    """Compatibility shim for historical notebook imports."""
+    return data_selection.select_plot_datetime(ds_target, ds_prediction, cfg)
+
+
+def _select_plot_ensemble(
+    ds_prediction: Any,
+    ds_prediction_std: Any,
+    cfg: dict[str, Any],
+) -> tuple[Any, Any]:
+    """Compatibility shim for historical notebook imports."""
+    return data_selection.select_plot_ensemble(ds_prediction, ds_prediction_std, cfg)
 
 
 if __name__ == "__main__":
