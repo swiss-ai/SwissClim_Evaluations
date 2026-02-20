@@ -9,11 +9,25 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=144
 
-# -------------------------------------------------------------
-# EDIT THESE TWO LINES FOR YOUR SETUP
-# 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
+# =============================================================
+# USER INPUT (edit this section only)
+# =============================================================
+# Enroot/EDF TOML (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
-# -------------------------------------------------------------
+
+# File listing evaluation configs, one path per line
+EVAL_CONFIG_LIST_FILE="eval_configs.txt"
+
+# Dask spill directory
+DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+
+# PYTHONPATH behavior for project src directory:
+# - prepend  : PROJECT_ROOT/src:$PYTHONPATH
+# - overwrite: PROJECT_ROOT/src only
+# - keep     : do not modify PYTHONPATH (default)
+PYTHONPATH_MODE="keep"
+# =============================================================
+
 # Resolve paths relative to the job submission directory when running under Slurm.
 # Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
@@ -29,14 +43,27 @@ cd "$PROJECT_ROOT" || {
     exit 1
 }
 
-# Override PYTHONPATH to include src directory (latest code changes)
-export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH}"
+# Configure PYTHONPATH behavior
+SRC_PATH="${PROJECT_ROOT}/src"
+case "$PYTHONPATH_MODE" in
+    prepend)
+        export PYTHONPATH="${SRC_PATH}:${PYTHONPATH:-}"
+        echo "PYTHONPATH mode: prepend (${SRC_PATH} added first)"
+        ;;
+    overwrite)
+        export PYTHONPATH="${SRC_PATH}"
+        echo "PYTHONPATH mode: overwrite (set to ${SRC_PATH})"
+        ;;
+    keep)
+        echo "PYTHONPATH mode: keep (no changes)"
+        ;;
+    *)
+        echo "ERROR: Invalid PYTHONPATH_MODE='$PYTHONPATH_MODE'. Use: prepend|overwrite|keep"
+        exit 1
+        ;;
+esac
 
-# -------------------------------------------------------------
-# DASK SCRATCH CONFIGURATION
-# Set the directory for Dask spillover to avoid filling /tmp
-# -------------------------------------------------------------
-export DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+export DASK_TEMPORARY_DIRECTORY
 mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 
 # Disable rich/ANSI output so SLURM log files remain clean
@@ -51,11 +78,11 @@ echo "Starting parallel evaluation jobs..."
 
 # List of evaluation configs
 # Read from shared file
-if [ ! -f "${PROJECT_ROOT}/eval_configs.txt" ]; then
-    echo "Error: eval_configs.txt not found!"
+if [ ! -f "${PROJECT_ROOT}/${EVAL_CONFIG_LIST_FILE}" ]; then
+    echo "Error: ${EVAL_CONFIG_LIST_FILE} not found!"
     exit 1
 fi
-mapfile -t EVAL_CONFIGS < "${PROJECT_ROOT}/eval_configs.txt"
+mapfile -t EVAL_CONFIGS < "${PROJECT_ROOT}/${EVAL_CONFIG_LIST_FILE}"
 
 # Filter out empty lines
 VALID_CONFIGS=()

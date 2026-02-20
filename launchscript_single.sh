@@ -8,6 +8,25 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 
+# =============================================================
+# USER INPUT (edit this section only)
+# =============================================================
+# Evaluation config to run (absolute path or relative to submit/project directory)
+CONFIG_FILE="config/example_config.yaml"
+
+# Enroot/EDF TOML (or EDF name if your site supports it)
+EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
+
+# Dask spill directory
+DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+
+# PYTHONPATH behavior for project src directory:
+# - prepend  : PROJECT_ROOT/src:$PYTHONPATH
+# - overwrite: PROJECT_ROOT/src only
+# - keep     : do not modify PYTHONPATH (default)
+PYTHONPATH_MODE="keep"
+# =============================================================
+
 # Resolve paths relative to the job submission directory when running under Slurm.
 # Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
@@ -22,10 +41,6 @@ cd "$PROJECT_ROOT" || {
     echo "ERROR: Failed to change directory to project root: $PROJECT_ROOT"
     exit 1
 }
-
-# -------------------------------------------------------------
-# CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="config/example_config.yaml"
 
 # Resolve CONFIG_FILE robustly (absolute or relative to submit directory)
 resolve_config_path() {
@@ -64,18 +79,27 @@ if ! CONFIG_FILE_RESOLVED="$(resolve_config_path "$CONFIG_FILE")"; then
 fi
 CONFIG_FILE="$CONFIG_FILE_RESOLVED"
 
-# -------------------------------------------------------------
-# Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
-EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
-# -------------------------------------------------------------
-# Override PYTHONPATH to include src directory (latest code changes)
-# export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+# Configure PYTHONPATH behavior
+SRC_PATH="${PROJECT_ROOT}/src"
+case "$PYTHONPATH_MODE" in
+    prepend)
+        export PYTHONPATH="${SRC_PATH}:${PYTHONPATH:-}"
+        echo "PYTHONPATH mode: prepend (${SRC_PATH} added first)"
+        ;;
+    overwrite)
+        export PYTHONPATH="${SRC_PATH}"
+        echo "PYTHONPATH mode: overwrite (set to ${SRC_PATH})"
+        ;;
+    keep)
+        echo "PYTHONPATH mode: keep (no changes)"
+        ;;
+    *)
+        echo "ERROR: Invalid PYTHONPATH_MODE='$PYTHONPATH_MODE'. Use: prepend|overwrite|keep"
+        exit 1
+        ;;
+esac
 
-# -------------------------------------------------------------
-# DASK SCRATCH CONFIGURATION
-# Set the directory for Dask spillover to avoid filling /tmp
-# -------------------------------------------------------------
-export DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+export DASK_TEMPORARY_DIRECTORY
 mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 
 
