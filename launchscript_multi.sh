@@ -43,6 +43,34 @@ cd "$PROJECT_ROOT" || {
     exit 1
 }
 
+resolve_output_dir() {
+    local cfg_path="$1"
+    local project_root="$2"
+    python - <<'PY' "$cfg_path" "$project_root"
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+cfg_path = Path(sys.argv[1]).resolve()
+project_root = Path(sys.argv[2]).resolve()
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+out = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+if not out:
+    print("")
+    raise SystemExit(0)
+
+out_path = Path(out)
+if not out_path.is_absolute():
+    cfg_based = (cfg_path.parent / out_path).resolve()
+    project_based = (project_root / out_path).resolve()
+    out_path = cfg_based if cfg_based.exists() else project_based
+
+print(str(out_path))
+PY
+}
+
 # Configure PYTHONPATH behavior
 SRC_PATH="${PROJECT_ROOT}/src"
 case "$PYTHONPATH_MODE" in
@@ -209,10 +237,11 @@ for config in "${EVAL_CONFIGS[@]}"; do
     err_log="${LOG_DIR}/${job_name}.err"
 
     if [ -f "$out_log" ] || [ -f "$err_log" ]; then
-        # Extract output_root
-        outdir=$(python -c "import yaml; cfg=yaml.safe_load(open('$config')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+        # Extract and resolve output_root robustly
+        outdir="$(resolve_output_dir "$config" "$PROJECT_ROOT")"
 
-        if [ -n "$outdir" ] && [ -d "$outdir" ]; then
+        if [ -n "$outdir" ]; then
+            mkdir -p "$outdir"
             if [ -f "$out_log" ]; then
                 cp "$out_log" "$outdir/"
                 echo "Copied $out_log to $outdir/"
@@ -241,7 +270,7 @@ fi
 echo "Rendering notebooks..."
 
 # Create a bash script to handle notebook rendering for a single config
-cat <<'EOF' > render_single_notebook.sh
+cat <<'EOF' > "${PROJECT_ROOT}/render_single_notebook.sh"
 #!/bin/bash
 
 config=$1
@@ -267,10 +296,21 @@ if [ -z "$outdir" ]; then
     exit 0
 fi
 
-if [ ! -d "$outdir" ]; then
-    echo "Output directory does not exist: $outdir"
-    exit 0
+if [[ "$outdir" != /* ]]; then
+    cfg_dir=$(python - <<'PY' "$config"
+import os
+import sys
+print(os.path.dirname(os.path.abspath(sys.argv[1])))
+PY
+)
+    if [ -d "${cfg_dir}/${outdir}" ]; then
+        outdir="${cfg_dir}/${outdir}"
+    else
+        outdir="${project_root}/${outdir}"
+    fi
 fi
+
+mkdir -p "$outdir"
 
 echo "Processing notebooks for config: $config -> $outdir"
 
@@ -361,7 +401,7 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
 
-    echo "$task_id bash render_single_notebook.sh $config ${LOG_DIR}/notebook_${job_name}.log ${PROJECT_ROOT}" >> "$MP_NB_CONF"
+    echo "$task_id bash ${PROJECT_ROOT}/render_single_notebook.sh $config ${LOG_DIR}/notebook_${job_name}.log ${PROJECT_ROOT}" >> "$MP_NB_CONF"
     ((task_id++))
 done
 
@@ -383,6 +423,7 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
     log_file="${LOG_DIR}/notebook_${job_name}.log"
+    outdir="$(resolve_output_dir "$config" "$PROJECT_ROOT")"
 
     if [ -f "$log_file" ]; then
         status_line=$(grep "NOTEBOOK_RENDER_STATUS:" "$log_file" | tail -n 1)
@@ -399,9 +440,15 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
     else
         echo "Notebooks for $job_name: UNKNOWN (Log file missing: $log_file)"
     fi
+
+    if [ -n "$outdir" ] && [ -f "$log_file" ]; then
+        mkdir -p "$outdir"
+        cp "$log_file" "$outdir/${job_name}_notebooks.log" 2>/dev/null || \
+            echo "Could not copy notebook log $log_file to $outdir"
+    fi
 done
 
 # Cleanup
-rm "$MP_NB_CONF" "render_single_notebook.sh"
+rm "$MP_NB_CONF" "${PROJECT_ROOT}/render_single_notebook.sh"
 
 echo "All tasks completed."

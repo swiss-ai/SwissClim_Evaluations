@@ -72,6 +72,34 @@ PY
     return 1
 }
 
+resolve_output_dir() {
+    local cfg_path="$1"
+    local project_root="$2"
+    python - <<'PY' "$cfg_path" "$project_root"
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+cfg_path = Path(sys.argv[1]).resolve()
+project_root = Path(sys.argv[2]).resolve()
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+out = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+if not out:
+    print("")
+    raise SystemExit(0)
+
+out_path = Path(out)
+if not out_path.is_absolute():
+    cfg_based = (cfg_path.parent / out_path).resolve()
+    project_based = (project_root / out_path).resolve()
+    out_path = cfg_based if cfg_based.exists() else project_based
+
+print(str(out_path))
+PY
+}
+
 if ! CONFIG_FILE_RESOLVED="$(resolve_config_path "$CONFIG_FILE")"; then
     echo "ERROR: Config file not found: $CONFIG_FILE"
     echo "Checked: '$CONFIG_FILE', '${SUBMIT_DIR}/${CONFIG_FILE}', '${PROJECT_ROOT}/${CONFIG_FILE}'"
@@ -128,10 +156,11 @@ EXIT_CODE=$?
 echo "Evaluation finished."
 
 # --- Copy Logs ---
-# Extract output_root using python
-OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_FILE')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+# Extract and resolve output_root robustly
+OUTDIR="$(resolve_output_dir "$CONFIG_FILE" "$PROJECT_ROOT")"
 
-if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
+if [ -n "$OUTDIR" ]; then
+    mkdir -p "$OUTDIR"
     echo "Copying logs to $OUTDIR"
     cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
     cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
@@ -148,26 +177,21 @@ fi
 echo "Rendering notebooks..."
 
 # Create a temporary bash script to handle notebook rendering
-cat <<'EOF' > render_single_notebook.sh
+cat <<'EOF' > "${PROJECT_ROOT}/render_single_notebook.sh"
 #!/bin/bash
 
 # Install missing dependencies for notebook rendering
 
 CONFIG_PATH="$1"
 PROJECT_ROOT="$2"
-
-# Extract output_root using python
-OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_PATH')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+OUTDIR="$3"
 
 if [ -z "$OUTDIR" ]; then
     echo "No output_root found in $CONFIG_PATH"
     exit 1
 fi
 
-if [ ! -d "$OUTDIR" ]; then
-    echo "Output directory does not exist: $OUTDIR"
-    exit 1
-fi
+mkdir -p "$OUTDIR"
 
 echo "Output directory: $OUTDIR"
 
@@ -237,10 +261,15 @@ done
 EOF
 
 # Run the rendering script
+NOTEBOOK_LOG="${LOG_DIR}/${job_name}_notebooks.log"
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    bash render_single_notebook.sh "$CONFIG_FILE" "$PROJECT_ROOT"
+    bash "${PROJECT_ROOT}/render_single_notebook.sh" "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1
+
+if [ -n "$OUTDIR" ] && [ -f "$NOTEBOOK_LOG" ]; then
+    cp "$NOTEBOOK_LOG" "$OUTDIR/${job_name}_notebooks.log" 2>/dev/null || echo "Could not copy notebook render log"
+fi
 
 # Cleanup
-rm render_single_notebook.sh
+rm "${PROJECT_ROOT}/render_single_notebook.sh"
 
 echo "All tasks completed."
