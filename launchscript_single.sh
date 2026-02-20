@@ -139,6 +139,14 @@ export PYTHONUNBUFFERED=1
 # Create logs directory if it doesn't exist
 mkdir -p "$LOG_DIR"
 
+TEMP_FILES=()
+cleanup() {
+    for f in "${TEMP_FILES[@]}"; do
+        [ -n "$f" ] && rm -f "$f"
+    done
+}
+trap cleanup EXIT
+
 
 # Generate robust job name from config (parent_dir + filename)
 filename=$(basename "${CONFIG_FILE}" .yaml)
@@ -177,7 +185,9 @@ fi
 echo "Rendering notebooks..."
 
 # Create a temporary bash script to handle notebook rendering
-cat <<'EOF' > "${PROJECT_ROOT}/render_single_notebook.sh"
+RENDER_SCRIPT="${PROJECT_ROOT}/render_single_notebook.sh"
+TEMP_FILES+=("$RENDER_SCRIPT")
+cat <<'EOF' > "$RENDER_SCRIPT"
 #!/bin/bash
 
 # Install missing dependencies for notebook rendering
@@ -263,13 +273,13 @@ EOF
 # Run the rendering script
 NOTEBOOK_LOG="${LOG_DIR}/${job_name}_notebooks.log"
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    bash "${PROJECT_ROOT}/render_single_notebook.sh" "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1
+    bash "$RENDER_SCRIPT" "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1
 
 if [ -n "$OUTDIR" ] && [ -f "$NOTEBOOK_LOG" ]; then
     cp "$NOTEBOOK_LOG" "$OUTDIR/${job_name}_notebooks.log" 2>/dev/null || echo "Could not copy notebook render log"
 fi
 
 # Cleanup
-rm "${PROJECT_ROOT}/render_single_notebook.sh"
+rm -f "$RENDER_SCRIPT"
 
 echo "All tasks completed."

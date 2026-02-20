@@ -101,6 +101,14 @@ export PYTHONUNBUFFERED=1
 # Create logs directory if it doesn't exist
 mkdir -p "$LOG_DIR"
 
+TEMP_FILES=()
+cleanup() {
+    for f in "${TEMP_FILES[@]}"; do
+        [ -n "$f" ] && rm -f "$f"
+    done
+}
+trap cleanup EXIT
+
 # --- Step 1: Parallel Evaluation Jobs ---
 echo "Starting parallel evaluation jobs..."
 
@@ -153,6 +161,7 @@ EVAL_CONFIGS=("${RESOLVED_CONFIGS[@]}")
 
 # Create multi-prog config file
 MP_CONF="${PROJECT_ROOT}/eval_multiprog.conf"
+TEMP_FILES+=("$MP_CONF")
 rm -f "$MP_CONF"
 
 idx=0
@@ -177,7 +186,7 @@ srun --ntasks=${#EVAL_CONFIGS[@]} --cpus-per-task=32 --multi-prog "$MP_CONF" \
     --container-writable --environment="${EDF_CONFIG}"
 
 # Cleanup
-rm "$MP_CONF"
+rm -f "$MP_CONF"
 echo "Evaluation jobs finished."
 
 # Check for failures and identify successful jobs
@@ -391,6 +400,7 @@ EOF
 # Create multi-prog config for notebooks
 MP_NB_CONF="notebook_multiprog.conf"
 MP_NB_CONF="${PROJECT_ROOT}/notebook_multiprog.conf"
+TEMP_FILES+=("$MP_NB_CONF")
 rm -f "$MP_NB_CONF"
 
 task_id=0
@@ -449,6 +459,6 @@ for config in "${SUCCESSFUL_CONFIGS[@]}"; do
 done
 
 # Cleanup
-rm "$MP_NB_CONF" "${PROJECT_ROOT}/render_single_notebook.sh"
+rm -f "$MP_NB_CONF" "${PROJECT_ROOT}/render_single_notebook.sh"
 
 echo "All tasks completed."
