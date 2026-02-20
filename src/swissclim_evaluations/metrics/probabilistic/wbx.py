@@ -183,6 +183,13 @@ def _save_probabilistic_summaries(
             return hours.round().astype("Int64")
         return pd.to_numeric(series, errors="coerce").round().astype("Int64")
 
+    def _normalize_summary_lead_time(df_sub: pd.DataFrame) -> pd.DataFrame:
+        if "lead_time" not in df_sub.columns:
+            return df_sub
+        out = df_sub.copy()
+        out["lead_time"] = _lead_time_to_hours(out["lead_time"])
+        return out
+
     def _format_prob_line_df(
         df_sub: pd.DataFrame,
         metric_name: str,
@@ -279,6 +286,8 @@ def _save_probabilistic_summaries(
                 else str(init_range)
             )
             df["init_time_range"] = init_label
+
+        df = _normalize_summary_lead_time(df)
 
         summary_filename = build_output_filename(
             metric=f"{metric.lower()}_summary",

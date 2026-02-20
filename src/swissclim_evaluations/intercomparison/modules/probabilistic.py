@@ -29,6 +29,22 @@ def _parse_map_filename(name: str) -> str:
     return name[:-4] if name.endswith(".npz") else name
 
 
+def _lead_time_to_hours(series: pd.Series) -> pd.Series:
+    vals = pd.to_timedelta(series, errors="coerce")
+    if vals.notna().any():
+        hours = vals.dt.total_seconds() / 3600.0
+        return hours.round().astype("Int64")
+    return pd.to_numeric(series, errors="coerce").round().astype("Int64")
+
+
+def _normalize_summary_lead_time(df: pd.DataFrame) -> pd.DataFrame:
+    if "lead_time" not in df.columns:
+        return df
+    out = df.copy()
+    out["lead_time"] = _lead_time_to_hours(out["lead_time"])
+    return out
+
+
 def intercompare_probabilistic(
     models: list[Path],
     labels: list[str],
@@ -133,6 +149,7 @@ def intercompare_probabilistic(
 
     if frames:
         combined = pd.concat(frames, ignore_index=True)
+        combined = _normalize_summary_lead_time(combined)
         if combined["model"].nunique() >= 2:
             out_csv = dst_prob / "crps_summary_combined.csv"
             combined.to_csv(out_csv, index=False)
@@ -409,6 +426,7 @@ def intercompare_probabilistic(
 
     if frames_ssr:
         combined_ssr = pd.concat(frames_ssr, ignore_index=True)
+        combined_ssr = _normalize_summary_lead_time(combined_ssr)
         if combined_ssr["model"].nunique() >= 2:
             out_csv = dst_prob / "ssr_combined.csv"
             combined_ssr.to_csv(out_csv, index=False)
