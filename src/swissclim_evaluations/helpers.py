@@ -757,7 +757,7 @@ def save_dataframe(
 ) -> None:
     """Save pandas DataFrame to CSV file, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=index, index_label=index_label, **kwargs)
+    df.to_csv(path, index=index, index_label=index_label, na_rep="NaN", **kwargs)
     prefix = f"[{module}] " if module else ""
     c.print(f"{prefix}Saved {path}")
 
