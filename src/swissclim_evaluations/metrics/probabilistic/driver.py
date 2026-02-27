@@ -154,6 +154,68 @@ def plot_probabilistic(
             if "lead_time" in pit.dims and pit.sizes["lead_time"] > 1:
                 # Define edges for per-lead plots even when global histogram is skipped.
                 edges = np.linspace(0.0, 1.0, 21)
+
+                # Compute global (all-leads) histogram for NPZ and summary PNG
+                pit_all = np.asarray(pit.values).ravel()
+                pit_all = pit_all[np.isfinite(pit_all)]
+                counts_global, _ = np.histogram(pit_all, bins=edges)
+                width_g = np.diff(edges)
+                total_g = counts_global.sum()
+                density_global = (
+                    counts_global / (total_g * width_g.mean()) if total_g > 0 else counts_global
+                )
+
+                ens_token_plot = ensemble_mode_to_token("prob")
+                if save_npz:
+                    out_npz = section / build_output_filename(
+                        metric="pit_hist",
+                        variable=str(var_name),
+                        level=None,
+                        qualifier=None,
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token_plot,
+                        ext="npz",
+                    )
+                    save_data(
+                        out_npz,
+                        counts=density_global,
+                        edges=edges,
+                        variable=str(var_name),
+                        module="probabilistic",
+                    )
+
+                if save_fig:
+                    fig_g, ax_g = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
+                    ax_g.bar(
+                        edges[:-1],
+                        density_global,
+                        width=width_g,
+                        align="edge",
+                        color=COLOR_DIAGNOSTIC,
+                        edgecolor="white",
+                    )
+                    ax_g.axhline(1.0, color="brown", linestyle="--", linewidth=1, label="Uniform")
+                    ax_g.legend()
+                    ax_g.set_title(
+                        f"PIT Histogram (all leads) — {format_variable_name(str(var_name))}",
+                        loc="left",
+                        fontsize=10,
+                    )
+                    ax_g.set_title(extract_date_from_dataset(ds_target), loc="right", fontsize=10)
+                    ax_g.set_xlabel("PIT value")
+                    ax_g.set_ylabel("Density")
+                    out_png_g = section / build_output_filename(
+                        metric="pit_hist",
+                        variable=str(var_name),
+                        level=None,
+                        qualifier=None,
+                        init_time_range=init_range_plot,
+                        lead_time_range=lead_range_plot,
+                        ensemble=ens_token_plot,
+                        ext="png",
+                    )
+                    save_figure(fig_g, out_png_g)
             else:
                 # Use dask_histogram from dask_utils (imported as dask_histogram)
                 edges = np.linspace(0.0, 1.0, 21)
@@ -232,7 +294,7 @@ def plot_probabilistic(
             pit.size > 0
             and "lead_time" in pit.dims
             and int(pit.sizes.get("lead_time", 0)) > 1
-            and save_fig
+            and (save_fig or save_npz)
         ):
             full_hours = [_to_hour_safe(x, idx) for idx, x in enumerate(pit["lead_time"].values)]
             if full_hours:
@@ -250,72 +312,101 @@ def plot_probabilistic(
                     n = len(hour_index_pairs)
                     ncols = int((plotting_cfg or {}).get("panel_cols", 2))
                     nrows = (n + ncols - 1) // ncols
-                    fig, axes = plt.subplots(
-                        nrows,
-                        ncols,
-                        figsize=(5.4 * ncols, 3.0 * nrows),
-                        dpi=dpi * 2,
-                        squeeze=False,
-                        constrained_layout=True,
-                    )
-                    axes_flat = axes.flatten()
-                    for i, (h, li) in enumerate(hour_index_pairs):
-                        r, col = divmod(i, ncols)
+
+                    # Compute per-lead densities (needed for both NPZ and plot)
+                    lead_hours_arr = np.array([h for h, _ in hour_index_pairs], dtype=float)
+                    local_edges = np.linspace(0.0, 1.0, 21)
+                    counts_per_lead: list[np.ndarray] = []
+                    for _, li in hour_index_pairs:
                         sub = pit.isel(lead_time=li)
                         data = np.asarray(sub.values).ravel()
                         data = data[np.isfinite(data)]
-                        # Use local edges if defined, else default
-                        local_edges = np.linspace(0.0, 1.0, 21)
-                        counts_local, _ = np.histogram(data, bins=local_edges)
+                        c_loc, _ = np.histogram(data, bins=local_edges)
                         width = np.diff(local_edges)
-                        total = counts_local.sum()
-                        dens = counts_local / (total * width.mean()) if total > 0 else counts_local
-                        ax = axes_flat[i]
-                        ax.bar(
-                            local_edges[:-1],
-                            dens,
-                            width=width,
-                            align="edge",
-                            color="#4C78A8",
-                            edgecolor="white",
-                        )
-                        ax.axhline(1.0, color="brown", linestyle="--", linewidth=1)
-                        ax.set_title(f"PIT (+{int(h)}h)", fontsize=10)
-                        if r == nrows - 1:
-                            ax.set_xlabel("PIT value")
-                        if col == 0:
-                            ax.set_ylabel("Density")
-
-                    # Hide unused axes if n not multiple of ncols
-                    for j in range(n, nrows * ncols):
-                        if hasattr(axes_flat[j], "axis"):
-                            axes_flat[j].axis("off")
-
-                    date_str = extract_date_from_dataset(ds_target)
-                    # Adjust layout to leave space for suptitle
-                    layout_engine = (
-                        fig.get_layout_engine() if hasattr(fig, "get_layout_engine") else None
-                    )
-                    if layout_engine is not None and hasattr(layout_engine, "set"):
-                        layout_engine.set(rect=[0, 0, 1, 0.92])
-                    plt.suptitle(
-                        f"PIT Histograms by Lead Time — "
-                        f"{format_variable_name(str(var_name))}{date_str}",
-                        fontsize=16,
-                        y=0.98,
-                    )
+                        total = c_loc.sum()
+                        dens = c_loc / (total * width.mean()) if total > 0 else c_loc
+                        counts_per_lead.append(dens)
 
                     ens_token_plot = ensemble_mode_to_token("prob")
-                    out_png = section / build_output_filename(
-                        metric="pit_hist",
-                        variable=str(var_name),
-                        level=None,
-                        qualifier="grid",
-                        init_time_range=init_range_plot,
-                        lead_time_range=lead_range_plot,
-                        ensemble=ens_token_plot,
-                        ext="png",
-                    )
-                    save_figure(fig, out_png)
-                else:
-                    plt.close(fig)
+
+                    if save_npz:
+                        out_npz_grid = section / build_output_filename(
+                            metric="pit_hist",
+                            variable=str(var_name),
+                            level=None,
+                            qualifier="grid",
+                            init_time_range=None,
+                            lead_time_range=None,
+                            ensemble=ens_token_plot,
+                            ext="npz",
+                        )
+                        save_data(
+                            out_npz_grid,
+                            counts=np.stack(counts_per_lead, axis=0),
+                            edges=local_edges,
+                            lead_hours=lead_hours_arr,
+                            variable=str(var_name),
+                            module="probabilistic",
+                        )
+
+                    if save_fig:
+                        fig, axes = plt.subplots(
+                            nrows,
+                            ncols,
+                            figsize=(5.4 * ncols, 3.0 * nrows),
+                            dpi=dpi * 2,
+                            squeeze=False,
+                            constrained_layout=True,
+                        )
+                        axes_flat = axes.flatten()
+                        width = np.diff(local_edges)
+                        for i, ((h, _), dens) in enumerate(
+                            zip(hour_index_pairs, counts_per_lead, strict=False)
+                        ):
+                            r, col = divmod(i, ncols)
+                            ax = axes_flat[i]
+                            ax.bar(
+                                local_edges[:-1],
+                                dens,
+                                width=width,
+                                align="edge",
+                                color="#4C78A8",
+                                edgecolor="white",
+                            )
+                            ax.axhline(1.0, color="brown", linestyle="--", linewidth=1)
+                            ax.set_title(f"PIT (+{int(h)}h)", fontsize=10)
+                            if r == nrows - 1:
+                                ax.set_xlabel("PIT value")
+                            if col == 0:
+                                ax.set_ylabel("Density")
+
+                        # Hide unused axes if n not multiple of ncols
+                        for j in range(n, nrows * ncols):
+                            if hasattr(axes_flat[j], "axis"):
+                                axes_flat[j].axis("off")
+
+                        date_str = extract_date_from_dataset(ds_target)
+                        # Adjust layout to leave space for suptitle
+                        layout_engine = (
+                            fig.get_layout_engine() if hasattr(fig, "get_layout_engine") else None
+                        )
+                        if layout_engine is not None and hasattr(layout_engine, "set"):
+                            layout_engine.set(rect=[0, 0, 1, 0.92])
+                        plt.suptitle(
+                            f"PIT Histograms by Lead Time — "
+                            f"{format_variable_name(str(var_name))}{date_str}",
+                            fontsize=16,
+                            y=0.98,
+                        )
+
+                        out_png = section / build_output_filename(
+                            metric="pit_hist",
+                            variable=str(var_name),
+                            level=None,
+                            qualifier="grid",
+                            init_time_range=init_range_plot,
+                            lead_time_range=lead_range_plot,
+                            ensemble=ens_token_plot,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png)
