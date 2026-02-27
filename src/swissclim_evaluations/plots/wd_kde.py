@@ -599,155 +599,157 @@ def run(
                         }
                     )
 
-            # Compute all
-            lazy_list = []
-            # Map index in lazy_list back to (job_idx, key)
-            meta_list: list[tuple[int, str]] = []
+                # Compute all
+                lazy_list = []
+                # Map index in lazy_list back to (job_idx, key)
+                meta_list: list[tuple[int, str]] = []
 
-            for idx, job in enumerate(jobs):
-                for k_lazy, k_res in [
-                    ("sub_t_q_lazy", "sub_t_q"),
-                    ("sub_p_q_lazy", "sub_p_q"),
-                    ("sub_t_lazy", "sub_t"),
-                    ("sub_p_lazy", "sub_p"),
-                ]:
-                    if k_lazy in job:
-                        lazy_list.append(job[k_lazy])
-                        meta_list.append((idx, k_res))
+                for idx, job in enumerate(jobs):
+                    for k_lazy, k_res in [
+                        ("sub_t_q_lazy", "sub_t_q"),
+                        ("sub_p_q_lazy", "sub_p_q"),
+                        ("sub_t_lazy", "sub_t"),
+                        ("sub_p_lazy", "sub_p"),
+                    ]:
+                        if k_lazy in job:
+                            lazy_list.append(job[k_lazy])
+                            meta_list.append((idx, k_res))
 
-            if lazy_list:
-                desc = (
-                    f"Computing KDE evolution variable={base_var}"
-                    if lvl is None
-                    else f"Computing KDE evolution variable={base_var} level={lvl}"
-                )
-                c.print(f"{desc}...")
-                results = dask.compute(*lazy_list)
-
-                for (j_idx, k_res), res_val in zip(meta_list, results, strict=False):
-                    jobs[j_idx][k_res] = to_finite_array(res_val)
-
-            # Process quantiles
-            sub_t_q = np.asarray(jobs[0]["sub_t_q"])
-            sub_p_q = np.asarray(jobs[0]["sub_p_q"])
-
-            if sub_t_q.size > 0:
-                q_t = np.quantile(sub_t_q, [0.001, 0.999])
-            else:
-                q_t = np.array([np.nan, np.nan])
-
-            if sub_p_q.size > 0:
-                q_p = np.quantile(sub_p_q, [0.001, 0.999])
-            else:
-                q_p = np.array([np.nan, np.nan])
-
-            vmin = float(min(q_t[0], q_p[0]))
-            vmax = float(max(q_t[1], q_p[1]))
-            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-                vmin, vmax = -3.0, 3.0
-            y_eval = np.linspace(vmin, vmax, 200)
-
-            Z_t = []
-            Z_p = []
-
-            def _eval_kde_from_array(arr: np.ndarray, y_eval_local: np.ndarray) -> np.ndarray:
-                arr = arr.ravel()
-                arr = arr[np.isfinite(arr)]
-                if arr.size < 10:
-                    return np.zeros_like(y_eval_local)
-                kde = gaussian_kde(arr)
-                return kde(y_eval_local)
-
-            # Process leads
-            for job in jobs[1:]:
-                arr_t = np.asarray(job["sub_t"])
-                arr_p = np.asarray(job["sub_p"])
-
-                Z_t.append(_eval_kde_from_array(arr_t, y_eval))
-                Z_p.append(_eval_kde_from_array(arr_p, y_eval))
-
-            X = np.asarray(lead_hours, dtype=float)
-            Y = y_eval
-            Z_t_arr = np.asarray(Z_t)
-            Z_p_arr = np.asarray(Z_p)
-
-            # Keep only: Ridgeline plot
-
-            # 3: Ridgeline plot (joy plot) in 2D
-            # Style reversal requested: fill = model densities, outline line = target densities.
-            # Color meaning: Viridis gradient keyed by lead index (early → dark, late → bright).
-            fig_r, ax_r = plt.subplots(figsize=(10, 6), dpi=dpi * 2, constrained_layout=True)
-            offset = 1.05 * max(float(np.max(Z_t_arr)), float(np.max(Z_p_arr)))
-            cmap = plt.get_cmap("viridis")
-            for i, h in enumerate(X.tolist()):
-                color = cmap(i / max(1, len(X) - 1))
-                y_target = i * offset + Z_t_arr[i]
-                y_model = i * offset + Z_p_arr[i]
-                # Filled model ridge (fallback to line if fill_between not available in test stubs)
-                if hasattr(ax_r, "fill_between"):
-                    ax_r.fill_between(
-                        Y,
-                        i * offset,
-                        y_model,
-                        color=color,
-                        alpha=0.55,
-                        linewidth=0.0,
-                        label="Prediction" if i == 0 else None,
+                if lazy_list:
+                    desc = (
+                        f"Computing KDE evolution variable={base_var}"
+                        if lvl is None
+                        else f"Computing KDE evolution variable={base_var} level={lvl}"
                     )
+                    c.print(f"{desc}...")
+                    results = dask.compute(*lazy_list)
+
+                    for (j_idx, k_res), res_val in zip(meta_list, results, strict=False):
+                        jobs[j_idx][k_res] = to_finite_array(res_val)
+
+                # Process quantiles
+                sub_t_q = np.asarray(jobs[0]["sub_t_q"])
+                sub_p_q = np.asarray(jobs[0]["sub_p_q"])
+
+                if sub_t_q.size > 0:
+                    q_t = np.quantile(sub_t_q, [0.001, 0.999])
                 else:
+                    q_t = np.array([np.nan, np.nan])
+
+                if sub_p_q.size > 0:
+                    q_p = np.quantile(sub_p_q, [0.001, 0.999])
+                else:
+                    q_p = np.array([np.nan, np.nan])
+
+                vmin = float(min(q_t[0], q_p[0]))
+                vmax = float(max(q_t[1], q_p[1]))
+                if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
+                    vmin, vmax = -3.0, 3.0
+                y_eval = np.linspace(vmin, vmax, 200)
+
+                Z_t = []
+                Z_p = []
+
+                def _eval_kde_from_array(arr: np.ndarray, y_eval_local: np.ndarray) -> np.ndarray:
+                    arr = arr.ravel()
+                    arr = arr[np.isfinite(arr)]
+                    if arr.size < 10:
+                        return np.zeros_like(y_eval_local)
+                    kde = gaussian_kde(arr)
+                    return kde(y_eval_local)
+
+                # Process leads
+                for job in jobs[1:]:
+                    arr_t = np.asarray(job["sub_t"])
+                    arr_p = np.asarray(job["sub_p"])
+
+                    Z_t.append(_eval_kde_from_array(arr_t, y_eval))
+                    Z_p.append(_eval_kde_from_array(arr_p, y_eval))
+
+                X = np.asarray(lead_hours, dtype=float)
+                Y = y_eval
+                Z_t_arr = np.asarray(Z_t)
+                Z_p_arr = np.asarray(Z_p)
+
+                # Keep only: Ridgeline plot
+
+                # 3: Ridgeline plot (joy plot) in 2D
+                # Style reversal requested: fill = model densities, outline line = target densities.
+                # Color meaning: Viridis gradient keyed by lead index (early → dark, late → bright).
+                fig_r, ax_r = plt.subplots(figsize=(10, 6), dpi=dpi * 2, constrained_layout=True)
+                offset = 1.05 * max(float(np.max(Z_t_arr)), float(np.max(Z_p_arr)))
+                cmap = plt.get_cmap("viridis")
+                for i, h in enumerate(X.tolist()):
+                    color = cmap(i / max(1, len(X) - 1))
+                    y_target = i * offset + Z_t_arr[i]
+                    y_model = i * offset + Z_p_arr[i]
+                    # Filled model ridge (fallback to line)
+                    if hasattr(ax_r, "fill_between"):
+                        ax_r.fill_between(
+                            Y,
+                            i * offset,
+                            y_model,
+                            color=color,
+                            alpha=0.55,
+                            linewidth=0.0,
+                            label="Prediction" if i == 0 else None,
+                        )
+                    else:
+                        ax_r.plot(
+                            Y, y_model, color=color, lw=1.0, label="Prediction" if i == 0 else None
+                        )
+                    # Target outline as thin black line for contrast
                     ax_r.plot(
-                        Y, y_model, color=color, lw=1.0, label="Prediction" if i == 0 else None
+                        Y, y_target, color="black", lw=0.7, label="Target" if i == 0 else None
                     )
-                # Target outline as thin black line for contrast
-                ax_r.plot(Y, y_target, color="black", lw=0.7, label="Target" if i == 0 else None)
-                # Lead hour label
-                ax_r.text(Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8)
-                if hasattr(ax_r, "set_yticks"):
-                    ax_r.set_yticks([])
+                    # Lead hour label
+                    ax_r.text(
+                        Y[-1] + (Y[1] - Y[0]) * 0.5, i * offset + 0.02, f"{int(h)}h", fontsize=8
+                    )
+                    if hasattr(ax_r, "set_yticks"):
+                        ax_r.set_yticks([])
 
-            # Add level info to title if applicable
-            level_str = f" (level {lvl})" if lvl is not None else ""
-            ax_r.set_xlabel(f"{format_variable_name(base_var)} (standardized)")
-            ax_r.set_title(
-                f"KDE Evolution (Ridgeline): {format_variable_name(base_var)}{level_str}"
-            )
-            ax_r.legend(loc="upper right", frameon=False)
+                # Add level info to title if applicable
+                level_str = f" (level {lvl})" if lvl is not None else ""
+                ax_r.set_xlabel(f"{format_variable_name(base_var)} (standardized)")
+                ax_r.set_title(
+                    f"KDE Evolution (Ridgeline): {format_variable_name(base_var)}{level_str}"
+                )
+                ax_r.legend(loc="upper right", frameon=False)
 
-            if save_fig:
-                qual = f"ridgeline{'_level' + str(lvl) if lvl is not None else ''}"
-                out_png = section_output / build_output_filename(
-                    metric="wd_kde_evolve",
-                    variable=base_var,
-                    level="surface",
-                    qualifier=qual,
-                    ensemble=ensemble_mode_to_token(ensemble_mode),
-                    ext="png",
-                )
-                save_figure(fig_r, out_png, module="wd_kde")
-            else:
-                plt.close(fig_r)
-            if save_npz:
-                out_npz = section_output / build_output_filename(
-                    metric="wd_kde_evolve",
-                    variable=base_var,
-                    level=None,
-                    qualifier="ridgeline_data",
-                    init_time_range=None,
-                    lead_time_range=None,
-                    ensemble=ens_token_base,
-                    ext="npz",
-                )
-                save_data(
-                    out_npz,
-                    lead_hours=X,
-                    y_eval=Y,
-                    density_target=Z_t_arr,
-                    density_model=Z_p_arr,
-                    variable=base_var,
-                    module="wd_kde",
-                )
-
-            # Removed: heatmaps, 3D curves, and NPZ bundle.
+                if save_fig:
+                    qual = f"ridgeline{'_level' + str(lvl) if lvl is not None else ''}"
+                    out_png = section_output / build_output_filename(
+                        metric="wd_kde_evolve",
+                        variable=base_var,
+                        level="surface",
+                        qualifier=qual,
+                        ensemble=ensemble_mode_to_token(ensemble_mode),
+                        ext="png",
+                    )
+                    save_figure(fig_r, out_png, module="wd_kde")
+                else:
+                    plt.close(fig_r)
+                if save_npz:
+                    out_npz = section_output / build_output_filename(
+                        metric="wd_kde_evolve",
+                        variable=base_var,
+                        level=None,
+                        qualifier="ridgeline_data",
+                        init_time_range=None,
+                        lead_time_range=None,
+                        ensemble=ens_token_base,
+                        ext="npz",
+                    )
+                    save_data(
+                        out_npz,
+                        lead_hours=X,
+                        y_eval=Y,
+                        density_target=Z_t_arr,
+                        density_model=Z_p_arr,
+                        variable=base_var,
+                        module="wd_kde",
+                    )
 
     if wasserstein_rows:
         import pandas as pd
