@@ -8,7 +8,6 @@ import numpy as np
 import xarray as xr
 from weatherbenchX.metrics import base
 from weatherbenchX.metrics.probabilistic import (
-    CRPSEnsemble,
     EnsembleVariance,
     UnbiasedEnsembleMeanSquaredError,
     UnbiasedSpreadSkillRatio,
@@ -56,39 +55,6 @@ class RobustUnbiasedSpreadSkillRatio(UnbiasedSpreadSkillRatio):
         mse = statistic_values["UnbiasedEnsembleMeanSquaredError"]
         ratio = variance / mse
         return np.sqrt(ratio)
-
-
-def compute_wbx_crps(
-    preds: dict[str, xr.DataArray] | xr.Dataset | xr.DataArray,
-    targs: dict[str, xr.DataArray] | xr.Dataset | xr.DataArray,
-    ensemble_dim: str = "ensemble",
-    metric: CRPSEnsemble | None = None,
-) -> xr.Dataset:
-    """Compute Fair CRPS using WeatherBenchX implementation."""
-    metric_obj = metric or CRPSEnsemble(ensemble_dim=ensemble_dim)
-
-    if isinstance(preds, xr.DataArray):
-        preds = {preds.name or "prediction": preds}
-    if isinstance(targs, xr.DataArray):
-        targs = {targs.name or "target": targs}
-
-    if isinstance(preds, xr.Dataset):
-        preds = {v: preds[v] for v in preds.data_vars}
-    if isinstance(targs, xr.Dataset):
-        targs = {v: targs[v] for v in targs.data_vars}
-
-    stats = {}
-    for name, stat in metric_obj.statistics.items():
-        res = stat.compute(preds, targs)
-        stats[name] = res
-
-    crps_results = {}
-    for var in preds:
-        if var in stats["CRPSSkill"] and var in stats["CRPSSpread"]:
-            crps = stats["CRPSSkill"][var] - 0.5 * stats["CRPSSpread"][var]
-            crps_results[var] = _add_metric_prefix(crps, "CRPS")
-
-    return xr.Dataset(crps_results)
 
 
 def _pit(da_target, da_prediction):
