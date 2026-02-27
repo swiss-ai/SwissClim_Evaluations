@@ -413,7 +413,7 @@ mkdir -p "$outdir"
 
 echo "Processing notebooks for config: $config -> $outdir"
 
-# Select notebooks based on available outputs
+# Select notebooks based on config type and available outputs
 notebooks_raw=$(python - <<'PY' "$config"
 import yaml
 from pathlib import Path
@@ -421,25 +421,33 @@ import sys
 
 cfg_path = Path(sys.argv[1])
 cfg = yaml.safe_load(cfg_path.read_text()) or {}
-outdir_val = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+paths_block = cfg.get("paths", {}) or {}
+
+is_intercomparison = bool(cfg.get("models")) and not (
+    paths_block.get("target")
+    or paths_block.get("nwp")
+    or paths_block.get("prediction")
+    or paths_block.get("ml")
+)
+
+outdir_val = cfg.get("output_root") or paths_block.get("output_root", "")
 outdir = Path(outdir_val)
 
 def has_files(p: Path) -> bool:
     return p.exists() and any(x.is_file() for x in p.rglob("*"))
 
 notebooks: list[str] = []
-if has_files(outdir / "deterministic"):
-    notebooks.append("deterministic_verification.ipynb")
-if has_files(outdir / "probabilistic"):
-    notebooks.append("probabilistic_verification.ipynb")
 
-has_intercompare = (
-    has_files(outdir / "intercomparison")
-    or any(outdir.rglob("*_combined*.csv"))
-    or any(outdir.rglob("*_compare*.png"))
-)
-if has_intercompare:
-    notebooks.append("model_intercomparison.ipynb")
+if is_intercomparison:
+    # Only render the intercomparison notebook; deterministic/probabilistic notebooks
+    # require zarr datasets and must not be rendered for intercomparison configs.
+    if has_files(outdir):
+        notebooks.append("model_intercomparison.ipynb")
+else:
+    if has_files(outdir / "deterministic"):
+        notebooks.append("deterministic_verification.ipynb")
+    if has_files(outdir / "probabilistic"):
+        notebooks.append("probabilistic_verification.ipynb")
 
 print(" ".join(notebooks))
 PY
