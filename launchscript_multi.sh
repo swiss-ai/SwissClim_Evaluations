@@ -6,8 +6,13 @@
 #SBATCH --account=a122
 #SBATCH --partition=normal
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=144
+# ntasks-per-node and cpus-per-task are derived from PARALLEL_BATCH_SIZE below.
+# Allocation: PARALLEL_BATCH_SIZE tasks × (144 / PARALLEL_BATCH_SIZE) CPUs = 144 CPUs total.
+# If you change PARALLEL_BATCH_SIZE you MUST also update these two directives to match:
+#   --ntasks-per-node = PARALLEL_BATCH_SIZE
+#   --cpus-per-task   = 144 / PARALLEL_BATCH_SIZE  (must be a whole number)
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=36
 
 # =============================================================
 # USER INPUT (edit this section only)
@@ -20,6 +25,23 @@ EVAL_CONFIG_LIST_FILE="eval_configs.txt"
 
 # Dask spill directory
 DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+
+# Maximum number of eval configs to run in parallel at one time.
+# Configs beyond this limit are processed in sequential batches so that
+# memory is always split by at most PARALLEL_BATCH_SIZE, preventing OOMs.
+# MUST match --ntasks-per-node above.
+PARALLEL_BATCH_SIZE=4
+
+# Approx. usable node RAM in GiB for this job (set to your node memory)
+NODE_RAM_GIB=480
+
+# Fraction of node RAM allowed for the parallel evals in one batch (0-1).
+# Keep headroom for scheduler/container/OS overhead.
+NODE_RAM_USAGE_FRACTION=0.90
+
+# Fraction of per-eval budget passed to Dask worker pool (0-1).
+# Remaining memory stays as process/output overhead outside workers.
+DASK_EVAL_MEMORY_FRACTION=0.90
 
 # PYTHONPATH behavior for project src directory:
 # - prepend  : PROJECT_ROOT/src:$PYTHONPATH
@@ -159,35 +181,110 @@ PY
 done
 EVAL_CONFIGS=("${RESOLVED_CONFIGS[@]}")
 
-# Create multi-prog config file
+TOTAL_PARALLEL_EVALS=${#EVAL_CONFIGS[@]}
+if [ "$TOTAL_PARALLEL_EVALS" -lt 1 ]; then
+    echo "ERROR: No evaluation configs found after filtering/resolution."
+    exit 1
+fi
+
+if ! [[ "$NODE_RAM_GIB" =~ ^[0-9]+$ ]] || [ "$NODE_RAM_GIB" -lt 1 ]; then
+    echo "ERROR: NODE_RAM_GIB must be a positive integer, got '$NODE_RAM_GIB'"
+    exit 1
+fi
+
+if ! [[ "$NODE_RAM_USAGE_FRACTION" =~ ^0(\.[0-9]+)?|1(\.0+)?$ ]]; then
+    echo "ERROR: NODE_RAM_USAGE_FRACTION must be between 0 and 1, got '$NODE_RAM_USAGE_FRACTION'"
+    exit 1
+fi
+
+if ! [[ "$DASK_EVAL_MEMORY_FRACTION" =~ ^0(\.[0-9]+)?|1(\.0+)?$ ]]; then
+    echo "ERROR: DASK_EVAL_MEMORY_FRACTION must be between 0 and 1, got '$DASK_EVAL_MEMORY_FRACTION'"
+    exit 1
+fi
+
+if ! [[ "$PARALLEL_BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "$PARALLEL_BATCH_SIZE" -lt 1 ]; then
+    echo "ERROR: PARALLEL_BATCH_SIZE must be a positive integer, got '$PARALLEL_BATCH_SIZE'"
+    exit 1
+fi
+
+TOTAL_USABLE_RAM_GIB=$(python - <<'PY' "$NODE_RAM_GIB" "$NODE_RAM_USAGE_FRACTION"
+import sys
+node_ram = float(sys.argv[1])
+fraction = float(sys.argv[2])
+print(max(1, int(node_ram * fraction)))
+PY
+)
+
+# Memory per eval is always based on the fixed batch width, NOT the total number of
+# configs.  This guarantees that no matter how many configs are in the list, each
+# running eval gets the same generous slice of RAM and never races against N others.
+EVAL_MEMORY_BUDGET_GIB=$(python - <<'PY' "$TOTAL_USABLE_RAM_GIB" "$PARALLEL_BATCH_SIZE"
+import sys
+usable = float(sys.argv[1])
+batch  = int(sys.argv[2])
+print(max(1, int(usable / batch)))
+PY
+)
+
+export SWISSCLIM_DASK_MEMORY_BUDGET_GIB="$EVAL_MEMORY_BUDGET_GIB"
+export SWISSCLIM_DASK_MEMORY_BUDGET_FRACTION="$DASK_EVAL_MEMORY_FRACTION"
+
+CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-36}"
+
+echo "Resource plan: node_ram=${NODE_RAM_GIB}GiB, usable=${TOTAL_USABLE_RAM_GIB}GiB"
+echo "  batch_size=${PARALLEL_BATCH_SIZE}, per_eval_budget=${EVAL_MEMORY_BUDGET_GIB}GiB, dask_fraction=${DASK_EVAL_MEMORY_FRACTION}"
+echo "  total_configs=${TOTAL_PARALLEL_EVALS}, batches=ceil(${TOTAL_PARALLEL_EVALS}/${PARALLEL_BATCH_SIZE})"
+echo "  cpus_per_eval=${CPUS_PER_TASK}"
+
+# ---------------------------------------------------------------------------
+# Process evaluation configs in sequential batches of PARALLEL_BATCH_SIZE.
+# Each batch is launched as a single blocking srun --multi-prog step so the
+# node's memory is always shared by at most PARALLEL_BATCH_SIZE processes.
+# ---------------------------------------------------------------------------
 MP_CONF="${PROJECT_ROOT}/eval_multiprog.conf"
 TEMP_FILES+=("$MP_CONF")
-rm -f "$MP_CONF"
 
-idx=0
-for config in "${EVAL_CONFIGS[@]}"; do
-    [ -z "$config" ] && continue
-    # Use parent dir + filename to avoid collisions
-    filename=$(basename "${config}" .yaml)
-    parent_dir=$(basename "$(dirname "${config}")")
-    job_name="${parent_dir}_${filename}"
-    out_log="${LOG_DIR}/${job_name}.out"
-    err_log="${LOG_DIR}/${job_name}.err"
+batch_num=0
+batch_start=0
+while [ "$batch_start" -lt "$TOTAL_PARALLEL_EVALS" ]; do
+    batch_end=$(( batch_start + PARALLEL_BATCH_SIZE ))
+    if [ "$batch_end" -gt "$TOTAL_PARALLEL_EVALS" ]; then
+        batch_end="$TOTAL_PARALLEL_EVALS"
+    fi
+    BATCH_CONFIGS=("${EVAL_CONFIGS[@]:$batch_start:$(( batch_end - batch_start ))}")
+    current_batch_size=${#BATCH_CONFIGS[@]}
+    (( batch_num++ ))
 
-    # Map task ID to command.
-    # We append the exit code to the .out file to avoid creating separate status files
-    echo "$idx bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > \"${out_log}\" 2> \"${err_log}\"; echo \"SWISSCLIM_JOB_EXIT_CODE: \$?\" >> \"${out_log}\"'" >> "$MP_CONF"
-    ((idx++))
+    echo ""
+    echo "=== Batch ${batch_num}: running configs ${batch_start}–$(( batch_end - 1 )) (${current_batch_size} parallel evals) ==="
+
+    rm -f "$MP_CONF"
+    local_idx=0
+    for config in "${BATCH_CONFIGS[@]}"; do
+        [ -z "$config" ] && continue
+        filename=$(basename "${config}" .yaml)
+        parent_dir=$(basename "$(dirname "${config}")")
+        job_name="${parent_dir}_${filename}"
+        out_log="${LOG_DIR}/${job_name}.out"
+        err_log="${LOG_DIR}/${job_name}.err"
+
+        # Append exit code to the .out file so we can detect success/failure later.
+        echo "${local_idx} bash -c 'python -u -m swissclim_evaluations.cli --config \"${config}\" > \"${out_log}\" 2> \"${err_log}\"; echo \"SWISSCLIM_JOB_EXIT_CODE: \$?\" >> \"${out_log}\"'" >> "$MP_CONF"
+        (( local_idx++ ))
+    done
+
+    # srun is blocking: this call returns only when all tasks in the batch complete.
+    srun --ntasks="${current_batch_size}" --cpus-per-task="${CPUS_PER_TASK}" \
+        --container-writable --environment="${EDF_CONFIG}" \
+        --multi-prog "$MP_CONF"
+
+    echo "=== Batch ${batch_num} finished ==="
+    batch_start="$batch_end"
 done
 
-echo "Evaluation configs: ${EVAL_CONFIGS[*]}"
-# Run all tasks in a single step
-srun --ntasks=${#EVAL_CONFIGS[@]} --cpus-per-task=32 --multi-prog "$MP_CONF" \
-    --container-writable --environment="${EDF_CONFIG}"
-
-# Cleanup
 rm -f "$MP_CONF"
-echo "Evaluation jobs finished."
+echo ""
+echo "All evaluation batches finished."
 
 # Check for failures and identify successful jobs
 FAILURES=0
@@ -236,9 +333,8 @@ for config in "${EVAL_CONFIGS[@]}"; do
 done
 
 # Copy logs to output folders
-idx=0
 for config in "${EVAL_CONFIGS[@]}"; do
-    # Use parent dir + filename to avoid collisions
+    [ -z "$config" ] && continue
     filename=$(basename "${config}" .yaml)
     parent_dir=$(basename "$(dirname "${config}")")
     job_name="${parent_dir}_${filename}"
@@ -246,7 +342,6 @@ for config in "${EVAL_CONFIGS[@]}"; do
     err_log="${LOG_DIR}/${job_name}.err"
 
     if [ -f "$out_log" ] || [ -f "$err_log" ]; then
-        # Extract and resolve output_root robustly
         outdir="$(resolve_output_dir "$config" "$PROJECT_ROOT")"
 
         if [ -n "$outdir" ]; then
@@ -259,16 +354,11 @@ for config in "${EVAL_CONFIGS[@]}"; do
                 cp "$err_log" "$outdir/"
                 echo "Copied $err_log to $outdir/"
             fi
-
-            # Copy dask log if it exists (using idx as PROCID)
-            dask_log="${LOG_DIR}/dask_distributed_${SLURM_JOB_ID}_${idx}.log"
-            if [ -f "$dask_log" ]; then
-                cp "$dask_log" "$outdir/${job_name}_dask.log"
-                echo "Copied $dask_log to $outdir/"
-            fi
+            # Note: dask log PROCID restarts at 0 each batch, so we cannot map
+            # global config index → PROCID reliably.  Dask logs land in LOG_DIR
+            # and are available there for manual inspection.
         fi
     fi
-    ((idx++))
 done
 
 if [ $FAILURES -ne 0 ]; then
@@ -397,30 +487,44 @@ fi
 exit 0
 EOF
 
-# Create multi-prog config for notebooks
-MP_NB_CONF="notebook_multiprog.conf"
+# Render notebooks in sequential batches of PARALLEL_BATCH_SIZE.
 MP_NB_CONF="${PROJECT_ROOT}/notebook_multiprog.conf"
 TEMP_FILES+=("$MP_NB_CONF")
-rm -f "$MP_NB_CONF"
 
-task_id=0
-for config in "${SUCCESSFUL_CONFIGS[@]}"; do
-    [ -z "$config" ] && continue
-    # Use parent dir + filename to avoid collisions
-    filename=$(basename "${config}" .yaml)
-    parent_dir=$(basename "$(dirname "${config}")")
-    job_name="${parent_dir}_${filename}"
+TOTAL_SUCCESSFUL=${#SUCCESSFUL_CONFIGS[@]}
+if [ "$TOTAL_SUCCESSFUL" -gt 0 ]; then
+    nb_batch_num=0
+    nb_batch_start=0
+    while [ "$nb_batch_start" -lt "$TOTAL_SUCCESSFUL" ]; do
+        nb_batch_end=$(( nb_batch_start + PARALLEL_BATCH_SIZE ))
+        if [ "$nb_batch_end" -gt "$TOTAL_SUCCESSFUL" ]; then
+            nb_batch_end="$TOTAL_SUCCESSFUL"
+        fi
+        NB_BATCH=("${SUCCESSFUL_CONFIGS[@]:$nb_batch_start:$(( nb_batch_end - nb_batch_start ))}")
+        nb_current_size=${#NB_BATCH[@]}
+        (( nb_batch_num++ ))
 
-    echo "$task_id bash ${PROJECT_ROOT}/render_single_notebook.sh $config ${LOG_DIR}/notebook_${job_name}.log ${PROJECT_ROOT}" >> "$MP_NB_CONF"
-    ((task_id++))
-done
+        echo ""
+        echo "=== Notebook batch ${nb_batch_num}: rendering ${nb_current_size} configs ==="
 
-if [ $task_id -gt 0 ]; then
-    echo "Rendering notebooks in parallel for $task_id jobs..."
-    # Move flags before --multi-prog to avoid them being passed as arguments to the command
-    srun --ntasks=$task_id --cpus-per-task=32 \
-        --container-writable --environment="${EDF_CONFIG}" \
-        --multi-prog "$MP_NB_CONF"
+        rm -f "$MP_NB_CONF"
+        nb_local_idx=0
+        for config in "${NB_BATCH[@]}"; do
+            [ -z "$config" ] && continue
+            filename=$(basename "${config}" .yaml)
+            parent_dir=$(basename "$(dirname "${config}")")
+            job_name="${parent_dir}_${filename}"
+            echo "${nb_local_idx} bash ${PROJECT_ROOT}/render_single_notebook.sh $config ${LOG_DIR}/notebook_${job_name}.log ${PROJECT_ROOT}" >> "$MP_NB_CONF"
+            (( nb_local_idx++ ))
+        done
+
+        srun --ntasks="${nb_current_size}" --cpus-per-task="${CPUS_PER_TASK}" \
+            --container-writable --environment="${EDF_CONFIG}" \
+            --multi-prog "$MP_NB_CONF"
+
+        echo "=== Notebook batch ${nb_batch_num} finished ==="
+        nb_batch_start="$nb_batch_end"
+    done
 else
     echo "No successful jobs to render."
 fi
