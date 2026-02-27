@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -179,8 +180,16 @@ def run(
             n_leads = len(lead_indices)
 
             # Compute global vmin/vmax for consistent color scale
-            vmin = min(float(ds_var_full.min()), float(ds_prediction_var_full.min()))
-            vmax = max(float(ds_var_full.max()), float(ds_prediction_var_full.max()))
+            # Batch all 4 reductions into a single dask.compute() to avoid
+            # 4 separate scheduler round-trips and redundant data traversals.
+            _vmin_t, _vmin_p, _vmax_t, _vmax_p = dask.compute(
+                ds_var_full.min(),
+                ds_prediction_var_full.min(),
+                ds_var_full.max(),
+                ds_prediction_var_full.max(),
+            )
+            vmin = min(float(_vmin_t), float(_vmin_p))
+            vmax = max(float(_vmax_t), float(_vmax_p))
 
             fig, axes = plt.subplots(
                 n_leads,
@@ -490,13 +499,17 @@ def run(
                 ds_var_lev = ds_var_lev.squeeze()
                 ds_prediction_var_lev = ds_prediction_var_lev.squeeze()
 
-                vmin = min(float(ds_var_lev.min()), float(ds_prediction_var_lev.min()))
-                vmax = max(float(ds_var_lev.max()), float(ds_prediction_var_lev.max()))
+                # Pre-load .values (needed for pcolormesh anyway) and derive
+                # min/max from numpy — saves 4 redundant dask computes per level.
+                arr_t = ds_var_lev.values
+                arr_p = ds_prediction_var_lev.values
+                vmin = min(float(np.nanmin(arr_t)), float(np.nanmin(arr_p)))
+                vmax = max(float(np.nanmax(arr_t)), float(np.nanmax(arr_p)))
 
                 im_ds = ax_ds.pcolormesh(
                     ds_var_lev.coords.get("longitude"),
                     ds_var_lev.coords.get("latitude"),
-                    ds_var_lev.values,
+                    arr_t,
                     cmap=get_colormap_for_variable(str(var)),
                     vmin=vmin,
                     vmax=vmax,
@@ -530,7 +543,7 @@ def run(
                 ax_pred.pcolormesh(
                     ds_prediction_var_lev.coords.get("longitude"),
                     ds_prediction_var_lev.coords.get("latitude"),
-                    ds_prediction_var_lev.values,
+                    arr_p,
                     cmap=get_colormap_for_variable(str(var)),
                     vmin=vmin,
                     vmax=vmax,
