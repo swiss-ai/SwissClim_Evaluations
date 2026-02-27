@@ -278,18 +278,66 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
 
             level_values = payloads[0]["level"]
 
-            fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
-            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get("nmae"))
-                if arr is None:
-                    continue
-                ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
+            # Detect multi-lead: nmae may be 2D (n_leads × n_levels)
+            sample_nmae = np.asarray(payloads[0]["nmae"])
+            is_multi_lead = sample_nmae.ndim == 2
+            lead_hours_arr = payloads[0].get("lead_hours")
 
-            ax.set_xlabel("NMAE [%]")
-            ax.set_ylabel("Level")
-            ax.invert_yaxis()
-            ax.grid(True, linestyle=":", alpha=0.6)
-            ax.legend()
+            if is_multi_lead:
+                n_leads = sample_nmae.shape[0]
+                # Derive lead labels
+                if lead_hours_arr is not None and len(np.asarray(lead_hours_arr)) == n_leads:
+                    lead_labels = [f"+{int(h)}h" for h in np.asarray(lead_hours_arr)]
+                else:
+                    lead_labels = [f"lead {i}" for i in range(n_leads)]
+
+                fig, axes = plt.subplots(
+                    1,
+                    n_leads,
+                    figsize=(min(6, 4) * n_leads, 10),
+                    dpi=160,
+                    sharey=True,
+                )
+                if n_leads == 1:
+                    axes = [axes]
+
+                for li, (ax_l, lead_lbl) in enumerate(zip(axes, lead_labels, strict=False)):
+                    for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                        arr = np.asarray(pay.get("nmae"))
+                        if arr is None or arr.ndim < 2 or arr.shape[0] <= li:
+                            continue
+                        ax_l.plot(
+                            arr[li], level_values, label=lab, color=color_palette[idx], linewidth=2
+                        )
+                    ax_l.set_xlabel("NMAE [%]")
+                    ax_l.set_title(lead_lbl)
+                    ax_l.grid(True, linestyle=":", alpha=0.6)
+                    if li == 0:
+                        ax_l.set_ylabel("Level")
+                        ax_l.invert_yaxis()
+
+                handles, labels_leg = axes[0].get_legend_handles_labels()
+                if handles:
+                    fig.legend(
+                        handles,
+                        labels_leg,
+                        loc="lower center",
+                        ncol=min(6, len(models)),
+                        bbox_to_anchor=(0.5, -0.02),
+                    )
+            else:
+                fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
+                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    arr = np.asarray(pay.get("nmae"))
+                    if arr is None:
+                        continue
+                    ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
+
+                ax.set_xlabel("NMAE [%]")
+                ax.set_ylabel("Level")
+                ax.invert_yaxis()
+                ax.grid(True, linestyle=":", alpha=0.6)
+                ax.legend()
 
             # Variable name extraction
             var = base[:-4]
@@ -298,7 +346,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                     var = var.split("vertical_profiles_nmae_")[1].split("_multi_global_profile")[0]
 
             date_suffix = extract_date_from_filename(base)
-            ax.set_title(
+            fig.suptitle(
                 f"Global Vertical Profile — {format_variable_name(var)}{date_suffix}", fontsize=14
             )
 

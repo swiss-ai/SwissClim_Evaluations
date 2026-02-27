@@ -79,12 +79,9 @@ def intercompare_probabilistic(
     ssr = common_files(models, "probabilistic/ssr*.csv")
     ssr_lvl = [f for f in ssr if "per_level" in f]
     ssr_avg = [f for f in ssr if "per_level" not in f]
-    ssr_line = common_files(models, "probabilistic/ssr_line_*.csv")
-    results["SSR"] = 1 if (ssr_avg or ssr_line) else 0
+    results["SSR"] = 1 if ssr_avg else 0
     if ssr_lvl:
         results["SSR (Per Level)"] = 1
-    if ssr_line:
-        results["SSR Line Plots"] = len(ssr_line)
 
     # Ensemble
     ens = common_files(models, "probabilistic/crps_ensemble*.csv")
@@ -438,58 +435,6 @@ def intercompare_probabilistic(
             out_csv = dst_prob / "ssr_per_level_combined.csv"
             combined_ssr_lvl.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
-
-    # --- 5b. SSR Line Plots (Multi-Lead) ---
-    # Look for ssr_line_<var>_by_lead_*.csv
-    ssr_line_files = common_files(models, "probabilistic/ssr_line_*.csv")
-    if ssr_line_files:
-        print_file_list(f"Found {len(ssr_line_files)} common SSR line files", ssr_line_files)
-        colors = sns.color_palette("tab10", n_colors=len(models))
-
-        for base in ssr_line_files:
-            # Extract variable name from filename: ssr_line_<var>_by_lead...
-            # We can use the helper but need to be careful with the prefix
-            var_name = base.replace("ssr_line_", "").split("_by_lead")[0]
-
-            fig, ax = plt.subplots(figsize=(10, 6))
-            has_data = False
-
-            for idx, (lab, m) in enumerate(zip(labels, models, strict=False)):
-                ssr_path = m / "probabilistic" / base
-                if ssr_path.exists():
-                    try:
-                        df = pd.read_csv(ssr_path)
-                        if "lead_time_hours" in df.columns and "SSR" in df.columns:
-                            df = df.sort_values("lead_time_hours")
-                            ax.plot(
-                                df["lead_time_hours"],
-                                df["SSR"],
-                                label=lab,
-                                color=colors[idx],
-                                marker="o",
-                            )
-                            has_data = True
-                    except Exception:
-                        # If reading/parsing this SSR CSV fails for any reason,
-                        # skip this model/file and continue plotting the others.
-                        pass
-
-            if has_data:
-                ax.set_xlabel("Lead Time [h]")
-                ax.set_ylabel("SSR")
-                ax.set_title(f"SSR Evolution — {format_variable_name(var_name)}")
-                ax.legend()
-                ax.grid(True, linestyle=":", alpha=0.6)
-
-                # Add ideal line
-                ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="Ideal")
-
-                out_png = dst_prob / base.replace(".csv", "_compare.png")
-                fig.savefig(out_png, dpi=150)
-                plt.close(fig)
-                c.success(f"Saved {out_png.relative_to(out_root)}")
-            else:
-                plt.close(fig)
 
     # --- 6. CRPS Ensemble ---
     frames_ens: list[pd.DataFrame] = []

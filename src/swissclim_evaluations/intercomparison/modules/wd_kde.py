@@ -143,7 +143,9 @@ def intercompare_wd_kde(
                 legend_labels = ["Target", *labels[:n_legend_models]]
                 ax.legend(legend_handles, legend_labels, loc="upper right", frameon=False)
 
-            out_png = dst / base.replace("_ridgeline_data.npz", "_ridgeline_compare.png")
+            stem = Path(base).stem  # drop .npz
+            out_png_name = stem.split("_ridgeline_data")[0] + "_ridgeline_compare.png"
+            out_png = dst / out_png_name
             fig.savefig(out_png, bbox_inches="tight")
             plt.close(fig)
             c.success(f"Saved {out_png.relative_to(out_root)}")
