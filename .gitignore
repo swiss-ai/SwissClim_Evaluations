@@ -53,3 +53,4 @@ config/dev
 output_dirs.txt
 *.conf
 config/train_config_ESFMs*
+config/firat/*

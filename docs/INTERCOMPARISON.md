@@ -67,6 +67,7 @@ What gets combined:
         *   `lsd_metrics_banded_averaged_combined.csv`: Banded averaged LSD metrics.
         *   `lsd_metrics_per_level_combined.csv`: Per-level LSD metrics.
         *   `lsd_metrics_banded_per_level_combined.csv`: Banded per-level LSD metrics.
+        *   `lsd_metrics_banded_lead_time_combined.csv`: Banded LSD metrics per lead time.
 
 *   **Vertical Profiles**
     *   **Plots**:
@@ -96,12 +97,9 @@ What gets combined:
 *   **Probabilistic**
     *   **CSVs**:
         *   `crps_summary_combined.csv`: Combined CRPS summary.
-        *   `crps_summary_per_level_combined.csv`: Combined per-level CRPS summary.
         *   `temporal_metrics_combined.csv`: Combined temporal probabilistic metrics from `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv`.
         *   `ssr_combined.csv`: Combined Spread-Skill Ratio.
-        *   `ssr_per_level_combined.csv`: Combined per-level Spread-Skill Ratio.
-        *   `crps_ensemble_combined.csv`: Combined CRPS ensemble metrics.
     *   **Plots**:
         *   `temporal_<metric>_<variable>[_level<lvl>]_compare.png`: Line plots of probabilistic metrics vs lead time.
         *   `crps_map_<var>_compare.png`: CRPS map panels.
-        *   `pit_hist_<var>_compare.png`: PIT histogram comparison.
+        *   `pit_hist_<var>[_<level>]_compare.png`: PIT histogram comparison (per level for 3D variables).

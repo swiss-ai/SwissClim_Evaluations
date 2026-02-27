@@ -9,6 +9,17 @@ the run log prints explicit skip messages.
 
 The evaluation generates organized results for each enabled module.
 
+## Derived Variables
+
+The `derived_variables` config block computes new variables (e.g. wind speed) lazily from existing
+data_vars **before any module runs**. Derived variables therefore appear as ordinary variables in
+all module outputs — outputs are named after the derived variable (e.g. `wind_speed`,
+`10m_wind_speed`) exactly as they would be for any raw variable.
+
+Currently available recipes: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹.
+
+See `README.md § Derived Variables` for the config syntax and [WIND_UV_ASSESSMENT.md](WIND_UV_ASSESSMENT.md) for a per-module impact analysis of wind variables.
+
 ## Ensemble handling: modes and filename tokens
 
 Datasets may include an `ensemble` dimension. You can pre‑select members (`selection.ensemble_members`) and set per‑module modes under `ensemble`. Invalid combinations are rejected early.
@@ -73,12 +84,9 @@ det_line_temperature_500_MAE_by_lead_ensmean.csv   # 3D variable with level toke
 SSR filenames follow a similar pattern:
 
 ```text
-ssr_averaged_init2023010200-2023010412_ensprob.csv
-ssr_per_level_ensprob.csv
+ssr_summary_averaged_init2023010200-2023010412_ensprob.csv
 ssr_line_2m_temperature_by_lead_ensprob.csv
-ssr_temporal_2m_temperature_ensprob.png      # Temporal evolution plot
-ssr_map_2m_temperature_ensprob.png           # Spatial map plot
-ssr_regions_2m_temperature_ensprob.png       # Regional bar chart
+ssr_line_temperature_500_by_lead_ensprob.csv   # 3D variable with level token
 ```
 
 ### Extreme Threshold Statistics (ETS)
@@ -170,20 +178,27 @@ All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` /
 Per-variable artifacts (NPZ/CSV/PNG):
 
 ```text
-pit_hist_2m_temperature_ensprob.npz
-pit_hist_2m_temperature_grid_ensprob.png   # optional (if plotting enabled, multi-lead)
-crps_map_2m_temperature_ensprob.png         # optional (if plotting enabled)
+pit_hist_2m_temperature_ensprob.npz                  # single-lead histogram
+pit_hist_2m_temperature_grid_ensprob.png              # per-lead-time grid (multi-lead only)
+pit_hist_2m_temperature_grid_ensprob.npz              # per-lead-time grid data (multi-lead only)
+pit_hist_temperature_500_ensprob.npz                  # 3D variable with level token (single-lead)
+pit_hist_temperature_500_grid_ensprob.png             # 3D variable per-lead grid
+crps_map_2m_temperature_ensprob.png                   # optional (if plotting enabled)
 crps_line_2m_temperature_by_lead_ensprob.csv
 crps_line_2m_temperature_ensprob.png
-crps_line_2m_temperature_data_ensprob.npz   # optional (if output_mode includes npz)
-crps_line_temperature_500_by_lead_ensprob.csv       # 3D variable with level token
+crps_line_2m_temperature_data_ensprob.npz             # optional (if output_mode includes npz)
+crps_line_temperature_500_by_lead_ensprob.csv         # 3D variable with level token
 ssr_line_2m_temperature_by_lead_ensprob.csv
-ssr_line_temperature_500_by_lead_ensprob.csv        # 3D variable with level token
+ssr_line_temperature_500_by_lead_ensprob.csv          # 3D variable with level token
 temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv  # legacy-compatible alias
-ssr_temporal_2m_temperature_ensprob.png             # optional (SSR temporal plot)
-ssr_map_2m_temperature_ensprob.png                  # optional (SSR map plot)
-ssr_regions_2m_temperature_ensprob.png              # optional (SSR regional plot)
+ssr_temporal_2m_temperature_ensprob.png               # optional (SSR temporal plot)
+ssr_map_2m_temperature_ensprob.png                    # optional (SSR map plot)
+ssr_regions_2m_temperature_ensprob.png                # optional (SSR regional plot)
 ```
+
+Note: For multi-lead runs, only the per-lead-time grid is produced (no separate averaged/global PIT
+histogram). For single-lead runs, the individual histogram is emitted. 3D variables emit one
+histogram per pressure level.
 
 WeatherBenchX per-variable spatial aggregations (NPZ format):
 
@@ -198,11 +213,9 @@ ssr_spatial_temperature_500_ensprob.npz
 Summary tables:
 
 ```text
-ssr_ensprob.csv
-ssr_per_level_ensprob.csv
+ssr_summary_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
-crps_summary_per_level_ensprob.csv
 ```
 
 ### Details for probabilistic outputs
@@ -211,10 +224,12 @@ crps_summary_per_level_ensprob.csv
 - WBX CRPS/SSR fields are computed once per variable batch and reused for summary and by-lead line outputs.
 - `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv` are written for multi-lead runs independent of plot mode.
 - Legacy CRPS aliases `temporal_probabilistic_metrics_*_per_lead_time*.csv` are also written to preserve older analysis scripts.
-- SSR figures are written as `ssr_temporal_*`, `ssr_map_*`, and `ssr_regions_*` when `plotting.output_mode` includes plots (`plot` or `both`).
 - Spatial NPZ artifacts (`*_spatial_*.npz`) are emitted when `plotting.output_mode` includes `npz` (`npz` or `both`).
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
 - PIT histograms are stored as NPZ (counts, edges) for reproducibility.
+- For multi-lead runs, PIT histograms are produced only as a per-lead-time grid (no
+  averaged/global histogram). Single-lead runs emit a single histogram per variable.
+- For 3D variables, PIT histograms are computed and stored per pressure level.
 - Full PIT/CRPS fields are not written to keep output size manageable.
 - For 3D variables, level-resolved outputs are produced by default where supported.
 
@@ -247,6 +262,7 @@ Intercomparison outputs are written under `output/intercomparison/<module>/` and
 	- `energy_spectra/lsd_metrics_3d_averaged_combined.csv`
 	- `energy_spectra/lsd_metrics_lead_time_combined.csv`
 	- `energy_spectra/lsd_metrics_3d_lead_time_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_lead_time_combined.csv`
 - **vertical_profiles**
 	- `vertical_profiles/*_compare.png`
 	- `vertical_profiles/*_summary.csv`
