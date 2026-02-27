@@ -724,10 +724,6 @@ def run_selected(cfg: dict[str, Any]) -> None:
                             performance_cfg=performance_cfg,
                             include_wbx_outputs=False,
                         )
-                        # Keep placeholder plotting call for compatibility.
-                        orchestrator.plot_probabilistic(
-                            ds_target, ds_prediction, out_root, plotting
-                        )
                     else:
                         c.info(
                             "[probabilistic] Stage 1/2: PIT artifact computation skipped "
