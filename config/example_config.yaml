@@ -64,20 +64,24 @@ selection:
   longitudes: [0.0, 359.75]
 
   # Variables without a level dimension present in BOTH datasets.
+  # Note: if derived_variables is configured, all source components (U and V)
+  # must be included here for the derived variable to be computed. Missing
+  # components are skipped with a warning (inner-join guard).
   variables_2d: [
     "10m_u_component_of_wind",
-    # "10m_v_component_of_wind",
+    "10m_v_component_of_wind",
     # "2m_temperature",
     # "mean_sea_level_pressure",
   ]
 
   # Variables with a level dimension present in BOTH datasets (pressure levels).
+  # Same rule applies: include both U and V if you want wind_speed derived.
   variables_3d: [
     # "geopotential",
     # "specific_humidity",
     # "temperature",
     "u_component_of_wind",
-    # "v_component_of_wind",
+    "v_component_of_wind",
   ]
 
   # Optional pre-selection of ensemble members BEFORE any module logic runs.
@@ -193,6 +197,36 @@ plotting:
   #   - In 'none' mode, artifact-only modules are skipped and mixed modules emit CSV only.
   output_mode: both
 
+  # Number of columns in PIT histogram per-lead-time grid plots (default: 2).
+  # panel_cols: 2
+
+  # If true, bin WBX CRPS/SSR temporal summaries by meteorological season (DJF, MAM, JJA, SON).
+  # group_by_season: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Derived variables
+# Compute new variables lazily from existing data_vars before any module runs.
+# Only variables present in BOTH the target and prediction datasets can be
+# derived (inner-join guard). Missing source components are skipped with a
+# warning instead of raising an error.
+#
+# Each entry becomes a new variable in both datasets. The sub-key name is the
+# output variable name. Required fields per entry:
+#   kind:  the recipe to apply. Currently available:
+#            wind_speed  — sqrt(U² + V²), m s⁻¹
+#   u:     name of the U-component variable in both datasets
+#   v:     name of the V-component variable in both datasets
+# ─────────────────────────────────────────────────────────────────────────────
+derived_variables:
+  10m_wind_speed:
+    kind: wind_speed
+    u: 10m_u_component_of_wind
+    v: 10m_v_component_of_wind
+  wind_speed:
+    kind: wind_speed
+    u: u_component_of_wind
+    v: v_component_of_wind
+
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
   maps: true                 # Global and per-level maps (Cartopy)
@@ -216,6 +250,9 @@ metrics:
     # If true, compute and report metrics per pressure level (for 3D variables).
     report_per_level: true
 
+    # In members mode, also emit a mean-of-members summary CSV.
+    # aggregate_members_mean: true
+
     include: ["MAE", "RMSE", "MSE", "Bias", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
@@ -228,13 +265,11 @@ metrics:
     # - window_size: integer (square window) or two-element list [height, width]
     # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
     # Optional: use absolute thresholds instead of quantiles:
-    #   - threshold: single float applied to all variables (units must match each variable)
-    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
+    #   - thresholds: mapping of variable name -> list of floats (absolute thresholds)
     fss:
       quantile: 0.95
       window_size: 9            # Example: square window of 9x9
-      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
-      # thresholds:              # Example: per-variable thresholds (units must match dataset)
+      # thresholds:              # Example: per-variable absolute thresholds (units must match dataset)
       #   "total_precipitation": [0.001, 0.005]     # e.g., 1 mm over accumulation period
       #   "10m_u_component_of_wind": [10.0]  # e.g., 10 m/s event
       #
@@ -247,6 +282,9 @@ metrics:
     # If true, compute and report ETS per pressure level (for 3D variables).
     report_per_level: true
 
+    # In members mode, also emit a mean-of-members summary CSV.
+    # aggregate_members_mean: true
+
     thresholds: [50, 70, 90]
 
   # Energy Spectra configuration.
@@ -257,10 +295,15 @@ metrics:
 
     # Controls whether individual per-spectrum overlay plots (energy_spectrum_*_compare.png,
     # *_compare_ratio.png) and per-lead individual plots (energy_spectrum_*_leadXXXh_compare.png)
-    # are generated during intercomparison.
+    # are generated in both single-model runs and intercomparison.
     # Set to true only if you need per-variable per-time-slice spectral overlays;
     # the spectrograms already summarise the full lead-time evolution in one figure.
     individual_plots: false
+
+    # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
+    # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
+    # instead of the spectrum of the scalar wind-speed field, which would be
+    # physically incorrect.
 
   probabilistic:
     # Per-level reporting for 3D variables is enabled by default.
