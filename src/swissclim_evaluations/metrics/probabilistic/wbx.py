@@ -104,8 +104,10 @@ def run_probabilistic_wbx(
         "CRPS": CRPSEnsemble(ensemble_dim="ensemble"),
     }
 
+    import gc
+
     variables = [str(v) for v in ds_pred.data_vars]
-    spatial_parts: list[xr.Dataset] = []
+    results_spatial = xr.Dataset()
 
     for variable in variables:
         c.print(f"[probabilistic] Computing WBX metrics for {variable} (full graph)...")
@@ -114,9 +116,11 @@ def run_probabilistic_wbx(
 
         res_lazy = _compute_wbx_metric_dataset(metric_aggregator, metrics, ds_p_var, ds_t_var)
         res_computed = dask.compute(res_lazy)[0]
-        spatial_parts.append(res_computed)
-
-    results_spatial = xr.merge(spatial_parts, compat="override") if spatial_parts else xr.Dataset()
+        # Merge incrementally instead of accumulating all results in a list;
+        # this lets previous results be GC'd if no longer referenced.
+        results_spatial = xr.merge([results_spatial, res_computed], compat="override")
+        del res_lazy, res_computed, ds_p_var, ds_t_var
+        gc.collect()
     ens_token_prob = ensemble_mode_to_token("prob")
 
     # Save CSV summaries (Spatially aggregated)
