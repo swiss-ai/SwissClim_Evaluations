@@ -776,6 +776,10 @@ def run(
     # Extract config
     es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
     report_per_level = bool(es_cfg.get("report_per_level", True))
+    # When False (default) and a multi-lead dataset is detected, per-init/lead
+    # individual spectrum PNGs and NPZ files are suppressed.  CSVs and
+    # spectrograms are always written regardless of this flag.
+    individual_plots = bool(es_cfg.get("individual_plots", False))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -1038,7 +1042,8 @@ def run(
                 c.print(f"[energy_spectra] saved {out_csv_banded}")
 
     # Generate plots and NPZ for 2D variables
-    if save_plot or save_npz:
+    # Skipped in multi-lead mode unless individual_plots=True (too many files).
+    if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
         for var in variables_2d:
             c.print(f"[energy_spectra] outputs variable: {var}")
             for ens_idx in ensemble_members:
@@ -1252,7 +1257,8 @@ def run(
             save_dataframe(df_3d_lead, out_csv_3d_lead, index=False, module="energy_spectra")
 
         # Generate plots and NPZ for 3D variables per level
-        if save_plot or save_npz:
+        # Skipped in multi-lead mode unless individual_plots=True (too many files).
+        if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
             for var in variables_3d:
                 for lvl in levels:
                     for ens_idx in ensemble_members:
@@ -1682,6 +1688,66 @@ def run(
                 c.print(f"[energy_spectra] Saved {out_tripanel}")
                 save_fig_helper(fig, out_tripanel, module="energy_spectra")
                 plt.close(fig)
+
+        # 3D per-level spectrograms and bundle NPZs
+        if variables_3d and "level" in (tgt.dims if hasattr(tgt, "dims") else []):
+            levels_3d = tgt["level"].values
+            for var in variables_3d:
+                c.print(f"[energy_spectra] spectrogram 3D variable: {var}")
+                for lvl in levels_3d:
+                    spec_t3, spec_p3 = _compute_spectra_pair(
+                        tgt,
+                        pred,
+                        str(var),
+                        level=int(lvl),
+                        reduce_ensemble=(resolved == "mean"),
+                        weights=weights,
+                    )
+                    spec_t3 = _reduce_time_like(spec_t3)
+                    spec_p3 = _reduce_time_like(spec_p3)
+                    spec_t3, spec_p3 = xr.align(spec_t3, spec_p3, join="inner")
+                    for _da, _name in [(spec_t3, "t3"), (spec_p3, "p3")]:
+                        extra = [d for d in _da.dims if d not in ("lead_time", "wavenumber")]
+                        if extra:
+                            if _name == "t3":
+                                spec_t3 = _da.mean(dim=extra, skipna=True)
+                            else:
+                                spec_p3 = _da.mean(dim=extra, skipna=True)
+                    if "lead_time" not in spec_t3.dims:
+                        continue
+                    leads_3d = spec_t3["lead_time"].values
+                    try:
+                        x_hours_3d = np.array(
+                            [int(np.timedelta64(lt) / np.timedelta64(1, "h")) for lt in leads_3d]
+                        )
+                    except Exception:
+                        x_hours_3d = np.arange(len(leads_3d))
+                    kvals_3d = spec_t3["wavenumber"].values
+                    Zt3 = np.asarray(spec_t3.transpose("lead_time", "wavenumber").values)
+                    Zp3 = np.asarray(spec_p3.transpose("lead_time", "wavenumber").values)
+
+                    if save_npz:
+                        out_npz_3d = section_output / build_output_filename(
+                            metric="energy_spectra_per_lead",
+                            variable=str(var),
+                            level=int(lvl),
+                            qualifier="bundle",
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="npz",
+                        )
+                        save_data(
+                            out_npz_3d,
+                            lead_hours=x_hours_3d,
+                            wavenumber=kvals_3d,
+                            energy_target=Zt3,
+                            energy_prediction=Zp3,
+                            log_energy_diff=(np.log10(Zp3 + 1e-10) - np.log10(Zt3 + 1e-10)),
+                            variable=str(var),
+                            level=int(lvl),
+                            module="energy_spectra",
+                        )
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:
