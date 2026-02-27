@@ -277,6 +277,45 @@ def resolve_dask_profile(performance_cfg: dict[str, Any]) -> dict[str, Any]:
     processes = _as_bool(performance_cfg.get("dask_processes"), default_processes)
     memory_limit = performance_cfg.get("dask_memory_limit", defaults["memory_limit"])
 
+    # -----------------------------------------------------------------------
+    # Honour the per-eval memory budget injected by launchscript_multi.sh.
+    #
+    # The launchscript exports two env vars to prevent OOM when multiple evals
+    # run in parallel on the same node:
+    #   SWISSCLIM_DASK_MEMORY_BUDGET_GIB   – total GiB assigned to this eval
+    #   SWISSCLIM_DASK_MEMORY_BUDGET_FRACTION – fraction given to Dask workers
+    #
+    # If set, derive per-worker memory limit instead of using hardcoded
+    # profile defaults.  SLURM_CPUS_PER_TASK also caps the worker count so
+    # we never spawn more workers than CPUs actually allocated to this task.
+    # -----------------------------------------------------------------------
+    budget_gib_env = os.environ.get("SWISSCLIM_DASK_MEMORY_BUDGET_GIB", "")
+    budget_fraction_env = os.environ.get("SWISSCLIM_DASK_MEMORY_BUDGET_FRACTION", "")
+    slurm_cpus_env = os.environ.get("SLURM_CPUS_PER_TASK", "")
+
+    if budget_gib_env:
+        try:
+            budget_gib = float(budget_gib_env)
+            fraction = float(budget_fraction_env) if budget_fraction_env else 0.9
+            fraction = max(0.1, min(1.0, fraction))
+            total_dask_gib = budget_gib * fraction
+
+            # Cap worker count to CPUs available to this Slurm task
+            if slurm_cpus_env:
+                slurm_cpus = max(1, int(slurm_cpus_env))
+                n_workers = min(n_workers, slurm_cpus)
+
+            # Ensure at least 1 worker; derive per-worker limit
+            n_workers = max(1, n_workers)
+            per_worker_gib = total_dask_gib / n_workers
+            # Keep at least 1 GiB so Dask doesn't complain
+            per_worker_gib = max(1.0, per_worker_gib)
+            # Use config override if explicitly provided, else use derived value
+            if not performance_cfg.get("dask_memory_limit"):
+                memory_limit = f"{per_worker_gib:.1f}GiB"
+        except (ValueError, ZeroDivisionError):
+            pass  # Fall back to unmodified defaults
+
     return {
         "profile": defaults["profile"],
         "n_workers": n_workers,

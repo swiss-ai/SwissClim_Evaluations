@@ -150,8 +150,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             # South (Row 0)
             axsou = axs[0, j]
             for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get(key_neg))
-                if arr is None or arr.shape[0] <= j:
+                raw = pay.get(key_neg)
+                if raw is None:
+                    continue
+                arr = np.asarray(raw)
+                if arr.ndim == 0 or arr.shape[0] <= j:
                     continue
                 axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
             if neg_lat_min is not None and neg_lat_max is not None:
@@ -165,8 +168,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             # North (Row 1)
             axn = axs[1, j]
             for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get(key_pos))
-                if arr is None or arr.shape[0] <= j:
+                raw = pay.get(key_pos)
+                if raw is None:
+                    continue
+                arr = np.asarray(raw)
+                if arr.ndim == 0 or arr.shape[0] <= j:
                     continue
                 axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
             if pos_lat_min is not None and pos_lat_max is not None:
@@ -220,9 +226,13 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         plt.close(fig)
         rows = []
         for lab, pay in zip(labels, payloads, strict=False):
-            neg_arr = np.asarray(pay.get(key_neg))
-            pos_arr = np.asarray(pay.get(key_pos))
-            if neg_arr is None or pos_arr is None:
+            raw_neg = pay.get(key_neg)
+            raw_pos = pay.get(key_pos)
+            if raw_neg is None or raw_pos is None:
+                continue
+            neg_arr = np.asarray(raw_neg)
+            pos_arr = np.asarray(raw_pos)
+            if neg_arr.ndim == 0 or pos_arr.ndim == 0:
                 continue
             for j in range(bands):
                 with np.errstate(all="ignore"):
@@ -294,7 +304,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                 fig, axes = plt.subplots(
                     1,
                     n_leads,
-                    figsize=(min(6, 4) * n_leads, 10),
+                    figsize=(max(6, 4 * n_leads), 10),
                     dpi=160,
                     sharey=True,
                 )
@@ -303,8 +313,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
 
                 for li, (ax_l, lead_lbl) in enumerate(zip(axes, lead_labels, strict=False)):
                     for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                        arr = np.asarray(pay.get("nmae"))
-                        if arr is None or arr.ndim < 2 or arr.shape[0] <= li:
+                        raw_nmae = pay.get("nmae")
+                        if raw_nmae is None:
+                            continue
+                        arr = np.asarray(raw_nmae)
+                        if arr.ndim < 2 or arr.shape[0] <= li:
                             continue
                         ax_l.plot(
                             arr[li], level_values, label=lab, color=color_palette[idx], linewidth=2
@@ -328,9 +341,10 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             else:
                 fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
                 for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    arr = np.asarray(pay.get("nmae"))
-                    if arr is None:
+                    raw_nmae = pay.get("nmae")
+                    if raw_nmae is None:
                         continue
+                    arr = np.asarray(raw_nmae)
                     ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
 
                 ax.set_xlabel("NMAE [%]")

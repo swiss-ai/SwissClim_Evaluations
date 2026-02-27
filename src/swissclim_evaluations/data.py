@@ -1,7 +1,7 @@
 import contextlib
 import logging
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import xarray as xr
@@ -490,3 +490,143 @@ def apply_ensemble_policy(
 
     # No explicit selection: do NOT pre-reduce. Keep ensemble for modules to decide.
     return ds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Derived-variable machinery
+# ─────────────────────────────────────────────────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+def _wind_speed(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Lazy wind speed magnitude: sqrt(U² + V²).  Units: m s⁻¹."""
+    da = np.sqrt(ds[u_var] ** 2 + ds[v_var] ** 2)
+    da.attrs["units"] = "m s**-1"
+    da.attrs["long_name"] = "Wind Speed"
+    return da
+
+
+# Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
+# Available recipes that a user may reference via ``kind:`` in config:
+#   wind_speed  — sqrt(U² + V²), m s⁻¹, suitable for all modules
+_DERIVED_RECIPES: dict[str, Any] = {
+    "wind_speed": _wind_speed,
+}
+
+
+def _parse_derived_cfg(
+    derived_cfg: dict[str, Any],
+) -> list[tuple[str, str, str, str]]:
+    """Parse the ``derived_variables`` config block.
+
+    Returns a list of ``(output_name, kind, u_var, v_var)`` tuples.
+
+    Each sub-key becomes the output variable name::
+
+        10m_wind_speed:
+          kind: wind_speed                    # see _DERIVED_RECIPES for available kinds
+          u: 10m_u_component_of_wind
+          v: 10m_v_component_of_wind
+    """
+    entries: list[tuple[str, str, str, str]] = []
+
+    for key, block in derived_cfg.items():
+        if not isinstance(block, dict):
+            c.warn(f"derived_variables.{key}: expected a mapping, skipping.")
+            continue
+
+        if "kind" not in block:
+            c.warn(
+                f"derived_variables.{key}: missing required 'kind' key. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}. Skipping."
+            )
+            continue
+
+        kind = str(block["kind"])
+        if kind not in _DERIVED_RECIPES:
+            c.warn(
+                f"derived_variables.{key}: unknown kind '{kind}'. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}."
+            )
+            continue
+
+        u_var = str(block.get("u") or block.get("u_var") or "")
+        v_var = str(block.get("v") or block.get("v_var") or "")
+        if not u_var or not v_var:
+            c.warn(f"derived_variables.{key}: requires 'u' and 'v' keys. Skipping.")
+            continue
+
+        entries.append((key, kind, u_var, v_var))
+
+    return entries
+
+
+def add_derived_variables(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    derived_cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Compute derived variables and append them to both datasets.
+
+    Currently supported recipes (see ``_DERIVED_RECIPES``):
+
+    * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
+
+    **Inner-join guard**: a derived variable is only added when *both* source
+    components are present in *both* the target and prediction datasets.  If a
+    component is missing from either dataset the variable is skipped with a
+    warning.
+
+    All computations are **lazy** — no Dask graphs are evaluated here.
+
+    .. note::
+        Not all evaluation metrics are physically or statistically meaningful
+        for every variable — derived or otherwise.  The user is responsible for
+        choosing sensible module combinations.  See the README for guidance.
+
+    Parameters
+    ----------
+    ds_target, ds_prediction : xr.Dataset
+        Datasets returned by :func:`data_selection.prepare_datasets`.
+    derived_cfg : dict
+        The ``derived_variables`` config block.
+
+    Returns
+    -------
+    tuple[xr.Dataset, xr.Dataset]
+        Updated ``(ds_target, ds_prediction)`` with derived variables appended.
+    """
+    if not derived_cfg:
+        return ds_target, ds_prediction
+
+    entries = _parse_derived_cfg(derived_cfg)
+    added: list[str] = []
+    skipped: list[str] = []
+
+    for out_name, kind, u_var, v_var in entries:
+        # Inner-join guard
+        missing_target = {u_var, v_var} - set(ds_target.data_vars)
+        missing_pred = {u_var, v_var} - set(ds_prediction.data_vars)
+        if missing_target or missing_pred:
+            parts: list[str] = []
+            if missing_target:
+                parts.append(f"target missing {sorted(missing_target)}")
+            if missing_pred:
+                parts.append(f"prediction missing {sorted(missing_pred)}")
+            c.warn(f"Skipping derived '{out_name}' ({kind}): {'; '.join(parts)}.")
+            skipped.append(out_name)
+            continue
+
+        recipe = _DERIVED_RECIPES[kind]
+        ds_target = ds_target.assign({out_name: recipe(ds_target, u_var, v_var)})
+        ds_prediction = ds_prediction.assign({out_name: recipe(ds_prediction, u_var, v_var)})
+        added.append(out_name)
+        logger.info("Derived variable '%s' (%s) added to both datasets.", out_name, kind)
+
+    if added:
+        c.info(f"Derived variables added to both datasets: {added}")
+    if skipped:
+        c.warn(f"Derived variables skipped (missing source components): {skipped}")
+
+    return ds_target, ds_prediction

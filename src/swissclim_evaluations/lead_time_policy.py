@@ -74,6 +74,15 @@ def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
     if cfg is None:
         return LeadTimePolicy(mode="first")
     mode = str(cfg.get("mode", "first")).lower()
+    valid_modes = {"first", "full", "subset", "stride", "bins"}
+    if mode not in valid_modes:
+        from . import console as _c
+
+        _c.warn(
+            f"lead_time.mode='{mode}' is not recognised "
+            f"(valid: {sorted(valid_modes - {'bins'})}). Falling back to 'first'."
+        )
+        mode = "first"
     # Accept both flat 'subset_hours' and nested 'subset: { hours: [...] }'
     subset_val = cfg.get("subset")
     if isinstance(subset_val, dict):

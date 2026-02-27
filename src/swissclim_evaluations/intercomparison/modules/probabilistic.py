@@ -495,10 +495,18 @@ def intercompare_probabilistic(
                 counts = pay["counts"]
                 bins = pay.get("bins", pay.get("edges"))
 
-                # Normalize if needed? Usually they are raw counts.
-                # Let's plot density
+                # Guard: skip model if bin count doesn't match reference
+                if len(bins) != len(bins0):
+                    c.warn(f"Skipping {lab}: bin count {len(bins)} != {len(bins0)}")
+                    continue
+
+                # Normalize to density; guard against empty histogram
                 width = np.diff(bins)
-                density = counts / (counts.sum() * width)
+                total = counts.sum()
+                if total == 0:
+                    density = np.zeros_like(counts, dtype=float)
+                else:
+                    density = counts / (total * width)
 
                 # Plot as filled bars side-by-side
                 # Shift x position based on model index

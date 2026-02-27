@@ -660,6 +660,9 @@ VARIABLE_UNITS = {
     "10m_v_component_of_wind": "m s**-1",
     "u_component_of_wind": "m s**-1",
     "v_component_of_wind": "m s**-1",
+    # Derived wind variables
+    "wind_speed": "m s**-1",
+    "10m_wind_speed": "m s**-1",
     "geopotential": "m**2 s**-2",
     "specific_humidity": "kg kg**-1",
     "mean_sea_level_pressure": "Pa",

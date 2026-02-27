@@ -589,7 +589,7 @@ def intercompare_energy_spectra(
                 for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                     specm = dat.get("spectrum_prediction")
                     if specm is None:
-                        specm = dat.get("spectrum_prediction")
+                        specm = dat.get("spectrum_pred")
 
                     # Try to get the matching target spectrum for this model
                     spec_t = dat.get("spectrum_target")

@@ -213,6 +213,20 @@ def _compute_banded_lsd_da(
     return lsd_banded
 
 
+# Kinetic energy proxy map: derived wind-speed variable name → (U source, V source).
+# When a variable in this map is requested, the spectra module computes
+# KE = 0.5 * (spec_U + spec_V) instead of the spectrum of wind_speed directly.
+# This is physically correct: E_k = 0.5*(|FFT(U)|² + |FFT(V)|²) while
+# |FFT(√(U²+V²))|² ≠ 0.5*(|FFT(U)|² + |FFT(V)|²).
+# The U/V source variables must be present in both datasets (they will be if
+# the user keeps them in variables_2d/3d, which is required for derived-variable
+# computation anyway).
+_KE_PAIRS: dict[str, tuple[str, str]] = {
+    "wind_speed": ("u_component_of_wind", "v_component_of_wind"),
+    "10m_wind_speed": ("10m_u_component_of_wind", "10m_v_component_of_wind"),
+}
+
+
 def _compute_spectra_pair(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -225,7 +239,44 @@ def _compute_spectra_pair(
     """Compute and align spectra for target and prediction once.
 
     Returns (spectrum_target, spectrum_prediction) with identical coordinates.
+
+    For wind-speed variables listed in ``_KE_PAIRS`` the function computes the
+    physically correct kinetic-energy proxy spectrum
+    ``KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)`` using the underlying U/V components
+    instead of the spectrum of the derived scalar wind-speed field.  If the
+    required U/V source variables are not present in the dataset the function
+    falls back to the direct spectrum of the wind-speed variable with a warning.
     """
+    # ── Kinetic-energy proxy for wind-speed variables ─────────────────────────
+    if var in _KE_PAIRS:
+        u_var, v_var = _KE_PAIRS[var]
+        has_uv_target = u_var in ds_target.data_vars and v_var in ds_target.data_vars
+        has_uv_pred = u_var in ds_prediction.data_vars and v_var in ds_prediction.data_vars
+        if has_uv_target and has_uv_pred:
+            spec_t_u, spec_p_u = _compute_spectra_pair(
+                ds_target,
+                ds_prediction,
+                u_var,
+                level,
+                reduce_ensemble=reduce_ensemble,
+                weights=weights,
+            )
+            spec_t_v, spec_p_v = _compute_spectra_pair(
+                ds_target,
+                ds_prediction,
+                v_var,
+                level,
+                reduce_ensemble=reduce_ensemble,
+                weights=weights,
+            )
+            return 0.5 * (spec_t_u + spec_t_v), 0.5 * (spec_p_u + spec_p_v)
+        else:
+            c.warn(
+                f"Energy spectra: '{var}' is a wind-speed variable but source components "
+                f"'{u_var}'/'{v_var}' are not both present in the datasets. "
+                "Falling back to direct spectrum of the scalar field (not a true KE spectrum)."
+            )
+    # ── Standard path ─────────────────────────────────────────────────────────
     if level is not None:
         da_target = ds_target[var].sel(level=level, drop=True)
         da_prediction = ds_prediction[var].sel(level=level, drop=True)
@@ -291,6 +342,7 @@ def _plot_single_spectrum(
     k_min = float(np.nanmin(wavenumber[wavenumber > 0]))
     k_max = float(np.nanmax(wavenumber))
     if k_min <= 0 or not np.isfinite(k_min):  # safety
+        plt.close(fig)
         return
     ax.set_xlim(k_min, k_max)
 
@@ -926,20 +978,53 @@ def run(
             lsd_mean = float(lsd_da.mean().values)
             summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
 
-            # Per Lead Time (averaged over init_time)
-            if "lead_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
-                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                # Compute once
-                lsd_lead = lsd_lead.compute()
-                for t in lsd_lead["lead_time"].values:
-                    val = float(lsd_lead.sel(lead_time=t).values)
-                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
-                    lsd_lead_time_rows.append(
+            # Per Lead Time + Plot Datetime LSD — batch-compute together
+            _has_lead = "lead_time" in lsd_da.dims
+            _has_init = "init_time" in lsd_da.dims
+            if _has_lead or _has_init:
+                lazy_items: list = []
+                lazy_tags: list[str] = []
+
+                if _has_lead:
+                    red_dims_lt = [d for d in lsd_da.dims if d != "lead_time"]
+                    _lead_lazy = lsd_da.mean(dim=red_dims_lt) if red_dims_lt else lsd_da
+                    lazy_items.append(_lead_lazy)
+                    lazy_tags.append("lead")
+
+                if _has_init:
+                    _plot_lazy = lsd_da.isel(init_time=time_index).mean()
+                    lazy_items.append(_plot_lazy)
+                    lazy_tags.append("plot")
+
+                _computed = dask.compute(*lazy_items)
+                _results = dict(zip(lazy_tags, _computed, strict=False))
+
+                if _has_lead:
+                    lsd_lead = _results["lead"]
+                    for t in lsd_lead["lead_time"].values:
+                        val = float(lsd_lead.sel(lead_time=t).values)
+                        hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                        lsd_lead_time_rows.append(
+                            {
+                                "variable": str(var),
+                                "lead_time": f"{hours:03d}h",
+                                "lsd_mean": val,
+                            }
+                        )
+
+                if _has_init:
+                    lsd_plot_val = float(_results["plot"])
+                    t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                    try:
+                        t_str = np.datetime_as_string(t_val, unit="h")
+                    except Exception:
+                        t_str = str(t_val)
+
+                    lsd_plot_rows.append(
                         {
                             "variable": str(var),
-                            "lead_time": f"{hours:03d}h",
-                            "lsd_mean": val,
+                            "init_time": t_str,
+                            "lsd_mean": lsd_plot_val,
                         }
                     )
 
@@ -956,28 +1041,6 @@ def run(
                     dpi,
                     save_plot_data=save_npz,
                     save_figure=save_plot,
-                )
-
-            # Plot Datetime specific LSD
-            if "init_time" in lsd_da.dims:
-                # Calculate LSD for the specific plot datetime only
-                # Use time_index which was computed earlier for plot_dt
-                lsd_plot_da = lsd_da.isel(init_time=time_index)
-                lsd_plot_val = float(lsd_plot_da.mean().compute())
-
-                # Get the actual datetime string
-                t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                try:
-                    t_str = np.datetime_as_string(t_val, unit="h")
-                except Exception:
-                    t_str = str(t_val)
-
-                lsd_plot_rows.append(
-                    {
-                        "variable": str(var),
-                        "init_time": t_str,
-                        "lsd_mean": lsd_plot_val,
-                    }
                 )
 
             # Compute banded LSD metrics (2D)
@@ -1103,14 +1166,24 @@ def run(
             lsd_da = _compute_lsd_da(spec_t, spec_p)
             # Average over all dims except level
             red_dims = [d for d in lsd_da.dims if d != "level"]
-            lsd_means_per_level = lsd_da.mean(dim=red_dims).compute()
 
             # 2. Banded LSD per level
             lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
             red_dims_band = [d for d in lsd_bands_da.dims if d not in ["level", "band"]]
-            lsd_bands_mean_per_level = (
-                lsd_bands_da.mean(dim=red_dims_band).compute() if red_dims_band else lsd_bands_da
+
+            # Batch-compute both reductions in a single dask.compute() to avoid
+            # re-executing the shared FFT graph twice.
+            _lsd_lazy = lsd_da.mean(dim=red_dims)
+            _lsd_bands_lazy = (
+                lsd_bands_da.mean(dim=red_dims_band) if red_dims_band else lsd_bands_da
             )
+            if red_dims_band:
+                lsd_means_per_level, lsd_bands_mean_per_level = dask.compute(
+                    _lsd_lazy, _lsd_bands_lazy
+                )
+            else:
+                lsd_means_per_level = _lsd_lazy.compute()
+                lsd_bands_mean_per_level = _lsd_bands_lazy
 
             var_lsd_values = []
             for lvl in levels:
@@ -1138,18 +1211,54 @@ def run(
             )
 
             # Per Lead Time (averaged over init_time and level)
-            if "lead_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
-                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                lsd_lead = lsd_lead.compute()
-                for t in lsd_lead["lead_time"].values:
-                    val = float(lsd_lead.sel(lead_time=t).values)
-                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
-                    lsd_3d_lead_time_rows.append(
+            # + Plot Datetime specific LSD
+            # Batch-compute both in one call when both are needed.
+            _has_lead = "lead_time" in lsd_da.dims
+            _has_init = "init_time" in lsd_da.dims
+            if _has_lead or _has_init:
+                lazy_items = []
+                lazy_tags = []
+
+                if _has_lead:
+                    red_dims_lt = [d for d in lsd_da.dims if d != "lead_time"]
+                    _lead_lazy = lsd_da.mean(dim=red_dims_lt) if red_dims_lt else lsd_da
+                    lazy_items.append(_lead_lazy)
+                    lazy_tags.append("lead")
+
+                if _has_init:
+                    _plot_lazy = lsd_da.isel(init_time=time_index).mean()
+                    lazy_items.append(_plot_lazy)
+                    lazy_tags.append("plot")
+
+                _computed = dask.compute(*lazy_items)
+                _results = dict(zip(lazy_tags, _computed, strict=False))
+
+                if _has_lead:
+                    lsd_lead = _results["lead"]
+                    for t in lsd_lead["lead_time"].values:
+                        val = float(lsd_lead.sel(lead_time=t).values)
+                        hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                        lsd_3d_lead_time_rows.append(
+                            {
+                                "variable": str(var),
+                                "lead_time": f"{hours:03d}h",
+                                "lsd_mean": val,
+                            }
+                        )
+
+                if _has_init:
+                    lsd_plot_val = float(_results["plot"])
+                    t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                    try:
+                        t_str = np.datetime_as_string(t_val, unit="h")
+                    except Exception:
+                        t_str = str(t_val)
+
+                    lsd_3d_plot_rows.append(
                         {
                             "variable": str(var),
-                            "lead_time": f"{hours:03d}h",
-                            "lsd_mean": val,
+                            "init_time": t_str,
+                            "lsd_mean": lsd_plot_val,
                         }
                     )
 
@@ -1168,27 +1277,6 @@ def run(
                         save_plot_data=save_npz,
                         save_figure=save_plot,
                     )
-
-            # Plot Datetime specific LSD
-            if "init_time" in lsd_da.dims:
-                # Calculate LSD for the specific plot datetime only
-                lsd_plot_da = lsd_da.isel(init_time=time_index)
-                # Average over other dims (like lead_time, level)
-                lsd_plot_val = float(lsd_plot_da.mean().compute())
-
-                t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                try:
-                    t_str = np.datetime_as_string(t_val, unit="h")
-                except Exception:
-                    t_str = str(t_val)
-
-                lsd_3d_plot_rows.append(
-                    {
-                        "variable": str(var),
-                        "init_time": t_str,
-                        "lsd_mean": lsd_plot_val,
-                    }
-                )
 
         if report_per_level and lsd_3d_rows:
             import pandas as _pd
@@ -1690,7 +1778,13 @@ def run(
                 plt.close(fig)
 
         # 3D per-level spectrograms and bundle NPZs
-        if variables_3d and "level" in (tgt.dims if hasattr(tgt, "dims") else []):
+        # Gated by individual_plots (same semantics as 2D): N vars × M levels × plots is large.
+        if (
+            (individual_plots or not is_multi_lead)
+            and (save_plot or save_npz)
+            and variables_3d
+            and "level" in (tgt.dims if hasattr(tgt, "dims") else [])
+        ):
             levels_3d = tgt["level"].values
             for var in variables_3d:
                 c.print(f"[energy_spectra] spectrogram 3D variable: {var}")
@@ -1748,6 +1842,114 @@ def run(
                             level=int(lvl),
                             module="energy_spectra",
                         )
+
+                    if save_plot:
+                        from matplotlib.gridspec import GridSpec as _GS3
+
+                        eps = 1e-10
+                        logZt3 = np.log10(Zt3.T + eps)
+                        logZp3 = np.log10(Zp3.T + eps)
+                        vmin_s3 = float(np.nanmin([np.nanmin(logZt3), np.nanmin(logZp3)]))
+                        vmax_s3 = float(np.nanmax([np.nanmax(logZt3), np.nanmax(logZp3)]))
+                        diff3 = logZp3 - logZt3
+                        vmax_d3 = float(np.nanmax(np.abs(diff3)))
+                        fig3 = plt.figure(figsize=(22, 5), dpi=dpi)
+                        gs3 = _GS3(1, 4, figure=fig3, width_ratios=[1, 1, 0.06, 1])
+                        axs3 = [
+                            fig3.add_subplot(gs3[0, 0]),
+                            fig3.add_subplot(gs3[0, 1]),
+                            fig3.add_subplot(gs3[0, 2]),
+                            fig3.add_subplot(gs3[0, 3]),
+                        ]
+                        axs3[0].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            logZt3,
+                            shading="auto",
+                            cmap="viridis",
+                            vmin=vmin_s3,
+                            vmax=vmax_s3,
+                        )
+                        im3_p = axs3[1].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            logZp3,
+                            shading="auto",
+                            cmap="viridis",
+                            vmin=vmin_s3,
+                            vmax=vmax_s3,
+                        )
+                        im3_d = axs3[3].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            diff3,
+                            shading="auto",
+                            cmap="coolwarm",
+                            vmin=-vmax_d3,
+                            vmax=vmax_d3,
+                        )
+                        for _, (ax3, ttl3) in enumerate(
+                            zip(
+                                [axs3[0], axs3[1], axs3[3]],
+                                [
+                                    "Target log10 energy",
+                                    "Model log10 energy",
+                                    "Δ log10 energy (M-T)",
+                                ],
+                                strict=False,
+                            )
+                        ):
+                            ax3.set_xlabel("lead_time (h)")
+                            ax3.set_title(ttl3, fontsize=11)
+                            _apply_lead_ticks(ax3, x_hours_3d)
+                        y3min = float(np.nanmin(kvals_3d))
+                        y3max = float(np.nanmax(kvals_3d))
+                        for ax3 in [axs3[0], axs3[1], axs3[3]]:
+                            ax3.set_ylim(y3min, y3max)
+                        axs3[0].set_ylabel("wavenumber (cycles/km)")
+                        axs3[1].tick_params(axis="y", labelleft=False)
+                        axs3[1].set_yticklabels([])
+                        axs3[3].set_ylabel("wavenumber (cycles/km)")
+                        axs3[3].tick_params(axis="y", labelleft=True)
+                        fig3.colorbar(
+                            im3_p, ax=axs3[1], orientation="vertical", fraction=0.046, pad=0.02
+                        ).set_label("log10 energy")
+                        fig3.colorbar(
+                            im3_d, ax=axs3[3], orientation="vertical", fraction=0.046, pad=0.05
+                        ).set_label("Δ log10 energy")
+                        div3 = axs3[2]
+                        div3.set_xticks([])
+                        div3.set_yticks([])
+                        for sp in div3.spines.values():
+                            sp.set_visible(False)
+                        div3.add_line(
+                            Line2D(
+                                [0.5, 0.5],
+                                [0.0, 1.0],
+                                transform=div3.transAxes,
+                                color="#666",
+                                linewidth=1.6,
+                                alpha=0.8,
+                            )
+                        )
+                        t3_str = f"Energy Spectrogram — {format_variable_name(var)} L{int(lvl)}"
+                        if init_range:
+                            s3, e3 = init_range
+                            t3_str += f" ({s3})" if s3 == e3 else f" ({s3} — {e3})"
+                        fig3.suptitle(t3_str, fontsize=13)
+                        out_tripanel_3d = section_output / build_output_filename(
+                            metric="energy_spectra_per_lead",
+                            variable=str(var),
+                            level=int(lvl),
+                            qualifier="tripanel",
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        c.print(f"[energy_spectra] Saved {out_tripanel_3d}")
+                        save_fig_helper(fig3, out_tripanel_3d, module="energy_spectra")
+                        plt.close(fig3)
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:

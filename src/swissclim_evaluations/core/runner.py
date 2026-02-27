@@ -11,6 +11,7 @@ from .. import console as c
 from ..dask_utils import (
     resolve_module_batching_options,
 )
+from ..data import add_derived_variables
 from ..helpers import (
     format_ensemble_log,
     resolve_ensemble_mode,
@@ -82,6 +83,13 @@ def run_selected(cfg: dict[str, Any]) -> None:
         ds_target_std,
         ds_prediction_std,
     ) = data_selection.prepare_datasets(cfg)
+
+    # Apply user-defined derived variables (e.g. wind speed/direction from U+V).
+    # Runs before any module so all modules see the derived variables automatically.
+    derived_cfg = cfg.get("derived_variables") or {}
+    if derived_cfg:
+        ds_target, ds_prediction = add_derived_variables(ds_target, ds_prediction, derived_cfg)
+
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
 

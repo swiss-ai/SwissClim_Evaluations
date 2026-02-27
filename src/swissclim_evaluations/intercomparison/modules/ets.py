@@ -169,8 +169,19 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
 
         # Plot ETS vs Lead Time per (Variable, Threshold)
         # Columns are: model, lead_time_hours, <var>_ETS <thresh>%
-        meta_cols = {"model", "lead_time_hours", "Unnamed: 0"}
-        metric_cols = [c for c in combined.columns if c not in meta_cols]
+        meta_cols = {
+            "model",
+            "lead_time_hours",
+            "Unnamed: 0",
+            "variable",
+            "threshold",
+            "level",
+            "init_time",
+            "valid_time",
+            "source_file",
+            "member",
+        }
+        metric_cols = [col for col in combined.columns if col not in meta_cols]
 
         # Group by variable and threshold
         # Expected format: "{var}_ETS {thresh}%"
@@ -186,8 +197,11 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                 var_part = col
                 thresh_part = ""
 
-            pivot = combined.pivot(
-                index="lead_time_hours", columns="model", values=col
+            pivot = combined.pivot_table(
+                index="lead_time_hours",
+                columns="model",
+                values=col,
+                aggfunc="mean",
             ).sort_index()
 
             if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
