@@ -255,6 +255,13 @@ metrics:
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
 
+    # Controls whether individual per-spectrum overlay plots (energy_spectrum_*_compare.png,
+    # *_compare_ratio.png) and per-lead individual plots (energy_spectrum_*_leadXXXh_compare.png)
+    # are generated during intercomparison.
+    # Set to true only if you need per-variable per-time-slice spectral overlays;
+    # the spectrograms already summarise the full lead-time evolution in one figure.
+    individual_plots: false
+
   probabilistic:
     # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report CRPS/SSR summaries per pressure level (for 3D variables).
