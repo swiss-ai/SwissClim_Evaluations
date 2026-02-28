@@ -96,6 +96,68 @@ def _calculate_ets_for_thresholds(
     return pd.DataFrame.from_dict(metrics_dict, orient="index")
 
 
+def _calculate_ets_all_leads_batched(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
+) -> list[dict[str, Any]]:
+    """Compute ETS for every lead time in a single Dask graph.
+
+    Instead of looping over lead times and triggering one dask.compute per lead,
+    we preserve the 'lead_time' dimension so that quantile thresholds and ETS
+    scores are computed for *all* leads simultaneously.  The result is equivalent
+    to the per-lead loop but only materialises the graph once.
+
+    Returns a list of row-dicts ready to be appended to the ``rows`` accumulator
+    used in ``run()``:  [{"lead_time_hours": ..., "variable": ..., "ETS X%": ...}, ...]
+    """
+    leads_arr = ds_prediction["lead_time"].values
+    is_td = np.issubdtype(np.asarray(leads_arr).dtype, np.timedelta64)
+    lead_hours = [
+        int(lt / np.timedelta64(1, "h")) if is_td else int(i) for i, lt in enumerate(leads_arr)
+    ]
+    n_leads = len(lead_hours)
+    if n_leads == 0:
+        return []
+
+    variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
+    if not variables:
+        return []
+
+    lazy_jobs: list[tuple[str, Any]] = []
+    for var in variables:
+        raw = _compute_ets_raw(
+            ds_target[[var]],
+            ds_prediction[[var]],
+            thresholds,
+            preserve_dims=["lead_time"],
+        )
+        if var in raw:
+            c.print(f"Preparing ETS scores (per lead) variable={var}...")
+            lazy_jobs.append((var, raw[var]))
+
+    if not lazy_jobs:
+        return []
+
+    c.print(f"Computing ETS scores per lead for {len(lazy_jobs)} variable(s) in one dask graph...")
+    computed = dask.compute(*[lazy for _, lazy in lazy_jobs])
+
+    rows: list[dict[str, Any]] = []
+    for (var, _), ets_score in zip(lazy_jobs, computed, strict=False):
+        if ets_score is None:
+            continue
+        # ets_score is an xr.DataArray with dims (quantile, lead_time).
+        # Use named isel to avoid any ambiguity about axis order.
+        for li, hours in enumerate(lead_hours):
+            flat: dict[str, Any] = {"lead_time_hours": float(hours), "variable": str(var)}
+            for ti, threshold in enumerate(thresholds):
+                val = float(ets_score.isel(quantile=ti, lead_time=li, drop=True).values)
+                flat[f"ETS {threshold}%"] = val
+            rows.append(flat)
+
+    return rows
+
+
 def _calculate_ets_per_level(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -336,27 +398,13 @@ def run(
                 ds_prediction.sizes.get("lead_time", 0)
             ) > 1
             if multi_lead:
-                rows = []
-                leads = list(ds_prediction["lead_time"].values)
-                # Determine hours deterministically based on dtype of leads
-                is_td = np.issubdtype(np.asarray(leads).dtype, np.timedelta64)
-                for i, lt in enumerate(leads):
-                    hours = int(lt / np.timedelta64(1, "h")) if is_td else int(i)
-                    ds_t_i = (
-                        ds_target.isel(lead_time=i, drop=False)
-                        if "lead_time" in ds_target.dims
-                        else ds_target
-                    )
-                    ds_p_i = ds_prediction.isel(lead_time=i, drop=False)
-                    df_i = _calculate_ets_for_thresholds(ds_t_i, ds_p_i, thresholds)
-                    for var, row in df_i.iterrows():
-                        flat: dict[str, float | str] = {
-                            "lead_time_hours": float(hours),
-                            "variable": str(var),
-                        }
-                        for col, val in row.items():
-                            flat[str(col)] = float(val)
-                        rows.append(flat)
+                # Compute ETS for all lead times in a single Dask graph instead of
+                # looping over each lead and triggering a separate dask.compute per lead.
+                rows = _calculate_ets_all_leads_batched(
+                    ds_target if "lead_time" in ds_target.dims else ds_target,
+                    ds_prediction,
+                    thresholds,
+                )
                 if rows:
                     long_df = pd.DataFrame(rows)
                     long_df, wide_df = save_metric_by_lead_tables(
