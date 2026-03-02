@@ -54,3 +54,5 @@ output_dirs.txt
 *.conf
 config/train_config_ESFMs*
 config/firat/*
+launchscript_train_config_ESFMs*
+test*

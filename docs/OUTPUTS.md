@@ -79,6 +79,25 @@ det_line_2m_temperature_MAE_data_ensmean.npz
 det_line_temperature_500_MAE_by_lead_ensmean.csv   # 3D variable with level token
 ```
 
+#### Spatial Metric Maps (MAE / RMSE / Bias)
+
+When `output_mode` is `plot`, `npz`, or `both`, the deterministic module also produces
+spatial-field metric maps for every selected variable (2-D and 3-D at each pressure level).
+Only metrics present in `deterministic.include` are generated (by default all three).
+For multi-lead runs each lead time is shown as a separate row in the figure.
+
+```text
+det_mae_map_2m_temperature_ensmean.png
+det_mae_map_2m_temperature_ensmean.npz
+det_rmse_map_2m_temperature_ensmean.png
+det_bias_map_2m_temperature_lead000h-072h_ensmean.png   # multi-lead
+det_mae_map_temperature_500_init2023010200-2023010412_ensmean.png   # 3D per-level
+det_mae_map_temperature_500_init2023010200-2023010412_ensmean.npz
+```
+
+NPZ keys: `mae` (or `rmse`/`bias`) — mean spatial field, `latitude`, `longitude`,
+`variable`, `units`, and optionally `level`, `<metric>_per_lead` (3-D stack), `lead_labels`.
+
 ### Spread-Skill Ratio (SSR)
 
 SSR filenames follow a similar pattern:
@@ -171,6 +190,15 @@ map_temperature_500_init2023010200-2023010412_ensmean.png        # mean reductio
 map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (output_mode=npz/both)
 ```
 
+**3D variables and multi-lead NPZ files**: For 3D atmospheric variables evaluated with more than one lead time, the NPZ files are saved **per pressure level** (one file per level) with the full lead-time stack preserved:
+
+```text
+map_temperature_500_init2023010200-2023010412_lead000h-072h_ens0.npz  # level 500 hPa, shape (n_leads, lat, lon)
+map_temperature_850_init2023010200-2023010412_lead000h-072h_ens0.npz  # level 850 hPa
+```
+
+For single-lead or purely single-init 3D runs, a combined NPZ is written instead (all levels in one file). The intercomparison tool automatically prefers per-level files and ignores the combined `_to_`-range equivalent when it finds the individual level files.
+
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
@@ -243,8 +271,16 @@ All modules print concise progress like:
 
 Intercomparison outputs are written under `output/intercomparison/<module>/` and are consumed by `notebooks/model_intercomparison.ipynb` via folder-level display helpers.
 
+All intercomparison plots use **consistent model colours**: each label in `intercomparison.yaml → labels` is assigned a fixed colour from the `tab10` palette in the order it appears in the list. This colour is shared across every module (bar charts, line plots, histograms, KDE, spectra, PIT, CRPS).
+
 - **maps**
-	- `maps/*_compare.png`
+	- `maps/map_<var>[_<level>]_compare.png`: Target + per-model panels. Multi-lead 2D variables produce a row per lead time labelled `(+Xh)` on the left; multi-lead 3D variables produce one gridded figure per pressure level.
+	- `maps/det_mae_map_*_compare.png`: MAE spatial map comparison (panels per model).
+	- `maps/det_mae_map_*_per_lead_compare.png`: MAE per-lead gridded comparison with `(+Xh)` row labels.
+	- `maps/det_rmse_map_*_compare.png`: RMSE spatial map comparison.
+	- `maps/det_rmse_map_*_per_lead_compare.png`: RMSE per-lead gridded comparison.
+	- `maps/det_bias_map_*_compare.png`: Bias spatial map comparison.
+	- `maps/det_bias_map_*_per_lead_compare.png`: Bias per-lead gridded comparison.
 - **histograms**
 	- `histograms/*_compare.png`
 - **wd_kde**
@@ -286,3 +322,4 @@ Intercomparison outputs are written under `output/intercomparison/<module>/` and
 	- `probabilistic/temporal_*_compare.png`
 	- `probabilistic/pit_hist_*_compare.png`
 	- `probabilistic/crps_map_*_compare.png`
+	- `probabilistic/crps_spatial_*_per_lead_compare.png`

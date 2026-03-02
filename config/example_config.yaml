@@ -244,6 +244,12 @@ metrics:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Bias", "Pearson R",
   #   "FSS", "Relative L1", "Relative L2"
   #   "SEEPS" (only for precipitation)
+  #
+  # Spatial metric maps: When MAE, RMSE, or Bias are included (and output_mode
+  # is not "none"), the deterministic module also generates per-variable spatial
+  # error maps (PNG + NPZ). For 3D variables, one map per pressure level is
+  # produced. Multi-lead runs show each lead time as a separate row.
+  #
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     # Per-level reporting for 3D variables is enabled by default.
@@ -294,8 +300,12 @@ metrics:
     report_per_level: true
 
     # Controls whether individual per-spectrum overlay plots (energy_spectrum_*_compare.png,
-    # *_compare_ratio.png) and per-lead individual plots (energy_spectrum_*_leadXXXh_compare.png)
-    # are generated in both single-model runs and intercomparison.
+    # *_compare_ratio.png) and per-lead individual PNG tripanel spectrograms
+    # (energy_spectra_per_lead_*_tripanel*.png) are generated in both single-model runs
+    # and intercomparison.
+    # NOTE: This flag does NOT suppress bundle NPZ files (energy_spectra_per_lead_*_bundle*.npz)
+    # or LSD/banded-LSD CSVs — those are always written for multi-lead runs so the
+    # intercomparison pipeline can produce 3D per-level spectrograms and band plots.
     # Set to true only if you need per-variable per-time-slice spectral overlays;
     # the spectrograms already summarise the full lead-time evolution in one figure.
     individual_plots: false

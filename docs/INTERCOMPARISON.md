@@ -37,6 +37,9 @@ What gets combined:
 *   **Maps**
     *   **Plots**:
         *   `map_<var>[_level<lvl>]_compare.png`: Panel maps with DS in the first column and each model as subsequent columns.
+        *   `det_mae_map_<var>[_<level>]_compare.png`: MAE spatial map comparison (one panel per model).
+        *   `det_rmse_map_<var>[_<level>]_compare.png`: RMSE spatial map comparison.
+        *   `det_bias_map_<var>[_<level>]_compare.png`: Bias spatial map comparison (diverging colour scale).
 
 *   **Histograms**
     *   **Plots**:
@@ -55,8 +58,9 @@ What gets combined:
     *   **Plots**:
         *   `*_compare.png`: Overlays of DS baseline + model spectra per variable (and per level).
         *   `*_compare_ratio.png`: Ratio of Model/Target energy density vs wavenumber.
-        *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison.
-        *   `energy_spectra_per_lead_*_bundle*_spectrogram_delta_compare.png`: Multi-model Δlog10(model-target) spectrogram compare.
+        *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison (when `individual_plots: true`).
+        *   `energy_spectra_per_lead_*_bundle*_spectrogram_delta_compare.png`: Multi-model Δlog10(model-target) spectrogram compare
+        *   `lsd_banded_lead_time_<var>_compare.png`: LSD vs lead time by spectral band (requires `individual_plots: false` multi-lead run).
     *   **CSVs**:
         *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
         *   `lsd_metrics_lead_time_combined.csv`: LSD metrics per lead time.
@@ -101,5 +105,6 @@ What gets combined:
         *   `ssr_combined.csv`: Combined Spread-Skill Ratio.
     *   **Plots**:
         *   `temporal_<metric>_<variable>[_level<lvl>]_compare.png`: Line plots of probabilistic metrics vs lead time.
-        *   `crps_map_<var>_compare.png`: CRPS map panels.
+        *   `crps_spatial_<var>_mean_compare.png`: CRPS spatial map averaged over lead times (one panel per model).
+        *   `crps_spatial_<var>_per_lead_compare.png`: CRPS spatial map grid (rows = lead times with `Target (+Xh)` labels, cols = models).
         *   `pit_hist_<var>[_<level>]_compare.png`: PIT histogram comparison (per level for 3D variables).
