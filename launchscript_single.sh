@@ -139,11 +139,8 @@ export PYTHONUNBUFFERED=1
 # Create logs directory if it doesn't exist
 mkdir -p "$LOG_DIR"
 
-TEMP_FILES=()
 cleanup() {
-    for f in "${TEMP_FILES[@]}"; do
-        [ -n "$f" ] && rm -f "$f"
-    done
+    :
 }
 trap cleanup EXIT
 
@@ -158,7 +155,7 @@ echo "Starting evaluation for config: $CONFIG_FILE"
 # Run the evaluation
 # We use srun to launch the python process within the container environment defined by EDF_CONFIG
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    python -u -m swissclim_evaluations.cli --config "$CONFIG_FILE"
+    python -u -m swissclim_evaluations.intercompare --config "$CONFIG_FILE"
 EXIT_CODE=$?
 
 echo "Evaluation finished."
@@ -184,13 +181,10 @@ fi
 # --- Notebook Rendering ---
 echo "Rendering notebooks..."
 
-# Create a temporary bash script to handle notebook rendering
-RENDER_SCRIPT="${PROJECT_ROOT}/render_single_notebook.sh"
-TEMP_FILES+=("$RENDER_SCRIPT")
-cat <<'EOF' > "$RENDER_SCRIPT"
+NOTEBOOK_LOG="${LOG_DIR}/${job_name}_notebooks.log"
+srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
+    bash -s "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1 <<'RENDER_EOF'
 #!/bin/bash
-
-# Install missing dependencies for notebook rendering
 
 CONFIG_PATH="$1"
 PROJECT_ROOT="$2"
@@ -276,18 +270,10 @@ for nb_name in "${NOTEBOOKS[@]}"; do
         echo "ERROR: Failed to convert $nb_name to HTML"
     fi
 done
-EOF
-
-# Run the rendering script
-NOTEBOOK_LOG="${LOG_DIR}/${job_name}_notebooks.log"
-srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    bash "$RENDER_SCRIPT" "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1
+RENDER_EOF
 
 if [ -n "$OUTDIR" ] && [ -f "$NOTEBOOK_LOG" ]; then
     cp "$NOTEBOOK_LOG" "$OUTDIR/${job_name}_notebooks.log" 2>/dev/null || echo "Could not copy notebook render log"
 fi
-
-# Cleanup
-rm -f "$RENDER_SCRIPT"
 
 echo "All tasks completed."
