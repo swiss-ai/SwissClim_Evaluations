@@ -251,6 +251,9 @@ class _DummyFig:
     def add_axes(self, *a, **k):
         return _DummyAxis()
 
+    def add_subplot(self, *a, **k):
+        return _DummyAxis()
+
     def colorbar(self, *a, **k):
         return _DummyColorbar()
 

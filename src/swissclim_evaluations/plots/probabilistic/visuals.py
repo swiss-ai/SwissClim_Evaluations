@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -28,7 +30,7 @@ def visualize_probabilistic_metrics(
     plotting_cfg: dict[str, Any],
     init_range: tuple | None,
     lead_range: tuple | None,
-    ens_token: str,
+    ens_token: str | None,
     ds_target: xr.Dataset | None = None,  # For date extraction
 ):
     """Generate plots for CRPS and SSR metrics (Maps, Line Plots)."""
@@ -114,6 +116,77 @@ def visualize_probabilistic_metrics(
                     extend=extend,
                     dpi=dpi,
                 )
+
+                # --- Per-lead-time grid map ---
+                if "lead_time" in da_lvl.dims and da_lvl.sizes["lead_time"] > 1:
+                    lead_vals = da_lvl["lead_time"].values
+                    if np.issubdtype(np.asarray(lead_vals).dtype, np.timedelta64):
+                        lead_hours = (lead_vals / np.timedelta64(1, "h")).astype(int)
+                    else:
+                        lead_hours = np.asarray(lead_vals).astype(int)
+
+                    n_leads = len(lead_hours)
+                    fig_g, axes_g = plt.subplots(
+                        1,
+                        n_leads,
+                        figsize=(5 * n_leads, 4),
+                        dpi=dpi * 2,
+                        subplot_kw={"projection": ccrs.PlateCarree()},
+                        constrained_layout=True,
+                    )
+                    if n_leads == 1:
+                        axes_g = [axes_g]
+
+                    # Common colour range across all leads
+                    all_vals = np.asarray(da_lvl.values)
+                    grid_vmin = vmin if vmin is not None else float(np.nanmin(all_vals))
+                    grid_vmax = vmax if vmax is not None else float(np.nanmax(all_vals))
+
+                    im_last = None
+                    for li, (ax_l, lh) in enumerate(zip(axes_g, lead_hours, strict=True)):
+                        da_lead = da_lvl.isel(lead_time=li)
+                        z = np.asarray(da_lead.values)
+                        ax_l.coastlines(linewidth=0.5)
+                        im_last = ax_l.pcolormesh(
+                            da_lead[lon_name],
+                            da_lead[lat_name],
+                            z,
+                            cmap=cmap,
+                            vmin=grid_vmin,
+                            vmax=grid_vmax,
+                            shading="auto",
+                            transform=ccrs.PlateCarree(),
+                        )
+                        ax_l.set_title(f"Lead {lh}h", fontsize=9)
+
+                    if im_last is not None:
+                        fig_g.colorbar(
+                            im_last,
+                            ax=list(axes_g),
+                            orientation="horizontal",
+                            fraction=0.04,
+                            pad=0.06,
+                            label=metric_type,
+                            extend=extend,
+                        )
+                    lvl_str = f" @ {lvl}" if lvl is not None else ""
+                    fig_g.suptitle(
+                        f"{metric_type} Map per Lead — " f"{display_var}{lvl_str}",
+                        fontsize=11,
+                        y=1.02,
+                    )
+                    out_grid = section / build_output_filename(
+                        metric=f"{metric_type.lower()}_map_per_lead",
+                        variable=display_var,
+                        level=lvl,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    plt.savefig(out_grid, bbox_inches="tight", dpi=200)
+                    plt.close(fig_g)
 
             # --- Line Plot (Evolution) ---
             # We need the version WITH lead_time preserved.

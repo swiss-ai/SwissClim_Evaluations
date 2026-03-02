@@ -10,7 +10,9 @@ from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
     ensure_dir,
+    model_color_map,
     print_file_list,
+    reorder_pivot_columns,
     report_checklist,
     report_missing,
     scan_model_sets,
@@ -20,6 +22,7 @@ from swissclim_evaluations.intercomparison.core import (
 def intercompare_deterministic_metrics(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
+    _cmap = model_color_map(labels)
     # Availability report
     per_model, _, uni = scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
     report_missing("deterministic_metrics", models, labels, per_model, uni)
@@ -287,7 +290,9 @@ def intercompare_deterministic_metrics(
                     plt.close(fig)
                     c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
-                ax = pivot.plot(kind="bar", figsize=(12, 6))
+                pivot = reorder_pivot_columns(pivot, labels)
+                _bar_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
+                ax = pivot.plot(kind="bar", figsize=(12, 6), color=_bar_colors or None)
                 ax.set_title(f"{metric} by variable and model".title())
                 ax.set_ylabel(metric)
                 ax.set_xlabel("")
@@ -416,8 +421,12 @@ def intercompare_deterministic_metrics(
                 ).sort_index()
 
                 if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                    pivot = reorder_pivot_columns(pivot, labels)
+                    _line_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
+                    pivot.plot(
+                        kind="line", ax=ax, marker="o", markersize=4, color=_line_colors or None
+                    )
 
                     level_has_value = has_level and pd.notna(pair.get("level"))
                     level_title = f" @ {int(level_val)}" if level_has_value else ""

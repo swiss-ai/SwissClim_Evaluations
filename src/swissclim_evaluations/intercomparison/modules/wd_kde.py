@@ -5,7 +5,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from matplotlib.lines import Line2D
 
 from swissclim_evaluations.helpers import (
@@ -19,6 +18,7 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
     report_checklist,
     report_missing,
@@ -34,7 +34,7 @@ def intercompare_wd_kde(
 ) -> None:
     src_rel = Path("wd_kde")
     dst = ensure_dir(out_root / "wd_kde")
-    colors = sns.color_palette("tab10", n_colors=len(models))
+    colors = list(model_color_map(labels).values())
 
     # Availability report
     patterns = [

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
 
 from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
@@ -18,6 +17,7 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
     report_checklist,
     report_missing,
@@ -83,7 +83,7 @@ def intercompare_histograms(
         c.warn("No common histogram files found (latbands or global). Skipping plots.")
         return
 
-    colors = sns.color_palette("tab10", n_colors=len(models))
+    colors = list(model_color_map(labels).values())
 
     # Process Global
     if common_g:

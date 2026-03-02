@@ -652,6 +652,36 @@ def format_level_label(level: str | int | float | None) -> str:
     return f" (Level {level})"
 
 
+# ── Spatial metric map specifications (MAE / RMSE / Bias) ────────────────────
+# Single source-of-truth used by the deterministic orchestrator (generation)
+# and the intercomparison maps module (comparison).  Keys are title-case to
+# match the deterministic ``include`` config list; the ``key`` field gives the
+# lower-case token used in filenames and NPZ arrays.
+SPATIAL_METRIC_SPECS: dict[str, dict] = {
+    "MAE": {
+        "key": "mae",
+        "fn": lambda pred, tgt: np.abs(pred - tgt),
+        "cmap": "RdBu_r",
+        "vmin_zero": True,
+        "diverging": False,
+    },
+    "RMSE": {
+        "key": "rmse",
+        "fn": lambda pred, tgt: np.sqrt((pred - tgt) ** 2),
+        "cmap": "RdBu_r",
+        "vmin_zero": True,
+        "diverging": False,
+    },
+    "Bias": {
+        "key": "bias",
+        "fn": lambda pred, tgt: pred - tgt,
+        "cmap": "RdBu_r",
+        "vmin_zero": False,
+        "diverging": True,
+    },
+}
+
+
 # Common variable units fallback mapping
 VARIABLE_UNITS = {
     "2m_temperature": "K",

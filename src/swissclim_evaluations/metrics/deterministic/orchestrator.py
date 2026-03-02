@@ -4,6 +4,7 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
+import dask
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -12,10 +13,13 @@ from scores.functions import create_latitude_weights
 from ... import console as c
 from ...dask_utils import resolve_module_batching_options
 from ...helpers import (
+    SPATIAL_METRIC_SPECS,
     aggregate_member_dfs,
     build_output_filename,
     ensemble_mode_to_token,
     format_init_time_range,
+    format_level_label,
+    format_level_token,
     format_variable_name,
     get_variable_units,
     resolve_ensemble_mode,
@@ -23,8 +27,252 @@ from ...helpers import (
     save_dataframe,
     save_figure,
     save_metric_by_lead_tables,
+    unwrap_longitude_for_plot,
 )
 from . import calc
+
+
+def _generate_spatial_metric_maps(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    *,
+    include: list[str] | None,
+    section_output: Path,
+    init_range: str | tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+    ens_token: str | None,
+    save_fig: bool,
+    save_npz: bool,
+) -> None:
+    """Generate spatial-field metric maps for each variable.
+
+    Only metrics that are present in *include* (or the full default set when
+    *include* is ``None``) are generated.  Supports 2-D and 3-D (with
+    ``level`` dimension) variables.  When more than one lead-time is present
+    each lead is shown as a separate row in the figure.
+    """
+    # ── Short-circuit when output_mode is "none" ─────────────────────────
+    if not save_fig and not save_npz:
+        return
+
+    import matplotlib.pyplot as plt
+
+    try:
+        import cartopy.crs as ccrs
+    except ImportError:
+        c.warn("[deterministic] cartopy not available – skipping spatial metric maps")
+        return
+
+    metrics_to_generate = (
+        set(include) if include is not None else set(SPATIAL_METRIC_SPECS)
+    ) & set(SPATIAL_METRIC_SPECS)
+
+    if not metrics_to_generate:
+        return
+
+    # Only process variables present in BOTH datasets (inner join).
+    common_vars = sorted(set(ds_target.data_vars) & set(ds_prediction.data_vars))
+
+    for var in common_vars:
+        tgt_da = ds_target[var]
+        pred_da = ds_prediction[var]
+
+        has_level = "level" in tgt_da.dims
+        # lead_time may sit in either dataset
+        has_lead = "lead_time" in tgt_da.dims or "lead_time" in pred_da.dims
+        units = get_variable_units(ds_target, str(var))
+
+        levels = tgt_da["level"].values if has_level else [None]
+
+        for level_val in levels:
+            tgt_sel = tgt_da.sel(level=level_val) if level_val is not None else tgt_da
+            pred_sel = pred_da.sel(level=level_val) if level_val is not None else pred_da
+
+            # ── Build list of lead-time slices ───────────────────────────
+            lead_indices: list[int | None] = []
+            lead_labels: list[str] = []
+            if has_lead:
+                lead_src = tgt_sel if "lead_time" in tgt_sel.dims else pred_sel
+                n_leads = int(lead_src.sizes["lead_time"])
+                lead_vals = lead_src["lead_time"].values
+                for _idx in range(n_leads):
+                    lead_indices.append(_idx)
+                    lt = lead_vals[_idx]
+                    if np.issubdtype(type(lt), np.timedelta64):
+                        h = int(lt / np.timedelta64(1, "h"))
+                        lead_labels.append(f"+{h}h")
+                    else:
+                        lead_labels.append(f"lead={lt}")
+            else:
+                lead_indices = [None]
+                lead_labels = [""]
+
+            # Normalise init_range to the tuple form expected by build_output_filename.
+            # A bare str (legacy) is treated as both start and end.
+            _init_tup: tuple[str, str] | None = (
+                (init_range, init_range) if isinstance(init_range, str) else init_range
+            )
+
+            for metric_name in sorted(metrics_to_generate):
+                spec = SPATIAL_METRIC_SPECS[metric_name]
+                metric_key = spec["key"]
+
+                # ── Helper: reduce a DataArray to (lat, lon) ─────────────
+                def _reduce_to_spatial(da: xr.DataArray, li: int | None):
+                    """Select lead-time *li* and average extra dims → 2-D."""
+                    d = da
+                    if li is not None and "lead_time" in d.dims:
+                        d = d.isel(lead_time=li)
+                    # Average over init_time (if multi-init present)
+                    for dim in ("init_time", "time"):
+                        if dim in d.dims and d.sizes[dim] > 1:
+                            d = d.mean(dim=dim, keep_attrs=True)
+                    return d.squeeze()
+
+                # Pre-compute all per-lead fields for colour range
+                fields: list[np.ndarray] = []
+                for li in lead_indices:
+                    t = _reduce_to_spatial(tgt_sel, li)
+                    p = _reduce_to_spatial(pred_sel, li)
+                    fields.append(spec["fn"](p.values, t.values))
+
+                try:
+                    if spec["diverging"]:
+                        abs_max = float(np.nanmax([np.nanmax(np.abs(f)) for f in fields]))
+                        vmin, vmax = -abs_max, abs_max
+                    elif spec["vmin_zero"]:
+                        vmin = 0.0
+                        vmax = float(np.nanmax([np.nanmax(f) for f in fields]))
+                    else:
+                        vmin = float(np.nanmin([np.nanmin(f) for f in fields]))
+                        vmax = float(np.nanmax([np.nanmax(f) for f in fields]))
+                except ValueError:
+                    continue
+
+                n_rows = len(lead_indices)
+
+                if save_fig:
+                    fig, axes = plt.subplots(
+                        n_rows,
+                        1,
+                        figsize=(10, 4 * n_rows),
+                        dpi=200,
+                        subplot_kw={
+                            "projection": ccrs.PlateCarree(),
+                        },
+                        constrained_layout=True,
+                    )
+                    if n_rows == 1:
+                        axes = np.array([axes])
+
+                    im = None
+                    for i, (li, lead_str) in enumerate(
+                        zip(lead_indices, lead_labels, strict=False)
+                    ):
+                        ax = axes[i]
+                        t = _reduce_to_spatial(tgt_sel, li)
+                        p = _reduce_to_spatial(pred_sel, li)
+                        t = unwrap_longitude_for_plot(t)
+                        p = unwrap_longitude_for_plot(p)
+                        field = spec["fn"](p.values, t.values)
+
+                        lon = t.coords.get("longitude", t.longitude)
+                        lat = t.coords.get("latitude", t.latitude)
+
+                        im = ax.pcolormesh(
+                            lon,
+                            lat,
+                            field,
+                            cmap=spec["cmap"],
+                            vmin=vmin,
+                            vmax=vmax,
+                            transform=ccrs.PlateCarree(),
+                            shading="auto",
+                        )
+                        ax.coastlines(linewidth=0.5)
+                        lon_v = np.asarray(lon)
+                        lat_v = np.asarray(lat)
+                        with contextlib.suppress(Exception):
+                            ax.set_extent(
+                                [
+                                    float(np.min(lon_v)),
+                                    float(np.max(lon_v)),
+                                    float(np.min(lat_v)),
+                                    float(np.max(lat_v)),
+                                ],
+                                crs=ccrs.PlateCarree(),
+                            )
+
+                        lvl_label = format_level_label(
+                            int(level_val) if level_val is not None else None
+                        )
+                        lead_part = f" ({lead_str})" if lead_str else ""
+                        ax.set_title(
+                            f"{metric_name} — "
+                            f"{format_variable_name(str(var))}"
+                            f"{lvl_label}{lead_part}"
+                        )
+
+                    if im is not None:
+                        cb = fig.colorbar(
+                            im,
+                            ax=axes,
+                            orientation="horizontal",
+                            fraction=0.05,
+                            pad=0.02,
+                        )
+                        label = metric_name
+                        if units:
+                            label += f" [{units}]"
+                        with contextlib.suppress(Exception):
+                            cb.set_label(label)
+
+                    lev_tok = format_level_token(int(level_val)) if level_val is not None else None
+                    out_png = section_output / build_output_filename(
+                        metric=f"det_{metric_key}_map",
+                        variable=str(var),
+                        level=lev_tok,
+                        qualifier=None,
+                        init_time_range=_init_tup,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig, out_png, module="deterministic")
+                    plt.close(fig)
+
+                if save_npz:
+                    mean_field = np.nanmean(fields, axis=0)
+                    t_ref = _reduce_to_spatial(tgt_sel, lead_indices[0])
+                    lon_arr = np.asarray(t_ref.coords.get("longitude", t_ref.longitude))
+                    lat_arr = np.asarray(t_ref.coords.get("latitude", t_ref.latitude))
+                    lev_tok = format_level_token(int(level_val)) if level_val is not None else None
+                    npz_data: dict[str, Any] = {
+                        metric_key: mean_field,
+                        "latitude": lat_arr,
+                        "longitude": lon_arr,
+                        "variable": str(var),
+                        "units": units or "",
+                    }
+                    if level_val is not None:
+                        npz_data["level"] = int(level_val)
+                    if len(fields) > 1:
+                        npz_data[f"{metric_key}_per_lead"] = np.stack(fields, axis=0)
+                        npz_data["lead_labels"] = np.array(lead_labels)
+
+                    out_npz = section_output / build_output_filename(
+                        metric=f"det_{metric_key}_map",
+                        variable=str(var),
+                        level=lev_tok,
+                        qualifier=None,
+                        init_time_range=_init_tup,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="npz",
+                    )
+                    save_data(out_npz, module="deterministic", **npz_data)
+
+    c.success("[deterministic] Spatial metric maps generated")
 
 
 def run(
@@ -280,6 +528,23 @@ def run(
                     "Deterministic standardized metrics (targets vs predictions) — first 5 rows:"
                 )
                 c.print(standardized_metrics.head())
+
+        # ── Spatial metric maps (MAE / RMSE / Bias) ──────────────────────────
+        try:
+            _generate_spatial_metric_maps(
+                ds_target,
+                ds_prediction,
+                include=include,
+                section_output=section_output,
+                init_range=init_range,
+                lead_range=lead_range,
+                ens_token=ens_token,
+                save_fig=save_fig,
+                save_npz=save_npz,
+            )
+        except Exception:
+            c.warn("[deterministic] Spatial metric map generation failed")
+
     else:
         pooled_metrics: list[pd.DataFrame] = []
         first_reg_df: pd.DataFrame | None = None
@@ -311,60 +576,103 @@ def run(
             else:
                 ds_tgt_m_std = ds_target_std
 
-            reg_m = calc.calculate_all_metrics(
+            # Build lazy graphs for all four result types, then materialise
+            # everything in one dask.compute instead of four separate ones.
+            # Note: FSS quantile thresholds are still computed eagerly inside
+            # calculate_all_metrics (before the compute=False short-circuit) —
+            # those computes cannot be deferred.
+            _raw_reg = calc.calculate_all_metrics(
                 ds_tgt_m,
                 ds_pred_m,
                 calc_relative=True,
                 include=include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                compute=True,
+                compute=False,
                 weights=weights,
                 performance_cfg=perf_cfg,
                 log_variable_progress=True,
             )
-
-            std_m = calc.calculate_all_metrics(
+            _raw_std = calc.calculate_all_metrics(
                 ds_tgt_m_std,
                 ds_pred_m_std,
                 calc_relative=False,
                 include=std_include,
                 fss_cfg=fss_cfg,
                 seeps_climatology_path=seeps_climatology_path,
-                compute=True,
+                compute=False,
                 weights=weights,
                 performance_cfg=perf_cfg,
                 log_variable_progress=False,
             )
 
+            _md_reg, _lazy_reg = _raw_reg if isinstance(_raw_reg, tuple) else ({}, [])
+            _md_std, _lazy_std = _raw_std if isinstance(_raw_std, tuple) else ({}, [])
+
+            _md_pl_reg: dict = {}
+            _lazy_pl_reg: list = []
+            _md_pl_std: dict = {}
+            _lazy_pl_std: list = []
             per_level_m = None
             per_level_m_std = None
             if report_per_level:
-                res = calc.calculate_per_level_metrics(
+                _raw_pl_reg = calc.calculate_per_level_metrics(
                     ds_tgt_m,
                     ds_pred_m,
                     calc_relative=True,
                     include=include,
                     fss_cfg=fss_cfg,
-                    compute=True,
+                    compute=False,
                     weights=weights,
                     performance_cfg=perf_cfg,
                     log_variable_progress=False,
                 )
-                if isinstance(res, pd.DataFrame):
-                    per_level_m = res
-
-                res_std = calc.calculate_per_level_metrics(
+                _raw_pl_std = calc.calculate_per_level_metrics(
                     ds_tgt_m_std,
                     ds_pred_m_std,
                     calc_relative=False,
                     include=std_include,
                     fss_cfg=fss_cfg,
-                    compute=True,
+                    compute=False,
                     weights=weights,
                     performance_cfg=perf_cfg,
                     log_variable_progress=False,
                 )
+                if isinstance(_raw_pl_reg, tuple):
+                    _md_pl_reg, _lazy_pl_reg = _raw_pl_reg
+                if isinstance(_raw_pl_std, tuple):
+                    _md_pl_std, _lazy_pl_std = _raw_pl_std
+
+            # Offsets for slicing computed results back to each group.
+            _n_reg = len(_lazy_reg)
+            _n_std = len(_lazy_std)
+            _n_pl_reg = len(_lazy_pl_reg)
+            _all_lazies = (
+                [o for _, _, o in _lazy_reg]
+                + [o for _, _, o in _lazy_std]
+                + [o for _, _, o in _lazy_pl_reg]
+                + [o for _, _, o in _lazy_pl_std]
+            )
+
+            c.print(
+                f"[deterministic] Computing member {mi} metrics "
+                f"({len(_all_lazies)} tasks) in one dask graph..."
+            )
+            _computed = list(dask.compute(*_all_lazies)) if _all_lazies else []
+
+            _c_reg = _computed[:_n_reg]
+            _c_std = _computed[_n_reg : _n_reg + _n_std]
+            _c_pl_reg = _computed[_n_reg + _n_std : _n_reg + _n_std + _n_pl_reg]
+            _c_pl_std = _computed[_n_reg + _n_std + _n_pl_reg :]
+
+            reg_m = calc.finalize_metrics(_md_reg, _lazy_reg, _c_reg, None)
+            std_m = calc.finalize_metrics(_md_std, _lazy_std, _c_std, None)
+            if report_per_level and _lazy_pl_reg:
+                res = calc.finalize_metrics(_md_pl_reg, _lazy_pl_reg, _c_pl_reg, ["level"])
+                if isinstance(res, pd.DataFrame):
+                    per_level_m = res
+            if report_per_level and _lazy_pl_std:
+                res_std = calc.finalize_metrics(_md_pl_std, _lazy_pl_std, _c_pl_std, ["level"])
                 if isinstance(res_std, pd.DataFrame):
                     per_level_m_std = res_std
 

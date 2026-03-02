@@ -399,8 +399,7 @@ def _plot_single_spectrum(
             ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax_r.set_ylabel("Ratio (Prediction / Target)")
             ax_r.set_xlim(k_min, k_max)
-            # Auto-scale y but keep 1.0 centered or visible
-            # ax_r.set_ylim(0.5, 2.0) # Optional: fixed range
+            ax_r.set_ylim(0, 2.0)  # Fixed 0–200 % range
 
             add_wavelength_axis(ax_r, k_min, k_max)
 
@@ -1262,7 +1261,7 @@ def run(
                         }
                     )
 
-            if save_plot or save_npz:
+            if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
                 for lvl in levels:
                     _plot_averaged_spectra(
                         spec_t.sel(level=lvl),
@@ -1459,6 +1458,22 @@ def run(
             Zt = np.asarray(spec_t2.transpose("lead_time", "wavenumber").values)
             Zp = np.asarray(spec_p2.transpose("lead_time", "wavenumber").values)
 
+            # Preserve full-resolution arrays for NPZ output / downstream analysis
+            kvals_full, Zt_full, Zp_full = kvals.copy(), Zt.copy(), Zp.copy()
+
+            # Apply 4Δx wavenumber cutoff for plotting (consistent with energy
+            # spectra line plots which trim [2:-2] and mask at k_max/2).
+            _k_max_spec = float(np.nanmax(kvals))
+            if np.isfinite(_k_max_spec) and _k_max_spec > 0 and len(kvals) > 4:
+                _k_cutoff_spec = _k_max_spec / 2.0
+                _cut_mask = np.ones(len(kvals), dtype=bool)
+                _cut_mask[:2] = False  # skip first 2 large-scale bins
+                _cut_mask &= kvals <= _k_cutoff_spec
+                if np.any(_cut_mask):
+                    kvals = kvals[_cut_mask]
+                    Zt = Zt[:, _cut_mask]
+                    Zp = Zp[:, _cut_mask]
+
             def _plot_spec_img(
                 Z: np.ndarray,
                 qualifier: str,
@@ -1507,9 +1522,19 @@ def run(
             logZt = np.log10(Zt + eps)
             logZp = np.log10(Zp + eps)
             Zdiff = (logZp - logZt).T  # shape (k, leads) for plotting convenience
+            # Mild Gaussian smoothing to remove pixel-level artifacts
+            try:
+                from scipy.ndimage import gaussian_filter
+
+                Zdiff = gaussian_filter(Zdiff, sigma=[1.0, 0.5])
+            except Exception:
+                pass
             if save_plot:
                 fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-                vmax = np.nanmax(np.abs(Zdiff))
+                # Robust vmax: 98th percentile so outliers don't compress colour range
+                vmax = float(np.nanpercentile(np.abs(Zdiff), 98))
+                if not (np.isfinite(vmax) and vmax > 0):
+                    vmax = float(np.nanmax(np.abs(Zdiff)))
                 im = ax.pcolormesh(
                     x_hours,
                     kvals,
@@ -1640,10 +1665,10 @@ def run(
                 save_data(
                     out_npz,
                     lead_hours=x_hours,
-                    wavenumber=kvals,
-                    energy_target=Zt,
-                    energy_prediction=Zp,
-                    log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
+                    wavenumber=kvals_full,
+                    energy_target=Zt_full,
+                    energy_prediction=Zp_full,
+                    log_energy_diff=(np.log10(Zp_full + 1e-10) - np.log10(Zt_full + 1e-10)),
                     variable=str(var),
                     module="energy_spectra",
                 )
@@ -1672,6 +1697,13 @@ def run(
                 vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
                 vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
                 diff = logZp - logZt
+                # Mild Gaussian smoothing to remove pixel-level artifacts
+                try:
+                    from scipy.ndimage import gaussian_filter
+
+                    diff = gaussian_filter(diff, sigma=[1.0, 0.5])
+                except Exception:
+                    pass
                 axs[0].pcolormesh(
                     x_hours,
                     kvals,
@@ -1690,7 +1722,10 @@ def run(
                     vmin=vmin_shared,
                     vmax=vmax_shared,
                 )
-                vmax_d = np.nanmax(np.abs(diff))
+                # Robust vmax: 98th percentile so outliers don't compress colour range
+                vmax_d = float(np.nanpercentile(np.abs(diff), 98))
+                if not (np.isfinite(vmax_d) and vmax_d > 0):
+                    vmax_d = float(np.nanmax(np.abs(diff)))
                 im2 = axs[3].pcolormesh(
                     x_hours,
                     kvals,
@@ -1778,10 +1813,11 @@ def run(
                 plt.close(fig)
 
         # 3D per-level spectrograms and bundle NPZs
-        # Gated by individual_plots (same semantics as 2D): N vars × M levels × plots is large.
+        # Always compute spectra and save NPZ bundles so the intercomparison
+        # pipeline can produce 3D spectrograms / band plots.  Only gate the
+        # individual per-lead PNG plots behind individual_plots.
         if (
-            (individual_plots or not is_multi_lead)
-            and (save_plot or save_npz)
+            (save_plot or save_npz)
             and variables_3d
             and "level" in (tgt.dims if hasattr(tgt, "dims") else [])
         ):
@@ -1843,7 +1879,63 @@ def run(
                             module="energy_spectra",
                         )
 
-                    if save_plot:
+                    # ── LSD per lead for this 3D level ──
+                    var_level_label = f"{var}@{int(lvl)}hPa"
+                    try:
+                        lsd_da_3d = _compute_lsd_da(spec_t3, spec_p3)
+                        red_dims_3d = [d for d in lsd_da_3d.dims if d != "lead_time"]
+                        if red_dims_3d:
+                            lsd_da_3d = lsd_da_3d.mean(dim=red_dims_3d, skipna=True)
+                        lsd_vals_3d = np.asarray(lsd_da_3d.values).ravel()
+                        for h, v in zip(x_hours_3d.tolist(), lsd_vals_3d.tolist(), strict=False):
+                            lsd_long_rows.append(
+                                {
+                                    "lead_time_hours": float(h),
+                                    "variable": var_level_label,
+                                    "LSD": float(v),
+                                }
+                            )
+                    except Exception:
+                        pass
+
+                    # ── Banded LSD per lead for this 3D level ──
+                    try:
+                        lsd_bands_3d = _compute_banded_lsd_da(spec_t3, spec_p3)
+                        red_dims_b3 = [
+                            d for d in lsd_bands_3d.dims if d not in ["lead_time", "band"]
+                        ]
+                        if red_dims_b3:
+                            lsd_bands_3d = lsd_bands_3d.mean(dim=red_dims_b3, skipna=True)
+                        for bname3 in lsd_bands_3d["band"].values:
+                            band_da_3d = lsd_bands_3d.sel(band=bname3)
+                            lsd_vals_b3 = np.asarray(band_da_3d.values).ravel()
+                            for h, v in zip(
+                                x_hours_3d.tolist(), lsd_vals_b3.tolist(), strict=False
+                            ):
+                                lsd_banded_long_rows.append(
+                                    {
+                                        "lead_time_hours": float(h),
+                                        "variable": var_level_label,
+                                        "band": str(bname3),
+                                        "LSD": float(v),
+                                    }
+                                )
+                    except Exception:
+                        pass
+
+                    # Apply 4Δx wavenumber cutoff for plotting (same as 2D)
+                    _k_max_3d = float(np.nanmax(kvals_3d))
+                    if np.isfinite(_k_max_3d) and _k_max_3d > 0 and len(kvals_3d) > 4:
+                        _k_cut_3d = _k_max_3d / 2.0
+                        _cm3 = np.ones(len(kvals_3d), dtype=bool)
+                        _cm3[:2] = False
+                        _cm3 &= kvals_3d <= _k_cut_3d
+                        if np.any(_cm3):
+                            kvals_3d = kvals_3d[_cm3]
+                            Zt3 = Zt3[:, _cm3]
+                            Zp3 = Zp3[:, _cm3]
+
+                    if save_plot and (individual_plots or not is_multi_lead):
                         from matplotlib.gridspec import GridSpec as _GS3
 
                         eps = 1e-10
@@ -1852,7 +1944,17 @@ def run(
                         vmin_s3 = float(np.nanmin([np.nanmin(logZt3), np.nanmin(logZp3)]))
                         vmax_s3 = float(np.nanmax([np.nanmax(logZt3), np.nanmax(logZp3)]))
                         diff3 = logZp3 - logZt3
-                        vmax_d3 = float(np.nanmax(np.abs(diff3)))
+                        # Mild Gaussian smoothing to remove pixel-level artifacts
+                        try:
+                            from scipy.ndimage import gaussian_filter
+
+                            diff3 = gaussian_filter(diff3, sigma=[1.0, 0.5])
+                        except Exception:
+                            pass
+                        # Robust vmax: 98th percentile so outliers don't compress colour range
+                        vmax_d3 = float(np.nanpercentile(np.abs(diff3), 98))
+                        if not (np.isfinite(vmax_d3) and vmax_d3 > 0):
+                            vmax_d3 = float(np.nanmax(np.abs(diff3)))
                         fig3 = plt.figure(figsize=(22, 5), dpi=dpi)
                         gs3 = _GS3(1, 4, figure=fig3, width_ratios=[1, 1, 0.06, 1])
                         axs3 = [

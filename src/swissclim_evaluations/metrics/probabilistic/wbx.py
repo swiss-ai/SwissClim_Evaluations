@@ -131,6 +131,19 @@ def run_probabilistic_wbx(
 
     # Save NPZ artifacts (Spatial fields)
     if save_npz and results_spatial.data_vars:
+
+        def _canonical_order(da: xr.DataArray) -> xr.DataArray:
+            """Transpose DataArray to (lead_time, latitude, longitude[, ...]) order.
+
+            The WBX aggregator may return dims in any order depending on the library
+            version (e.g. latitude, longitude, lead_time).  The intercomparison reader
+            hard-codes axis=0 as lead_time, so we normalise here.
+            """
+            preferred = ["lead_time", "latitude", "longitude"]
+            ordered = [d for d in preferred if d in da.dims]
+            rest = [d for d in da.dims if d not in preferred]
+            return da.transpose(*ordered, *rest) if ordered else da
+
         for var_name, _da_tmp in results_spatial.data_vars.items():
             parts = var_name.split(".", 1)
             if len(parts) == 2:
@@ -153,7 +166,7 @@ def run_probabilistic_wbx(
                     )
                     io.save_npz_with_coords(
                         npz_path,
-                        da_metric.sel(level=lvl, drop=True),
+                        _canonical_order(da_metric.sel(level=lvl, drop=True)),
                         module="probabilistic",
                         level=lvl,
                     )
@@ -166,7 +179,24 @@ def run_probabilistic_wbx(
                     ensemble=ens_token_prob,
                     ext="npz",
                 )
-                io.save_npz_with_coords(npz_path, da_metric, module="probabilistic")
+                io.save_npz_with_coords(
+                    npz_path, _canonical_order(da_metric), module="probabilistic"
+                )
+
+    # ── Generate CRPS / SSR map and line plots ──
+    if results_spatial.data_vars:
+        from ...plots.probabilistic import visualize_probabilistic_metrics
+
+        visualize_probabilistic_metrics(
+            results_spatial=results_spatial,
+            results_temporal=results_spatial,  # same dataset; lead_time dim is retained
+            out_root=out_root,
+            plotting_cfg=plotting_cfg,
+            init_range=init_range,
+            lead_range=lead_range,
+            ens_token=ens_token_prob,
+            ds_target=ds_target,
+        )
 
 
 def _save_probabilistic_summaries(

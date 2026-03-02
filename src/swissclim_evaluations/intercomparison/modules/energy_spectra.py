@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
@@ -19,6 +18,7 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
     report_checklist,
     report_missing,
@@ -54,7 +54,7 @@ def _plot_banded_lsd_bar(
 
     ncols = min(3, len(variables))
     nrows = (len(variables) + ncols - 1) // ncols
-    colors = sns.color_palette("tab10", n_colors=max(len(labels), 1))
+    colors = list(model_color_map(labels).values())
 
     fig, axes = plt.subplots(
         nrows,
@@ -130,7 +130,7 @@ def _plot_banded_lsd_by_lead(
     if not variables:
         return
 
-    colors = sns.color_palette("tab10", n_colors=max(len(labels), 1))
+    colors = list(model_color_map(labels).values())
     model_colors = {lab: colors[i % len(colors)] for i, lab in enumerate(labels)}
 
     bands_present = [b for b in _BAND_ORDER if b in combined["band"].values]
@@ -183,6 +183,7 @@ def _plot_banded_lsd_by_lead(
         fig.suptitle(
             f"LSD per Band vs Lead Time — {format_variable_name(var)}",
             fontsize=10,
+            y=1.02,
         )
         safe_var = str(var).replace("/", "_").replace(" ", "_")
         out_png = dst / f"lsd_banded_lead_time_{safe_var}_compare.png"
@@ -468,6 +469,14 @@ def intercompare_energy_spectra(
     frames_band_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         cands = list((m / "energy_spectra").glob("energy_ratios_bands_per_lead_per_lead_time*.csv"))
+        # Also pick up per-variable files (variable name sits between per_lead_ and _per_lead_time)
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob(
+                "energy_ratios_bands_per_lead_*_per_lead_time*.csv"
+            )
+            if f not in cands
+        ]
         for f in cands:
             try:
                 df = pd.read_csv(f)
@@ -479,6 +488,14 @@ def intercompare_energy_spectra(
 
     if frames_band_lead:
         combined_bl = pd.concat(frames_band_lead, ignore_index=True)
+        # De-duplicate rows that appear in both the combined CSV and per-variable CSVs
+        dedup_cols = [
+            c
+            for c in ["model", "lead_time_hours", "variable", "band", "LSD"]
+            if c in combined_bl.columns
+        ]
+        if dedup_cols:
+            combined_bl = combined_bl.drop_duplicates(subset=dedup_cols, keep="first")
         if combined_bl["model"].nunique() >= 2:
             out_csv = dst / "lsd_metrics_banded_lead_time_combined.csv"
             combined_bl.to_csv(out_csv, index=False)
@@ -520,7 +537,7 @@ def intercompare_energy_spectra(
                     )
                 except Exception:  # pragma: no cover
                     pass
-            colors = sns.color_palette("tab10", n_colors=len(models))
+            colors = list(model_color_map(labels).values())
             for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
                 wnm = dat.get("wavenumber")
@@ -729,7 +746,7 @@ def intercompare_energy_spectra(
                                     label="Target",
                                 )
 
-                    colors = sns.color_palette("tab10", n_colors=len(models))
+                    colors = list(model_color_map(labels).values())
                     for j, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
                         em = pay["energy_prediction"]
                         if em.ndim == 2 and em.shape[0] > i:
@@ -780,7 +797,14 @@ def intercompare_energy_spectra(
 
                 target_energy = np.asarray(payloads[0]["energy_target"])
                 if target_energy.ndim == 2 and target_energy.shape[1] == len(wavenumber):
-                    eps = 1e-10
+                    # Use an eps relative to each spectrum so near-zero wavenumber
+                    # bins don't explode the log ratio and create line artifacts.
+                    t_median = (
+                        float(np.nanmedian(target_energy[target_energy > 0]))
+                        if np.any(target_energy > 0)
+                        else 1e-10
+                    )
+                    eps = max(t_median * 1e-6, 1e-30)
                     diffs: list[np.ndarray] = []
                     for pay in payloads:
                         pred_energy = np.asarray(pay["energy_prediction"])
@@ -788,16 +812,42 @@ def intercompare_energy_spectra(
                             continue
                         with np.errstate(divide="ignore", invalid="ignore"):
                             diff = np.log10(pred_energy + eps) - np.log10(target_energy + eps)
+                        # Mild Gaussian smoothing to remove pixel-level artifacts
+                        # (σ=1 along wavenumber axis, 0.5 along lead axis)
+                        try:
+                            from scipy.ndimage import gaussian_filter
+
+                            diff = gaussian_filter(diff, sigma=[0.5, 1.0])
+                        except Exception:
+                            pass
                         diffs.append(diff)
 
                     if diffs:
-                        vmax = float(np.nanmax(np.abs(np.stack(diffs, axis=0))))
+                        # Apply 4Δx wavenumber cutoff: trim first 2 large-scale bins
+                        # and high-frequency bins beyond k_max/2 (consistent with
+                        # energy spectra line plots).
+                        _k_max_ic = float(np.nanmax(wavenumber))
+                        if np.isfinite(_k_max_ic) and _k_max_ic > 0 and len(wavenumber) > 4:
+                            _k_cut_ic = _k_max_ic / 2.0
+                            _cm_ic = np.ones(len(wavenumber), dtype=bool)
+                            _cm_ic[:2] = False
+                            _cm_ic &= wavenumber <= _k_cut_ic
+                            if np.any(_cm_ic):
+                                wavenumber = wavenumber[_cm_ic]
+                                diffs = [d[:, _cm_ic] for d in diffs]
+
+                        # Robust vmax: use 98th percentile so outlier rows don't
+                        # compress the colour range for the bulk of the data.
+                        all_vals = np.abs(np.stack(diffs, axis=0))
+                        vmax = float(np.nanpercentile(all_vals, 98))
+                        if not (np.isfinite(vmax) and vmax > 0):
+                            vmax = float(np.nanmax(all_vals))
                         if np.isfinite(vmax) and vmax > 0:
                             ncols = len(diffs)
                             fig, axes = plt.subplots(
                                 1,
                                 ncols,
-                                figsize=(max(5, 4 * ncols), 4.5),
+                                figsize=(max(5, 4 * ncols), 5.5),
                                 dpi=160,
                                 squeeze=False,
                                 sharey=True,
@@ -810,11 +860,12 @@ def intercompare_energy_spectra(
                                     x_hours,
                                     wavenumber,
                                     diff.T,
-                                    shading="auto",
+                                    shading="gouraud",
                                     cmap="coolwarm",
                                     vmin=-vmax,
                                     vmax=vmax,
                                 )
+                                ax.set_yscale("log")
                                 ax.set_title(lab, fontsize=9)
                                 ax.set_xlabel("Lead Time [h]")
                                 if j == 0:
@@ -822,24 +873,26 @@ def intercompare_energy_spectra(
                                 plotted = plotted or im is not None
 
                             if plotted:
+                                fig.subplots_adjust(bottom=0.28)
                                 cbar = fig.colorbar(
                                     im,
                                     ax=axes.ravel().tolist(),
                                     orientation="horizontal",
                                     location="bottom",
-                                    pad=0.12,
-                                    shrink=0.8,
+                                    pad=0.25,
+                                    shrink=0.6,
+                                    aspect=40,
                                 )
                                 cbar.set_label("Δ log10 energy (model - target)")
                                 fig.suptitle(
                                     f"Energy Spectrogram Δ — "
                                     f"{format_variable_name(str(variable))}{level_suffix}",
                                     fontsize=11,
+                                    y=1.02,
                                 )
                                 out_spec = dst / base.replace(
                                     ".npz", "_spectrogram_delta_compare.png"
                                 )
-                                plt.tight_layout()
                                 plt.savefig(out_spec, bbox_inches="tight", dpi=200)
                                 c.success(f"Saved {out_spec.relative_to(out_root)}")
                             plt.close(fig)

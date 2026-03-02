@@ -286,6 +286,175 @@ def _calculate_ets_per_level(
     return df
 
 
+def _compute_all_ets(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    thresholds: list[int],
+    do_per_lead: bool = False,
+    do_per_level: bool = False,
+) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame | None]:
+    """Compute overall ETS, per-lead ETS, and per-level ETS in a single dask.compute call.
+
+    Compared to calling the three individual helpers separately this function:
+    - Builds **all** lazy computation graphs before triggering any materialisation,
+      allowing Dask to fuse and deduplicate the underlying data reads.
+    - Computes quantiles for per-level ETS **once per variable** (preserving the
+      ``level`` dimension) instead of once per (variable, level) slice, eliminating
+      O(n_levels) redundant full-array scans per 3-D variable.
+
+    Returns
+    -------
+    overall_df
+        ETS scores aggregated over all dimensions, indexed by variable.
+    per_lead_rows
+        One row-dict per (variable, lead_time).  Empty when *do_per_lead* is False
+        or the dataset has no ``lead_time`` dimension.
+    per_level_df
+        ETS scores per pressure level, or None when *do_per_level* is False / no 3-D vars.
+    """
+    q_values = [t / 100.0 for t in thresholds]
+    all_variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
+    if not all_variables:
+        return pd.DataFrame(), [], None
+
+    variables_3d = [v for v in all_variables if "level" in ds_target[v].dims]
+    has_lead = (
+        "lead_time" in ds_prediction.dims and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+    )
+    has_level = "level" in ds_target.dims and bool(variables_3d)
+
+    # Each entry: (tag, lazy_DataArray)
+    # tag is a tuple used to identify the result after dask.compute.
+    lazy_tasks: list[tuple[Any, Any]] = []
+
+    # ── Pass 1: overall ETS (reduce ALL dimensions) ───────────────────────────
+    for var in all_variables:
+        da_t = ds_target[var]
+        da_p = ds_prediction[var]
+        quantiles = compute_quantile_preserving(da_t, q_values, None)
+        reduce_dims = list(da_t.dims)
+        obs_events = da_t >= quantiles
+        fcst_events = da_p >= quantiles
+        bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
+        bcm = bcm.transform(reduce_dims=reduce_dims)
+        c.print(f"Preparing ETS scores (overall) variable={var}...")
+        lazy_tasks.append((("overall", var), bcm.equitable_threat_score()))
+
+    # ── Pass 2: per-lead ETS (preserve lead_time during quantile / reduction) ─
+    if do_per_lead and has_lead:
+        for var in all_variables:
+            da_t = ds_target[var]
+            da_p = ds_prediction[var]
+            # Quantiles have shape (quantile, lead_time); reduce over everything else.
+            quantiles = compute_quantile_preserving(da_t, q_values, ["lead_time"])
+            reduce_dims = [d for d in da_t.dims if d != "lead_time"]
+            obs_events = da_t >= quantiles
+            fcst_events = da_p >= quantiles
+            bcm = BinaryContingencyManager(fcst_events=fcst_events, obs_events=obs_events)
+            bcm = bcm.transform(reduce_dims=reduce_dims)
+            c.print(f"Preparing ETS scores (per-lead) variable={var}...")
+            lazy_tasks.append((("per_lead", var), bcm.equitable_threat_score()))
+
+    # ── Pass 3: per-level ETS (quantiles computed once per var, level preserved)
+    if do_per_level and has_level:
+        for var in variables_3d:
+            da_t = ds_target[var]
+            da_p = ds_prediction[var]
+            # Single quantile computation across all levels simultaneously.
+            # Result shape: (quantile, level) — eliminates one full-data scan per level.
+            quantiles_by_level = compute_quantile_preserving(da_t, q_values, ["level"])
+            for lvl_raw in da_t["level"].values:
+                lvl_val: Any = lvl_raw.item() if hasattr(lvl_raw, "item") else lvl_raw
+                da_t_lvl = da_t.sel(level=lvl_val, drop=True)
+                da_p_lvl = da_p.sel(level=lvl_val, drop=True)
+                # q_lvl has shape (quantile,) — broadcasts over spatial/time dims.
+                q_lvl = quantiles_by_level.sel(level=lvl_val, drop=True)
+                obs_events_lvl = da_t_lvl >= q_lvl
+                fcst_events_lvl = da_p_lvl >= q_lvl
+                reduce_dims = list(da_t_lvl.dims)
+                bcm = BinaryContingencyManager(
+                    fcst_events=fcst_events_lvl, obs_events=obs_events_lvl
+                )
+                bcm = bcm.transform(reduce_dims=reduce_dims)
+                c.print(f"Preparing ETS scores (per-level) variable={var} level={lvl_val}...")
+                lazy_tasks.append((("per_level", var, lvl_val), bcm.equitable_threat_score()))
+
+    if not lazy_tasks:
+        return pd.DataFrame(), [], None
+
+    # ── Single dask.compute for ALL passes ────────────────────────────────────
+    n_overall = sum(1 for t, _ in lazy_tasks if t[0] == "overall")
+    n_lead = sum(1 for t, _ in lazy_tasks if t[0] == "per_lead")
+    n_level = sum(1 for t, _ in lazy_tasks if t[0] == "per_level")
+    c.print(
+        f"Computing all ETS passes ({len(lazy_tasks)} tasks: "
+        f"{n_overall} overall, {n_lead} per-lead, {n_level} per-level) "
+        f"in one dask graph..."
+    )
+    tags = [tag for tag, _ in lazy_tasks]
+    lazies = [lazy for _, lazy in lazy_tasks]
+    computed_raw = dask.compute(*lazies)
+    results: dict[Any, Any] = dict(zip(tags, computed_raw, strict=False))
+
+    # ── Unpack: overall_df ────────────────────────────────────────────────────
+    metrics_dict: dict[str, dict[str, float]] = {}
+    for var in all_variables:
+        ets_score = results.get(("overall", var))
+        if ets_score is None:
+            continue
+        metrics_dict[var] = {}
+        vals = ets_score.values
+        for i, threshold in enumerate(thresholds):
+            metrics_dict[var][f"ETS {threshold}%"] = float(vals[i].item())
+    overall_df = pd.DataFrame.from_dict(metrics_dict, orient="index")
+
+    # ── Unpack: per_lead_rows ─────────────────────────────────────────────────
+    per_lead_rows: list[dict[str, Any]] = []
+    if do_per_lead and has_lead:
+        leads_arr = ds_prediction["lead_time"].values
+        is_td = np.issubdtype(np.asarray(leads_arr).dtype, np.timedelta64)
+        lead_hours_list = [
+            int(lt / np.timedelta64(1, "h")) if is_td else int(i) for i, lt in enumerate(leads_arr)
+        ]
+        for var in all_variables:
+            ets_score = results.get(("per_lead", var))
+            if ets_score is None:
+                continue
+            for li, hours in enumerate(lead_hours_list):
+                flat: dict[str, Any] = {"lead_time_hours": float(hours), "variable": str(var)}
+                for ti, threshold in enumerate(thresholds):
+                    flat[f"ETS {threshold}%"] = float(
+                        ets_score.isel(quantile=ti, lead_time=li, drop=True).values
+                    )
+                per_lead_rows.append(flat)
+
+    # ── Unpack: per_level_df ──────────────────────────────────────────────────
+    per_level_df: pd.DataFrame | None = None
+    if do_per_level and has_level:
+        level_rows: list[dict[str, Any]] = []
+        for var in variables_3d:
+            for lvl_raw in ds_target[var]["level"].values:
+                lvl_val = lvl_raw.item() if hasattr(lvl_raw, "item") else lvl_raw
+                ets_score = results.get(("per_level", var, lvl_val))
+                if ets_score is None:
+                    continue
+                row: dict[str, Any] = {
+                    "variable": var,
+                    "level": int(lvl_val) if hasattr(lvl_val, "__int__") else lvl_val,
+                }
+                vals = ets_score.values
+                for i, threshold in enumerate(thresholds):
+                    row[f"ETS {threshold}%"] = float(
+                        vals[i].item() if hasattr(vals[i], "item") else vals[i]
+                    )
+                level_rows.append(row)
+        if level_rows:
+            per_level_df = pd.DataFrame(level_rows)
+            per_level_df = per_level_df.set_index("variable", drop=False)
+
+    return overall_df, per_lead_rows, per_level_df
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -334,7 +503,28 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_target = ds_target.mean(dim="ensemble", keep_attrs=True)
 
-    df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
+    # Determine what passes are needed up-front so everything can be computed
+    # in a single dask.compute instead of three separate graph materialisations.
+    _multi_lead = (
+        ("lead_time" in ds_prediction.dims)
+        and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+        and out_root is not None
+        and members_indices is None
+    )
+    _do_per_level = report_per_level and out_root is not None and members_indices is None
+
+    if members_indices is None:
+        df, _per_lead_rows, _per_level_df = _compute_all_ets(
+            ds_target,
+            ds_prediction,
+            thresholds,
+            do_per_lead=_multi_lead,
+            do_per_level=_do_per_level,
+        )
+    else:
+        df = _calculate_ets_for_thresholds(ds_target, ds_prediction, thresholds)
+        _per_lead_rows = []
+        _per_level_df = None
 
     c.print("Equitable Threat Score (targets vs predictions) — first 5 rows:")
     c.print(df.head())
@@ -393,18 +583,10 @@ def run(
                 ext="csv",
             )
             save_dataframe(df, out_csv, index_label="variable", module="ets")
-            # Optional per-lead wide CSV when multi-lead policy provided
-            multi_lead = ("lead_time" in ds_prediction.dims) and int(
-                ds_prediction.sizes.get("lead_time", 0)
-            ) > 1
-            if multi_lead:
-                # Compute ETS for all lead times in a single Dask graph instead of
-                # looping over each lead and triggering a separate dask.compute per lead.
-                rows = _calculate_ets_all_leads_batched(
-                    ds_target if "lead_time" in ds_target.dims else ds_target,
-                    ds_prediction,
-                    thresholds,
-                )
+            # Optional per-lead wide CSV when multi-lead policy provided.
+            # Results were already computed by _compute_all_ets above.
+            if _multi_lead:
+                rows = _per_lead_rows
                 if rows:
                     long_df = pd.DataFrame(rows)
                     long_df, wide_df = save_metric_by_lead_tables(
@@ -530,12 +712,9 @@ def run(
                             save_dataframe(
                                 pd.DataFrame(rows_csv), out_csv, index=False, module="ets"
                             )
-            if report_per_level:
-                per_level_df = _calculate_ets_per_level(
-                    ds_target,
-                    ds_prediction,
-                    thresholds,
-                )
+            if _do_per_level:
+                # Results were already computed by _compute_all_ets above.
+                per_level_df = _per_level_df
                 if per_level_df is not None:
                     out_csv_lvl = section_output / build_output_filename(
                         metric="ets_metrics",
@@ -560,7 +739,14 @@ def run(
                 else:
                     ds_tgt_m = ds_target
 
-                df_m = _calculate_ets_for_thresholds(ds_tgt_m, ds_pred_m, thresholds)
+                # Fuse overall + per-level into a single dask.compute for this member.
+                df_m, _, per_level_m = _compute_all_ets(
+                    ds_tgt_m,
+                    ds_pred_m,
+                    thresholds,
+                    do_per_lead=False,
+                    do_per_level=report_per_level,
+                )
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(
                     metric="ets_metrics",
@@ -575,24 +761,18 @@ def run(
                 save_dataframe(df_m, out_csv_m, index_label="variable", module="ets")
                 per_member_dfs.append(df_m)
 
-                if report_per_level:
-                    per_level_m = _calculate_ets_per_level(
-                        ds_tgt_m,
-                        ds_pred_m,
-                        thresholds,
+                if report_per_level and per_level_m is not None:
+                    out_csv_m_lvl = section_output / build_output_filename(
+                        metric="ets_metrics",
+                        variable=None,
+                        level=None,
+                        qualifier="per_level",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=token_m,
+                        ext="csv",
                     )
-                    if per_level_m is not None:
-                        out_csv_m_lvl = section_output / build_output_filename(
-                            metric="ets_metrics",
-                            variable=None,
-                            level=None,
-                            qualifier="per_level",
-                            init_time_range=init_range,
-                            lead_time_range=lead_range,
-                            ensemble=token_m,
-                            ext="csv",
-                        )
-                        save_dataframe(per_level_m, out_csv_m_lvl, index=False, module="ets")
+                    save_dataframe(per_level_m, out_csv_m_lvl, index=False, module="ets")
 
             if per_member_dfs and aggregate_members_mean:
                 from ..helpers import aggregate_member_dfs

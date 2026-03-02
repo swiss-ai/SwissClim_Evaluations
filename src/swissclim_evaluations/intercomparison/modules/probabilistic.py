@@ -6,7 +6,6 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 from swissclim_evaluations.helpers import (
     extract_date_from_filename,
@@ -18,7 +17,9 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
+    reorder_pivot_columns,
     report_checklist,
     report_missing,
     scan_model_sets,
@@ -52,6 +53,7 @@ def intercompare_probabilistic(
     max_crps_map_panels: int = 4,
 ) -> None:
     dst_prob = ensure_dir(out_root / "probabilistic")
+    _cmap = model_color_map(labels)
 
     # Availability report
     # Scan broadly for any CSV to catch CRPS, SSR, etc.
@@ -72,7 +74,7 @@ def intercompare_probabilistic(
         results["CRPS Line (Per Lead)"] = len(lead)
 
     # Maps
-    maps = common_files(models, "probabilistic/crps_map_*.npz")
+    maps = common_files(models, "probabilistic/crps_spatial_*.npz")
     results["CRPS Maps"] = len(maps)
 
     # SSR
@@ -278,8 +280,12 @@ def intercompare_probabilistic(
                 ).sort_index()
 
                 if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                    pivot = reorder_pivot_columns(pivot, labels)
+                    _line_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
+                    pivot.plot(
+                        kind="line", ax=ax, marker="o", markersize=4, color=_line_colors or None
+                    )
 
                     level_has_value = has_level and pd.notna(pair.get("level"))
                     level_title = f" @ {int(level_val)}" if level_has_value else ""
@@ -297,7 +303,7 @@ def intercompare_probabilistic(
                     plt.close(fig)
 
     # --- 4. CRPS Maps ---
-    common_maps = common_files(models, "probabilistic/crps_map_*.npz")
+    common_maps = common_files(models, "probabilistic/crps_spatial_*.npz")
     if common_maps:
         print_file_list(f"Found {len(common_maps)} common CRPS map files", common_maps)
 
@@ -309,16 +315,16 @@ def intercompare_probabilistic(
 
             key = _parse_map_filename(base)
             # Check if we already processed this variable (ignoring date/ens suffix)
-            var_part = clean_var_from_filename(base, prefix="crps_map_")
+            var_part = clean_var_from_filename(base, prefix="crps_spatial_")
             if var_part in seen_vars:
                 continue
 
             payloads = [load_npz(m / "probabilistic" / base) for m in models]
 
-            # CRPS maps usually have 'crps' key
+            # CRPS maps saved by CLI under 'data' key
             predictions = []
             for p in payloads:
-                val = p.get("crps")
+                val = p.get("data")
                 predictions.append(val)
 
             if any(x is None for x in predictions):
@@ -326,73 +332,235 @@ def intercompare_probabilistic(
 
             lats = payloads[0].get("latitude")
             lons = payloads[0].get("longitude")
+            lead_times = payloads[0].get("lead_time")
             map_var_name = payloads[0].get("variable")
             units = payloads[0].get("units")
+
+            # Fallback: extract variable name from filename when NPZ lacks it
+            if map_var_name is None:
+                map_var_name = var_part if var_part else None
 
             if lats is None or lons is None or map_var_name is None:
                 continue
 
             seen_vars.add(var_part)
 
-            # Plotting
-            ncols = len(models)
-            fig, axes = plt.subplots(
-                1,
-                ncols,
-                figsize=(6 * ncols, 4),
-                dpi=160,
-                subplot_kw={"projection": ccrs.PlateCarree()},
-                constrained_layout=True,
-            )
-            if ncols == 1:
-                axes = [axes]
+            n_lead_times = len(lead_times) if lead_times is not None else 0
 
-            # Determine common vmin/vmax
-            try:
-                vmin = float(np.nanmin([np.nanmin(x) for x in predictions]))
-                vmax = float(np.nanmax([np.nanmax(x) for x in predictions]))
-            except ValueError:
-                continue
+            # Normalise predictions to (lead_time, lat, lon) canonical order.
+            # Old NPZ files may have been saved with arbitrary dim ordering (e.g.
+            # latitude, longitude, lead_time from WBX). Detect which axis matches
+            # n_lead_times and move it to position 0.
+            if lead_times is not None and n_lead_times > 0:
+                normalised = []
+                for p in predictions:
+                    if p.ndim == 3 and p.shape[0] != n_lead_times:
+                        for ax in (1, 2):
+                            if p.shape[ax] == n_lead_times:
+                                p = np.moveaxis(p, ax, 0)
+                                break
+                    normalised.append(p)
+                predictions = normalised
 
-            im0 = None
-            for ax, lab, pred in zip(axes, labels, predictions, strict=False):
-                im0 = ax.pcolormesh(
-                    lons,
-                    lats,
-                    pred,
-                    cmap="viridis",
-                    vmin=vmin,
-                    vmax=vmax,
-                    transform=ccrs.PlateCarree(),
+            # Determine lead-time labels (hours) if present
+            has_lead = lead_times is not None and n_lead_times > 1 and predictions[0].ndim == 3
+
+            if has_lead:
+                # Convert lead_time to hours for labelling
+                try:
+                    lt_hours = lead_times.astype("timedelta64[h]").astype(float)
+                except (TypeError, ValueError):
+                    lt_hours = np.asarray(lead_times, dtype=float)
+                n_leads = n_lead_times
+
+                # ── Mean map (averaged over lead_time) ──
+                mean_preds = [p.mean(axis=0) for p in predictions]
+                ncols = len(models)
+                fig_m, axes_m = plt.subplots(
+                    1,
+                    ncols,
+                    figsize=(6 * ncols, 4),
+                    dpi=160,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
                 )
-                ax.coastlines(linewidth=0.5)
-                ax.set_title(f"{lab}")
-
-            # Colorbar
-            if im0:
-                cbar = fig.colorbar(
-                    im0,
-                    ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
-                    orientation="horizontal",
-                    fraction=0.05,
-                    pad=0.08,
+                if ncols == 1:
+                    axes_m = [axes_m]
+                try:
+                    vmin = float(np.nanmin([np.nanmin(x) for x in mean_preds]))
+                    vmax = float(np.nanmax([np.nanmax(x) for x in mean_preds]))
+                except ValueError:
+                    continue
+                im0 = None
+                for ax, lab, pred in zip(axes_m, labels, mean_preds, strict=False):
+                    im0 = ax.pcolormesh(
+                        lons,
+                        lats,
+                        pred,
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                    )
+                    ax.coastlines(linewidth=0.5)
+                    ax.set_title(lab)
+                if im0:
+                    cbar = fig_m.colorbar(
+                        im0,
+                        ax=axes_m if isinstance(axes_m, (list | np.ndarray)) else [axes_m],
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.08,
+                    )
+                    cbar.set_label(f"CRPS ({units})" if units else "CRPS")
+                title_base = (
+                    f"CRPS Map (mean) — {format_variable_name(str(map_var_name))}"
+                    if map_var_name
+                    else "CRPS Map (mean)"
                 )
-                if units:
-                    cbar.set_label(f"CRPS ({units})")
-                else:
-                    cbar.set_label("CRPS")
+                date_suffix = extract_date_from_filename(key)
+                fig_m.suptitle(f"{title_base}{date_suffix}", y=1.02)
+                out_mean = dst_prob / (key + "_mean_compare.png")
+                plt.savefig(out_mean, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_mean.relative_to(out_root)}")
+                plt.close(fig_m)
 
-            if map_var_name:
-                title_base = f"CRPS Map — {format_variable_name(str(map_var_name))}"
+                # ── Per-lead-time grid (rows=lead_time, cols=models) ──
+                ncols = len(models)
+                nrows = n_leads
+                fig, axes = plt.subplots(
+                    nrows,
+                    ncols,
+                    figsize=(5 * ncols, 3.5 * nrows),
+                    dpi=160,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
+                )
+                axes = np.atleast_2d(axes)
+                # Global vmin/vmax across all leads and models
+                try:
+                    vmin = float(np.nanmin([np.nanmin(x) for x in predictions]))
+                    vmax = float(np.nanmax([np.nanmax(x) for x in predictions]))
+                except ValueError:
+                    continue
+                im0 = None
+                for li in range(nrows):
+                    lt_label = f"(+{int(lt_hours[li])}h)" if li < len(lt_hours) else f"lead {li}"
+                    for mi, (lab, pred) in enumerate(zip(labels, predictions, strict=False)):
+                        ax = axes[li, mi]
+                        im0 = ax.pcolormesh(
+                            lons,
+                            lats,
+                            pred[li],
+                            cmap="viridis",
+                            vmin=vmin,
+                            vmax=vmax,
+                            transform=ccrs.PlateCarree(),
+                        )
+                        ax.coastlines(linewidth=0.5)
+                        if li == 0:
+                            ax.set_title(lab, fontsize=9)
+                        if mi == 0:
+                            ax.text(
+                                -0.08,
+                                0.5,
+                                lt_label,
+                                transform=ax.transAxes,
+                                rotation=90,
+                                va="center",
+                                ha="right",
+                                fontsize=9,
+                                fontweight="bold",
+                            )
+                if im0:
+                    cbar = fig.colorbar(
+                        im0,
+                        ax=axes.ravel().tolist(),
+                        orientation="horizontal",
+                        fraction=0.03,
+                        pad=0.04,
+                    )
+                    cbar.set_label(f"CRPS ({units})" if units else "CRPS")
+                title_base = (
+                    f"CRPS Map per Lead — {format_variable_name(str(map_var_name))}"
+                    if map_var_name
+                    else "CRPS Map per Lead"
+                )
+                date_suffix = extract_date_from_filename(key)
+                fig.suptitle(f"{title_base}{date_suffix}", y=1.02)
+                out_lead = dst_prob / (key + "_per_lead_compare.png")
+                plt.savefig(out_lead, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_lead.relative_to(out_root)}")
+                plt.close(fig)
             else:
-                title_base = "CRPS Map"
-            date_suffix = extract_date_from_filename(key)
-            fig.suptitle(f"{title_base}{date_suffix}")
+                # Data is 2D or single lead — plot as before
+                # If 3D with single lead, squeeze
+                preds_2d = []
+                for p in predictions:
+                    if p.ndim == 3 and p.shape[0] == 1:
+                        preds_2d.append(p[0])
+                    else:
+                        preds_2d.append(p)
+                predictions = preds_2d
 
-            out_png = dst_prob / (key + "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
-            c.success(f"Saved {out_png.relative_to(out_root)}")
-            plt.close(fig)
+                ncols = len(models)
+                fig, axes = plt.subplots(
+                    1,
+                    ncols,
+                    figsize=(6 * ncols, 4),
+                    dpi=160,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
+                )
+                if ncols == 1:
+                    axes = [axes]
+
+                # Determine common vmin/vmax
+                try:
+                    vmin = float(np.nanmin([np.nanmin(x) for x in predictions]))
+                    vmax = float(np.nanmax([np.nanmax(x) for x in predictions]))
+                except ValueError:
+                    continue
+
+                im0 = None
+                for ax, lab, pred in zip(axes, labels, predictions, strict=False):
+                    im0 = ax.pcolormesh(
+                        lons,
+                        lats,
+                        pred,
+                        cmap="viridis",
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                    )
+                    ax.coastlines(linewidth=0.5)
+                    ax.set_title(f"{lab}")
+
+                # Colorbar
+                if im0:
+                    cbar = fig.colorbar(
+                        im0,
+                        ax=axes if isinstance(axes, (list | np.ndarray)) else [axes],
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.08,
+                    )
+                    if units:
+                        cbar.set_label(f"CRPS ({units})")
+                    else:
+                        cbar.set_label("CRPS")
+
+                if map_var_name:
+                    title_base = f"CRPS Map — {format_variable_name(str(map_var_name))}"
+                else:
+                    title_base = "CRPS Map"
+                date_suffix = extract_date_from_filename(key)
+                fig.suptitle(f"{title_base}{date_suffix}", y=1.02)
+
+                out_png = dst_prob / (key + "_compare.png")
+                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_png.relative_to(out_root)}")
+                plt.close(fig)
 
     # --- 5. Spread Skill Ratio (SSR) ---
     frames_ssr: list[pd.DataFrame] = []
@@ -459,16 +627,49 @@ def intercompare_probabilistic(
     common_pit = common_files(models, "probabilistic/pit_hist*.npz")
     if common_pit:
         print_file_list(f"Found {len(common_pit)} common PIT histogram files", common_pit)
+
+        # Group grid files by variable so we can aggregate per-lead counts
+        # Grid NPZs: pit_hist_<var>_grid_ensprob.npz  (counts shape = n_leads × n_bins)
+        # Non-grid NPZs: pit_hist_<var>_ensprob.npz   (counts shape = n_bins)
+        processed_vars: set[str] = set()
+
         for base in common_pit:
-            # Skip if it's a grid file or data file that we don't want to plot directly
-            # Also skip per-lead files to avoid duplicates
-            if "grid" in base or "data" in base or "lead" in base:
+            # Skip auxiliary files we can't plot
+            if "data" in base:
                 continue
 
-            # Special check for geopotential which might be named differently or skipped
-            # If base contains 'geopotential', ensure we process it
+            is_grid = "grid" in base
+            # Derive the variable key without the "grid" qualifier so we can
+            # check whether a non-grid file already covered this variable.
+            var_key = base.replace("_grid", "") if is_grid else base
+
+            if var_key in processed_vars:
+                continue
+            processed_vars.add(var_key)
 
             payloads = [load_npz(m / "probabilistic" / base) for m in models]
+
+            # For grid files the counts array is 2-D (n_leads × n_bins).
+            # Aggregate across leads to get a single histogram per model.
+            if is_grid:
+                agg_payloads = []
+                for p in payloads:
+                    counts_raw = p.get("counts")
+                    edges = p.get("edges", p.get("bins"))
+                    if counts_raw is None or edges is None:
+                        agg_payloads.append(p)
+                        continue
+                    counts_arr = np.asarray(counts_raw)
+                    if counts_arr.ndim == 2:
+                        # Sum across leads, then re-normalise
+                        counts_sum = counts_arr.sum(axis=0)
+                        width = np.diff(edges)
+                        total = counts_sum.sum()
+                        density = counts_sum / (total * width.mean()) if total > 0 else counts_sum
+                        agg_payloads.append({**p, "counts": density, "edges": edges})
+                    else:
+                        agg_payloads.append(p)
+                payloads = agg_payloads
 
             # Check if we have counts and bins/edges
             if not all("counts" in p and ("bins" in p or "edges" in p) for p in payloads):
@@ -480,7 +681,7 @@ def intercompare_probabilistic(
             # Assuming normalized counts or we normalize them
             # Usually PIT histograms are normalized so that area is 1 or mean height is 1
 
-            colors = sns.color_palette("tab10", n_colors=len(models))
+            colors = [_cmap[lab] for lab in labels if lab in _cmap]
 
             # Calculate width for side-by-side bars
             n_models = len(models)

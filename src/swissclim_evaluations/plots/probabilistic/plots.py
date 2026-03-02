@@ -46,7 +46,7 @@ def plot_single_map(
     da = unwrap_longitude_for_plot(da, lon_name)
 
     fig = plt.figure(figsize=(12, 6), dpi=dpi * 2)
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     if hasattr(ax, "add_feature"):
         ax.add_feature(cfeature.COASTLINE, lw=0.5)
 

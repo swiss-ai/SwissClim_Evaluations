@@ -55,6 +55,12 @@ def save_npz_with_coords(path: Path, da: xr.DataArray, module: str | None = None
         if dim_name in da.coords:
             coords[dim_name] = np.asarray(da.coords[dim_name].values)
 
+    # Preserve the variable name so downstream intercomparison can identify it.
+    if "variable" not in kwargs and da.name is not None:
+        # DataArray name may be "CRPS.T_2m" — extract the variable part.
+        name_str = str(da.name)
+        coords["variable"] = name_str.split(".", 1)[1] if "." in name_str else name_str
+
     coords.update(kwargs)
 
     data_obj = da.data

@@ -51,6 +51,20 @@ def _window_size(ds: xr.Dataset) -> tuple[int, int]:
     return (ws, ws)
 
 
+def finalize_metrics(
+    metrics_dict: dict[str, dict[str, Any]],
+    lazy_list: list[tuple[str, str, Any]],
+    computed_results: list[Any],
+    preserve_dims: list[str] | None,
+) -> pd.DataFrame:
+    """Public wrapper around the internal metric-finalisation logic.
+
+    Used by callers that collect multiple lazy graphs and run a single
+    ``dask.compute`` across them, then dispatch the results here.
+    """
+    return _finalize_metrics(metrics_dict, lazy_list, computed_results, preserve_dims)
+
+
 def _finalize_metrics(
     metrics_dict: dict[str, dict[str, Any]],
     lazy_list: list[tuple[str, str, Any]],
