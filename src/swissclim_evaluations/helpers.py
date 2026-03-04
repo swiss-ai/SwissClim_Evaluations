@@ -697,6 +697,8 @@ VARIABLE_UNITS = {
     # Derived wind variables
     "wind_speed": "m s**-1",
     "10m_wind_speed": "m s**-1",
+    # Derived geopotential height
+    "geopotential_height": "m",
     "geopotential": "m**2 s**-2",
     "specific_humidity": "kg kg**-1",
     "mean_sea_level_pressure": "Pa",

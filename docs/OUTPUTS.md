@@ -11,14 +11,31 @@ The evaluation generates organized results for each enabled module.
 
 ## Derived Variables
 
-The `derived_variables` config block computes new variables (e.g. wind speed) lazily from existing
+The `derived_variables` config block computes new variables lazily from existing
 data_vars **before any module runs**. Derived variables therefore appear as ordinary variables in
-all module outputs — outputs are named after the derived variable (e.g. `wind_speed`,
-`10m_wind_speed`) exactly as they would be for any raw variable.
+all module outputs — outputs are named after the derived variable exactly as they would be for any
+raw variable.
 
-Currently available recipes: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹.
+Currently available recipes:
+
+| Recipe | Formula | Units | Inputs |
+|---|---|---|---|
+| `wind_speed` | `sqrt(U²+V²)` | m s⁻¹ | `u` + `v` |
+| `geopotential_height` | `geopotential / 9.80665` | m | `u` (or `source`) only |
 
 See `README.md § Derived Variables` for the config syntax and [WIND_UV_ASSESSMENT.md](WIND_UV_ASSESSMENT.md) for a per-module impact analysis of wind variables.
+
+### Physical constraint overlays in Bivariate Histograms
+
+The multivariate bivariate-histogram plots automatically add physical constraint overlays for
+recognised variable pairs:
+
+| Pair | Constraint | Overlay |
+|---|---|---|
+| `temperature` × `specific_humidity` | Clausius–Clapeyron saturation curve (Bolton 1980, 500 hPa) | dashed red saturation line; supersaturated region hatched red; `q < 0` region hatched dark-red |
+| `geopotential_height` × `wind_speed` | Wind speed is a magnitude ≥ 0 by definition | dashed red line at 0; below-zero region hatched red |
+
+Constraints are drawn in both orientations (either variable may be on either axis).
 
 ## Ensemble handling: modes and filename tokens
 

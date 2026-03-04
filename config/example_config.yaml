@@ -214,10 +214,12 @@ plotting:
 #
 # Each entry becomes a new variable in both datasets. The sub-key name is the
 # output variable name. Required fields per entry:
-#   kind:  the recipe to apply. Currently available:
-#            wind_speed  — sqrt(U² + V²), m s⁻¹
-#   u:     name of the U-component variable in both datasets
-#   v:     name of the V-component variable in both datasets
+#   kind:    the recipe to apply. Currently available:
+#              wind_speed          — sqrt(U²+V²), m s⁻¹  (dual-input: u + v required)
+#              geopotential_height — geopotential / 9.80665, m  (single-input: only u required)
+#   u:       name of the U-component / source variable in both datasets
+#   v:       name of the V-component variable (dual-input recipes only)
+#   source:  synonym for u, preferred for single-input recipes for clarity
 # ─────────────────────────────────────────────────────────────────────────────
 derived_variables:
   10m_wind_speed:
@@ -228,6 +230,11 @@ derived_variables:
     kind: wind_speed
     u: u_component_of_wind
     v: v_component_of_wind
+  # Geopotential height (Z = Φ/g₀) for Geostrophic Balance bivariate plots.
+  # Requires 'geopotential' to be included in variables_3d (or variables_2d).
+  # geopotential_height:
+  #   kind: geopotential_height
+  #   source: geopotential
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
@@ -345,17 +352,25 @@ metrics:
   multivariate:
     # Bivariate Histograms: list of [var_x, var_y] pairs to generate 2-D density
     # plots for. Both variables must be present in the prediction AND target.
+    #
+    # Physical constraint overlays are drawn automatically for recognised pairs:
+    #   • temperature × specific_humidity  — Clausius–Clapeyron saturation curve
+    #     (q_sat(T) at 500 hPa via Bolton 1980); supersaturated region and q<0 shaded.
+    #   • geopotential_height × wind_speed  — wind speed ≥ 0 line; region below shaded.
+    #
     # Common physically-motivated pairs:
-    #   Wind components      : ["10m_u_component_of_wind", "10m_v_component_of_wind"]
-    #   3-D wind             : ["u_component_of_wind", "v_component_of_wind"]
-    #   Thermodynamics       : ["temperature", "specific_humidity"]
-    #   Hydrostatics         : ["geopotential", "temperature"]
-    #   Precipitation physics: ["total_precipitation", "total_column_water_vapour"]
-    #   Vertical motion      : ["vertical_velocity", "temperature"]
+    #   Wind components         : ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+    #   3-D wind                : ["u_component_of_wind", "v_component_of_wind"]
+    #   Thermodynamics (500 hPa): ["temperature", "specific_humidity"]
+    #   Geostrophic balance     : ["geopotential_height", "wind_speed"]  # requires derived vars
+    #   Hydrostatics            : ["geopotential", "temperature"]
+    #   Precipitation physics   : ["total_precipitation", "total_column_water_vapour"]
+    #   Vertical motion         : ["vertical_velocity", "temperature"]
     bivariate_pairs:
       - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
       - ["u_component_of_wind", "v_component_of_wind"]
-      # - ["temperature", "specific_humidity"]
+      # - ["temperature", "specific_humidity"]    # thermodynamic constraint overlay
+      # - ["geopotential_height", "wind_speed"]    # geostrophic balance overlay  (needs geopotential_height derived var)
       # - ["geopotential", "temperature"]
       # - ["total_precipitation", "total_column_water_vapour"]
       # - ["vertical_velocity", "temperature"]

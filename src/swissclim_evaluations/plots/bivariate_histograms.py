@@ -27,6 +27,335 @@ def _get_label(da: xr.DataArray, var_name: str) -> str:
     return name
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Physical-constraint overlay helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _q_sat_at_pressure(T_K: np.ndarray, P_Pa: float = 50000.0) -> np.ndarray:
+    """Saturation specific humidity [kg kg⁻¹] via Bolton (1980).
+
+    Uses the standard Magnus/Tetens saturation-vapour-pressure formula valid
+    for temperatures in the range roughly −40 °C to +60 °C.
+
+    Parameters
+    ----------
+    T_K : array_like
+        Temperature in Kelvin.
+    P_Pa : float
+        Ambient pressure in Pa (default: 50 000 Pa = 500 hPa).
+    """
+    epsilon = 0.6219  # Rd / Rv ratio
+    T_C = np.asarray(T_K, dtype=float) - 273.15
+    # Bolton (1980) saturation vapour pressure [Pa]
+    e_s = 611.2 * np.exp(17.67 * T_C / (T_C + 243.5))
+    e_s = np.clip(e_s, 0.0, 0.99 * P_Pa)  # prevent q_sat → ∞
+    return epsilon * e_s / (P_Pa - (1.0 - epsilon) * e_s)
+
+
+def _get_physical_constraints(
+    var_x: str,
+    var_y: str,
+    bins_x: np.ndarray,
+    bins_y: np.ndarray,
+) -> list[dict]:
+    """Return a list of physical-constraint specs for the given variable pair.
+
+    Each spec is a plain dict that drives :func:`_draw_physical_constraints`.
+    Currently handled pairs:
+
+    * **temperature × specific_humidity** — Clausius–Clapeyron saturation curve
+      at 500 hPa (Bolton 1980).  The supersaturated region and q < 0 are shaded.
+    * **geopotential_height × wind_speed** — horizontal/vertical line at
+      wind speed = 0 (below that is kinematically unphysical), with shading.
+
+    Parameters
+    ----------
+    var_x, var_y : str
+        Variable names as they appear in the dataset.
+    bins_x, bins_y : np.ndarray
+        Bin-edge arrays produced by the histogram step.
+    """
+    constraints: list[dict] = []
+    lx, ly = var_x.lower(), var_y.lower()
+
+    is_temp_x = "temperature" in lx
+    is_temp_y = "temperature" in ly
+    is_q_x = "specific_humidity" in lx
+    is_q_y = "specific_humidity" in ly
+    is_z_x = "geopotential_height" in lx
+    is_z_y = "geopotential_height" in ly
+    is_ws_x = "wind_speed" in lx
+    is_ws_y = "wind_speed" in ly
+
+    # ── Temperature vs Specific Humidity ────────────────────────────────────
+    # Physical upper bound: q ≤ q_sat(T) — Clausius–Clapeyron.
+    # Physical lower bound: q ≥ 0.
+    if (is_temp_x and is_q_y) or (is_q_x and is_temp_y):
+        if is_temp_x:  # temperature on x-axis, q on y-axis
+            T_arr = np.linspace(bins_x[0], bins_x[-1], 400)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
+            constraints.append({
+                "type": "curve",
+                "value_x": T_arr,
+                "value_y": q_sat,
+                "fill_x": T_arr,
+                "fill_y": q_sat,
+                "fill": "above",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                "fill_alpha": 0.13,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Supersaturated (unphysical)",
+            })
+            constraints.append({
+                "type": "hline",
+                "value": 0.0,
+                "fill": "below",
+                "color": "#8c1515",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "$q = 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#8c1515",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "$q < 0$ (unphysical)",
+            })
+        else:  # q on x-axis, temperature on y-axis
+            T_arr = np.linspace(bins_y[0], bins_y[-1], 400)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
+            constraints.append({
+                "type": "curve",
+                "value_x": q_sat,
+                "value_y": T_arr,
+                "fill_x": q_sat,
+                "fill_y": T_arr,
+                "fill": "right",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                "fill_alpha": 0.13,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Supersaturated (unphysical)",
+            })
+            constraints.append({
+                "type": "vline",
+                "value": 0.0,
+                "fill": "left",
+                "color": "#8c1515",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "$q = 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#8c1515",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "$q < 0$ (unphysical)",
+            })
+
+    # ── Geopotential Height vs Wind Speed ────────────────────────────────────
+    # Physical lower bound: wind speed ≥ 0 (it is a magnitude by definition).
+    if (is_z_x or is_z_y) and (is_ws_x or is_ws_y):
+        if is_ws_y:
+            constraints.append({
+                "type": "hline",
+                "value": 0.0,
+                "fill": "below",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": "Wind speed $= 0$",
+                "fill_alpha": 0.15,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Wind speed $< 0$ (unphysical)",
+            })
+        else:  # wind speed on x-axis
+            constraints.append({
+                "type": "vline",
+                "value": 0.0,
+                "fill": "left",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": "Wind speed $= 0$",
+                "fill_alpha": 0.15,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Wind speed $< 0$ (unphysical)",
+            })
+
+    return constraints
+
+
+def _draw_physical_constraints(
+    ax: plt.Axes,
+    constraints: list[dict],
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+) -> list[tuple]:
+    """Draw physical-constraint lines and shaded regions on *ax*.
+
+    Returns a list of ``(artist, label)`` pairs to be appended to the legend.
+    """
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    legend_entries: list[tuple] = []
+    fill_labels_seen: set[str] = set()
+
+    for spec in constraints:
+        ctype = spec["type"]
+        color = spec.get("color", "#d62728")
+        lw = spec.get("lw", 1.5)
+        ls = spec.get("ls", "--")
+        label = spec.get("label", "")
+        fill_side = spec.get("fill", None)
+        fill_alpha = spec.get("fill_alpha", 0.12)
+        fill_color = spec.get("fill_color", color)
+        fill_hatch = spec.get("fill_hatch", None)
+        fill_label = spec.get("fill_label", None)
+
+        if ctype == "hline":
+            val = float(spec["value"])
+            (line,) = ax.plot(
+                [x_min, x_max],
+                [val, val],
+                color=color,
+                lw=lw,
+                ls=ls,
+                zorder=6,
+                label=label,
+            )
+            legend_entries.append((line, label))
+            if fill_side == "above":
+                ax.fill_between(
+                    [x_min, x_max],
+                    val,
+                    y_max,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+            elif fill_side == "below":
+                ax.fill_between(
+                    [x_min, x_max],
+                    y_min,
+                    val,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+
+        elif ctype == "vline":
+            val = float(spec["value"])
+            (line,) = ax.plot(
+                [val, val],
+                [y_min, y_max],
+                color=color,
+                lw=lw,
+                ls=ls,
+                zorder=6,
+                label=label,
+            )
+            legend_entries.append((line, label))
+            if fill_side == "right":
+                ax.fill_betweenx(
+                    [y_min, y_max],
+                    val,
+                    x_max,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+            elif fill_side == "left":
+                ax.fill_betweenx(
+                    [y_min, y_max],
+                    x_min,
+                    val,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+
+        elif ctype == "curve":
+            xs = np.asarray(spec["value_x"])
+            ys = np.asarray(spec["value_y"])
+            (line,) = ax.plot(xs, ys, color=color, lw=lw, ls=ls, zorder=6, label=label)
+            legend_entries.append((line, label))
+            fill_xs = np.asarray(spec.get("fill_x", xs))
+            fill_ys = np.asarray(spec.get("fill_y", ys))
+            if fill_side == "above":
+                ax.fill_between(
+                    fill_xs,
+                    fill_ys,
+                    y_max,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+            elif fill_side == "below":
+                ax.fill_between(
+                    fill_xs,
+                    y_min,
+                    fill_ys,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+            elif fill_side == "right":
+                ax.fill_betweenx(
+                    fill_ys,
+                    fill_xs,
+                    x_max,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+            elif fill_side == "left":
+                ax.fill_betweenx(
+                    fill_ys,
+                    x_min,
+                    fill_xs,
+                    color=fill_color,
+                    alpha=fill_alpha,
+                    hatch=fill_hatch,
+                    zorder=4,
+                    linewidth=0,
+                )
+
+        # Add shaded-region label (deduplicated)
+        if fill_label and fill_label not in fill_labels_seen:
+            fill_labels_seen.add(fill_label)
+            patch = mpatches.Patch(
+                color=fill_color,
+                alpha=fill_alpha + 0.1,
+                hatch=fill_hatch,
+                label=fill_label,
+                linewidth=0,
+            )
+            legend_entries.append((patch, fill_label))
+
+    return legend_entries
+
+
 def calculate_and_plot_bivariate_histograms(
     ds_prediction: xr.Dataset,
     ds_target: xr.Dataset | None,
@@ -404,7 +733,21 @@ def plot_bivariate_histogram(
     ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
     ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
 
-    # Add legend for the contours
+    # ── Physical-constraint overlays ─────────────────────────────────────────
+    final_xlim = ax.get_xlim()
+    final_ylim = ax.get_ylim()
+    constraints = _get_physical_constraints(var_x, var_y, bins_x, bins_y)
+    constraint_entries = _draw_physical_constraints(
+        ax,
+        constraints,
+        x_range=(final_xlim[0], final_xlim[1]),
+        y_range=(final_ylim[0], final_ylim[1]),
+    )
+    # Re-apply limits after fill operations (fill_between can expand them)
+    ax.set_xlim(final_xlim)
+    ax.set_ylim(final_ylim)
+
+    # ── Legend ───────────────────────────────────────────────────────────────
     # Use 3 representative colors for the filled contours (low, mid, high)
     cmap = plt.get_cmap("plasma")
     patch1 = mpatches.Patch(color=cmap(0.2))
@@ -417,11 +760,18 @@ def plot_bivariate_histogram(
     ]
     labels = [label_2, label_1]
 
+    # Append physical-constraint artists
+    for artist, lbl in constraint_entries:
+        handles.append(artist)
+        labels.append(lbl)
+
     ax.legend(
         handles=handles,
         labels=labels,
         loc="upper right",
         handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+        fontsize="small",
+        framealpha=0.85,
     )
 
     return ax

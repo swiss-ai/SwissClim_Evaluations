@@ -507,12 +507,32 @@ def _wind_speed(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
     return da
 
 
+def _geopotential_height(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Lazy geopotential height: Z = geopotential / g₀.  Units: m.
+
+    Only the *source* variable (``u_var``) is used; ``v_var`` is a no-op and
+    should be left as an empty string in the config.
+    """
+    g0 = 9.80665  # standard gravity, m s⁻²
+    da = ds[u_var] / g0
+    da.attrs["units"] = "m"
+    da.attrs["long_name"] = "Geopotential Height"
+    return da
+
+
 # Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
 # Available recipes that a user may reference via ``kind:`` in config:
-#   wind_speed  — sqrt(U² + V²), m s⁻¹, suitable for all modules
+#   wind_speed         — sqrt(U² + V²), m s⁻¹, suitable for all modules
+#   geopotential_height — geopotential / 9.80665, m (single-input: only 'u' required)
 _DERIVED_RECIPES: dict[str, Any] = {
     "wind_speed": _wind_speed,
+    "geopotential_height": _geopotential_height,
 }
+
+# Recipes that require only a single source variable.
+# For these kinds the config block only needs the ``u`` (or ``source``) key;
+# the ``v`` key is optional and ignored.
+_SINGLE_INPUT_KINDS: frozenset[str] = frozenset({"geopotential_height"})
 
 
 def _parse_derived_cfg(
@@ -528,6 +548,13 @@ def _parse_derived_cfg(
           kind: wind_speed                    # see _DERIVED_RECIPES for available kinds
           u: 10m_u_component_of_wind
           v: 10m_v_component_of_wind
+
+        For single-input recipes (e.g. ``geopotential_height``) only ``u``
+        (or the synonym ``source``) is required; ``v`` is unused::
+
+        geopotential_height:
+          kind: geopotential_height
+          u: geopotential
     """
     entries: list[tuple[str, str, str, str]] = []
 
@@ -551,10 +578,16 @@ def _parse_derived_cfg(
             )
             continue
 
-        u_var = str(block.get("u") or block.get("u_var") or "")
+        # Accept 'source' as an alias for 'u' (clearer for single-input recipes).
+        u_var = str(block.get("source") or block.get("u") or block.get("u_var") or "")
         v_var = str(block.get("v") or block.get("v_var") or "")
-        if not u_var or not v_var:
-            c.warn(f"derived_variables.{key}: requires 'u' and 'v' keys. Skipping.")
+
+        if not u_var:
+            c.warn(f"derived_variables.{key}: requires 'u' (or 'source') key. Skipping.")
+            continue
+
+        if kind not in _SINGLE_INPUT_KINDS and not v_var:
+            c.warn(f"derived_variables.{key}: kind '{kind}' requires 'v' key. Skipping.")
             continue
 
         entries.append((key, kind, u_var, v_var))
@@ -572,6 +605,7 @@ def add_derived_variables(
     Currently supported recipes (see ``_DERIVED_RECIPES``):
 
     * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
+    * ``geopotential_height`` — ``geopotential / 9.80665`` (m); single-input, only ``u`` required
 
     **Inner-join guard**: a derived variable is only added when *both* source
     components are present in *both* the target and prediction datasets.  If a
@@ -605,9 +639,10 @@ def add_derived_variables(
     skipped: list[str] = []
 
     for out_name, kind, u_var, v_var in entries:
-        # Inner-join guard
-        missing_target = {u_var, v_var} - set(ds_target.data_vars)
-        missing_pred = {u_var, v_var} - set(ds_prediction.data_vars)
+        # Inner-join guard: single-input recipes only need u_var
+        src_vars = {u_var} if kind in _SINGLE_INPUT_KINDS else {u_var, v_var}
+        missing_target = src_vars - set(ds_target.data_vars)
+        missing_pred = src_vars - set(ds_prediction.data_vars)
         if missing_target or missing_pred:
             parts: list[str] = []
             if missing_target:

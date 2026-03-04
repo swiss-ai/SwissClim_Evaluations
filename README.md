@@ -57,15 +57,27 @@ For post-run Dask diagnostics, set `performance.dask_performance_report: true` (
 
 ## Derived Variables
 
-The pipeline supports computing derived variables (e.g. wind speed) on-the-fly from raw data variables, before any module runs. Configure with the `derived_variables` block in your YAML.
+The pipeline supports computing derived variables on-the-fly from raw data variables, before any module runs. Configure with the `derived_variables` block in your YAML.
 
 Each sub-key becomes the output variable name. Required fields:
 
 | Field | Description |
 |---|---|
-| `kind` | Recipe to apply. Currently available: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹ |
-| `u` | Name of the U-component variable in both datasets |
-| `v` | Name of the V-component variable in both datasets |
+| `kind` | Recipe to apply. Available: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹; `geopotential_height` — `geopotential / 9.80665`, m |
+| `u` / `source` | Name of the U-component or sole source variable in both datasets |
+| `v` | Name of the V-component variable (dual-input recipes `wind_speed` only; omit for `geopotential_height`) |
+
+Example for geostrophic balance analysis:
+```yaml
+derived_variables:
+  wind_speed:
+    kind: wind_speed
+    u: u_component_of_wind
+    v: v_component_of_wind
+  geopotential_height:
+    kind: geopotential_height
+    source: geopotential
+```
 
 > For a detailed per-module impact analysis of wind variables specifically, see [docs/WIND_UV_ASSESSMENT.md](docs/WIND_UV_ASSESSMENT.md).
 
