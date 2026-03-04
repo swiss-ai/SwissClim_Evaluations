@@ -108,3 +108,4 @@ What gets combined:
         *   `crps_spatial_<var>_mean_compare.png`: CRPS spatial map averaged over lead times (one panel per model).
         *   `crps_spatial_<var>_per_lead_compare.png`: CRPS spatial map grid (rows = lead times with `Target (+Xh)` labels, cols = models).
         *   `pit_hist_<var>[_<level>]_compare.png`: PIT histogram comparison (per level for 3D variables).
+        *   `spaghetti_<var>[_<level>]_compare.png`: Side-by-side spaghetti timeseries comparison (one panel per model). Each panel shows ensemble members as thin coloured lines (model's assigned colour) and the shared ground-truth target as a thick black line. Requires `output_mode` to include `npz` in the single-model run.

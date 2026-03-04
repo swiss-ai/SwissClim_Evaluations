@@ -103,6 +103,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/ssr_line*.csv",
         "probabilistic/pit_hist*.npz",
         "probabilistic/crps_map_*.npz",
+        "probabilistic/spaghetti_*.npz",
     ),
 }
 

@@ -222,6 +222,10 @@ temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv  # legac
 ssr_temporal_2m_temperature_ensprob.png               # optional (SSR temporal plot)
 ssr_map_2m_temperature_ensprob.png                    # optional (SSR map plot)
 ssr_regions_2m_temperature_ensprob.png                # optional (SSR regional plot)
+spaghetti_2m_temperature_init2023010200-2023010200_lead000h-072h_ensprob.png  # spaghetti timeseries
+spaghetti_2m_temperature_init2023010200-2023010200_lead000h-072h_ensprob.npz  # spaghetti data (for intercomparison)
+spaghetti_temperature_500_init2023010200-2023010200_lead000h-072h_ensprob.png # 3D spaghetti per level
+spaghetti_temperature_500_init2023010200-2023010200_lead000h-072h_ensprob.npz # 3D spaghetti data per level
 ```
 
 Note: For multi-lead runs, only the per-lead-time grid is produced (no separate averaged/global PIT
@@ -260,6 +264,15 @@ crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 - For 3D variables, PIT histograms are computed and stored per pressure level.
 - Full PIT/CRPS fields are not written to keep output size manageable.
 - For 3D variables, level-resolved outputs are produced by default where supported.
+- **Spaghetti time-series** (`spaghetti_*.png` / `spaghetti_*.npz`): spatially averaged line plots
+  with one line per ensemble member (thin, vermilion) and the target/ground truth (thick, black).
+  X-axis shows lead time in hours; y-axis shows the spatial mean of the variable. By default the
+  first available `init_time` is used; override with `plotting.plot_datetime`. Requires ensemble
+  size >= 2 and multiple lead times. For 3D variables, one plot per pressure level is generated.
+  Controlled by `metrics.probabilistic.spaghetti` (default: `true`). PNG emitted when
+  `output_mode` includes `"plot"` (`"plot"` or `"both"`); NPZ data artifacts emitted when
+  `output_mode` includes `"npz"` (`"npz"` or `"both"`). NPZ keys: `lead_hours`, `member_values`
+  (shape `n_members × n_leads`), `target_values`, `variable`, `units`, and optionally `level`.
 
 All modules print concise progress like:
 
@@ -323,3 +336,4 @@ All intercomparison plots use **consistent model colours**: each label in `inter
 	- `probabilistic/pit_hist_*_compare.png`
 	- `probabilistic/crps_map_*_compare.png`
 	- `probabilistic/crps_spatial_*_per_lead_compare.png`
+	- `probabilistic/spaghetti_*_compare.png`: side-by-side spaghetti timeseries (one panel per model, ensemble members as thin lines, shared target as thick black line)

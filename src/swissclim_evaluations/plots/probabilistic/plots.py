@@ -11,6 +11,8 @@ import pandas as pd
 import xarray as xr
 
 from ...helpers import (
+    COLOR_GROUND_TRUTH,
+    COLOR_MODEL_PREDICTION,
     format_level_token,
     format_variable_name,
     save_figure,
@@ -115,6 +117,78 @@ def plot_lead_time_evolution(
     ax.set_title(time_label, loc="right", fontsize=10)
     ax.set_xlabel("Lead Time [h]")
     ax.set_ylabel(metric_label)
+    ax.grid(True, linestyle="--", alpha=0.6)
+
+    save_figure(fig, out_path, module="probabilistic")
+    plt.close(fig)
+
+
+def plot_spaghetti_timeseries(
+    lead_hours: np.ndarray,
+    member_values: np.ndarray,
+    target_values: np.ndarray,
+    out_path: Path,
+    variable: str,
+    level: Any = None,
+    units: str = "",
+    time_label: str = "",
+    dpi: int = 96,
+):
+    """Plot spatially-averaged timeseries with one line per ensemble member + target.
+
+    Produces a "spaghetti plot" showing ensemble spread alongside the ground truth.
+    Each ensemble member is drawn as a thin coloured line and the target/observation
+    is overlaid as a thicker black line.
+
+    Args:
+        lead_hours: 1-D array of lead-time hours (x-axis values).
+        member_values: 2-D array of shape ``(n_members, n_lead_times)`` with spatially
+            averaged values per member.
+        target_values: 1-D array of shape ``(n_lead_times,)`` with spatially averaged
+            target/observation values.
+        out_path: Destination file path for the saved figure.
+        variable: Variable name (used in the title).
+        level: Optional pressure level (included in the title when not ``None``).
+        units: Physical units string for the y-axis label.
+        time_label: Extra label shown in the upper-right corner of the plot
+            (typically the init-time stamp).
+        dpi: Base dots-per-inch for the figure.
+    """
+    n_members = member_values.shape[0]
+    fig, ax = plt.subplots(figsize=(9, 4), dpi=dpi * 2)
+
+    # --- Ensemble members: thin coloured lines ---
+    for m in range(n_members):
+        ax.plot(
+            lead_hours,
+            member_values[m],
+            color=COLOR_MODEL_PREDICTION,
+            alpha=max(0.15, min(0.6, 3.0 / n_members)),
+            linewidth=0.8,
+            label="Ensemble members" if m == 0 else None,
+        )
+
+    # --- Target / ground truth: thick black line ---
+    ax.plot(
+        lead_hours,
+        target_values,
+        color=COLOR_GROUND_TRUTH,
+        linewidth=2.0,
+        label="Target (ground truth)",
+        zorder=10,
+    )
+
+    lvl_str = f" @ {format_level_token(level)}" if level is not None else ""
+    ax.set_title(
+        f"Ensemble Spaghetti — {format_variable_name(str(variable))}{lvl_str}",
+        loc="left",
+        fontsize=10,
+    )
+    ax.set_title(time_label, loc="right", fontsize=10)
+    ax.set_xlabel("Lead Time [h]")
+    y_label = f"Spatial Mean [{units}]" if units else "Spatial Mean"
+    ax.set_ylabel(y_label)
+    ax.legend(loc="best", fontsize=8)
     ax.grid(True, linestyle="--", alpha=0.6)
 
     save_figure(fig, out_path, module="probabilistic")

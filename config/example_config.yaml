@@ -320,6 +320,16 @@ metrics:
     # If true, compute and report CRPS/SSR summaries per pressure level (for 3D variables).
     report_per_level: true
 
+    # Spaghetti time-series plots of spatially averaged fields.
+    # When enabled (default: true), generates a line plot for each variable
+    # (and pressure level for 3D variables) showing every ensemble member as a
+    # thin line and the target/ground truth as a thick line.
+    # X-axis: lead time (hours); Y-axis: spatial mean of the atmospheric variable.
+    # The init_time used is controlled by plotting.plot_datetime (defaults to
+    # the first available init_time). Requires ensemble size >= 2 and
+    # multiple lead times.
+    spaghetti: true
+
 performance:
   # Dask scheduler choice.
   #   - distributed: LocalCluster + spill-over controls (recommended default).
