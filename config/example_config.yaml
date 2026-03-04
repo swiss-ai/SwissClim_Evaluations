@@ -114,6 +114,7 @@ selection:
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
+    multivariate: mean       # mean | pooled | members
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
   # If true, enables a scan for NaN values in the data (reported as warnings).
@@ -237,6 +238,7 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  multivariate: true         # Multivariate metrics (Bivariate Histograms)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
@@ -329,6 +331,27 @@ metrics:
     # the first available init_time). Requires ensemble size >= 2 and
     # multiple lead times.
     spaghetti: true
+
+  # Multivariate metrics configuration.
+  multivariate:
+    # Bivariate Histograms: list of [var_x, var_y] pairs to generate 2-D density
+    # plots for. Both variables must be present in the prediction AND target.
+    # Common physically-motivated pairs:
+    #   Wind components      : ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+    #   3-D wind             : ["u_component_of_wind", "v_component_of_wind"]
+    #   Thermodynamics       : ["temperature", "specific_humidity"]
+    #   Hydrostatics         : ["geopotential", "temperature"]
+    #   Precipitation physics: ["total_precipitation", "total_column_water_vapour"]
+    #   Vertical motion      : ["vertical_velocity", "temperature"]
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
+      # - ["temperature", "specific_humidity"]
+      # - ["geopotential", "temperature"]
+      # - ["total_precipitation", "total_column_water_vapour"]
+      # - ["vertical_velocity", "temperature"]
+    # Number of histogram bins along each axis (default: 100).
+    # bins: 100
 
 performance:
   # Dask scheduler choice.

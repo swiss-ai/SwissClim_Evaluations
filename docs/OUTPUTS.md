@@ -199,6 +199,45 @@ map_temperature_850_init2023010200-2023010412_lead000h-072h_ens0.npz  # level 85
 
 For single-lead or purely single-init 3D runs, a combined NPZ is written instead (all levels in one file). The intercomparison tool automatically prefers per-level files and ignores the combined `_to_`-range equivalent when it finds the individual level files.
 
+### Bivariate Histograms (`multivariate` module)
+
+Bivariate histograms compare the joint distribution of two variables between prediction and ground truth using log-scale 2-D density contour plots. Outputs are written to a `multivariate/` sub-folder under `output_root`.
+
+**Outputs per pair `[var_x, var_y]`:**
+
+- Plot (PNG): `multivariate/bivariate_<var_x>_<var_y><_ens*>.png` — filled colour contours for the ground truth overlaid with greyscale contours for the prediction.
+- Data (NPZ): `multivariate/bivariate_hist_<var_x>_<var_y><_ens*>.npz` — raw histogram counts and bin edges (`hist`, `hist_target`, `bins_x`, `bins_y`).
+
+The ensemble token appended to the filename depends on the resolved mode:
+
+| Mode     | Token            | Behaviour                             |
+|----------|------------------|---------------------------------------|
+| `mean`   | `ensmean`        | Ensemble is reduced to mean first.    |
+| `pooled` | `enspooled`      | All members' values are pooled.       |
+| `members`| `ens0`, `ens1`, … | One plot/NPZ pair per member.         |
+
+**Example filenames:**
+
+```text
+multivariate/bivariate_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.png
+multivariate/bivariate_hist_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.npz
+multivariate/bivariate_u_component_of_wind_v_component_of_wind_ens0.png   # members mode
+```
+
+**Configuring pairs** — edit `metrics.multivariate.bivariate_pairs` in your YAML:
+
+```yaml
+metrics:
+  multivariate:
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
+      - ["temperature", "specific_humidity"]   # requires both vars in dataset
+    # bins: 100   # optional, histogram resolution (default 100)
+```
+
+Pairs whose variables are absent from either dataset are skipped with a warning. Only variables present in **both** the prediction and target datasets can be used.
+
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
