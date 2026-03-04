@@ -73,12 +73,10 @@ def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
     for it in values:
         if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
             s, e = it[0], it[1]
-            ranges.append(
-                (
-                    str(s) if s else None,
-                    str(e) if e else None,
-                )
-            )
+            ranges.append((
+                str(s) if s else None,
+                str(e) if e else None,
+            ))
         elif isinstance(it, str) and ":" in it:
             s, e = it.split(":", 1)
             ranges.append((s or None, e or None))
@@ -431,14 +429,21 @@ def select_plot_ensemble(
     return ds_prediction, ds_prediction_std
 
 
-def _standardize_pair(
-    targets: xr.Dataset, predictions: xr.Dataset
-) -> tuple[xr.Dataset, xr.Dataset]:
+def standardize_pair(targets: xr.Dataset, predictions: xr.Dataset) -> tuple[xr.Dataset, xr.Dataset]:
+    """Z-score normalise *targets* and *predictions* jointly (shared mean/std).
+
+    Public so that callers outside this module (e.g. the runner) can
+    re-standardise after adding derived variables.
+    """
     # Explicit join ensures compatibility with upcoming xarray default change
     combined = xr.concat([targets, predictions], dim="__concat__", join="outer")
     mean = combined.mean()
     std = combined.std()
     return (targets - mean) / std, (predictions - mean) / std
+
+
+# Keep a private alias for any callers that may still reference the old name.
+_standardize_pair = standardize_pair
 
 
 def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str) -> list[str]:
@@ -819,13 +824,11 @@ def prepare_datasets(
     if "init_time" in ds_prediction.dims:
         # Ensure predictions have lead_time
         if "lead_time" not in ds_prediction.dims:
-            ds_prediction = ds_prediction.expand_dims(
-                {
-                    "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
-                        "timedelta64[ns]"
-                    )
-                }
-            )
+            ds_prediction = ds_prediction.expand_dims({
+                "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
+                    "timedelta64[ns]"
+                )
+            })
 
         # Capture pre-alignment lead_time hours (after policy, before valid_time intersection)
         try:
@@ -846,13 +849,11 @@ def prepare_datasets(
         # Targets: support either (init_time, lead_time) or standalone time
         if "init_time" in ds_target.dims:
             if "lead_time" not in ds_target.dims:
-                ds_target = ds_target.expand_dims(
-                    {
-                        "lead_time": np.array(
-                            [np.timedelta64(0, "h")], dtype="timedelta64[h]"
-                        ).astype("timedelta64[ns]")
-                    }
-                )
+                ds_target = ds_target.expand_dims({
+                    "lead_time": np.array([np.timedelta64(0, "h")], dtype="timedelta64[h]").astype(
+                        "timedelta64[ns]"
+                    )
+                })
             target_init = ds_target["init_time"].astype("datetime64[ns]")
             target_lead = ds_target["lead_time"].astype("timedelta64[ns]")
             ds_tgt_stacked = ds_target.stack(pair=("init_time", "lead_time"))
@@ -863,9 +864,9 @@ def prepare_datasets(
             # preserve all available lead_time offsets instead of collapsing to a single dummy lead.
             tvals = ds_target["time"].values.astype("datetime64[ns]")
             # Give target a valid_time coordinate for reindexing
-            ds_tgt_time = ds_target.assign_coords(valid_time=("time", tvals)).swap_dims(
-                {"time": "valid_time"}
-            )
+            ds_tgt_time = ds_target.assign_coords(valid_time=("time", tvals)).swap_dims({
+                "time": "valid_time"
+            })
             pred_valid_times = ds_pred_stacked["valid_time"].values
             ds_tgt_reindexed = ds_tgt_time.reindex(valid_time=pred_valid_times)
             # Rename to 'pair' and attach same MultiIndex as predictions so that unstack works
@@ -1017,5 +1018,5 @@ def prepare_datasets(
 
     # Persist audit for run_selected to write out alongside outputs
     cfg["__lead_time_audit"] = lead_audit
-    ds_target_std, ds_prediction_std = _standardize_pair(ds_target, ds_prediction)
+    ds_target_std, ds_prediction_std = standardize_pair(ds_target, ds_prediction)
     return ds_target, ds_prediction, ds_target_std, ds_prediction_std

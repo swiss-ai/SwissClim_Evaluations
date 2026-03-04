@@ -89,6 +89,9 @@ def run_selected(cfg: dict[str, Any]) -> None:
     derived_cfg = cfg.get("derived_variables") or {}
     if derived_cfg:
         ds_target, ds_prediction = add_derived_variables(ds_target, ds_prediction, derived_cfg)
+        # Re-standardize so derived variables are present in the normalised datasets
+        # used by wd_kde (and any other module that uses ds_target_std / ds_prediction_std).
+        ds_target_std, ds_prediction_std = data_selection.standardize_pair(ds_target, ds_prediction)
 
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")

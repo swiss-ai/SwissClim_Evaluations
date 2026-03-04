@@ -345,6 +345,8 @@ def run(
             units = get_variable_units(ds_target, variable_name)
             if units:
                 ax.set_xlabel(f"{format_variable_name(variable_name)} [{units}]")
+            else:
+                ax.set_xlabel(format_variable_name(variable_name))
 
             if save_npz:
                 key_counts = "neg_counts" if job["type"] == "neg" else "pos_counts"
@@ -664,8 +666,11 @@ def run(
                 )
 
             ax.set_title(f"Lead: {label}", fontsize=14)
-            if units := da_target_var.attrs.get("units"):
-                ax.set_xlabel(str(units))
+            _units = get_variable_units(da_target_var, variable_name)
+            if _units:
+                ax.set_xlabel(f"{format_variable_name(variable_name)} [{_units}]")
+            else:
+                ax.set_xlabel(format_variable_name(variable_name))
             if i == 0:
                 ax.legend()
 
@@ -937,7 +942,11 @@ def run(
                     else:
                         ax.set_ylabel("Density")
                     if i >= (nrows - 1) * ncols:
-                        ax.set_xlabel(variable_name)
+                        _units = get_variable_units(ds_target[variable_name], variable_name)
+                        if _units:
+                            ax.set_xlabel(f"{format_variable_name(variable_name)} [{_units}]")
+                        else:
+                            ax.set_xlabel(format_variable_name(variable_name))
                     else:
                         ax.tick_params(axis="x", labelbottom=False)
                 axes[0].legend(loc="upper right")
