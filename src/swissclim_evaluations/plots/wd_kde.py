@@ -301,13 +301,15 @@ def run(
                 plt.close(fig_g)
 
             # Add to CSV rows
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "global",
-                "lat_min": -90.0,
-                "lat_max": 90.0,
-                "wasserstein": float(w_g),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "global",
+                    "lat_min": -90.0,
+                    "lat_max": 90.0,
+                    "wasserstein": float(w_g),
+                }
+            )
 
         if not per_lat_band:
             return
@@ -352,13 +354,15 @@ def run(
 
             w = wasserstein_distance(ds_flat, prediction_flat)
             w_distances.append(w)
-            wasserstein_rows.append({
-                "variable": var_name,
-                "hemisphere": "south" if job["type"] == "lat_neg" else "north",
-                "lat_min": float(lat_min),
-                "lat_max": float(lat_max),
-                "wasserstein": float(w),
-            })
+            wasserstein_rows.append(
+                {
+                    "variable": var_name,
+                    "hemisphere": "south" if job["type"] == "lat_neg" else "north",
+                    "lat_min": float(lat_min),
+                    "lat_max": float(lat_max),
+                    "wasserstein": float(w),
+                }
+            )
             if save_fig or save_npz:
                 kde_ds = gaussian_kde(ds_flat)
                 kde_prediction = gaussian_kde(prediction_flat)
@@ -517,11 +521,13 @@ def run(
             if "level" not in ds_prediction_std_eff[v].dims
         ]
         if process_3d:
-            cand_vars.extend([
-                v
-                for v in ds_prediction_std_eff.data_vars
-                if "level" in ds_prediction_std_eff[v].dims
-            ])
+            cand_vars.extend(
+                [
+                    v
+                    for v in ds_prediction_std_eff.data_vars
+                    if "level" in ds_prediction_std_eff[v].dims
+                ]
+            )
 
         for base_var in cand_vars:
             # Handle 3D variables by iterating over levels
@@ -552,11 +558,13 @@ def run(
                 jobs = []
 
                 # Quantile job (now subsample job)
-                jobs.append({
-                    "type": "quantile_subsample",
-                    "sub_t_q_lazy": sub_t_q_lazy,
-                    "sub_p_q_lazy": sub_p_q_lazy,
-                })
+                jobs.append(
+                    {
+                        "type": "quantile_subsample",
+                        "sub_t_q_lazy": sub_t_q_lazy,
+                        "sub_p_q_lazy": sub_p_q_lazy,
+                    }
+                )
 
                 for i, lt in enumerate(leads):
                     # Convert timedelta leads to hours; fall back to index
@@ -582,12 +590,14 @@ def run(
                     # Use subsampling instead of full mean
                     seed = base_seed + (hash(base_var + str(lvl)) % 1000) * 1000 + i * 10
 
-                    jobs.append({
-                        "type": "lead",
-                        "i": i,
-                        "sub_t_lazy": subsample_values(da_t, max_samples, seed, lazy=True),
-                        "sub_p_lazy": subsample_values(da_p, max_samples, seed, lazy=True),
-                    })
+                    jobs.append(
+                        {
+                            "type": "lead",
+                            "i": i,
+                            "sub_t_lazy": subsample_values(da_t, max_samples, seed, lazy=True),
+                            "sub_p_lazy": subsample_values(da_p, max_samples, seed, lazy=True),
+                        }
+                    )
 
                 # Compute all
                 lazy_list = []

@@ -417,9 +417,7 @@ def generate_spaghetti_plots(
                 }
                 if lvl is not None:
                     npz_kwargs["level"] = lvl
-                save_data(
-                    out_npz, module="probabilistic", **npz_kwargs
-                )
+                save_data(out_npz, module="probabilistic", **npz_kwargs)
 
             # --- Save PNG figure ---
             if save_fig:

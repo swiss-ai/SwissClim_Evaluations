@@ -103,7 +103,6 @@ def _intercompare_spaghetti(
             level = level.item()
 
         n_models = len(models)
-        lead_hours_ref = np.asarray(payloads[0]["lead_hours"])
 
         # --- Gridded figure: 1 row, n_models columns ---
         fig, axes = plt.subplots(

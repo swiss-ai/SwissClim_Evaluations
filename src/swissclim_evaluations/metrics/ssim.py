@@ -71,13 +71,15 @@ def calculate_ssim(
         p_min_lazy = da_prediction.min(skipna=True)
         p_max_lazy = da_prediction.max(skipna=True)
 
-        range_jobs.append({
-            "t_min": t_min_lazy,
-            "t_max": t_max_lazy,
-            "p_min": p_min_lazy,
-            "p_max": p_max_lazy,
-            "var": var,
-        })
+        range_jobs.append(
+            {
+                "t_min": t_min_lazy,
+                "t_max": t_max_lazy,
+                "p_min": p_min_lazy,
+                "p_max": p_max_lazy,
+                "var": var,
+            }
+        )
 
     if not range_jobs:
         return pd.DataFrame()
