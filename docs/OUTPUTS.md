@@ -122,6 +122,27 @@ ets_line_2m_temperature_ensmean.png
 ets_line_2m_temperature_data_ensmean.npz
 ```
 
+### SSIM (Structural Similarity Index)
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+
+```text
+ssim/ssim_ssim_ensmean.csv
+ssim/ssim_ssim_ens0.csv   # members mode per-member file
+```
+
+Each CSV contains per-variable SSIM scores plus an `AVERAGE_SSIM` summary row. The metric is calculated per 2-D spatial slice (lat/lon) and averaged over all remaining dimensions.
+
+**Configuration** — edit `metrics.ssim` in your YAML:
+
+```yaml
+metrics:
+  ssim:
+    sigma: 1.5        # Gaussian kernel sigma (default 1.5)
+    # K1: 0.01        # luminance constant
+    # K2: 0.03        # contrast constant
+```
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)

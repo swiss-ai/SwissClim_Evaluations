@@ -25,6 +25,7 @@ from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
+from swissclim_evaluations.intercomparison.modules.ssim import intercompare_ssim
 from swissclim_evaluations.intercomparison.modules.vertical_profiles import (
     intercompare_vertical_profiles,
 )
@@ -68,6 +69,7 @@ MODULE_ALIASES: dict[str, str] = {
     "vertical_profiles": "vprof",
     "deterministic": "metrics",
     "probabilistic": "prob",
+    "ssim": "ssim",
     # additional aliases used in config/docs
     "deterministic_metrics": "metrics",
     "energy": "spectra",
@@ -105,6 +107,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/crps_map_*.npz",
         "probabilistic/spaghetti_*.npz",
     ),
+    "ssim": ("ssim/ssim_ssim_*.csv",),
 }
 
 
@@ -210,11 +213,15 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
             f"individual_plots={individual_plots}",
             "n/a",
         )
+    if module == "ssim":
+        ssim_cfg = metrics_cfg.get("ssim", {}) if isinstance(metrics_cfg, dict) else {}
+        sigma = ssim_cfg.get("sigma", 1.5) if isinstance(ssim_cfg, dict) else 1.5
+        return f"SSIM (sigma={sigma})", "n/a"
     return "n/a", "n/a"
 
 
 def _print_module_config_summary(mods: set[str], cfg: dict[str, Any]) -> None:
-    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "prob"]
+    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "prob", "ssim"]
     c.section("Configured Metrics/Thresholds")
     for module in module_order:
         enabled = module in mods
@@ -247,6 +254,7 @@ def run_from_config(cfg: dict) -> None:
         "ets",
         "prob",
         "vprof",
+        "ssim",
     ]
     modules = [str(m).lower() for m in modules]
     # Other options
@@ -293,6 +301,8 @@ def run_from_config(cfg: dict) -> None:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
+    if "ssim" in mods:
+        intercompare_ssim(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 

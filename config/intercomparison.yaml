@@ -24,7 +24,7 @@ labels:
 
 output_root: output/intercomparison
 
-modules: [maps, hist, kde, spectra, vprof, metrics, ets, prob]
+modules: [maps, hist, kde, spectra, vprof, metrics, ets, prob, ssim]
 
 max_map_panels: 4
 max_crps_map_panels: 4

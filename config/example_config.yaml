@@ -114,6 +114,7 @@ selection:
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
+    ssim: mean               # mean | pooled | members
     multivariate: mean       # mean | pooled | members
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
@@ -238,6 +239,7 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  ssim: true                 # Structural Similarity Index (SSIM)
   multivariate: true         # Multivariate metrics (Bivariate Histograms)
 
 metrics:
@@ -331,6 +333,13 @@ metrics:
     # the first available init_time). Requires ensemble size >= 2 and
     # multiple lead times.
     spaghetti: true
+
+  # SSIM configuration
+  ssim:
+    sigma: 1.5               # Standard deviation for Gaussian kernel
+    # win_size: 7           # Window size (optional, defaults to 7 or derived from sigma)
+    # K1: 0.01              # Algorithm constant (luminance)
+    # K2: 0.03              # Algorithm constant (contrast)
 
   # Multivariate metrics configuration.
   multivariate:

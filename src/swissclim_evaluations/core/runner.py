@@ -153,6 +153,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "deterministic",
         "ets",
         "probabilistic",
+        "ssim",
         "multivariate",
     ]
     resolved_modes: dict[str, str] = {}
@@ -730,6 +731,43 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 "status": "skipped",
                 "seconds": 0.0,
                 "error": "no ensemble dimension",
+            })
+
+    # SSIM (Structural Similarity Index)
+    if chapter_flags.get("ssim"):
+        from ..metrics.ssim import run as run_ssim
+
+        c.module_status("ssim", "run", "Structural Similarity Index")
+        if "ensemble" in ds_prediction.dims:
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(format_ensemble_log("ssim", ensemble_cfg.get("ssim", "mean"), ens_size))
+        else:
+            c.info("No ensemble dimension \u2192 deterministic inputs.")
+        _t = time.time()
+        try:
+            run_ssim(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("ssim"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("ssim", dt))
+            module_results.append({
+                "name": "ssim",
+                "status": "success",
+                "seconds": dt,
+                "error": None,
+            })
+        except Exception as ex:
+            dt = time.time() - _t
+            c.error(f"ssim failed: {ex}")
+            module_results.append({
+                "name": "ssim",
+                "status": "failed",
+                "seconds": dt,
+                "error": str(ex),
             })
 
     # Multivariate (Bivariate Histograms)

@@ -343,6 +343,7 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "ets": "mean",
     "probabilistic": "prob",
     "multivariate": "mean",
+    "ssim": "mean",
     # plots / diagnostics
     "energy_spectra": "mean",
     "vertical_profiles": "mean",
@@ -364,6 +365,7 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "deterministic": {"mean", "pooled", "members"},
     "ets": {"mean", "pooled", "members"},
     "multivariate": {"mean", "pooled", "members"},
+    "ssim": {"mean", "pooled", "members"},
 }
 
 
