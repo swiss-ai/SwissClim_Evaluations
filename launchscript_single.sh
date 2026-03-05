@@ -155,7 +155,7 @@ echo "Starting evaluation for config: $CONFIG_FILE"
 # Run the evaluation
 # We use srun to launch the python process within the container environment defined by EDF_CONFIG
 srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    python -u -m swissclim_evaluations.intercompare --config "$CONFIG_FILE"
+    python -u -m swissclim_evaluations.cli --config "$CONFIG_FILE"
 EXIT_CODE=$?
 
 echo "Evaluation finished."
