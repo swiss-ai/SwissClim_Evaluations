@@ -18,6 +18,34 @@ from ..dask_utils import compute_jobs
 from ..helpers import format_variable_name, get_variable_units
 
 
+def _is_geopotential_height(name: str) -> bool:
+    return "geopotential_height" in str(name).lower() and "gradient" not in str(name).lower()
+
+
+def _is_geopotential_height_gradient(name: str) -> bool:
+    return "geopotential_height_gradient" in str(name).lower()
+
+
+def _is_wind_speed(name: str) -> bool:
+    return "wind_speed" in str(name).lower()
+
+
+def _is_geostrophic_gradient_pair(var_x: str, var_y: str) -> bool:
+    lx = str(var_x).lower()
+    ly = str(var_y).lower()
+    return ("geopotential_height_gradient" in lx and "wind_speed" in ly) or (
+        "geopotential_height_gradient" in ly and "wind_speed" in lx
+    )
+
+
+def _format_level_suffix(level_hpa: float | None) -> str:
+    if level_hpa is None:
+        return ""
+    if float(level_hpa).is_integer():
+        return f"_level{int(level_hpa)}"
+    return f"_level{level_hpa:g}"
+
+
 def _get_label(da: xr.DataArray, var_name: str) -> str:
     """Get a formatted label with unit for a variable from DataArray attributes."""
     name = format_variable_name(var_name)
@@ -58,6 +86,7 @@ def _get_physical_constraints(
     var_y: str,
     bins_x: np.ndarray,
     bins_y: np.ndarray,
+    level_hpa: float | None = None,
 ) -> list[dict]:
     """Return a list of physical-constraint specs for the given variable pair.
 
@@ -66,8 +95,8 @@ def _get_physical_constraints(
 
     * **temperature × specific_humidity** — Clausius–Clapeyron saturation curve
       at 500 hPa (Bolton 1980).  The supersaturated region and q < 0 are shaded.
-    * **geopotential_height × wind_speed** — horizontal/vertical line at
-      wind speed = 0 (below that is kinematically unphysical), with shading.
+        * **geopotential_height_gradient × wind_speed** — geostrophic reference
+            line plus hard lower bound wind speed >= 0.
 
     Parameters
     ----------
@@ -77,14 +106,18 @@ def _get_physical_constraints(
         Bin-edge arrays produced by the histogram step.
     """
     constraints: list[dict] = []
+
+    # Draw physical overlays only for 500 hPa views.
+    if level_hpa is None or not np.isclose(float(level_hpa), 500.0):
+        return constraints
     lx, ly = var_x.lower(), var_y.lower()
 
     is_temp_x = "temperature" in lx
     is_temp_y = "temperature" in ly
     is_q_x = "specific_humidity" in lx
     is_q_y = "specific_humidity" in ly
-    is_z_x = "geopotential_height" in lx
-    is_z_y = "geopotential_height" in ly
+    is_zgrad_x = "geopotential_height_gradient" in lx
+    is_zgrad_y = "geopotential_height_gradient" in ly
     is_ws_x = "wind_speed" in lx
     is_ws_y = "wind_speed" in ly
 
@@ -165,9 +198,49 @@ def _get_physical_constraints(
                 }
             )
 
-    # ── Geopotential Height vs Wind Speed ────────────────────────────────────
-    # Physical lower bound: wind speed ≥ 0 (it is a magnitude by definition).
-    if (is_z_x or is_z_y) and (is_ws_x or is_ws_y):
+    # ── Geopotential Height Gradient vs Wind Speed ──────────────────────────
+    # Geostrophic balance: U_g = (g / f) * |∇Z|
+    # Plotted as a diagonal reference line through the origin.
+    # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
+    if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
+        g = 9.81
+        f_abs = 1.0e-4  # mid-latitude Coriolis parameter, s⁻¹
+        slope = g / f_abs  # ≈ 98 100  (m s⁻¹) / (m m⁻¹)
+
+        if is_zgrad_x and is_ws_y:
+            # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
+            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
+            y_arr = slope * x_arr
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                }
+            )
+        elif is_zgrad_y and is_ws_x:
+            # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
+            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
+            y_arr = x_arr / slope
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                }
+            )
+
+        # Wind speed ≥ 0 hard bound
         if is_ws_y:
             constraints.append(
                 {
@@ -175,28 +248,28 @@ def _get_physical_constraints(
                     "value": 0.0,
                     "fill": "below",
                     "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
+                    "lw": 1.5,
+                    "ls": ":",
                     "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.15,
+                    "fill_alpha": 0.10,
                     "fill_color": "#d62728",
-                    "fill_hatch": "///",
+                    "fill_hatch": "\\\\\\\\",
                     "fill_label": "Wind speed $< 0$ (unphysical)",
                 }
             )
-        else:  # wind speed on x-axis
+        else:
             constraints.append(
                 {
                     "type": "vline",
                     "value": 0.0,
                     "fill": "left",
                     "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
+                    "lw": 1.5,
+                    "ls": ":",
                     "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.15,
+                    "fill_alpha": 0.10,
                     "fill_color": "#d62728",
-                    "fill_hatch": "///",
+                    "fill_hatch": "\\\\\\\\",
                     "fill_label": "Wind speed $< 0$ (unphysical)",
                 }
             )
@@ -415,27 +488,69 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (missing in target)")
             continue
 
-        # Compute for Prediction
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        pred_x = ds_prediction[var_x]
+        pred_y = ds_prediction[var_y]
+        targ_x = ds_target[var_x]
+        targ_y = ds_target[var_y]
 
-        # Compute min/max lazily to determine range and handle NaNs
-        min_x_lazy = da.nanmin(da_x)
-        max_x_lazy = da.nanmax(da_x)
-        min_y_lazy = da.nanmin(da_y)
-        max_y_lazy = da.nanmax(da_y)
+        x_has_level = "level" in pred_x.dims
+        y_has_level = "level" in pred_y.dims
 
-        range_jobs.append(
-            {
-                "min_x": min_x_lazy,
-                "max_x": max_x_lazy,
-                "min_y": min_y_lazy,
-                "max_y": max_y_lazy,
-                "pair_idx": i,
-                "var_x": var_x,
-                "var_y": var_y,
-            }
-        )
+        levels_to_process: list[float | None]
+        if x_has_level or y_has_level:
+            level_values: np.ndarray | None = None
+
+            def _merge_levels(level_arr: np.ndarray) -> None:
+                nonlocal level_values
+                if level_values is None:
+                    level_values = np.asarray(level_arr)
+                else:
+                    level_values = np.intersect1d(level_values, np.asarray(level_arr))
+
+            if x_has_level:
+                _merge_levels(pred_x["level"].values)
+            if "level" in targ_x.dims:
+                _merge_levels(targ_x["level"].values)
+            if y_has_level:
+                _merge_levels(pred_y["level"].values)
+            if "level" in targ_y.dims:
+                _merge_levels(targ_y["level"].values)
+
+            if level_values is None or len(level_values) == 0:
+                skipped_pairs.append(f"{var_x} vs {var_y} (no common levels)")
+                continue
+
+            levels_to_process = [float(v) for v in np.asarray(level_values, dtype=float)]
+        else:
+            levels_to_process = [None]
+
+        for level_hpa in levels_to_process:
+            pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
+            pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
+
+            da_x = pred_x_sel.data.flatten()
+            da_y = pred_y_sel.data.flatten()
+
+            # Compute min/max lazily to determine range and handle NaNs
+            min_x_lazy = da.nanmin(da_x)
+            max_x_lazy = da.nanmax(da_x)
+            min_y_lazy = da.nanmin(da_y)
+            max_y_lazy = da.nanmax(da_y)
+
+            range_jobs.append(
+                {
+                    "min_x": min_x_lazy,
+                    "max_x": max_x_lazy,
+                    "min_y": min_y_lazy,
+                    "max_y": max_y_lazy,
+                    "pair_idx": i,
+                    "var_x": var_x,
+                    "var_y": var_y,
+                    "level_hpa": level_hpa,
+                    "x_has_level": x_has_level,
+                    "y_has_level": y_has_level,
+                }
+            )
 
     if not range_jobs:
         if skipped_pairs:
@@ -461,6 +576,9 @@ def calculate_and_plot_bivariate_histograms(
     for job in range_jobs:
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_hpa = job["level_hpa"]
+        x_has_level = bool(job.get("x_has_level", False))
+        y_has_level = bool(job.get("y_has_level", False))
 
         try:
             min_x = float(job["min_x_res"])
@@ -483,8 +601,10 @@ def calculate_and_plot_bivariate_histograms(
         fill_y = min_y - 1.0
 
         # Re-access data (dask arrays)
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]
+        pred_y = ds_prediction[var_y].sel(level=level_hpa) if y_has_level else ds_prediction[var_y]
+        da_x = pred_x.data.flatten()
+        da_y = pred_y.data.flatten()
 
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
@@ -499,8 +619,18 @@ def calculate_and_plot_bivariate_histograms(
 
         # Target data
         if ds_target is not None:
-            da_x_t = ds_target[var_x].data.flatten()
-            da_y_t = ds_target[var_y].data.flatten()
+            targ_x = (
+                ds_target[var_x].sel(level=level_hpa)
+                if "level" in ds_target[var_x].dims and level_hpa is not None
+                else ds_target[var_x]
+            )
+            targ_y = (
+                ds_target[var_y].sel(level=level_hpa)
+                if "level" in ds_target[var_y].dims and level_hpa is not None
+                else ds_target[var_y]
+            )
+            da_x_t = targ_x.data.flatten()
+            da_y_t = targ_y.data.flatten()
 
             da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
             da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
@@ -520,6 +650,7 @@ def calculate_and_plot_bivariate_histograms(
                 "yedges": yedges,
                 "var_x": var_x,
                 "var_y": var_y,
+                "level_hpa": level_hpa,
                 "range_x": range_x,
                 "range_y": range_y,
             }
@@ -546,10 +677,14 @@ def calculate_and_plot_bivariate_histograms(
         yedges = job["yedges"]
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_hpa = job.get("level_hpa")
+        level_suffix = _format_level_suffix(level_hpa)
 
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
-        out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
+        out_file = (
+            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{level_suffix}{suffix}.npz"
+        )
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         np.savez(
@@ -558,6 +693,9 @@ def calculate_and_plot_bivariate_histograms(
             bins_x=xedges,
             bins_y=yedges,
             hist_target=hist_target,
+            var_x=var_x,
+            var_y=var_y,
+            level_hpa=np.nan if level_hpa is None else float(level_hpa),
         )
 
         # Generate plot immediately
@@ -568,6 +706,16 @@ def calculate_and_plot_bivariate_histograms(
             warnings.filterwarnings(
                 "ignore", message="Log scale: values of z <= 0 have been masked"
             )
+            label_da_x = (
+                ds_prediction[var_x].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_x].dims and level_hpa is not None)
+                else ds_prediction[var_x]
+            )
+            label_da_y = (
+                ds_prediction[var_y].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_y].dims and level_hpa is not None)
+                else ds_prediction[var_y]
+            )
             plot_bivariate_histogram(
                 hist_1=hist_pred,
                 hist_2=hist_target,
@@ -577,17 +725,23 @@ def calculate_and_plot_bivariate_histograms(
                 label_2="Ground Truth",
                 var_x=var_x,
                 var_y=var_y,
+                level_hpa=level_hpa,
                 ax=ax,
-                xlabel=_get_label(ds_prediction[var_x], var_x),
-                ylabel=_get_label(ds_prediction[var_y], var_y),
+                xlabel=_get_label(label_da_x, var_x),
+                ylabel=_get_label(label_da_y, var_y),
             )
 
-        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
+        plot_out = (
+            out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{level_suffix}{suffix}.png"
+        )
         fig.savefig(plot_out, bbox_inches="tight")
         plt.close(fig)
 
         c.info(f"[multivariate] Saved bivariate plot: {plot_out.name}")
-        plotted_pairs.append(f"{var_x} vs {var_y}")
+        if level_hpa is None:
+            plotted_pairs.append(f"{var_x} vs {var_y}")
+        else:
+            plotted_pairs.append(f"{var_x} vs {var_y} @ {level_hpa:g} hPa")
 
     # Summary output
     if plotted_pairs:
@@ -607,6 +761,7 @@ def plot_bivariate_histogram(
     label_2: str,
     var_x: str,
     var_y: str,
+    level_hpa: float | None = None,
     ax: plt.Axes | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
@@ -634,6 +789,25 @@ def plot_bivariate_histogram(
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 8))
+
+    # For geopotential-height (or its gradient) vs wind-speed, enforce a physically
+    # intuitive view: x-axis = wind speed / gradient, y-axis = geopotential height.
+    if _is_geopotential_height_gradient(var_x) and _is_wind_speed(var_y):
+        # Keep gradient on x, wind speed on y — natural geostrophic axes.
+        pass
+    elif _is_geopotential_height_gradient(var_y) and _is_wind_speed(var_x):
+        # Swap so gradient is on x and wind speed is on y.
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
+    elif _is_geopotential_height(var_x) and _is_wind_speed(var_y):
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
 
     # Calculate centers
     x_centers = (bins_x[:-1] + bins_x[1:]) / 2
@@ -733,7 +907,16 @@ def plot_bivariate_histogram(
 
     ax.set_xlabel(xlabel if xlabel else var_x)
     ax.set_ylabel(ylabel if ylabel else var_y)
-    ax.set_title(f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}")
+
+    if _is_geostrophic_gradient_pair(var_x, var_y):
+        ax.tick_params(axis="x", labelrotation=45)
+        for tick in ax.get_xticklabels():
+            tick.set_ha("right")
+
+    title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
+    if level_hpa is not None:
+        title += f" ({level_hpa:g} hPa)"
+    ax.set_title(title)
 
     # Zoom out by 25%
     x_min, x_max = bins_x.min(), bins_x.max()
@@ -752,7 +935,13 @@ def plot_bivariate_histogram(
     # ── Physical-constraint overlays ─────────────────────────────────────────
     final_xlim = ax.get_xlim()
     final_ylim = ax.get_ylim()
-    constraints = _get_physical_constraints(var_x, var_y, bins_x, bins_y)
+    constraints = _get_physical_constraints(
+        var_x,
+        var_y,
+        bins_x,
+        bins_y,
+        level_hpa=level_hpa,
+    )
     constraint_entries = _draw_physical_constraints(
         ax,
         constraints,

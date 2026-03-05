@@ -21,8 +21,7 @@ Currently available recipes:
 | Recipe | Formula | Units | Inputs |
 |---|---|---|---|
 | `wind_speed` | `sqrt(U²+V²)` | m s⁻¹ | `u` + `v` |
-| `geopotential_height` | `geopotential / 9.80665` | m | `u` (or `source`) only |
-
+| `geopotential_height` | `geopotential / 9.80665` | m | `u` (or `source`) only || `geopotential_height_gradient` | `sqrt((∂Z/∂y)²+(∂Z/∂x)²)` — horizontal gradient magnitude \|∇Z\| | m m⁻¹ | `u` (or `source`) only; supply `geopotential_height` variable |
 See `README.md § Derived Variables` for the config syntax and [WIND_UV_ASSESSMENT.md](WIND_UV_ASSESSMENT.md) for a per-module impact analysis of wind variables.
 
 ### Physical constraint overlays in Bivariate Histograms
@@ -33,7 +32,8 @@ recognised variable pairs:
 | Pair | Constraint | Overlay |
 |---|---|---|
 | `temperature` × `specific_humidity` | Clausius–Clapeyron saturation curve (Bolton 1980, 500 hPa) | dashed red saturation line; supersaturated region hatched red; `q < 0` region hatched dark-red |
-| `geopotential_height` × `wind_speed` | Wind speed is a magnitude ≥ 0 by definition | dashed red line at 0; below-zero region hatched red |
+| `geopotential_height` × `wind_speed` | Wind speed is a magnitude ≥ 0 by definition | dashed red line at wind speed = 0; below-zero region hatched red |
+| `geopotential_height_gradient` × `wind_speed` | Geostrophic balance: U_g = (g/f)\|∇Z\| with mid-latitude f = 10⁻⁴ s⁻¹ | diagonal dashed orange reference line through the origin; dashed red line at wind speed = 0 |
 
 Constraints are drawn in both orientations (either variable may be on either axis).
 

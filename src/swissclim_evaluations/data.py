@@ -520,19 +520,54 @@ def _geopotential_height(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray
     return da
 
 
+def _geopotential_height_gradient(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Horizontal gradient magnitude of geopotential height |∇Z|.  Units: m m⁻¹.
+
+    Computes |∇Z| = sqrt((∂Z/∂y)² + (∂Z/∂x)²) using centred finite differences
+    along the ``latitude`` and ``longitude`` coordinates.  The partial derivatives
+    are converted from degrees⁻¹ to m⁻¹ using the WGS-84 mean Earth radius.
+
+    Only the *source* variable (``u_var``) is used; the variable must already be
+    in **metres** (geopotential height, not raw geopotential).  Use the
+    ``geopotential_height`` recipe first if you have raw geopotential.
+    """
+    R_earth = 6_371_000.0  # WGS-84 mean radius, m
+    deg2rad = np.pi / 180.0
+
+    Z = ds[u_var]
+
+    lat = Z["latitude"]  # degrees
+    cos_lat = np.cos(lat * deg2rad)  # broadcast-ready DataArray
+
+    # ∂Z/∂lat  [m / degree] → [m / m] via R_earth [m / rad] and deg2rad
+    dZ_dlat = Z.differentiate("latitude") / (R_earth * deg2rad)  # m m⁻¹
+
+    # ∂Z/∂lon  [m / degree] → [m / m]; longitude arc-length shrinks with cos(lat)
+    dZ_dlon = Z.differentiate("longitude") / (R_earth * deg2rad * cos_lat)  # m m⁻¹
+
+    grad = np.sqrt(dZ_dlat**2 + dZ_dlon**2)
+    grad.attrs["units"] = "m m**-1"
+    grad.attrs["long_name"] = "Geopotential Height Gradient Magnitude"
+    return grad
+
+
 # Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
 # Available recipes that a user may reference via ``kind:`` in config:
-#   wind_speed         — sqrt(U² + V²), m s⁻¹, suitable for all modules
-#   geopotential_height — geopotential / 9.80665, m (single-input: only 'u' required)
+#   wind_speed                  — sqrt(U² + V²), m s⁻¹, suitable for all modules
+#   geopotential_height         — geopotential / 9.80665, m (single-input: only 'u' required)
+#   geopotential_height_gradient — |∇Z|, m m⁻¹ (single-input: supply geopotential_height variable)
 _DERIVED_RECIPES: dict[str, Any] = {
     "wind_speed": _wind_speed,
     "geopotential_height": _geopotential_height,
+    "geopotential_height_gradient": _geopotential_height_gradient,
 }
 
 # Recipes that require only a single source variable.
 # For these kinds the config block only needs the ``u`` (or ``source``) key;
 # the ``v`` key is optional and ignored.
-_SINGLE_INPUT_KINDS: frozenset[str] = frozenset({"geopotential_height"})
+_SINGLE_INPUT_KINDS: frozenset[str] = frozenset(
+    {"geopotential_height", "geopotential_height_gradient"}
+)
 
 
 def _parse_derived_cfg(
@@ -606,6 +641,8 @@ def add_derived_variables(
 
     * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
     * ``geopotential_height`` — ``geopotential / 9.80665`` (m); single-input, only ``u`` required
+    * ``geopotential_height_gradient`` — ``|∇Z|`` (m m⁻¹); single-input, supply geopotential height
+    variable
 
     **Inner-join guard**: a derived variable is only added when *both* source
     components are present in *both* the target and prediction datasets.  If a

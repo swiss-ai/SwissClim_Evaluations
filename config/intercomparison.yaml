@@ -4,13 +4,16 @@
 # - models: list of per-model output directories to compare
 # - labels: optional human-friendly labels (must match models length); if omitted, folder names are used
 # - output_root: where to write combined artifacts (PNG/CSV)
-# - modules: subset of modules to run: spectra, hist, kde, maps, metrics, ets, prob, vprof
-#            spectra includes per-lead delta spectrogram compare when
-#            `energy_spectra_per_lead_*_bundle*.npz` artifacts are available
+# - modules: subset of modules to run: spectra, hist, kde, maps, metrics, ets, prob, vprof, ssim, multivariate
+#            spectra includes per-lead delta spectrogram compare (2D and 3D per-level) when
+#            `energy_spectra_per_lead_*_bundle*.npz` artifacts are available; bundles are
+#            written for all multi-lead runs regardless of `energy_spectra.individual_plots`
 #            kde includes ridgeline evolution compare when
 #            `wd_kde_evolve_*_ridgeline_data*.npz` artifacts are available
 #            probabilistic temporal combines `crps_line_*_by_lead*.csv` and
 #            `ssr_line_*_by_lead*.csv` (including optional `_level<lvl>` variants)
+#            multivariate combines bivariate histogram artifacts when
+#            `multivariate/bivariate_hist_*_ens*.npz` artifacts are available
 # - max_map_panels: limit number of map panels rendered
 # - max_crps_map_panels: limit CRPS map panels in probabilistic section
 
