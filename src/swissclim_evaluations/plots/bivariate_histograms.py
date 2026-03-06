@@ -15,7 +15,7 @@ from matplotlib.lines import Line2D
 
 from .. import console as c
 from ..dask_utils import compute_jobs
-from ..helpers import format_variable_name, get_variable_units
+from ..helpers import format_level_token, format_variable_name, get_variable_units
 
 
 def _get_label(da: xr.DataArray, var_name: str) -> str:
@@ -368,6 +368,220 @@ def _draw_physical_constraints(
     return legend_entries
 
 
+def _plot_bivariate_per_lead_grid(
+    ds_prediction: xr.Dataset,
+    ds_target: xr.Dataset | None,
+    var_x: str,
+    var_y: str,
+    xedges: np.ndarray,
+    yedges: np.ndarray,
+    out_root: Path,
+    ensemble_token: str | None = None,
+    level_val: float | int | None = None,
+    level_token: str | None = None,
+) -> None:
+    """Generate a per-lead-time grid of bivariate histograms for one variable pair.
+
+    Produces a single figure where each subplot corresponds to one lead time,
+    arranged in a grid of up to 3 columns.  All subplots share the same bin
+    edges (``xedges`` / ``yedges``) so that densities are directly comparable
+    across lead times.
+
+    **Dask contract**: All lazy histogram objects for every lead time (both
+    prediction and target) are collected into a single :func:`compute_jobs`
+    call.  No per-lead ``compute()`` is issued, ensuring a single scheduler
+    round-trip.
+
+    Parameters
+    ----------
+    ds_prediction : xr.Dataset
+        Prediction dataset.  **Must** contain a ``lead_time`` dimension with
+        at least 2 values for this function to produce output.
+    ds_target : xr.Dataset or None
+        Reference/observation dataset.  If ``None`` the subplots show only
+        the prediction distribution (no filled ground-truth contours).
+    var_x : str
+        Variable name plotted on the x-axis.
+    var_y : str
+        Variable name plotted on the y-axis.
+    xedges : np.ndarray
+        Bin edges for the x-axis, pre-computed from the global data range.
+    yedges : np.ndarray
+        Bin edges for the y-axis, pre-computed from the global data range.
+    out_root : Path
+        Root output directory.  A ``multivariate/`` sub-folder is created
+        automatically.
+    ensemble_token : str or None
+        Optional token appended to the output filename
+        (e.g. ``ensmean``, ``ens0``).
+    level_val : float, int, or None
+        Pressure-level value (e.g. ``500``) to select from 3-D variables
+        before slicing by lead time.  When ``None`` the full array is used
+        (2-D variable case).  The caller must pass the same value that was
+        used to compute ``xedges``/``yedges``.
+    level_token : str or None
+        Human-readable level label embedded in the output filename and
+        figure title (e.g. ``"500"``).  Mirrors ``level_val`` in string form.
+    """
+    # ── Guard: need multi-lead prediction ────────────────────────────────────
+    if "lead_time" not in ds_prediction[var_x].dims:
+        return
+    leads = ds_prediction["lead_time"].values
+    n_leads = len(leads)
+    if n_leads < 2:
+        return
+
+    # ── Pre-compute fill sentinels (out-of-range substitutes for NaN) ────────
+    fill_x = float(xedges[0]) - 1.0
+    fill_y = float(yedges[0]) - 1.0
+    range_x = [float(xedges[0]), float(xedges[-1])]
+    range_y = [float(yedges[0]), float(yedges[-1])]
+
+    # ── Build one lazy histogram job per lead time ────────────────────────────
+    # All lazy objects are collected here; a single compute_jobs call resolves
+    # the entire graph without repeated scheduler round-trips.
+    hist_jobs: list[dict] = []
+    for lt in leads:
+        # ── Prediction slice ──────────────────────────────────────────────────
+        # Apply level selection for 3-D variables before slicing by lead time.
+        _px = ds_prediction[var_x]
+        if level_val is not None and "level" in _px.dims:
+            _px = _px.sel(level=level_val)
+        da_xp = _px.sel(lead_time=lt).data.flatten()
+        _py = ds_prediction[var_y]
+        if level_val is not None and "level" in _py.dims:
+            _py = _py.sel(level=level_val)
+        da_yp = _py.sel(lead_time=lt).data.flatten()
+        da_xp = da.where(da.isnan(da_xp), fill_x, da_xp)
+        da_yp = da.where(da.isnan(da_yp), fill_y, da_yp)
+        h_pred_lazy, _, _ = da.histogram2d(
+            da_xp, da_yp, bins=[xedges, yedges], range=[range_x, range_y]
+        )
+
+        # ── Target slice (may lack lead_time dim — use full array in that case)
+        # Apply level selection first when dealing with 3-D target variables.
+        h_target_lazy = None
+        if ds_target is not None:
+            _tx = ds_target[var_x]
+            _ty = ds_target[var_y]
+            if level_val is not None:
+                if "level" in _tx.dims:
+                    _tx = _tx.sel(level=level_val)
+                if "level" in _ty.dims:
+                    _ty = _ty.sel(level=level_val)
+            if "lead_time" in _tx.dims:
+                da_xt = _tx.sel(lead_time=lt).data.flatten()
+            else:
+                da_xt = _tx.data.flatten()
+            if "lead_time" in _ty.dims:
+                da_yt = _ty.sel(lead_time=lt).data.flatten()
+            else:
+                da_yt = _ty.data.flatten()
+            da_xt = da.where(da.isnan(da_xt), fill_x, da_xt)
+            da_yt = da.where(da.isnan(da_yt), fill_y, da_yt)
+            h_target_lazy, _, _ = da.histogram2d(
+                da_xt, da_yt, bins=[xedges, yedges], range=[range_x, range_y]
+            )
+
+        hist_jobs.append(
+            {
+                "h_pred": h_pred_lazy,
+                "h_target": h_target_lazy,
+                "lt": lt,
+            }
+        )
+
+    # ── Single batch compute for all lead-time histograms ────────────────────
+    compute_jobs(
+        hist_jobs,
+        key_map={"h_pred": "hist_pred", "h_target": "hist_target"},
+        desc=f"Computing bivariate histograms by lead: {var_x} vs {var_y}",
+    )
+
+    # ── Grid layout ───────────────────────────────────────────────────────────
+    cols = min(3, n_leads)
+    rows = int(np.ceil(n_leads / cols))
+    fig, axs = plt.subplots(
+        rows,
+        cols,
+        figsize=(6 * cols, 5 * rows),
+        dpi=150,
+        constrained_layout=True,
+    )
+    axs_flat = np.atleast_1d(np.array(axs)).flatten()
+
+    last_i = 0
+    for i, job in enumerate(hist_jobs):
+        lt = job["lt"]
+        # Format lead-time label (timedelta64 → '+Nh', otherwise string)
+        if np.issubdtype(type(lt), np.timedelta64):
+            hours = int(lt / np.timedelta64(1, "h"))
+            lead_label = f"+{hours}h"
+        else:
+            lead_label = str(lt)
+
+        ax = axs_flat[i]
+        hist_pred = job.get("hist_pred")
+        hist_target = job.get("hist_target")
+
+        if hist_pred is None:
+            ax.set_title(f"Lead: {lead_label} (no data)")
+            ax.axis("off")
+            last_i = i
+            continue
+
+        # When target is unavailable, pass a zero array so plot_bivariate_histogram
+        # can still render the prediction contours without crashing.
+        if hist_target is None:
+            hist_target = np.zeros_like(hist_pred)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="Log scale: values of z <= 0 have been masked"
+            )
+            plot_bivariate_histogram(
+                hist_1=hist_pred,
+                hist_2=hist_target,
+                bins_x=xedges,
+                bins_y=yedges,
+                label_1="Model Prediction",
+                label_2="Ground Truth",
+                var_x=var_x,
+                var_y=var_y,
+                ax=ax,
+                xlabel=_get_label(ds_prediction[var_x], var_x),
+                ylabel=_get_label(ds_prediction[var_y], var_y),
+            )
+        # Replace the per-subplot title set inside plot_bivariate_histogram with
+        # one that also carries the lead-time label.
+        ax.set_title(
+            f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}\n{lead_label}",
+            fontsize=10,
+        )
+        last_i = i
+
+    # ── Hide any surplus subplots beyond n_leads ──────────────────────────────
+    for j in range(last_i + 1, len(axs_flat)):
+        axs_flat[j].axis("off")
+
+    lev_title = f" @ {level_token}" if level_token else ""
+    fig.suptitle(
+        f"Bivariate Histograms by Lead Time — "
+        f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}{lev_title}",
+        fontsize=14,
+    )
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    suffix = f"_{ensemble_token}" if ensemble_token else ""
+    lev_sfx = f"_{level_token}" if level_token else ""
+    out_dir = out_root / "multivariate"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_png = out_dir / f"bivariate_by_lead_{var_x}_{var_y}{lev_sfx}{suffix}.png"
+    fig.savefig(out_png, bbox_inches="tight")
+    plt.close(fig)
+    c.info(f"[multivariate] Saved per-lead-time bivariate grid: {out_png.name}")
+
+
 def calculate_and_plot_bivariate_histograms(
     ds_prediction: xr.Dataset,
     ds_target: xr.Dataset | None,
@@ -415,27 +629,49 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (missing in target)")
             continue
 
-        # Compute for Prediction
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        # Determine pressure levels to iterate.  2D variables produce a single
+        # None sentinel; 3D variables (with a 'level' coordinate) produce one
+        # entry per level so that histograms are computed independently per level.
+        has_level = "level" in ds_prediction[var_x].dims or "level" in ds_prediction[var_y].dims
+        if has_level:
+            ref_var = var_x if "level" in ds_prediction[var_x].dims else var_y
+            raw_levels = ds_prediction[ref_var].coords["level"].values
+            level_list: list[tuple[float | int | None, str | None]] = [
+                (lv.item() if hasattr(lv, "item") else lv, format_level_token(lv))
+                for lv in raw_levels
+            ]
+        else:
+            level_list = [(None, None)]
 
-        # Compute min/max lazily to determine range and handle NaNs
-        min_x_lazy = da.nanmin(da_x)
-        max_x_lazy = da.nanmax(da_x)
-        min_y_lazy = da.nanmin(da_y)
-        max_y_lazy = da.nanmax(da_y)
+        for level_val, level_token_str in level_list:
+            # Select the correct level slice when dealing with 3-D variables
+            da_xp_arr = ds_prediction[var_x]
+            da_yp_arr = ds_prediction[var_y]
+            if level_val is not None:
+                if "level" in da_xp_arr.dims:
+                    da_xp_arr = da_xp_arr.sel(level=level_val)
+                if "level" in da_yp_arr.dims:
+                    da_yp_arr = da_yp_arr.sel(level=level_val)
 
-        range_jobs.append(
-            {
-                "min_x": min_x_lazy,
-                "max_x": max_x_lazy,
-                "min_y": min_y_lazy,
-                "max_y": max_y_lazy,
-                "pair_idx": i,
-                "var_x": var_x,
-                "var_y": var_y,
-            }
-        )
+            # Compute min/max lazily to determine range and handle NaNs
+            min_x_lazy = da.nanmin(da_xp_arr.data.flatten())
+            max_x_lazy = da.nanmax(da_xp_arr.data.flatten())
+            min_y_lazy = da.nanmin(da_yp_arr.data.flatten())
+            max_y_lazy = da.nanmax(da_yp_arr.data.flatten())
+
+            range_jobs.append(
+                {
+                    "min_x": min_x_lazy,
+                    "max_x": max_x_lazy,
+                    "min_y": min_y_lazy,
+                    "max_y": max_y_lazy,
+                    "pair_idx": i,
+                    "var_x": var_x,
+                    "var_y": var_y,
+                    "level_val": level_val,
+                    "level_token": level_token_str,
+                }
+            )
 
     if not range_jobs:
         if skipped_pairs:
@@ -461,6 +697,8 @@ def calculate_and_plot_bivariate_histograms(
     for job in range_jobs:
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_val = job.get("level_val")
+        level_token_str = job.get("level_token")
 
         try:
             min_x = float(job["min_x_res"])
@@ -482,9 +720,16 @@ def calculate_and_plot_bivariate_histograms(
         fill_x = min_x - 1.0
         fill_y = min_y - 1.0
 
-        # Re-access data (dask arrays)
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        # Re-access data (dask arrays), applying level selection for 3-D variables
+        da_x_arr = ds_prediction[var_x]
+        da_y_arr = ds_prediction[var_y]
+        if level_val is not None:
+            if "level" in da_x_arr.dims:
+                da_x_arr = da_x_arr.sel(level=level_val)
+            if "level" in da_y_arr.dims:
+                da_y_arr = da_y_arr.sel(level=level_val)
+        da_x = da_x_arr.data.flatten()
+        da_y = da_y_arr.data.flatten()
 
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
@@ -499,8 +744,15 @@ def calculate_and_plot_bivariate_histograms(
 
         # Target data
         if ds_target is not None:
-            da_x_t = ds_target[var_x].data.flatten()
-            da_y_t = ds_target[var_y].data.flatten()
+            da_x_t_arr = ds_target[var_x]
+            da_y_t_arr = ds_target[var_y]
+            if level_val is not None:
+                if "level" in da_x_t_arr.dims:
+                    da_x_t_arr = da_x_t_arr.sel(level=level_val)
+                if "level" in da_y_t_arr.dims:
+                    da_y_t_arr = da_y_t_arr.sel(level=level_val)
+            da_x_t = da_x_t_arr.data.flatten()
+            da_y_t = da_y_t_arr.data.flatten()
 
             da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
             da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
@@ -522,6 +774,8 @@ def calculate_and_plot_bivariate_histograms(
                 "var_y": var_y,
                 "range_x": range_x,
                 "range_y": range_y,
+                "level_val": level_val,
+                "level_token": level_token_str,
             }
         )
 
@@ -546,10 +800,15 @@ def calculate_and_plot_bivariate_histograms(
         yedges = job["yedges"]
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_val = job.get("level_val")
+        level_token_str = job.get("level_token")
 
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
-        out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
+        lev_sfx = f"_{level_token_str}" if level_token_str else ""
+        out_file = (
+            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{lev_sfx}{suffix}.npz"
+        )
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         np.savez(
@@ -582,12 +841,32 @@ def calculate_and_plot_bivariate_histograms(
                 ylabel=_get_label(ds_prediction[var_y], var_y),
             )
 
-        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
+        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{lev_sfx}{suffix}.png"
         fig.savefig(plot_out, bbox_inches="tight")
         plt.close(fig)
 
+        pair_label = f"{var_x} vs {var_y}" + (f" @ {level_token_str}" if level_token_str else "")
         c.info(f"[multivariate] Saved bivariate plot: {plot_out.name}")
-        plotted_pairs.append(f"{var_x} vs {var_y}")
+        plotted_pairs.append(pair_label)
+
+        # ── Per-lead-time grid ────────────────────────────────────────────────
+        # When the prediction dataset has multiple lead times we additionally
+        # produce one figure per level (for 3-D variables) that arranges a
+        # bivariate-histogram panel for each lead time in a grid.  The same
+        # bin edges computed above are reused so all panels are comparable.
+        if "lead_time" in ds_prediction[var_x].dims and ds_prediction.sizes.get("lead_time", 1) > 1:
+            _plot_bivariate_per_lead_grid(
+                ds_prediction=ds_prediction,
+                ds_target=ds_target,
+                var_x=var_x,
+                var_y=var_y,
+                xedges=xedges,
+                yedges=yedges,
+                out_root=out_root,
+                ensemble_token=ensemble_token,
+                level_val=level_val,
+                level_token=level_token_str,
+            )
 
     # Summary output
     if plotted_pairs:
