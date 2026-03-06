@@ -241,40 +241,20 @@ For single-lead or purely single-init 3D runs, a combined NPZ is written instead
 
 Bivariate histograms compare the joint distribution of two variables between prediction and ground truth using log-scale 2-D density contour plots. Outputs are written to a `multivariate/` sub-folder under `output_root`.
 
-**Outputs per pair `[var_x, var_y]`:**
+#### Output files per pair `[var_x, var_y]`
 
-- Plot (PNG): `multivariate/bivariate_<var_x>_<var_y><_ens*>.png` — filled colour contours for the ground truth overlaid with greyscale contours for the prediction.
-- Data (NPZ): `multivariate/bivariate_hist_<var_x>_<var_y><_ens*>.npz` — raw histogram counts and bin edges (`hist`, `hist_target`, `bins_x`, `bins_y`).
+For every valid pair the module always produces:
 
-The ensemble token appended to the filename depends on the resolved mode:
+| File | Description |
+|---|---|
+| `bivariate_<var_x>_<var_y>[_<level>][_<ens>].png` | Aggregated histogram — filled colour contours for ground truth overlaid with greyscale contours for the prediction. Accumulates **all** lead times and (for 2-D pairs) all spatial and temporal dimensions. |
+| `bivariate_hist_<var_x>_<var_y>[_<level>][_<ens>].npz` | Raw histogram counts and bin edges (`hist`, `hist_target`, `bins_x`, `bins_y`). |
 
-| Mode     | Token            | Behaviour                             |
-|----------|------------------|---------------------------------------|
-| `mean`   | `ensmean`        | Ensemble is reduced to mean first.    |
-| `pooled` | `enspooled`      | All members' values are pooled.       |
-| `members`| `ens0`, `ens1`, … | One plot/NPZ pair per member.         |
+When the prediction dataset contains **more than one lead time**, an additional per-lead-time grid is emitted:
 
-**Example filenames:**
-
-```text
-multivariate/bivariate_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.png
-multivariate/bivariate_hist_10m_u_component_of_wind_10m_v_component_of_wind_ensmean.npz
-multivariate/bivariate_u_component_of_wind_v_component_of_wind_ens0.png   # members mode
-```
-
-**Configuring pairs** — edit `metrics.multivariate.bivariate_pairs` in your YAML:
-
-```yaml
-metrics:
-  multivariate:
-    bivariate_pairs:
-      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
-      - ["u_component_of_wind", "v_component_of_wind"]
-      - ["temperature", "specific_humidity"]   # requires both vars in dataset
-    # bins: 100   # optional, histogram resolution (default 100)
-```
-
-Pairs whose variables are absent from either dataset are skipped with a warning. Only variables present in **both** the prediction and target datasets can be used.
+| File | Description |
+|---|---|
+| `bivariate_by_lead_<var_x>_<var_y>[_<level>][_<ens>].png` | Grid of bivariate panels — one subplot per lead time (up to 3 columns). All panels share the same bin edges so densities are directly comparable across lead times. |
 
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 
