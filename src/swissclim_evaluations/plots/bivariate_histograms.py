@@ -128,67 +128,75 @@ def _get_physical_constraints(
         if is_temp_x:  # temperature on x-axis, q on y-axis
             T_arr = np.linspace(bins_x[0], bins_x[-1], 400)
             q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
-            constraints.append({
-                "type": "curve",
-                "value_x": T_arr,
-                "value_y": q_sat,
-                "fill_x": T_arr,
-                "fill_y": q_sat,
-                "fill": "above",
-                "color": "#d62728",
-                "lw": 2.0,
-                "ls": "--",
-                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
-                "fill_alpha": 0.13,
-                "fill_color": "#d62728",
-                "fill_hatch": "///",
-                "fill_label": "Supersaturated (unphysical)",
-            })
-            constraints.append({
-                "type": "hline",
-                "value": 0.0,
-                "fill": "below",
-                "color": "#8c1515",
-                "lw": 1.5,
-                "ls": ":",
-                "label": "$q = 0$",
-                "fill_alpha": 0.10,
-                "fill_color": "#8c1515",
-                "fill_hatch": "\\\\\\\\",
-                "fill_label": "$q < 0$ (unphysical)",
-            })
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": T_arr,
+                    "value_y": q_sat,
+                    "fill_x": T_arr,
+                    "fill_y": q_sat,
+                    "fill": "above",
+                    "color": "#d62728",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "fill_alpha": 0.13,
+                    "fill_color": "#d62728",
+                    "fill_hatch": "///",
+                    "fill_label": "Supersaturated (unphysical)",
+                }
+            )
+            constraints.append(
+                {
+                    "type": "hline",
+                    "value": 0.0,
+                    "fill": "below",
+                    "color": "#8c1515",
+                    "lw": 1.5,
+                    "ls": ":",
+                    "label": "$q = 0$",
+                    "fill_alpha": 0.10,
+                    "fill_color": "#8c1515",
+                    "fill_hatch": "\\\\\\\\",
+                    "fill_label": "$q < 0$ (unphysical)",
+                }
+            )
         else:  # q on x-axis, temperature on y-axis
             T_arr = np.linspace(bins_y[0], bins_y[-1], 400)
             q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
-            constraints.append({
-                "type": "curve",
-                "value_x": q_sat,
-                "value_y": T_arr,
-                "fill_x": q_sat,
-                "fill_y": T_arr,
-                "fill": "right",
-                "color": "#d62728",
-                "lw": 2.0,
-                "ls": "--",
-                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
-                "fill_alpha": 0.13,
-                "fill_color": "#d62728",
-                "fill_hatch": "///",
-                "fill_label": "Supersaturated (unphysical)",
-            })
-            constraints.append({
-                "type": "vline",
-                "value": 0.0,
-                "fill": "left",
-                "color": "#8c1515",
-                "lw": 1.5,
-                "ls": ":",
-                "label": "$q = 0$",
-                "fill_alpha": 0.10,
-                "fill_color": "#8c1515",
-                "fill_hatch": "\\\\\\\\",
-                "fill_label": "$q < 0$ (unphysical)",
-            })
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": q_sat,
+                    "value_y": T_arr,
+                    "fill_x": q_sat,
+                    "fill_y": T_arr,
+                    "fill": "right",
+                    "color": "#d62728",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "fill_alpha": 0.13,
+                    "fill_color": "#d62728",
+                    "fill_hatch": "///",
+                    "fill_label": "Supersaturated (unphysical)",
+                }
+            )
+            constraints.append(
+                {
+                    "type": "vline",
+                    "value": 0.0,
+                    "fill": "left",
+                    "color": "#8c1515",
+                    "lw": 1.5,
+                    "ls": ":",
+                    "label": "$q = 0$",
+                    "fill_alpha": 0.10,
+                    "fill_color": "#8c1515",
+                    "fill_hatch": "\\\\\\\\",
+                    "fill_label": "$q < 0$ (unphysical)",
+                }
+            )
 
     # ── Geopotential Height Gradient vs Wind Speed ──────────────────────────
     # Geostrophic balance: U_g = (g / f) * |∇Z|
@@ -203,60 +211,68 @@ def _get_physical_constraints(
             # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
             x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
             y_arr = slope * x_arr
-            constraints.append({
-                "type": "curve",
-                "value_x": x_arr,
-                "value_y": y_arr,
-                "color": "#ff7f0e",
-                "lw": 2.0,
-                "ls": "--",
-                "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-            })
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                }
+            )
         elif is_zgrad_y and is_ws_x:
             # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
             x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
             y_arr = x_arr / slope
-            constraints.append({
-                "type": "curve",
-                "value_x": x_arr,
-                "value_y": y_arr,
-                "color": "#ff7f0e",
-                "lw": 2.0,
-                "ls": "--",
-                "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-            })
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                }
+            )
 
         # Wind speed ≥ 0 hard bound
         if is_ws_y:
-            constraints.append({
-                "type": "hline",
-                "value": 0.0,
-                "fill": "below",
-                "color": "#d62728",
-                "lw": 1.5,
-                "ls": ":",
-                "label": "Wind speed $= 0$",
-                "fill_alpha": 0.10,
-                "fill_color": "#d62728",
-                "fill_hatch": "\\\\\\\\",
-                "fill_label": "Wind speed $< 0$ (unphysical)",
-            })
+            constraints.append(
+                {
+                    "type": "hline",
+                    "value": 0.0,
+                    "fill": "below",
+                    "color": "#d62728",
+                    "lw": 1.5,
+                    "ls": ":",
+                    "label": "Wind speed $= 0$",
+                    "fill_alpha": 0.10,
+                    "fill_color": "#d62728",
+                    "fill_hatch": "\\\\\\\\",
+                    "fill_label": "Wind speed $< 0$ (unphysical)",
+                }
+            )
         else:
-            constraints.append({
-                "type": "vline",
-                "value": 0.0,
-                "fill": "left",
-                "color": "#d62728",
-                "lw": 1.5,
-                "ls": ":",
-                "label": "Wind speed $= 0$",
-                "fill_alpha": 0.10,
-                "fill_color": "#d62728",
-                "fill_hatch": "\\\\\\\\",
-                "fill_label": "Wind speed $< 0$ (unphysical)",
-            })
+            constraints.append(
+                {
+                    "type": "vline",
+                    "value": 0.0,
+                    "fill": "left",
+                    "color": "#d62728",
+                    "lw": 1.5,
+                    "ls": ":",
+                    "label": "Wind speed $= 0$",
+                    "fill_alpha": 0.10,
+                    "fill_color": "#d62728",
+                    "fill_hatch": "\\\\\\\\",
+                    "fill_label": "Wind speed $< 0$ (unphysical)",
+                }
+            )
 
     return constraints
 
@@ -536,11 +552,13 @@ def _plot_bivariate_per_lead_grid(
                 da_xt, da_yt, bins=[xedges, yedges], range=[range_x, range_y]
             )
 
-        hist_jobs.append({
-            "h_pred": h_pred_lazy,
-            "h_target": h_target_lazy,
-            "lt": lt,
-        })
+        hist_jobs.append(
+            {
+                "h_pred": h_pred_lazy,
+                "h_target": h_target_lazy,
+                "lt": lt,
+            }
+        )
 
     # ── Single batch compute for all lead-time histograms ────────────────────
     compute_jobs(
@@ -599,6 +617,7 @@ def _plot_bivariate_per_lead_grid(
                 label_2="Ground Truth",
                 var_x=var_x,
                 var_y=var_y,
+                level_hpa=level_hpa,
                 ax=ax,
                 xlabel=_get_label(ds_prediction[var_x], var_x),
                 ylabel=_get_label(ds_prediction[var_y], var_y),
@@ -729,18 +748,20 @@ def calculate_and_plot_bivariate_histograms(
             min_y_lazy = da.nanmin(da_y)
             max_y_lazy = da.nanmax(da_y)
 
-            range_jobs.append({
-                "min_x": min_x_lazy,
-                "max_x": max_x_lazy,
-                "min_y": min_y_lazy,
-                "max_y": max_y_lazy,
-                "pair_idx": i,
-                "var_x": var_x,
-                "var_y": var_y,
-                "level_hpa": level_hpa,
-                "x_has_level": x_has_level,
-                "y_has_level": y_has_level,
-            })
+            range_jobs.append(
+                {
+                    "min_x": min_x_lazy,
+                    "max_x": max_x_lazy,
+                    "min_y": min_y_lazy,
+                    "max_y": max_y_lazy,
+                    "pair_idx": i,
+                    "var_x": var_x,
+                    "var_y": var_y,
+                    "level_hpa": level_hpa,
+                    "x_has_level": x_has_level,
+                    "y_has_level": y_has_level,
+                }
+            )
 
     if not range_jobs:
         if skipped_pairs:
@@ -832,17 +853,19 @@ def calculate_and_plot_bivariate_histograms(
             # Should not happen given checks above, but for safety
             h_target_lazy = None
 
-        hist_jobs.append({
-            "h_pred": h_pred_lazy,
-            "h_target": h_target_lazy,
-            "xedges": xedges,
-            "yedges": yedges,
-            "var_x": var_x,
-            "var_y": var_y,
-            "level_hpa": level_hpa,
-            "range_x": range_x,
-            "range_y": range_y,
-        })
+        hist_jobs.append(
+            {
+                "h_pred": h_pred_lazy,
+                "h_target": h_target_lazy,
+                "xedges": xedges,
+                "yedges": yedges,
+                "var_x": var_x,
+                "var_y": var_y,
+                "level_hpa": level_hpa,
+                "range_x": range_x,
+                "range_y": range_y,
+            }
+        )
 
     # Compute histograms in batch
     compute_jobs(
@@ -971,6 +994,8 @@ def plot_bivariate_histogram(
     ax: plt.Axes | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -989,6 +1014,10 @@ def plot_bivariate_histogram(
         ax: Axes to plot on. If None, creates new figure.
         xlabel: Label for x-axis. If None, uses var_x.
         ylabel: Label for y-axis. If None, uses var_y.
+        xlim: Optional explicit x-axis limits. When provided with ``ylim``,
+            these limits are applied before physical overlays are drawn.
+        ylim: Optional explicit y-axis limits. When provided with ``xlim``,
+            these limits are applied before physical overlays are drawn.
 
     Returns:
         The axes with the plot.
@@ -1008,12 +1037,16 @@ def plot_bivariate_histogram(
         bins_x, bins_y = bins_y, bins_x
         var_x, var_y = var_y, var_x
         xlabel, ylabel = ylabel, xlabel
+        if xlim is not None and ylim is not None:
+            xlim, ylim = ylim, xlim
     elif _is_geopotential_height(var_x) and _is_wind_speed(var_y):
         hist_1 = np.asarray(hist_1).T
         hist_2 = np.asarray(hist_2).T
         bins_x, bins_y = bins_y, bins_x
         var_x, var_y = var_y, var_x
         xlabel, ylabel = ylabel, xlabel
+        if xlim is not None and ylim is not None:
+            xlim, ylim = ylim, xlim
 
     # Calculate centers
     x_centers = (bins_x[:-1] + bins_x[1:]) / 2
@@ -1124,19 +1157,23 @@ def plot_bivariate_histogram(
         title += f" ({level_hpa:g} hPa)"
     ax.set_title(title)
 
-    # Zoom out by 25%
-    x_min, x_max = bins_x.min(), bins_x.max()
-    y_min, y_max = bins_y.min(), bins_y.max()
+    # Zoom out by 25%, unless explicit limits are provided by the caller.
+    if xlim is not None and ylim is not None:
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+    else:
+        x_min, x_max = bins_x.min(), bins_x.max()
+        y_min, y_max = bins_y.min(), bins_y.max()
 
-    x_range = x_max - x_min
-    y_range = y_max - y_min
+        x_range = x_max - x_min
+        y_range = y_max - y_min
 
-    x_center = (x_max + x_min) / 2
-    y_center = (y_max + y_min) / 2
+        x_center = (x_max + x_min) / 2
+        y_center = (y_max + y_min) / 2
 
-    # Expand by 25% (factor 1.25)
-    ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
-    ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
+        # Expand by 25% (factor 1.25)
+        ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
+        ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
 
     # ── Physical-constraint overlays ─────────────────────────────────────────
     final_xlim = ax.get_xlim()
