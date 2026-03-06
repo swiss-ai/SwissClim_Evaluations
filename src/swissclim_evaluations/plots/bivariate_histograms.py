@@ -15,7 +15,35 @@ from matplotlib.lines import Line2D
 
 from .. import console as c
 from ..dask_utils import compute_jobs
-from ..helpers import format_level_token, format_variable_name, get_variable_units
+from ..helpers import format_variable_name, get_variable_units
+
+
+def _is_geopotential_height(name: str) -> bool:
+    return "geopotential_height" in str(name).lower() and "gradient" not in str(name).lower()
+
+
+def _is_geopotential_height_gradient(name: str) -> bool:
+    return "geopotential_height_gradient" in str(name).lower()
+
+
+def _is_wind_speed(name: str) -> bool:
+    return "wind_speed" in str(name).lower()
+
+
+def _is_geostrophic_gradient_pair(var_x: str, var_y: str) -> bool:
+    lx = str(var_x).lower()
+    ly = str(var_y).lower()
+    return ("geopotential_height_gradient" in lx and "wind_speed" in ly) or (
+        "geopotential_height_gradient" in ly and "wind_speed" in lx
+    )
+
+
+def _format_level_suffix(level_hpa: float | None) -> str:
+    if level_hpa is None:
+        return ""
+    if float(level_hpa).is_integer():
+        return f"_level{int(level_hpa)}"
+    return f"_level{level_hpa:g}"
 
 
 def _get_label(da: xr.DataArray, var_name: str) -> str:
@@ -58,6 +86,7 @@ def _get_physical_constraints(
     var_y: str,
     bins_x: np.ndarray,
     bins_y: np.ndarray,
+    level_hpa: float | None = None,
 ) -> list[dict]:
     """Return a list of physical-constraint specs for the given variable pair.
 
@@ -66,8 +95,8 @@ def _get_physical_constraints(
 
     * **temperature × specific_humidity** — Clausius–Clapeyron saturation curve
       at 500 hPa (Bolton 1980).  The supersaturated region and q < 0 are shaded.
-    * **geopotential_height × wind_speed** — horizontal/vertical line at
-      wind speed = 0 (below that is kinematically unphysical), with shading.
+        * **geopotential_height_gradient × wind_speed** — geostrophic reference
+            line plus hard lower bound wind speed >= 0.
 
     Parameters
     ----------
@@ -77,14 +106,18 @@ def _get_physical_constraints(
         Bin-edge arrays produced by the histogram step.
     """
     constraints: list[dict] = []
+
+    # Draw physical overlays only for 500 hPa views.
+    if level_hpa is None or not np.isclose(float(level_hpa), 500.0):
+        return constraints
     lx, ly = var_x.lower(), var_y.lower()
 
     is_temp_x = "temperature" in lx
     is_temp_y = "temperature" in ly
     is_q_x = "specific_humidity" in lx
     is_q_y = "specific_humidity" in ly
-    is_z_x = "geopotential_height" in lx
-    is_z_y = "geopotential_height" in ly
+    is_zgrad_x = "geopotential_height_gradient" in lx
+    is_zgrad_y = "geopotential_height_gradient" in ly
     is_ws_x = "wind_speed" in lx
     is_ws_y = "wind_speed" in ly
 
@@ -95,111 +128,135 @@ def _get_physical_constraints(
         if is_temp_x:  # temperature on x-axis, q on y-axis
             T_arr = np.linspace(bins_x[0], bins_x[-1], 400)
             q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
-            constraints.append(
-                {
-                    "type": "curve",
-                    "value_x": T_arr,
-                    "value_y": q_sat,
-                    "fill_x": T_arr,
-                    "fill_y": q_sat,
-                    "fill": "above",
-                    "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
-                    "fill_alpha": 0.13,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "///",
-                    "fill_label": "Supersaturated (unphysical)",
-                }
-            )
-            constraints.append(
-                {
-                    "type": "hline",
-                    "value": 0.0,
-                    "fill": "below",
-                    "color": "#8c1515",
-                    "lw": 1.5,
-                    "ls": ":",
-                    "label": "$q = 0$",
-                    "fill_alpha": 0.10,
-                    "fill_color": "#8c1515",
-                    "fill_hatch": "\\\\\\\\",
-                    "fill_label": "$q < 0$ (unphysical)",
-                }
-            )
+            constraints.append({
+                "type": "curve",
+                "value_x": T_arr,
+                "value_y": q_sat,
+                "fill_x": T_arr,
+                "fill_y": q_sat,
+                "fill": "above",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                "fill_alpha": 0.13,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Supersaturated (unphysical)",
+            })
+            constraints.append({
+                "type": "hline",
+                "value": 0.0,
+                "fill": "below",
+                "color": "#8c1515",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "$q = 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#8c1515",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "$q < 0$ (unphysical)",
+            })
         else:  # q on x-axis, temperature on y-axis
             T_arr = np.linspace(bins_y[0], bins_y[-1], 400)
             q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
-            constraints.append(
-                {
-                    "type": "curve",
-                    "value_x": q_sat,
-                    "value_y": T_arr,
-                    "fill_x": q_sat,
-                    "fill_y": T_arr,
-                    "fill": "right",
-                    "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
-                    "fill_alpha": 0.13,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "///",
-                    "fill_label": "Supersaturated (unphysical)",
-                }
-            )
-            constraints.append(
-                {
-                    "type": "vline",
-                    "value": 0.0,
-                    "fill": "left",
-                    "color": "#8c1515",
-                    "lw": 1.5,
-                    "ls": ":",
-                    "label": "$q = 0$",
-                    "fill_alpha": 0.10,
-                    "fill_color": "#8c1515",
-                    "fill_hatch": "\\\\\\\\",
-                    "fill_label": "$q < 0$ (unphysical)",
-                }
-            )
+            constraints.append({
+                "type": "curve",
+                "value_x": q_sat,
+                "value_y": T_arr,
+                "fill_x": q_sat,
+                "fill_y": T_arr,
+                "fill": "right",
+                "color": "#d62728",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                "fill_alpha": 0.13,
+                "fill_color": "#d62728",
+                "fill_hatch": "///",
+                "fill_label": "Supersaturated (unphysical)",
+            })
+            constraints.append({
+                "type": "vline",
+                "value": 0.0,
+                "fill": "left",
+                "color": "#8c1515",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "$q = 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#8c1515",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "$q < 0$ (unphysical)",
+            })
 
-    # ── Geopotential Height vs Wind Speed ────────────────────────────────────
-    # Physical lower bound: wind speed ≥ 0 (it is a magnitude by definition).
-    if (is_z_x or is_z_y) and (is_ws_x or is_ws_y):
+    # ── Geopotential Height Gradient vs Wind Speed ──────────────────────────
+    # Geostrophic balance: U_g = (g / f) * |∇Z|
+    # Plotted as a diagonal reference line through the origin.
+    # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
+    if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
+        g = 9.81
+        f_abs = 1.0e-4  # mid-latitude Coriolis parameter, s⁻¹
+        slope = g / f_abs  # ≈ 98 100  (m s⁻¹) / (m m⁻¹)
+
+        if is_zgrad_x and is_ws_y:
+            # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
+            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
+            y_arr = slope * x_arr
+            constraints.append({
+                "type": "curve",
+                "value_x": x_arr,
+                "value_y": y_arr,
+                "color": "#ff7f0e",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+            })
+        elif is_zgrad_y and is_ws_x:
+            # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
+            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
+            y_arr = x_arr / slope
+            constraints.append({
+                "type": "curve",
+                "value_x": x_arr,
+                "value_y": y_arr,
+                "color": "#ff7f0e",
+                "lw": 2.0,
+                "ls": "--",
+                "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+            })
+
+        # Wind speed ≥ 0 hard bound
         if is_ws_y:
-            constraints.append(
-                {
-                    "type": "hline",
-                    "value": 0.0,
-                    "fill": "below",
-                    "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.15,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "///",
-                    "fill_label": "Wind speed $< 0$ (unphysical)",
-                }
-            )
-        else:  # wind speed on x-axis
-            constraints.append(
-                {
-                    "type": "vline",
-                    "value": 0.0,
-                    "fill": "left",
-                    "color": "#d62728",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.15,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "///",
-                    "fill_label": "Wind speed $< 0$ (unphysical)",
-                }
-            )
+            constraints.append({
+                "type": "hline",
+                "value": 0.0,
+                "fill": "below",
+                "color": "#d62728",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "Wind speed $= 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#d62728",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "Wind speed $< 0$ (unphysical)",
+            })
+        else:
+            constraints.append({
+                "type": "vline",
+                "value": 0.0,
+                "fill": "left",
+                "color": "#d62728",
+                "lw": 1.5,
+                "ls": ":",
+                "label": "Wind speed $= 0$",
+                "fill_alpha": 0.10,
+                "fill_color": "#d62728",
+                "fill_hatch": "\\\\\\\\",
+                "fill_label": "Wind speed $< 0$ (unphysical)",
+            })
 
     return constraints
 
@@ -377,8 +434,7 @@ def _plot_bivariate_per_lead_grid(
     yedges: np.ndarray,
     out_root: Path,
     ensemble_token: str | None = None,
-    level_val: float | int | None = None,
-    level_token: str | None = None,
+    level_hpa: float | None = None,
 ) -> None:
     """Generate a per-lead-time grid of bivariate histograms for one variable pair.
 
@@ -414,14 +470,11 @@ def _plot_bivariate_per_lead_grid(
     ensemble_token : str or None
         Optional token appended to the output filename
         (e.g. ``ensmean``, ``ens0``).
-    level_val : float, int, or None
-        Pressure-level value (e.g. ``500``) to select from 3-D variables
-        before slicing by lead time.  When ``None`` the full array is used
-        (2-D variable case).  The caller must pass the same value that was
-        used to compute ``xedges``/``yedges``.
-    level_token : str or None
-        Human-readable level label embedded in the output filename and
-        figure title (e.g. ``"500"``).  Mirrors ``level_val`` in string form.
+    level_hpa : float or None
+        Pressure-level value in hPa (e.g. ``500.0``) to select from 3-D
+        variables before slicing by lead time.  When ``None`` the full array
+        is used (2-D variable case).  The caller must pass the same value
+        that was used to compute ``xedges``/``yedges``.
     """
     # ── Guard: need multi-lead prediction ────────────────────────────────────
     if "lead_time" not in ds_prediction[var_x].dims:
@@ -445,12 +498,12 @@ def _plot_bivariate_per_lead_grid(
         # ── Prediction slice ──────────────────────────────────────────────────
         # Apply level selection for 3-D variables before slicing by lead time.
         _px = ds_prediction[var_x]
-        if level_val is not None and "level" in _px.dims:
-            _px = _px.sel(level=level_val)
+        if level_hpa is not None and "level" in _px.dims:
+            _px = _px.sel(level=level_hpa)
         da_xp = _px.sel(lead_time=lt).data.flatten()
         _py = ds_prediction[var_y]
-        if level_val is not None and "level" in _py.dims:
-            _py = _py.sel(level=level_val)
+        if level_hpa is not None and "level" in _py.dims:
+            _py = _py.sel(level=level_hpa)
         da_yp = _py.sel(lead_time=lt).data.flatten()
         da_xp = da.where(da.isnan(da_xp), fill_x, da_xp)
         da_yp = da.where(da.isnan(da_yp), fill_y, da_yp)
@@ -464,11 +517,11 @@ def _plot_bivariate_per_lead_grid(
         if ds_target is not None:
             _tx = ds_target[var_x]
             _ty = ds_target[var_y]
-            if level_val is not None:
+            if level_hpa is not None:
                 if "level" in _tx.dims:
-                    _tx = _tx.sel(level=level_val)
+                    _tx = _tx.sel(level=level_hpa)
                 if "level" in _ty.dims:
-                    _ty = _ty.sel(level=level_val)
+                    _ty = _ty.sel(level=level_hpa)
             if "lead_time" in _tx.dims:
                 da_xt = _tx.sel(lead_time=lt).data.flatten()
             else:
@@ -483,13 +536,11 @@ def _plot_bivariate_per_lead_grid(
                 da_xt, da_yt, bins=[xedges, yedges], range=[range_x, range_y]
             )
 
-        hist_jobs.append(
-            {
-                "h_pred": h_pred_lazy,
-                "h_target": h_target_lazy,
-                "lt": lt,
-            }
-        )
+        hist_jobs.append({
+            "h_pred": h_pred_lazy,
+            "h_target": h_target_lazy,
+            "lt": lt,
+        })
 
     # ── Single batch compute for all lead-time histograms ────────────────────
     compute_jobs(
@@ -564,7 +615,7 @@ def _plot_bivariate_per_lead_grid(
     for j in range(last_i + 1, len(axs_flat)):
         axs_flat[j].axis("off")
 
-    lev_title = f" @ {level_token}" if level_token else ""
+    lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
         f"Bivariate Histograms by Lead Time — "
         f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}{lev_title}",
@@ -573,7 +624,7 @@ def _plot_bivariate_per_lead_grid(
 
     # ── Save ──────────────────────────────────────────────────────────────────
     suffix = f"_{ensemble_token}" if ensemble_token else ""
-    lev_sfx = f"_{level_token}" if level_token else ""
+    lev_sfx = _format_level_suffix(level_hpa)
     out_dir = out_root / "multivariate"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_png = out_dir / f"bivariate_by_lead_{var_x}_{var_y}{lev_sfx}{suffix}.png"
@@ -629,49 +680,67 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (missing in target)")
             continue
 
-        # Determine pressure levels to iterate.  2D variables produce a single
-        # None sentinel; 3D variables (with a 'level' coordinate) produce one
-        # entry per level so that histograms are computed independently per level.
-        has_level = "level" in ds_prediction[var_x].dims or "level" in ds_prediction[var_y].dims
-        if has_level:
-            ref_var = var_x if "level" in ds_prediction[var_x].dims else var_y
-            raw_levels = ds_prediction[ref_var].coords["level"].values
-            level_list: list[tuple[float | int | None, str | None]] = [
-                (lv.item() if hasattr(lv, "item") else lv, format_level_token(lv))
-                for lv in raw_levels
-            ]
-        else:
-            level_list = [(None, None)]
+        pred_x = ds_prediction[var_x]
+        pred_y = ds_prediction[var_y]
+        targ_x = ds_target[var_x]
+        targ_y = ds_target[var_y]
 
-        for level_val, level_token_str in level_list:
-            # Select the correct level slice when dealing with 3-D variables
-            da_xp_arr = ds_prediction[var_x]
-            da_yp_arr = ds_prediction[var_y]
-            if level_val is not None:
-                if "level" in da_xp_arr.dims:
-                    da_xp_arr = da_xp_arr.sel(level=level_val)
-                if "level" in da_yp_arr.dims:
-                    da_yp_arr = da_yp_arr.sel(level=level_val)
+        x_has_level = "level" in pred_x.dims
+        y_has_level = "level" in pred_y.dims
+
+        levels_to_process: list[float | None]
+        if x_has_level or y_has_level:
+            level_values: np.ndarray | None = None
+
+            def _merge_levels(level_arr: np.ndarray) -> None:
+                nonlocal level_values
+                if level_values is None:
+                    level_values = np.asarray(level_arr)
+                else:
+                    level_values = np.intersect1d(level_values, np.asarray(level_arr))
+
+            if x_has_level:
+                _merge_levels(pred_x["level"].values)
+            if "level" in targ_x.dims:
+                _merge_levels(targ_x["level"].values)
+            if y_has_level:
+                _merge_levels(pred_y["level"].values)
+            if "level" in targ_y.dims:
+                _merge_levels(targ_y["level"].values)
+
+            if level_values is None or len(level_values) == 0:
+                skipped_pairs.append(f"{var_x} vs {var_y} (no common levels)")
+                continue
+
+            levels_to_process = [float(v) for v in np.asarray(level_values, dtype=float)]
+        else:
+            levels_to_process = [None]
+
+        for level_hpa in levels_to_process:
+            pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
+            pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
+
+            da_x = pred_x_sel.data.flatten()
+            da_y = pred_y_sel.data.flatten()
 
             # Compute min/max lazily to determine range and handle NaNs
-            min_x_lazy = da.nanmin(da_xp_arr.data.flatten())
-            max_x_lazy = da.nanmax(da_xp_arr.data.flatten())
-            min_y_lazy = da.nanmin(da_yp_arr.data.flatten())
-            max_y_lazy = da.nanmax(da_yp_arr.data.flatten())
+            min_x_lazy = da.nanmin(da_x)
+            max_x_lazy = da.nanmax(da_x)
+            min_y_lazy = da.nanmin(da_y)
+            max_y_lazy = da.nanmax(da_y)
 
-            range_jobs.append(
-                {
-                    "min_x": min_x_lazy,
-                    "max_x": max_x_lazy,
-                    "min_y": min_y_lazy,
-                    "max_y": max_y_lazy,
-                    "pair_idx": i,
-                    "var_x": var_x,
-                    "var_y": var_y,
-                    "level_val": level_val,
-                    "level_token": level_token_str,
-                }
-            )
+            range_jobs.append({
+                "min_x": min_x_lazy,
+                "max_x": max_x_lazy,
+                "min_y": min_y_lazy,
+                "max_y": max_y_lazy,
+                "pair_idx": i,
+                "var_x": var_x,
+                "var_y": var_y,
+                "level_hpa": level_hpa,
+                "x_has_level": x_has_level,
+                "y_has_level": y_has_level,
+            })
 
     if not range_jobs:
         if skipped_pairs:
@@ -697,8 +766,9 @@ def calculate_and_plot_bivariate_histograms(
     for job in range_jobs:
         var_x = job["var_x"]
         var_y = job["var_y"]
-        level_val = job.get("level_val")
-        level_token_str = job.get("level_token")
+        level_hpa = job["level_hpa"]
+        x_has_level = bool(job.get("x_has_level", False))
+        y_has_level = bool(job.get("y_has_level", False))
 
         try:
             min_x = float(job["min_x_res"])
@@ -720,16 +790,11 @@ def calculate_and_plot_bivariate_histograms(
         fill_x = min_x - 1.0
         fill_y = min_y - 1.0
 
-        # Re-access data (dask arrays), applying level selection for 3-D variables
-        da_x_arr = ds_prediction[var_x]
-        da_y_arr = ds_prediction[var_y]
-        if level_val is not None:
-            if "level" in da_x_arr.dims:
-                da_x_arr = da_x_arr.sel(level=level_val)
-            if "level" in da_y_arr.dims:
-                da_y_arr = da_y_arr.sel(level=level_val)
-        da_x = da_x_arr.data.flatten()
-        da_y = da_y_arr.data.flatten()
+        # Re-access data (dask arrays)
+        pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]
+        pred_y = ds_prediction[var_y].sel(level=level_hpa) if y_has_level else ds_prediction[var_y]
+        da_x = pred_x.data.flatten()
+        da_y = pred_y.data.flatten()
 
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
@@ -744,15 +809,18 @@ def calculate_and_plot_bivariate_histograms(
 
         # Target data
         if ds_target is not None:
-            da_x_t_arr = ds_target[var_x]
-            da_y_t_arr = ds_target[var_y]
-            if level_val is not None:
-                if "level" in da_x_t_arr.dims:
-                    da_x_t_arr = da_x_t_arr.sel(level=level_val)
-                if "level" in da_y_t_arr.dims:
-                    da_y_t_arr = da_y_t_arr.sel(level=level_val)
-            da_x_t = da_x_t_arr.data.flatten()
-            da_y_t = da_y_t_arr.data.flatten()
+            targ_x = (
+                ds_target[var_x].sel(level=level_hpa)
+                if "level" in ds_target[var_x].dims and level_hpa is not None
+                else ds_target[var_x]
+            )
+            targ_y = (
+                ds_target[var_y].sel(level=level_hpa)
+                if "level" in ds_target[var_y].dims and level_hpa is not None
+                else ds_target[var_y]
+            )
+            da_x_t = targ_x.data.flatten()
+            da_y_t = targ_y.data.flatten()
 
             da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
             da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
@@ -764,20 +832,17 @@ def calculate_and_plot_bivariate_histograms(
             # Should not happen given checks above, but for safety
             h_target_lazy = None
 
-        hist_jobs.append(
-            {
-                "h_pred": h_pred_lazy,
-                "h_target": h_target_lazy,
-                "xedges": xedges,
-                "yedges": yedges,
-                "var_x": var_x,
-                "var_y": var_y,
-                "range_x": range_x,
-                "range_y": range_y,
-                "level_val": level_val,
-                "level_token": level_token_str,
-            }
-        )
+        hist_jobs.append({
+            "h_pred": h_pred_lazy,
+            "h_target": h_target_lazy,
+            "xedges": xedges,
+            "yedges": yedges,
+            "var_x": var_x,
+            "var_y": var_y,
+            "level_hpa": level_hpa,
+            "range_x": range_x,
+            "range_y": range_y,
+        })
 
     # Compute histograms in batch
     compute_jobs(
@@ -800,14 +865,13 @@ def calculate_and_plot_bivariate_histograms(
         yedges = job["yedges"]
         var_x = job["var_x"]
         var_y = job["var_y"]
-        level_val = job.get("level_val")
-        level_token_str = job.get("level_token")
+        level_hpa = job.get("level_hpa")
+        level_suffix = _format_level_suffix(level_hpa)
 
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
-        lev_sfx = f"_{level_token_str}" if level_token_str else ""
         out_file = (
-            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{lev_sfx}{suffix}.npz"
+            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{level_suffix}{suffix}.npz"
         )
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -817,6 +881,9 @@ def calculate_and_plot_bivariate_histograms(
             bins_x=xedges,
             bins_y=yedges,
             hist_target=hist_target,
+            var_x=var_x,
+            var_y=var_y,
+            level_hpa=np.nan if level_hpa is None else float(level_hpa),
         )
 
         # Generate plot immediately
@@ -827,6 +894,16 @@ def calculate_and_plot_bivariate_histograms(
             warnings.filterwarnings(
                 "ignore", message="Log scale: values of z <= 0 have been masked"
             )
+            label_da_x = (
+                ds_prediction[var_x].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_x].dims and level_hpa is not None)
+                else ds_prediction[var_x]
+            )
+            label_da_y = (
+                ds_prediction[var_y].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_y].dims and level_hpa is not None)
+                else ds_prediction[var_y]
+            )
             plot_bivariate_histogram(
                 hist_1=hist_pred,
                 hist_2=hist_target,
@@ -836,18 +913,23 @@ def calculate_and_plot_bivariate_histograms(
                 label_2="Ground Truth",
                 var_x=var_x,
                 var_y=var_y,
+                level_hpa=level_hpa,
                 ax=ax,
-                xlabel=_get_label(ds_prediction[var_x], var_x),
-                ylabel=_get_label(ds_prediction[var_y], var_y),
+                xlabel=_get_label(label_da_x, var_x),
+                ylabel=_get_label(label_da_y, var_y),
             )
 
-        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{lev_sfx}{suffix}.png"
+        plot_out = (
+            out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{level_suffix}{suffix}.png"
+        )
         fig.savefig(plot_out, bbox_inches="tight")
         plt.close(fig)
 
-        pair_label = f"{var_x} vs {var_y}" + (f" @ {level_token_str}" if level_token_str else "")
         c.info(f"[multivariate] Saved bivariate plot: {plot_out.name}")
-        plotted_pairs.append(pair_label)
+        if level_hpa is None:
+            plotted_pairs.append(f"{var_x} vs {var_y}")
+        else:
+            plotted_pairs.append(f"{var_x} vs {var_y} @ {level_hpa:g} hPa")
 
         # ── Per-lead-time grid ────────────────────────────────────────────────
         # When the prediction dataset has multiple lead times we additionally
@@ -864,8 +946,7 @@ def calculate_and_plot_bivariate_histograms(
                 yedges=yedges,
                 out_root=out_root,
                 ensemble_token=ensemble_token,
-                level_val=level_val,
-                level_token=level_token_str,
+                level_hpa=level_hpa,
             )
 
     # Summary output
@@ -886,6 +967,7 @@ def plot_bivariate_histogram(
     label_2: str,
     var_x: str,
     var_y: str,
+    level_hpa: float | None = None,
     ax: plt.Axes | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
@@ -913,6 +995,25 @@ def plot_bivariate_histogram(
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 8))
+
+    # For geopotential-height (or its gradient) vs wind-speed, enforce a physically
+    # intuitive view: x-axis = wind speed / gradient, y-axis = geopotential height.
+    if _is_geopotential_height_gradient(var_x) and _is_wind_speed(var_y):
+        # Keep gradient on x, wind speed on y — natural geostrophic axes.
+        pass
+    elif _is_geopotential_height_gradient(var_y) and _is_wind_speed(var_x):
+        # Swap so gradient is on x and wind speed is on y.
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
+    elif _is_geopotential_height(var_x) and _is_wind_speed(var_y):
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
 
     # Calculate centers
     x_centers = (bins_x[:-1] + bins_x[1:]) / 2
@@ -1012,7 +1113,16 @@ def plot_bivariate_histogram(
 
     ax.set_xlabel(xlabel if xlabel else var_x)
     ax.set_ylabel(ylabel if ylabel else var_y)
-    ax.set_title(f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}")
+
+    if _is_geostrophic_gradient_pair(var_x, var_y):
+        ax.tick_params(axis="x", labelrotation=45)
+        for tick in ax.get_xticklabels():
+            tick.set_ha("right")
+
+    title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
+    if level_hpa is not None:
+        title += f" ({level_hpa:g} hPa)"
+    ax.set_title(title)
 
     # Zoom out by 25%
     x_min, x_max = bins_x.min(), bins_x.max()
@@ -1031,7 +1141,13 @@ def plot_bivariate_histogram(
     # ── Physical-constraint overlays ─────────────────────────────────────────
     final_xlim = ax.get_xlim()
     final_ylim = ax.get_ylim()
-    constraints = _get_physical_constraints(var_x, var_y, bins_x, bins_y)
+    constraints = _get_physical_constraints(
+        var_x,
+        var_y,
+        bins_x,
+        bins_y,
+        level_hpa=level_hpa,
+    )
     constraint_entries = _draw_physical_constraints(
         ax,
         constraints,

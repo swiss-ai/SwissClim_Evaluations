@@ -159,7 +159,7 @@ def _intercompare_spaghetti(
         fig.suptitle(
             f"Ensemble Spaghetti — " f"{format_variable_name(variable)}{lvl_str}",
             fontsize=12,
-            y=1.02,
+            y=1.08,
         )
 
         stem = base.replace(".npz", "")

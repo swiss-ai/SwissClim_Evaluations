@@ -27,10 +27,12 @@ Module selection notes:
     - `metrics` / `deterministic` / `deterministic_metrics`
     - `ets`
     - `prob` / `probabilistic`
+    - `ssim`
+    - `multivariate`
 - Unknown module names are ignored with a warning.
 - If a requested module has no matching source artifacts across all model folders, it is skipped automatically with a warning.
 
-This is especially useful for runs created with `plotting.output_mode: none`, where artifact-only modules (for example `maps`, `histograms`, `vertical_profiles`) may not produce files for intercomparison.
+This is especially useful for runs created with `plotting.output_mode: none`, where artifact-only modules (for example `maps`, `histograms`, `vertical_profiles`, `multivariate`) may not produce files for intercomparison.
 
 What gets combined:
 
@@ -109,3 +111,7 @@ What gets combined:
         *   `crps_spatial_<var>_per_lead_compare.png`: CRPS spatial map grid (rows = lead times with `Target (+Xh)` labels, cols = models).
         *   `pit_hist_<var>[_<level>]_compare.png`: PIT histogram comparison (per level for 3D variables).
         *   `spaghetti_<var>[_<level>]_compare.png`: Side-by-side spaghetti timeseries comparison (one panel per model). Each panel shows ensemble members as thin coloured lines (model's assigned colour) and the shared ground-truth target as a thick black line. Requires `output_mode` to include `npz` in the single-model run.
+
+*   **Multivariate**
+    *   **Plots**:
+        *   `bivariate_<var_x>_<var_y>[_level<lvl>]_compare.png`: Side-by-side 2D histogram density compare for each variable pair (target vs each model panel).

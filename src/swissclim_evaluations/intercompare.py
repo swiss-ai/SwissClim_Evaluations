@@ -22,6 +22,9 @@ from swissclim_evaluations.intercomparison.modules.histograms import (
     intercompare_histograms,
 )
 from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
+from swissclim_evaluations.intercomparison.modules.multivariate import (
+    intercompare_multivariate,
+)
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
@@ -62,6 +65,7 @@ MODULE_ALIASES: dict[str, str] = {
     "metrics": "metrics",
     "ets": "ets",
     "prob": "prob",
+    "multivariate": "multivariate",
     # long-form aliases
     "histograms": "hist",
     "wd_kde": "kde",
@@ -74,6 +78,7 @@ MODULE_ALIASES: dict[str, str] = {
     "deterministic_metrics": "metrics",
     "energy": "spectra",
     "vertical": "vprof",
+    "bivariate": "multivariate",
 }
 
 
@@ -108,6 +113,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/spaghetti_*.npz",
     ),
     "ssim": ("ssim/ssim_ssim_*.csv",),
+    "multivariate": ("multivariate/bivariate_hist_*.npz",),
 }
 
 
@@ -217,11 +223,29 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
         ssim_cfg = metrics_cfg.get("ssim", {}) if isinstance(metrics_cfg, dict) else {}
         sigma = ssim_cfg.get("sigma", 1.5) if isinstance(ssim_cfg, dict) else 1.5
         return f"SSIM (sigma={sigma})", "n/a"
+    if module == "multivariate":
+        multi_cfg = metrics_cfg.get("multivariate", {}) if isinstance(metrics_cfg, dict) else {}
+        pairs = multi_cfg.get("bivariate_pairs") if isinstance(multi_cfg, dict) else None
+        bins = multi_cfg.get("bins", "default") if isinstance(multi_cfg, dict) else "default"
+        if isinstance(pairs, list) and pairs:
+            return f"bivariate_pairs={len(pairs)}; bins={bins}", "n/a"
+        return f"bivariate_pairs=default; bins={bins}", "n/a"
     return "n/a", "n/a"
 
 
 def _print_module_config_summary(mods: set[str], cfg: dict[str, Any]) -> None:
-    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "prob", "ssim"]
+    module_order = [
+        "maps",
+        "hist",
+        "kde",
+        "spectra",
+        "vprof",
+        "metrics",
+        "ets",
+        "prob",
+        "ssim",
+        "multivariate",
+    ]
     c.section("Configured Metrics/Thresholds")
     for module in module_order:
         enabled = module in mods
@@ -255,6 +279,7 @@ def run_from_config(cfg: dict) -> None:
         "prob",
         "vprof",
         "ssim",
+        "multivariate",
     ]
     modules = [str(m).lower() for m in modules]
     # Other options
@@ -303,6 +328,8 @@ def run_from_config(cfg: dict) -> None:
         )
     if "ssim" in mods:
         intercompare_ssim(models, labels, out_root)
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 
