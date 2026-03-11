@@ -65,10 +65,22 @@ cd "$PROJECT_ROOT" || {
     exit 1
 }
 
+# Resolve a path to an absolute path without requiring Python on the host.
+_abs_path() {
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$1"
+    else
+        (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")")
+    fi
+}
+
 resolve_output_dir() {
     local cfg_path="$1"
     local project_root="$2"
-    python - <<'PY' "$cfg_path" "$project_root"
+    local py_bin
+    py_bin=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+    [ -z "$py_bin" ] && return 0
+    "$py_bin" - <<'PY' "$cfg_path" "$project_root"
 import os
 import sys
 from pathlib import Path
@@ -155,23 +167,11 @@ for config in "${EVAL_CONFIGS[@]}"; do
     [ -z "$config" ] && continue
     resolved=""
     if [ -f "$config" ]; then
-        resolved=$(python - <<'PY' "$config"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
-)
+        resolved=$(_abs_path "$config")
     elif [ -f "${SUBMIT_DIR}/${config}" ]; then
-        resolved=$(python - <<'PY' "${SUBMIT_DIR}/${config}"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
-)
+        resolved=$(_abs_path "${SUBMIT_DIR}/${config}")
     elif [ -f "${PROJECT_ROOT}/${config}" ]; then
-        resolved=$(python - <<'PY' "${PROJECT_ROOT}/${config}"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
-)
+        resolved=$(_abs_path "${PROJECT_ROOT}/${config}")
     else
         echo "ERROR: Config file not found: $config"
         echo "Checked: '$config', '${SUBMIT_DIR}/${config}', '${PROJECT_ROOT}/${config}'"
@@ -207,24 +207,12 @@ if ! [[ "$PARALLEL_BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "$PARALLEL_BATCH_SIZE" -lt 1 
     exit 1
 fi
 
-TOTAL_USABLE_RAM_GIB=$(python - <<'PY' "$NODE_RAM_GIB" "$NODE_RAM_USAGE_FRACTION"
-import sys
-node_ram = float(sys.argv[1])
-fraction = float(sys.argv[2])
-print(max(1, int(node_ram * fraction)))
-PY
-)
+TOTAL_USABLE_RAM_GIB=$(awk "BEGIN { v=int($NODE_RAM_GIB * $NODE_RAM_USAGE_FRACTION); print (v<1?1:v) }")
 
 # Memory per eval is always based on the fixed batch width, NOT the total number of
 # configs.  This guarantees that no matter how many configs are in the list, each
 # running eval gets the same generous slice of RAM and never races against N others.
-EVAL_MEMORY_BUDGET_GIB=$(python - <<'PY' "$TOTAL_USABLE_RAM_GIB" "$PARALLEL_BATCH_SIZE"
-import sys
-usable = float(sys.argv[1])
-batch  = int(sys.argv[2])
-print(max(1, int(usable / batch)))
-PY
-)
+EVAL_MEMORY_BUDGET_GIB=$(awk "BEGIN { v=int($TOTAL_USABLE_RAM_GIB / $PARALLEL_BATCH_SIZE); print (v<1?1:v) }")
 
 export SWISSCLIM_DASK_MEMORY_BUDGET_GIB="$EVAL_MEMORY_BUDGET_GIB"
 export SWISSCLIM_DASK_MEMORY_BUDGET_FRACTION="$DASK_EVAL_MEMORY_FRACTION"

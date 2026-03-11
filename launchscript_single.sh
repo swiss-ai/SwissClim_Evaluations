@@ -43,30 +43,28 @@ cd "$PROJECT_ROOT" || {
 }
 
 # Resolve CONFIG_FILE robustly (absolute or relative to submit directory)
+_abs_path() {
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$1"
+    else
+        (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")")
+    fi
+}
 resolve_config_path() {
     local cfg="$1"
     if [ -z "$cfg" ]; then
         return 1
     fi
     if [ -f "$cfg" ]; then
-        python - <<'PY' "$cfg"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
+        _abs_path "$cfg"
         return 0
     fi
     if [ -f "${SUBMIT_DIR}/${cfg}" ]; then
-        python - <<'PY' "${SUBMIT_DIR}/${cfg}"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
+        _abs_path "${SUBMIT_DIR}/${cfg}"
         return 0
     fi
     if [ -f "${PROJECT_ROOT}/${cfg}" ]; then
-        python - <<'PY' "${PROJECT_ROOT}/${cfg}"
-import os, sys
-print(os.path.abspath(sys.argv[1]))
-PY
+        _abs_path "${PROJECT_ROOT}/${cfg}"
         return 0
     fi
     return 1
@@ -75,7 +73,10 @@ PY
 resolve_output_dir() {
     local cfg_path="$1"
     local project_root="$2"
-    python - <<'PY' "$cfg_path" "$project_root"
+    local py_bin
+    py_bin=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+    [ -z "$py_bin" ] && return 0
+    "$py_bin" - <<'PY' "$cfg_path" "$project_root"
 import os
 import sys
 from pathlib import Path
@@ -103,6 +104,10 @@ PY
 if ! CONFIG_FILE_RESOLVED="$(resolve_config_path "$CONFIG_FILE")"; then
     echo "ERROR: Config file not found: $CONFIG_FILE"
     echo "Checked: '$CONFIG_FILE', '${SUBMIT_DIR}/${CONFIG_FILE}', '${PROJECT_ROOT}/${CONFIG_FILE}'"
+    exit 1
+fi
+if [ -z "$CONFIG_FILE_RESOLVED" ]; then
+    echo "ERROR: Failed to resolve absolute path for config: $CONFIG_FILE"
     exit 1
 fi
 CONFIG_FILE="$CONFIG_FILE_RESOLVED"
