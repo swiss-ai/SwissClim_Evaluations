@@ -32,16 +32,21 @@ selection:
   # otherwise along init_time. Set to null to disable.
   temporal_resolution_hours: null
 
-  # Time selection (one of the following):
-  #   1) Single range [start, end]:
-  #      datetimes: ["2023-01-02T12", "2023-01-03T00"]
-  #   2) Multiple ranges:
-  #      datetimes: ["2023-01-02T00:2023-01-02T06", "2023-01-03T12:2023-01-03T18"]
-  #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
-  #   3) Explicit non-contiguous timestamps:
-  #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
-  # For target ERA5 (time) and prediction: (init_time+lead_time), the CLI aligns by
-  # valid_time = init_time + lead_time.
+  # Time selection via `datetimes`; three forms (freely mixed in the same list):
+  #
+  #   1) Ranges  — "start:end" selects all timestamps in [start, end] (inclusive):
+  #      datetimes: ["2023-01-02T00:2023-01-08T23", "2023-07-01T00:2023-07-07T23"]
+  #      Pair-list syntax is also accepted: [["2023-01-02T00","2023-01-08T23"], ...]
+  #
+  #   2) Single points — a bare timestamp (no colon) selects exactly that step:
+  #      datetimes: ["2023-01-10T00", "2023-04-10T00", "2023-07-10T00", "2023-10-10T00"]
+  #
+  #   3) No filtering — empty list or omit the key entirely:
+  #      datetimes: []
+  #
+  # Forms 1 and 2 can be combined freely in the same list.
+  # For ERA5 targets the end bound is automatically extended by max_hour so that
+  # valid_time = init_time + lead_time remains covered.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     "2023-04-02T00:2023-04-08T23",
@@ -99,6 +104,19 @@ selection:
   #     - Use plotting.plot_ensemble_members for restricting WHICH members are plotted in
   #       members-capable modules without discarding others for metrics.
   ensemble_members: null
+
+  # Per-module ensemble member selection — pure overrides.
+  # Accepts the same entries as the global 'ensemble_members' above.
+  # Indices are zero-based and refer to positions in the *full* (unfiltered) ensemble.
+  ensemble_members_per_module:
+    maps: null               # e.g. [0, 1] → use members 0 and 1 from the full ensemble
+    histograms: null         # e.g. null    → use globally-filtered dataset
+    wd_kde: null
+    energy_spectra: null
+    vertical_profiles: null
+    deterministic: null
+    ets: null
+    probabilistic: null
 
   # Per-module ensemble modes (override defaults if needed):
   #   mean     → reduce to mean (ensmean)

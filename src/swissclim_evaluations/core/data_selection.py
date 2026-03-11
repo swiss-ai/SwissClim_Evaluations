@@ -62,13 +62,6 @@ def _ensemble_handling_message(
 def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
     if not isinstance(values, list | tuple):  # ruff UP038
         return []
-    # Case: exactly two entries without ':' → treat as single [start, end]
-    if (
-        len(values) == 2
-        and all(isinstance(v, str) for v in values)
-        and all(":" not in v for v in values)  # plain bounds
-    ):
-        return [(values[0], values[1])]
     ranges: list[tuple[str | None, str | None]] = []
     for it in values:
         if isinstance(it, list | tuple) and len(it) == 2:  # ruff UP038
@@ -108,7 +101,6 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0
     latitudes: list[float] | None = sel.get("latitudes")
     longitudes: list[float] | None = sel.get("longitudes")
     datetimes: list[str] | None = sel.get("datetimes")
-    datetimes_list: list[str] | None = sel.get("datetimes_list")
 
     if levels is not None and "level" in ds.dims:
         try:
@@ -186,33 +178,7 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0
                 "convention (0–360 vs -180..180)."
             )
 
-    # Non-contiguous explicit timestamps take precedence if provided
-    if datetimes_list is not None and len(datetimes_list) > 0:
-        try:
-            req = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
-        except Exception:
-            req = list(datetimes_list)
-        dim_name = (
-            "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
-        )
-        if dim_name is not None:
-            try:
-                available = set(ds[dim_name].values.tolist())
-            except Exception:
-                available = set()
-            present = [x for x in req if x in available]
-            missing = [x for x in req if x not in available]
-            if missing:
-                raise KeyError(
-                    "Requested timestamps not found in "
-                    f"{dim_name}: {missing[:6]}"
-                    f"{' ...' if len(missing) > 6 else ''}"
-                )
-            if present:
-                ds = ds.sel({dim_name: present})
-        return ds
-
-    if datetimes is not None:
+    if datetimes:  # None or empty list → no time filtering
         dim_name = (
             "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
         )
@@ -221,29 +187,6 @@ def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0
 
         ranges = _parse_time_ranges(datetimes)
         if not ranges:
-            if len(datetimes) >= 2:
-                # If selecting on 'time' (typical for ERA5 targets) and multi-lead with a
-                # max_hour horizon is configured, extend the upper bound so that
-                # valid_time = init+lead remains covered by the ground-truth window.
-                end = datetimes[1]
-                try:
-                    if dim_name == "time" and extend_end_hours > 0:
-                        end_dt = np.datetime64(end).astype("datetime64[ns]")
-                        end_ext = end_dt + np.timedelta64(int(extend_end_hours), "h")
-                        end = str(end_ext)
-                    else:
-                        lt_cfg = (cfg or {}).get("lead_time", {})
-                        mode = str(lt_cfg.get("mode", "first")).lower()
-                        max_h = lt_cfg.get("max_hour")
-                        if dim_name == "time" and mode != "first" and max_h is not None:
-                            end_dt = np.datetime64(end).astype("datetime64[ns]")
-                            end_ext = end_dt + np.timedelta64(int(max_h), "h")
-                            end = str(end_ext)
-                except Exception:
-                    # If any error occurs while extending the end bound, fall back to the original
-                    # end value.
-                    pass
-                ds = ds.sel({dim_name: slice(datetimes[0], end)})
             return ds
 
         vals = ds[dim_name].values.astype("datetime64[ns]")
@@ -473,7 +416,6 @@ def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str
 
     # 3. Time
     datetimes = sel.get("datetimes")
-    datetimes_list = sel.get("datetimes_list")
 
     dim_name = "init_time" if "init_time" in ds.dims else ("time" if "time" in ds.dims else None)
 
@@ -483,21 +425,7 @@ def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str
         except Exception:
             available_times = ds[dim_name].values
 
-        if datetimes_list:
-            try:
-                req_times = [np.datetime64(x).astype("datetime64[ns]") for x in datetimes_list]
-            except Exception:
-                req_times = []
-
-            available_set = set(available_times)
-            missing_times = [str(t) for t in req_times if t not in available_set]
-            if missing_times:
-                errors.append(
-                    f"{dataset_name}: Missing timestamps (from datetimes_list): "
-                    f"{len(missing_times)} missing, e.g. {missing_times[:3]}"
-                )
-
-        elif datetimes:
+        if datetimes:
             ranges = _parse_time_ranges(datetimes)
             if ranges and len(available_times) > 0:
                 min_time = available_times.min()
@@ -524,7 +452,7 @@ def validate_requirements(ds: xr.Dataset, cfg: dict[str, Any], dataset_name: str
                 errors.append(f"{dataset_name}: No timestamps available.")
 
     else:
-        if datetimes or datetimes_list:
+        if datetimes:
             errors.append(
                 f"{dataset_name}: Missing time dimension ('init_time' or 'time') but time "
                 f"selection requested."
@@ -728,6 +656,11 @@ def prepare_datasets(
         preserve_all_leads=lead_policy.preserve_all_leads,
     )
     # ds_prediction already standardized above
+
+    # Snapshot the prediction dataset *before* applying the global ensemble_members
+    # filter so that per-module pure overrides (ensemble_members_per_module) can
+    # draw from the full, unfiltered ensemble via resolve_module_prediction().
+    cfg["__ds_prediction_pre_ens"] = ds_prediction
 
     # Handle optional ensemble dimension according to config and selected modules
     ds_prediction = data_mod.apply_ensemble_policy(
@@ -1017,7 +950,70 @@ def prepare_datasets(
                 "Missing-value check (enabled): no NaNs detected in ground_truth or predictions."
             )
 
+    # After derived-variable injection (done in runner.py after we return), the
+    # pre-ens snapshot stored in cfg["__ds_prediction_pre_ens"] must also receive
+    # derived variables before resolve_module_prediction() can use them.  That
+    # update is performed in runner.py immediately after add_derived_variables().
+
     # Persist audit for run_selected to write out alongside outputs
     cfg["__lead_time_audit"] = lead_audit
     ds_target_std, ds_prediction_std = _standardize_pair(ds_target, ds_prediction)
     return ds_target, ds_prediction, ds_target_std, ds_prediction_std
+
+
+def resolve_module_prediction(
+    module_name: str,
+    ds_prediction: xr.Dataset,
+    ds_prediction_std: xr.Dataset,
+    ds_target: xr.Dataset,
+    cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Return ``(ds_prediction, ds_prediction_std)`` scoped to *module_name*.
+
+    When ``selection.ensemble_members_per_module[module_name]`` is not-null the
+    returned datasets are derived from the **raw** prediction snapshot captured
+    before the global ``ensemble_members`` filter was applied.  This constitutes
+    a *pure override*: the requested member indices are selected directly from
+    the full ensemble, completely independent of the global filter.
+
+    When no per-module override is present the caller-supplied datasets (already
+    trimmed by the global filter) are returned unchanged.
+    """
+    per_module_cfg = ((cfg.get("selection") or {}).get("ensemble_members_per_module")) or {}
+    override = per_module_cfg.get(module_name)
+    if override is None:
+        return ds_prediction, ds_prediction_std
+
+    raw: xr.Dataset | None = cfg.get("__ds_prediction_pre_ens")
+    if raw is None:
+        c.warn(
+            f"ensemble_members_per_module[{module_name!r}] is set but the pre-filter "
+            "snapshot is unavailable; falling back to the global member filter."
+        )
+        return ds_prediction, ds_prediction_std
+
+    # Normalise value: single-element list collapses to int (ensemble dim is dropped)
+    override_norm: int | list[int]
+    if isinstance(override, list):
+        try:
+            override_norm = [int(i) for i in override]
+        except (TypeError, ValueError):
+            c.warn(
+                f"Invalid values in ensemble_members_per_module[{module_name!r}]; "
+                "skipping override."
+            )
+            return ds_prediction, ds_prediction_std
+        if len(override_norm) == 1:
+            override_norm = override_norm[0]
+    else:
+        try:
+            override_norm = int(override)
+        except (TypeError, ValueError):
+            c.warn(
+                f"Invalid value in ensemble_members_per_module[{module_name!r}]; skipping override."
+            )
+            return ds_prediction, ds_prediction_std
+
+    ds_pred_mod = data_mod.apply_ensemble_policy(raw, ensemble_members=override_norm)
+    _, ds_pred_std_mod = _standardize_pair(ds_target, ds_pred_mod)
+    return ds_pred_mod, ds_pred_std_mod
