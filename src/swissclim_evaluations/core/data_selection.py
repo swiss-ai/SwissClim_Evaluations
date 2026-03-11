@@ -434,10 +434,12 @@ def select_plot_ensemble(
 def _standardize_pair(
     targets: xr.Dataset, predictions: xr.Dataset
 ) -> tuple[xr.Dataset, xr.Dataset]:
-    # Explicit join ensures compatibility with upcoming xarray default change
-    combined = xr.concat([targets, predictions], dim="__concat__", join="outer")
-    mean = combined.mean()
-    std = combined.std()
+    # Normalize using target-only statistics so that the scale is fixed to the
+    # ground-truth distribution and is independent of prediction quality.
+    # This makes standardized metrics comparable across models and avoids the
+    # circularity of a denominator that shrinks/grows with the model's bias.
+    mean = targets.mean()
+    std = targets.std()
     return (targets - mean) / std, (predictions - mean) / std
 
 
