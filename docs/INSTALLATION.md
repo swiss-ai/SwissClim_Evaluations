@@ -69,13 +69,26 @@
 1. Or submit a batch job (CSCS Alps):
 
    ```bash
-   sbatch launchscript.sh
+   sbatch launchscript_single.sh
    ```
 
    Don't forget to adjust the path to your `config/my_run.yaml` in
-   `launchscript.sh` if you placed it elsewhere.
+   `launchscript_single.sh` if you placed it elsewhere.
+1. Run multiple configs in one batch allocation (CSCS Alps):
 
-1. Here is a one-liner with `srun` instead of the `launchscript`:
+   Populate `eval_configs.txt` with one config path per line (relative paths are supported), then submit:
+
+   ```bash
+   sbatch launchscript_multi.sh
+   ```
+
+   Notes:
+   - A good starting point is 2–3 concurrent eval runs per node with `launchscript_multi.sh`; increase only if memory headroom is clear.
+   - The dominant bottleneck is typically system memory (RAM), not CPU.
+   - `launchscript_multi.sh` reads `eval_configs.txt` and spawns one task per config via `srun --multi-prog`.
+   - Keep `#SBATCH --ntasks-per-node` aligned with the number of configs you want to run concurrently.
+   - Each task writes its own logs under `logs/` and outputs under each config's `paths.output_root`.
+1. Here is a one-liner with `srun` instead of the `launchscript_single.sh`:
 
    ```bash
    srun --job-name=swissclim-eval --time=01:30:00 --account=a122 --partition=normal --container-writable --environment=swissclim-eval /bin/bash -c 'export PYTHONUNBUFFERED=1 && python -u -m swissclim_evaluations.cli --config config/my_run.yaml'

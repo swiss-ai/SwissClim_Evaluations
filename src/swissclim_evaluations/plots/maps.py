@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import cartopy.crs as ccrs
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from .. import console as c
 from ..helpers import (
     build_output_filename,
     ensemble_mode_to_token,
@@ -19,6 +21,9 @@ from ..helpers import (
     get_colormap_for_variable,
     get_variable_units,
     resolve_ensemble_mode,
+    save_data,
+    save_figure,
+    unwrap_longitude_for_plot,
 )
 
 
@@ -32,16 +37,39 @@ def run(
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
+    if not save_fig and not save_npz:
+        c.print("[maps] Skipping module: output_mode=none (no PNG/NPZ outputs requested).")
+        return
     dpi = int(plotting_cfg.get("dpi", 48))
-    seed = int(plotting_cfg.get("random_seed", 42))
 
     section_output = out_root / "maps"
 
-    rng = np.random.default_rng(seed)
+    # Determine time index to plot
     time_index = 0
-    lead_index = 0
+    plot_dt = plotting_cfg.get("plot_datetime")
+
     if "init_time" in ds_target.dims and ds_target.init_time.size > 0:
-        time_index = int(rng.integers(0, ds_target.init_time.size))
+        if plot_dt is not None:
+            try:
+                target_dt = np.datetime64(plot_dt)
+                matches = np.where(ds_target.init_time.values == target_dt)[0]
+                if matches.size > 0:
+                    time_index = int(matches[0])
+                else:
+                    c.print(
+                        f"[maps] Warning: plot_datetime {plot_dt} not found. Using first init_time."
+                    )
+                    time_index = 0
+            except Exception as e:
+                c.print(
+                    f"[maps] Warning: Error selecting plot_datetime {plot_dt}: {e}. "
+                    "Using first init_time."
+                )
+                time_index = 0
+        else:
+            time_index = 0
+
+    lead_index = 0
     if "lead_time" in ds_target.dims and ds_target.lead_time.size > 0:
         lead_index = 0
     if "time" in ds_target.dims and ds_target.time.size > 0:
@@ -81,12 +109,8 @@ def run(
     lead_range = _extract_lead_range(ds_prediction)
 
     # Determine variables
-    if "level" in ds_target.dims and int(ds_target.level.size) > 1:
-        variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
-        variables_2d = [v for v in ds_target.data_vars if v not in variables_3d]
-    else:
-        variables_3d = []
-        variables_2d = list(ds_target.data_vars)
+    variables_3d = [v for v in ds_target.data_vars if "level" in ds_target[v].dims]
+    variables_2d = [v for v in ds_target.data_vars if "level" not in ds_target[v].dims]
 
     # Assume no missing data per project requirement; use direct min/max.
 
@@ -119,92 +143,190 @@ def run(
 
     # 2D maps (one figure per ensemble member if present)
     for _i, var in enumerate(variables_2d):  # _i unused (ruff B007)
-        print(f"[maps] 2D variable: {var}")
+        c.print(f"[maps] 2D variable: {var}")
         for ens in ensemble_members:
+            ds_var_full = ds_target[var]
+            ds_prediction_var_full = ds_prediction[var]
+
+            # Check if original variable has multiple init times (before slicing)
+            is_single_init = True
+            if "init_time" in ds_var_full.dims and ds_var_full.sizes["init_time"] > 1:
+                is_single_init = False
+
+            if ens is not None:
+                if "ensemble" in ds_var_full.dims:
+                    # If target has only 1 member (e.g. ERA5), reuse it for all prediction members
+                    if ds_var_full.sizes["ensemble"] == 1:
+                        ds_var_full = ds_var_full.isel(ensemble=0)
+                    else:
+                        ds_var_full = ds_var_full.isel(ensemble=ens)
+                if "ensemble" in ds_prediction_var_full.dims:
+                    ds_prediction_var_full = ds_prediction_var_full.isel(ensemble=ens)
+            if "init_time" in ds_var_full.dims:
+                ds_var_full = ds_var_full.isel(init_time=time_index)
+            if "init_time" in ds_prediction_var_full.dims:
+                ds_prediction_var_full = ds_prediction_var_full.isel(init_time=time_index)
+
+            # Determine lead times to plot
+            lead_indices = [0]
+            lead_coords = [None]
+            if "lead_time" in ds_prediction_var_full.dims:
+                lead_indices = list(range(ds_prediction_var_full.sizes["lead_time"]))
+                lead_coords = ds_prediction_var_full["lead_time"].values
+            elif "lead_time" in ds_var_full.dims:
+                lead_indices = list(range(ds_var_full.sizes["lead_time"]))
+                lead_coords = ds_var_full["lead_time"].values
+
+            n_leads = len(lead_indices)
+
+            # Compute global vmin/vmax for consistent color scale
+            # Batch all 4 reductions into a single dask.compute() to avoid
+            # 4 separate scheduler round-trips and redundant data traversals.
+            _vmin_t, _vmin_p, _vmax_t, _vmax_p = dask.compute(
+                ds_var_full.min(),
+                ds_prediction_var_full.min(),
+                ds_var_full.max(),
+                ds_prediction_var_full.max(),
+            )
+            vmin = min(float(_vmin_t), float(_vmin_p))
+            vmax = max(float(_vmax_t), float(_vmax_p))
+
             fig, axes = plt.subplots(
-                1,
+                n_leads,
                 2,
-                figsize=(14, 4),
+                figsize=(14, 4 * n_leads),
                 dpi=dpi * 2,
                 subplot_kw={"projection": ccrs.PlateCarree()},
                 constrained_layout=True,
             )
+            # Increase vertical spacing between rows
+            if n_leads > 1:
+                fig.get_layout_engine().set(h_pad=0.15)
 
-            ds_var = ds_target[var]
-            ds_ml_var = ds_prediction[var]
+            if n_leads == 1:
+                axes = np.array([axes])
 
-            # Check if original variable has multiple init times (before slicing)
-            is_single_init = True
-            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
-                is_single_init = False
+            im0 = None
+            for i, lead_idx in enumerate(lead_indices):
+                ax_tgt = axes[i, 0]
+                ax_pred = axes[i, 1]
 
-            if ens is not None:
-                if "ensemble" in ds_var.dims:
-                    ds_var = ds_var.isel(ensemble=ens)
-                if "ensemble" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
-            if "init_time" in ds_var.dims:
-                ds_var = ds_var.isel(init_time=time_index)
-            if "lead_time" in ds_var.dims:
-                ds_var = ds_var.isel(lead_time=lead_index)
-            if "time" in ds_var.dims:
-                ds_var = ds_var.isel(time=time_index)
-            if "init_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(init_time=time_index)
-            if "lead_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-            if "time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(time=time_index)
-            # Drop any remaining singleton temporal dims
-            for dim_drop in ("time", "init_time", "lead_time"):
-                if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
-                    ds_var = ds_var.isel({dim_drop: 0})
-                if dim_drop in ds_ml_var.dims and ds_ml_var.sizes[dim_drop] == 1:
-                    ds_ml_var = ds_ml_var.isel({dim_drop: 0})
-            ds_var = ds_var.squeeze()
-            ds_ml_var = ds_ml_var.squeeze()
-            vmin = min(float(ds_var.min()), float(ds_ml_var.min()))
-            vmax = max(float(ds_var.max()), float(ds_ml_var.max()))
+                ds_var = ds_var_full
+                ds_prediction_var = ds_prediction_var_full
 
-            lon = ds_var.coords.get("longitude", None)
-            lat = ds_var.coords.get("latitude", None)
-            im0 = axes[0].pcolormesh(
-                lon if lon is not None else ds_var.longitude,
-                lat if lat is not None else ds_var.latitude,
-                ds_var.values,
-                cmap=get_colormap_for_variable(str(var)),
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-                shading="auto",
-            )
-            axes[0].coastlines(linewidth=0.5)
+                if "lead_time" in ds_var.dims:
+                    ds_var = ds_var.isel(lead_time=lead_idx)
+                if "lead_time" in ds_prediction_var.dims:
+                    ds_prediction_var = ds_prediction_var.isel(lead_time=lead_idx)
 
-            date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
-            axes[0].set_title(f"{format_variable_name(var)} — Target{date_str}")
+                # Ensure we also select a single time slice if a free 'time' dimension exists
+                if "time" in ds_var.dims:
+                    ds_var = ds_var.isel(time=time_index)
+                if "time" in ds_prediction_var.dims:
+                    ds_prediction_var = ds_prediction_var.isel(time=time_index)
 
-            lon_ml = ds_ml_var.coords.get("longitude", None)
-            lat_ml = ds_ml_var.coords.get("latitude", None)
-            axes[1].pcolormesh(
-                lon_ml if lon_ml is not None else ds_ml_var.longitude,
-                lat_ml if lat_ml is not None else ds_ml_var.latitude,
-                ds_ml_var.values,
-                cmap=get_colormap_for_variable(str(var)),
-                vmin=vmin,
-                vmax=vmax,
-                transform=ccrs.PlateCarree(),
-                shading="auto",
-            )
-            axes[1].coastlines(linewidth=0.5)
-            axes[1].set_title("Prediction")
+                # Drop any remaining singleton temporal dims
+                for dim_drop in ("time", "init_time", "lead_time"):
+                    if dim_drop in ds_var.dims and ds_var.sizes[dim_drop] == 1:
+                        ds_var = ds_var.isel({dim_drop: 0})
+                    if (
+                        dim_drop in ds_prediction_var.dims
+                        and ds_prediction_var.sizes[dim_drop] == 1
+                    ):
+                        ds_prediction_var = ds_prediction_var.isel({dim_drop: 0})
+                ds_var = ds_var.squeeze()
+                ds_prediction_var = ds_prediction_var.squeeze()
+                ds_var = unwrap_longitude_for_plot(ds_var)
+                ds_prediction_var = unwrap_longitude_for_plot(ds_prediction_var)
 
-            # Use a colorbar compatible with constrained_layout, spanning both axes
+                lon = ds_var.coords.get("longitude", None)
+                lat = ds_var.coords.get("latitude", None)
+                im0 = ax_tgt.pcolormesh(
+                    lon if lon is not None else ds_var.longitude,
+                    lat if lat is not None else ds_var.latitude,
+                    ds_var.values,
+                    cmap=get_colormap_for_variable(str(var)),
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                    shading="auto",
+                )
+                ax_tgt.coastlines(linewidth=0.5)
+                # Zoom to data extent
+                _lon = lon.values if lon is not None else ds_var.longitude.values
+                _lat = lat.values if lat is not None else ds_var.latitude.values
+                if hasattr(ax_tgt, "set_extent"):
+                    ax_tgt.set_extent(
+                        [
+                            float(np.min(_lon)),
+                            float(np.max(_lon)),
+                            float(np.min(_lat)),
+                            float(np.max(_lat)),
+                        ],
+                        crs=ccrs.PlateCarree(),
+                    )
+
+                # Title
+                lead_str = ""
+                if lead_coords[i] is not None:
+                    val = lead_coords[i]
+                    if np.issubdtype(type(val), np.timedelta64):
+                        h = int(val / np.timedelta64(1, "h"))
+                        lead_str = f" (+{h}h)"
+                    else:
+                        lead_str = f" (lead={val})"
+
+                date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+                if i == 0:
+                    ax_tgt.set_title(f"{format_variable_name(str(var))} — Target{date_str}")
+                else:
+                    ax_tgt.set_title(f"Target{lead_str}")
+
+                ens_str = f" (member {ens})" if ens is not None else ""
+                lon_prediction = ds_prediction_var.coords.get("longitude", None)
+                lat_prediction = ds_prediction_var.coords.get("latitude", None)
+                ax_pred.pcolormesh(
+                    lon_prediction if lon_prediction is not None else ds_prediction_var.longitude,
+                    lat_prediction if lat_prediction is not None else ds_prediction_var.latitude,
+                    ds_prediction_var.values,
+                    cmap=get_colormap_for_variable(str(var)),
+                    vmin=vmin,
+                    vmax=vmax,
+                    transform=ccrs.PlateCarree(),
+                    shading="auto",
+                )
+                ax_pred.coastlines(linewidth=0.5)
+                _lon = (
+                    lon_prediction.values
+                    if lon_prediction is not None
+                    else ds_prediction_var.longitude.values
+                )
+                _lat = (
+                    lat_prediction.values
+                    if lat_prediction is not None
+                    else ds_prediction_var.latitude.values
+                )
+                if hasattr(ax_pred, "set_extent"):
+                    ax_pred.set_extent(
+                        [
+                            float(np.min(_lon)),
+                            float(np.max(_lon)),
+                            float(np.min(_lat)),
+                            float(np.max(_lat)),
+                        ],
+                        crs=ccrs.PlateCarree(),
+                    )
+                # Only show lead time on prediction if not already in target title (via date_str)
+                # date_str includes lead time (with '+') if target has it.
+                ax_pred.set_title(f"Prediction{ens_str}")
+
+            # Colorbar spanning both axes — vertical to save vertical space
             cb = fig.colorbar(
                 im0,
                 ax=axes,
                 orientation="horizontal",
                 fraction=0.05,
-                pad=0.08,
+                pad=0.02,
             )
             # In test mode, colorbar may be a dummy (None); guard the label call
             try:
@@ -214,18 +336,12 @@ def run(
                 # Non-fatal: continue without setting label
                 pass
 
-            # title_extra = "" if ens is None else f" (Ensemble {ens})"
-            # date_suffix = extract_date_from_dataset(ds_var)
-            # plt.suptitle(f"{format_variable_name(str(var))}{title_extra}{date_suffix}")
-
-            # Determine filename ensemble token
             ens_token = (
                 ensemble_mode_to_token("members", ens)
                 if (resolved_mode == "members" and ens is not None)
                 else ens_token_global
             )
             if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
                 out_png = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -236,10 +352,50 @@ def run(
                     ensemble=ens_token,
                     ext="png",
                 )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[maps] saved {out_png}")
+                save_figure(fig, out_png, module="maps")
+            else:
+                plt.close(fig)
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
+                # Prepare data for saving (full lead time stack)
+                ds_save_target = ds_var_full
+                ds_save_pred = ds_prediction_var_full
+
+                # Squeeze singleton dims (except lead_time if n_leads > 1)
+                for dim_drop in ("time", "init_time"):
+                    if dim_drop in ds_save_target.dims and ds_save_target.sizes[dim_drop] == 1:
+                        ds_save_target = ds_save_target.isel({dim_drop: 0})
+                    if dim_drop in ds_save_pred.dims and ds_save_pred.sizes[dim_drop] == 1:
+                        ds_save_pred = ds_save_pred.isel({dim_drop: 0})
+
+                # If lead_time is size 1, we might want to squeeze it to match previous behavior (2D
+                # map)
+                if "lead_time" in ds_save_target.dims and ds_save_target.sizes["lead_time"] == 1:
+                    ds_save_target = ds_save_target.isel(lead_time=0)
+                if "lead_time" in ds_save_pred.dims and ds_save_pred.sizes["lead_time"] == 1:
+                    ds_save_pred = ds_save_pred.isel(lead_time=0)
+
+                ds_save_target = unwrap_longitude_for_plot(ds_save_target)
+                ds_save_pred = unwrap_longitude_for_plot(ds_save_pred)
+
+                # Ensure consistent dimension order: (lead_time, latitude, longitude) or (latitude,
+                # longitude) This prevents issues where dimensions might be permuted (e.g.
+                # (longitude, lead_time)) which causes pcolormesh errors in intercompare.
+                if "latitude" in ds_save_target.dims and "longitude" in ds_save_target.dims:
+                    if "lead_time" in ds_save_target.dims:
+                        ds_save_target = ds_save_target.transpose(
+                            "lead_time", "latitude", "longitude", ...
+                        )
+                    else:
+                        ds_save_target = ds_save_target.transpose("latitude", "longitude", ...)
+
+                if "latitude" in ds_save_pred.dims and "longitude" in ds_save_pred.dims:
+                    if "lead_time" in ds_save_pred.dims:
+                        ds_save_pred = ds_save_pred.transpose(
+                            "lead_time", "latitude", "longitude", ...
+                        )
+                    else:
+                        ds_save_pred = ds_save_pred.transpose("latitude", "longitude", ...)
+
                 npz_path = section_output / build_output_filename(
                     metric="map",
                     variable=str(var),
@@ -250,28 +406,34 @@ def run(
                     ensemble=ens_token,
                     ext="npz",
                 )
-                np.savez(
+                save_data(
                     npz_path,
-                    target=ds_var.values,
-                    prediction=ds_ml_var.values,
+                    target=ds_save_target.values,
+                    prediction=ds_save_pred.values,
                     latitude=(
-                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
+                        ds_save_target.latitude.values
+                        if "latitude" in ds_save_target.coords
+                        else np.array([])
                     ),
                     longitude=(
-                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
+                        ds_save_target.longitude.values
+                        if "longitude" in ds_save_target.coords
+                        else np.array([])
                     ),
                     ensemble=int(ens) if ens is not None else -1,
                     variable=str(var),
                     units=get_variable_units(ds_target, str(var)),
+                    lead_time=lead_coords if n_leads > 1 else None,
+                    module="maps",
                 )
-                print(f"[maps] saved {npz_path}")
-
             plt.close(fig)
 
-    # 3D maps per level
-    for _i, var in enumerate(variables_3d):  # _i unused (ruff B007)
-        print(f"[maps] 3D variable: {var}")
+    # 3D maps per level (one figure with rows per level)
+    for _i, var in enumerate(variables_3d):
+        c.print(f"[maps] 3D variable: {var}")
         levels = list(ds_target[var].coords.get("level", []))
+        # Ensure levels are scalars for formatting
+        levels = [lvl.item() if hasattr(lvl, "item") else lvl for lvl in levels]
         if not levels:
             continue
 
@@ -282,154 +444,437 @@ def run(
             level_label = level_tokens[0]
         else:
             level_label = f"{level_tokens[0]}_to_{level_tokens[-1]}"
-        num_rows = len(levels)
         for ens in ensemble_members:
-            fig, axes = plt.subplots(
-                num_rows,
-                2,
-                figsize=(14, 4 * num_rows),
-                dpi=dpi * 2,
-                subplot_kw={"projection": ccrs.PlateCarree()},
-                squeeze=False,
-                constrained_layout=True,
-            )
-
-            ds_var = ds_target[var]
-            ds_ml_var = ds_prediction[var]
+            ds_var_full_3d = ds_target[var]
+            ds_prediction_var_full_3d = ds_prediction[var]
 
             # Check if original variable has multiple init times (before slicing)
             is_single_init = True
-            if "init_time" in ds_var.dims and ds_var.sizes["init_time"] > 1:
+            if "init_time" in ds_var_full_3d.dims and ds_var_full_3d.sizes["init_time"] > 1:
                 is_single_init = False
 
             if ens is not None:
-                if "ensemble" in ds_var.dims:
-                    ds_var = ds_var.isel(ensemble=ens)
-                if "ensemble" in ds_ml_var.dims:
-                    ds_ml_var = ds_ml_var.isel(ensemble=ens)
-            if "init_time" in ds_var.dims:
-                ds_var = ds_var.isel(init_time=time_index)
-            if "lead_time" in ds_var.dims:
-                ds_var = ds_var.isel(lead_time=lead_index)
-            if "init_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(init_time=time_index)
-            if "lead_time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(lead_time=lead_index)
-            # Ensure we also select a single time slice if a free 'time' dimension exists
-            # (mirrors handling in 2D map section). Without this, pcolormesh receives a 3D
-            # array (time, lat, lon) and raises a dimension mismatch error.
-            if "time" in ds_var.dims:
-                ds_var = ds_var.isel(time=time_index)
-            if "time" in ds_ml_var.dims:
-                ds_ml_var = ds_ml_var.isel(time=time_index)
+                if "ensemble" in ds_var_full_3d.dims:
+                    if ds_var_full_3d.sizes["ensemble"] == 1:
+                        ds_var_full_3d = ds_var_full_3d.isel(ensemble=0)
+                    else:
+                        ds_var_full_3d = ds_var_full_3d.isel(ensemble=ens)
+                if "ensemble" in ds_prediction_var_full_3d.dims:
+                    ds_prediction_var_full_3d = ds_prediction_var_full_3d.isel(ensemble=ens)
+            if "init_time" in ds_var_full_3d.dims:
+                ds_var_full_3d = ds_var_full_3d.isel(init_time=time_index)
+            if "init_time" in ds_prediction_var_full_3d.dims:
+                ds_prediction_var_full_3d = ds_prediction_var_full_3d.isel(init_time=time_index)
+            if "time" in ds_var_full_3d.dims:
+                ds_var_full_3d = ds_var_full_3d.isel(time=time_index)
+            if "time" in ds_prediction_var_full_3d.dims:
+                ds_prediction_var_full_3d = ds_prediction_var_full_3d.isel(time=time_index)
 
-            for idx, level in enumerate(levels):
-                level_val = int(level.values) if hasattr(level, "values") else int(level)
-                ax_ds, ax_ds_ml = axes[idx]
-                ds_var_lev = ds_var.sel(level=level)
-                ds_ml_var_lev = ds_ml_var.sel(level=level)
-                # After selecting level we expect dims (latitude, longitude). If an extra
-                # singleton dimension remains (e.g., time/init_time/lead_time), squeeze it.
-                ds_var_lev = ds_var_lev.squeeze()
-                ds_ml_var_lev = ds_ml_var_lev.squeeze()
+            # Determine lead times for 3D variables
+            lead_indices_3d = [0]
+            lead_coords_3d = [None]
+            has_multi_lead_3d = False
+            if "lead_time" in ds_prediction_var_full_3d.dims:
+                lead_indices_3d = list(range(ds_prediction_var_full_3d.sizes["lead_time"]))
+                lead_coords_3d = ds_prediction_var_full_3d["lead_time"].values
+                has_multi_lead_3d = len(lead_indices_3d) > 1
+            elif "lead_time" in ds_var_full_3d.dims:
+                lead_indices_3d = list(range(ds_var_full_3d.sizes["lead_time"]))
+                lead_coords_3d = ds_var_full_3d["lead_time"].values
+                has_multi_lead_3d = len(lead_indices_3d) > 1
 
-                vmin = min(float(ds_var_lev.min()), float(ds_ml_var_lev.min()))
-                vmax = max(float(ds_var_lev.max()), float(ds_ml_var_lev.max()))
+            ens_str = f" (member {ens})" if ens is not None else ""
 
-                vmin = min(float(ds_var_lev.min()), float(ds_ml_var_lev.min()))
-                vmax = max(float(ds_var_lev.max()), float(ds_ml_var_lev.max()))
+            if has_multi_lead_3d:
+                # Multi-lead: one lead-time gridded figure per level
+                for level in levels:
+                    level_val = int(level.values) if hasattr(level, "values") else int(level)
+                    n_leads_3d = len(lead_indices_3d)
+                    fig, axes = plt.subplots(
+                        n_leads_3d,
+                        2,
+                        figsize=(14, 4 * n_leads_3d),
+                        dpi=dpi * 2,
+                        subplot_kw={"projection": ccrs.PlateCarree()},
+                        squeeze=False,
+                        constrained_layout=True,
+                    )
+                    if n_leads_3d > 1:
+                        fig.get_layout_engine().set(h_pad=0.15)
 
-                im_ds = ax_ds.pcolormesh(
-                    ds_var_lev.coords.get("longitude"),
-                    ds_var_lev.coords.get("latitude"),
-                    ds_var_lev.values,
-                    cmap=get_colormap_for_variable(str(var)),
-                    vmin=vmin,
-                    vmax=vmax,
-                    transform=ccrs.PlateCarree(),
-                    shading="auto",
+                    # Compute global vmin/vmax across all leads for this level
+                    ds_lev_t = ds_var_full_3d.sel(level=level)
+                    ds_lev_p = ds_prediction_var_full_3d.sel(level=level)
+                    _vmin_t, _vmin_p, _vmax_t, _vmax_p = dask.compute(
+                        ds_lev_t.min(),
+                        ds_lev_p.min(),
+                        ds_lev_t.max(),
+                        ds_lev_p.max(),
+                    )
+                    vmin = min(float(_vmin_t), float(_vmin_p))
+                    vmax = max(float(_vmax_t), float(_vmax_p))
+
+                    im0 = None
+                    for i, lead_idx in enumerate(lead_indices_3d):
+                        ax_tgt = axes[i, 0]
+                        ax_pred = axes[i, 1]
+                        ds_t_lead = ds_lev_t
+                        ds_p_lead = ds_lev_p
+                        if "lead_time" in ds_t_lead.dims:
+                            ds_t_lead = ds_t_lead.isel(lead_time=lead_idx)
+                        if "lead_time" in ds_p_lead.dims:
+                            ds_p_lead = ds_p_lead.isel(lead_time=lead_idx)
+                        ds_t_lead = ds_t_lead.squeeze()
+                        ds_p_lead = ds_p_lead.squeeze()
+                        ds_t_lead = unwrap_longitude_for_plot(ds_t_lead)
+                        ds_p_lead = unwrap_longitude_for_plot(ds_p_lead)
+
+                        lon = ds_t_lead.coords.get("longitude", None)
+                        lat = ds_t_lead.coords.get("latitude", None)
+                        im0 = ax_tgt.pcolormesh(
+                            lon if lon is not None else ds_t_lead.longitude,
+                            lat if lat is not None else ds_t_lead.latitude,
+                            ds_t_lead.values,
+                            cmap=get_colormap_for_variable(str(var)),
+                            vmin=vmin,
+                            vmax=vmax,
+                            transform=ccrs.PlateCarree(),
+                            shading="auto",
+                        )
+                        ax_tgt.coastlines(linewidth=0.5)
+                        _lon = lon.values if lon is not None else ds_t_lead.longitude.values
+                        _lat = lat.values if lat is not None else ds_t_lead.latitude.values
+                        if hasattr(ax_tgt, "set_extent"):
+                            ax_tgt.set_extent(
+                                [
+                                    float(np.min(_lon)),
+                                    float(np.max(_lon)),
+                                    float(np.min(_lat)),
+                                    float(np.max(_lat)),
+                                ],
+                                crs=ccrs.PlateCarree(),
+                            )
+
+                        lead_str = ""
+                        if lead_coords_3d[i] is not None:
+                            val = lead_coords_3d[i]
+                            if np.issubdtype(type(val), np.timedelta64):
+                                h = int(val / np.timedelta64(1, "h"))
+                                lead_str = f" (+{h}h)"
+                            else:
+                                lead_str = f" (lead={val})"
+
+                        date_str = extract_date_from_dataset(ds_t_lead) if is_single_init else ""
+                        if i == 0:
+                            ax_tgt.set_title(
+                                f"{format_variable_name(str(var))} — Target"
+                                f"{format_level_label(level_val)}{date_str}"
+                            )
+                        else:
+                            ax_tgt.set_title(f"Target{lead_str}")
+
+                        lon_p = ds_p_lead.coords.get("longitude", None)
+                        lat_p = ds_p_lead.coords.get("latitude", None)
+                        ax_pred.pcolormesh(
+                            lon_p if lon_p is not None else ds_p_lead.longitude,
+                            lat_p if lat_p is not None else ds_p_lead.latitude,
+                            ds_p_lead.values,
+                            cmap=get_colormap_for_variable(str(var)),
+                            vmin=vmin,
+                            vmax=vmax,
+                            transform=ccrs.PlateCarree(),
+                            shading="auto",
+                        )
+                        ax_pred.coastlines(linewidth=0.5)
+                        _lon_p = lon_p.values if lon_p is not None else ds_p_lead.longitude.values
+                        _lat_p = lat_p.values if lat_p is not None else ds_p_lead.latitude.values
+                        if hasattr(ax_pred, "set_extent"):
+                            ax_pred.set_extent(
+                                [
+                                    float(np.min(_lon_p)),
+                                    float(np.max(_lon_p)),
+                                    float(np.min(_lat_p)),
+                                    float(np.max(_lat_p)),
+                                ],
+                                crs=ccrs.PlateCarree(),
+                            )
+                        ax_pred.set_title(f"Prediction{ens_str}{lead_str}")
+
+                    cb = fig.colorbar(
+                        im0,
+                        ax=axes,
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.02,
+                    )
+                    try:
+                        if cb is not None:
+                            cb.set_label(get_variable_units(ds_target, str(var)))
+                    except Exception:
+                        pass
+
+                    ens_token = (
+                        ensemble_mode_to_token("members", ens)
+                        if (resolved_mode == "members" and ens is not None)
+                        else ens_token_global
+                    )
+                    lev_token = format_level_token(level_val)
+                    if save_fig:
+                        out_png = section_output / build_output_filename(
+                            metric="map",
+                            variable=str(var),
+                            level=lev_token,
+                            qualifier=None,
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png, module="maps")
+                    else:
+                        plt.close(fig)
+                    plt.close(fig)
+            else:
+                # Single-lead: original all-levels-in-one-figure layout
+                num_rows = len(levels)
+                fig, axes = plt.subplots(
+                    num_rows,
+                    2,
+                    figsize=(14, 4 * num_rows),
+                    dpi=dpi * 2,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    squeeze=False,
+                    constrained_layout=True,
                 )
-                ax_ds.coastlines(linewidth=0.5)
 
-                date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
-                ax_ds.set_title(
-                    f"{format_variable_name(str(var))} — Target"
-                    f"{format_level_label(level_val)}{date_str}"
+                ds_var = ds_var_full_3d
+                ds_prediction_var = ds_prediction_var_full_3d
+                if "lead_time" in ds_var.dims:
+                    ds_var = ds_var.isel(lead_time=lead_index)
+                if "lead_time" in ds_prediction_var.dims:
+                    ds_prediction_var = ds_prediction_var.isel(lead_time=lead_index)
+
+                for idx, level in enumerate(levels):
+                    level_val = int(level.values) if hasattr(level, "values") else int(level)
+                    ax_ds, ax_pred = axes[idx]
+                    ds_var_lev = ds_var.sel(level=level)
+                    ds_prediction_var_lev = ds_prediction_var.sel(level=level)
+                    ds_var_lev = ds_var_lev.squeeze()
+                    ds_prediction_var_lev = ds_prediction_var_lev.squeeze()
+
+                    arr_t = ds_var_lev.values
+                    arr_p = ds_prediction_var_lev.values
+                    vmin = min(float(np.nanmin(arr_t)), float(np.nanmin(arr_p)))
+                    vmax = max(float(np.nanmax(arr_t)), float(np.nanmax(arr_p)))
+
+                    im_ds = ax_ds.pcolormesh(
+                        ds_var_lev.coords.get("longitude"),
+                        ds_var_lev.coords.get("latitude"),
+                        arr_t,
+                        cmap=get_colormap_for_variable(str(var)),
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                        shading="auto",
+                    )
+                    ax_ds.coastlines(linewidth=0.5)
+                    lon = ds_var_lev.coords.get("longitude", None)
+                    lat = ds_var_lev.coords.get("latitude", None)
+                    _lon = lon.values if lon is not None else ds_var_lev.longitude.values
+                    _lat = lat.values if lat is not None else ds_var_lev.latitude.values
+                    if hasattr(ax_ds, "set_extent"):
+                        ax_ds.set_extent(
+                            [
+                                float(np.min(_lon)),
+                                float(np.max(_lon)),
+                                float(np.min(_lat)),
+                                float(np.max(_lat)),
+                            ],
+                            crs=ccrs.PlateCarree(),
+                        )
+
+                    date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
+                    ax_ds.set_title(
+                        f"{format_variable_name(str(var))} — Target"
+                        f"{format_level_label(level_val)}{date_str}"
+                    )
+
+                    ax_pred.pcolormesh(
+                        ds_prediction_var_lev.coords.get("longitude"),
+                        ds_prediction_var_lev.coords.get("latitude"),
+                        arr_p,
+                        cmap=get_colormap_for_variable(str(var)),
+                        vmin=vmin,
+                        vmax=vmax,
+                        transform=ccrs.PlateCarree(),
+                        shading="auto",
+                    )
+                    ax_pred.coastlines(linewidth=0.5)
+                    lon_prediction = ds_prediction_var_lev.coords.get("longitude", None)
+                    lat_prediction = ds_prediction_var_lev.coords.get("latitude", None)
+                    _lon = (
+                        lon_prediction.values
+                        if lon_prediction is not None
+                        else ds_prediction_var_lev.longitude.values
+                    )
+                    _lat = (
+                        lat_prediction.values
+                        if lat_prediction is not None
+                        else ds_prediction_var_lev.latitude.values
+                    )
+                    if hasattr(ax_pred, "set_extent"):
+                        ax_pred.set_extent(
+                            [
+                                float(np.min(_lon)),
+                                float(np.max(_lon)),
+                                float(np.min(_lat)),
+                                float(np.max(_lat)),
+                            ],
+                            crs=ccrs.PlateCarree(),
+                        )
+                    ax_pred.set_title(f"Prediction{format_level_label(level_val)}{ens_str}")
+                    fig.colorbar(
+                        im_ds,
+                        ax=[ax_ds, ax_pred],
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.07,
+                        label=f"{get_variable_units(ds_target, str(var))}",
+                    )
+
+                ens_token = (
+                    ensemble_mode_to_token("members", ens)
+                    if (resolved_mode == "members" and ens is not None)
+                    else ens_token_global
                 )
-
-                ax_ds_ml.pcolormesh(
-                    ds_ml_var_lev.coords.get("longitude"),
-                    ds_ml_var_lev.coords.get("latitude"),
-                    ds_ml_var_lev.values,
-                    cmap=get_colormap_for_variable(str(var)),
-                    vmin=vmin,
-                    vmax=vmax,
-                    transform=ccrs.PlateCarree(),
-                    shading="auto",
-                )
-                ax_ds_ml.coastlines(linewidth=0.5)
-                ax_ds_ml.set_title(f"Model{format_level_label(level_val)}")
-
-                fig.colorbar(
-                    im_ds,
-                    ax=[ax_ds, ax_ds_ml],
-                    orientation="horizontal",
-                    fraction=0.05,
-                    pad=0.07,
-                    label=f"{get_variable_units(ds_target, str(var))} (level {level_val})",
-                )
-
-            # date_suffix = extract_date_from_dataset(ds_var.isel(level=0))
-            # plt.suptitle(f"{format_variable_name(str(var))}{title_extra}{date_suffix}")
-            # With constrained_layout=True above, avoid calling tight_layout (incompatible).
-            # Adjust padding via constrained layout pads instead.
-            # Leave default constrained_layout behavior; avoid calling private methods for safety
-
-            ens_token = (
-                ensemble_mode_to_token("members", ens)
-                if (resolved_mode == "members" and ens is not None)
-                else ens_token_global
-            )
-            if save_fig:
-                section_output.mkdir(parents=True, exist_ok=True)
-                out_png = section_output / build_output_filename(
-                    metric="map",
-                    variable=str(var),
-                    level=level_label,
-                    qualifier=None,  # drop legacy 'pl' qualifier
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="png",
-                )
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                print(f"[maps] saved {out_png}")
+                if save_fig:
+                    out_png = section_output / build_output_filename(
+                        metric="map",
+                        variable=str(var),
+                        level=level_label,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig, out_png, module="maps")
+                else:
+                    plt.close(fig)
             if save_npz:
-                section_output.mkdir(parents=True, exist_ok=True)
-                npz_path = section_output / build_output_filename(
-                    metric="map",
-                    variable=str(var),
-                    level=level_label,
-                    qualifier=None,  # drop legacy 'pl' qualifier
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="npz",
+                ens_token = (
+                    ensemble_mode_to_token("members", ens)
+                    if (resolved_mode == "members" and ens is not None)
+                    else ens_token_global
                 )
-                np.savez(
-                    npz_path,
-                    target=ds_var.values,
-                    prediction=ds_ml_var.values,
-                    latitude=(
-                        ds_var.latitude.values if "latitude" in ds_var.coords else np.array([])
-                    ),
-                    longitude=(
-                        ds_var.longitude.values if "longitude" in ds_var.coords else np.array([])
-                    ),
-                    level=(ds_var.level.values if "level" in ds_var.coords else np.array([])),
-                    ensemble=int(ens) if ens is not None else -1,
-                    variable=str(var),
-                    units=get_variable_units(ds_target, str(var)),
-                )
-                print(f"[maps] saved {npz_path}")
-            plt.close(fig)
+                if has_multi_lead_3d:
+                    # Save one NPZ per level with all lead times preserved,
+                    # so that intercompare can render per-lead gridded plots.
+                    for level in levels:
+                        level_val_npz = (
+                            int(level.values) if hasattr(level, "values") else int(level)
+                        )
+                        lev_token_npz = format_level_token(level_val_npz)
+                        ds_lev_t_npz = ds_var_full_3d.sel(level=level)
+                        ds_lev_p_npz = ds_prediction_var_full_3d.sel(level=level)
+                        # Squeeze singleton dims except lead_time
+                        for dim_drop in ("time", "init_time"):
+                            if dim_drop in ds_lev_t_npz.dims and ds_lev_t_npz.sizes[dim_drop] == 1:
+                                ds_lev_t_npz = ds_lev_t_npz.isel({dim_drop: 0})
+                            if dim_drop in ds_lev_p_npz.dims and ds_lev_p_npz.sizes[dim_drop] == 1:
+                                ds_lev_p_npz = ds_lev_p_npz.isel({dim_drop: 0})
+                        # Drop level dim (now scalar after .sel)
+                        ds_lev_t_npz = ds_lev_t_npz.squeeze(dim="level", drop=True)
+                        ds_lev_p_npz = ds_lev_p_npz.squeeze(dim="level", drop=True)
+                        ds_lev_t_npz = unwrap_longitude_for_plot(ds_lev_t_npz)
+                        ds_lev_p_npz = unwrap_longitude_for_plot(ds_lev_p_npz)
+                        # Transpose to (lead_time, latitude, longitude)
+                        if (
+                            "lead_time" in ds_lev_t_npz.dims
+                            and "latitude" in ds_lev_t_npz.dims
+                            and "longitude" in ds_lev_t_npz.dims
+                        ):
+                            ds_lev_t_npz = ds_lev_t_npz.transpose(
+                                "lead_time", "latitude", "longitude", ...
+                            )
+                        if (
+                            "lead_time" in ds_lev_p_npz.dims
+                            and "latitude" in ds_lev_p_npz.dims
+                            and "longitude" in ds_lev_p_npz.dims
+                        ):
+                            ds_lev_p_npz = ds_lev_p_npz.transpose(
+                                "lead_time", "latitude", "longitude", ...
+                            )
+                        npz_path = section_output / build_output_filename(
+                            metric="map",
+                            variable=str(var),
+                            level=lev_token_npz,
+                            qualifier=None,
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="npz",
+                        )
+                        save_data(
+                            npz_path,
+                            target=ds_lev_t_npz.values,
+                            prediction=ds_lev_p_npz.values,
+                            latitude=(
+                                ds_lev_t_npz.latitude.values
+                                if "latitude" in ds_lev_t_npz.coords
+                                else np.array([])
+                            ),
+                            longitude=(
+                                ds_lev_t_npz.longitude.values
+                                if "longitude" in ds_lev_t_npz.coords
+                                else np.array([])
+                            ),
+                            ensemble=int(ens) if ens is not None else -1,
+                            variable=str(var),
+                            units=get_variable_units(ds_target, str(var)),
+                            lead_time=lead_coords_3d if len(lead_coords_3d) > 1 else None,
+                            module="maps",
+                        )
+                else:
+                    # Single-lead: save one NPZ with all levels (original behavior)
+                    ds_var_npz = ds_var_full_3d
+                    ds_pred_npz = ds_prediction_var_full_3d
+                    if "lead_time" in ds_var_npz.dims:
+                        ds_var_npz = ds_var_npz.isel(lead_time=lead_index)
+                    if "lead_time" in ds_pred_npz.dims:
+                        ds_pred_npz = ds_pred_npz.isel(lead_time=lead_index)
+                    npz_path = section_output / build_output_filename(
+                        metric="map",
+                        variable=str(var),
+                        level=level_label,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="npz",
+                    )
+                    save_data(
+                        npz_path,
+                        target=ds_var_npz.values,
+                        prediction=ds_pred_npz.values,
+                        latitude=(
+                            ds_var_npz.latitude.values
+                            if "latitude" in ds_var_npz.coords
+                            else np.array([])
+                        ),
+                        longitude=(
+                            ds_var_npz.longitude.values
+                            if "longitude" in ds_var_npz.coords
+                            else np.array([])
+                        ),
+                        level=(
+                            ds_var_npz.level.values
+                            if "level" in ds_var_npz.coords
+                            else np.array([])
+                        ),
+                        ensemble=int(ens) if ens is not None else -1,
+                        variable=str(var),
+                        units=get_variable_units(ds_target, str(var)),
+                        allow_pickle=True,
+                        module="maps",
+                    )

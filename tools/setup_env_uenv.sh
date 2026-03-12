@@ -33,6 +33,7 @@ fi
 echo "🔧 Creating environment..."
 uv venv --prompt=swissclim-eval --python=3.11.9
 uv sync
+uv pip install pip
 
 # activate environment
 source .venv/bin/activate

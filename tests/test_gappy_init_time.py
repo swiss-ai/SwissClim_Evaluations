@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from swissclim_evaluations.cli import prepare_datasets
+from swissclim_evaluations.core.data_selection import prepare_datasets
 
 
 def _build_continuous_target():

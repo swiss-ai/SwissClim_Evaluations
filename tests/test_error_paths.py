@@ -95,12 +95,18 @@ def test_vertical_profiles_empty_band_outputs(tmp_path: Path, monkeypatch):
         def set_xlim(self, *a, **k):
             return None
 
-    def _stub_subplots(ncols, half, *a, **k):
+        def grid(self, *a, **k):
+            return None
+
+    def _stub_subplots(nrows=1, ncols=1, *a, **k):
         import numpy as _np
 
-        axes = _np.empty((ncols, half), dtype=object)
-        for i in range(ncols):
-            for j in range(half):
+        if nrows == 1 and ncols == 1:
+            return object(), _AX()
+
+        axes = _np.empty((nrows, ncols), dtype=object)
+        for i in range(nrows):
+            for j in range(ncols):
                 axes[i, j] = _AX()
         return object(), axes
 
@@ -118,5 +124,6 @@ def test_vertical_profiles_empty_band_outputs(tmp_path: Path, monkeypatch):
     # There should be at least one NPZ (may be more if multiple variables);
     # allow any matching prefix
     assert any(
-        f.name.startswith("vprof_nmae_") and f.suffix == ".npz" for f in vp_dir.iterdir()
-    ), "Expected vprof_nmae*.npz even with empty bands"
+        f.name.startswith("vertical_profiles_nmae_") and f.suffix == ".npz"
+        for f in vp_dir.iterdir()
+    ), "Expected vertical_profiles_nmae*.npz even with empty bands"

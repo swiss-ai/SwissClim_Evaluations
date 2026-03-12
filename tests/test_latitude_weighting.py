@@ -51,13 +51,13 @@ def test_deterministic_weighting(weighted_data):
     # MAE should be weighted.
     # Equator error (weight ~1) should result in higher MAE than High Lat error (weight ~0.5).
 
-    df_eq = deterministic._calculate_all_metrics(
-        ds_target, ds_pred_eq, calc_relative=False, n_points=8, include=["MAE"], fss_cfg=None
+    df_eq = deterministic.calc.calculate_all_metrics(
+        ds_target, ds_pred_eq, calc_relative=False, include=["MAE"], fss_cfg=None
     )
     mae_eq = df_eq.loc["var1", "MAE"]
 
     df_hi = deterministic._calculate_all_metrics(
-        ds_target, ds_pred_hi, calc_relative=False, n_points=8, include=["MAE"], fss_cfg=None
+        ds_target, ds_pred_hi, calc_relative=False, include=["MAE"], fss_cfg=None
     )
     mae_hi = df_hi.loc["var1", "MAE"]
 

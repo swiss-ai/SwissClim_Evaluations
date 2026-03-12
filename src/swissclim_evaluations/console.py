@@ -6,6 +6,7 @@ Falls back to plain prints if Rich isn't available.
 
 from __future__ import annotations
 
+import builtins
 import os
 import re
 from typing import Any, Protocol
@@ -26,7 +27,7 @@ except Exception:  # pragma: no cover - fallback when Rich not installed
 class _PlainConsole:
     def print(self, *objects: Any, **kwargs: Any) -> None:  # noqa: D401
         # Plain print fallback
-        print(*objects, flush=True)
+        builtins.print(*objects, flush=True)
 
 
 class _SupportsPrint(Protocol):
@@ -58,6 +59,11 @@ def _strip_markup(text: str) -> str:
         return _MARKUP_RE.sub("", text)
     except Exception:
         return text
+
+
+def print(*objects: Any, **kwargs: Any) -> None:
+    """Proxy to the underlying console print method."""
+    console.print(*objects, **kwargs)
 
 
 def header(title: str) -> None:
@@ -157,7 +163,7 @@ def module_status(name: str, status: str, detail: str = "") -> None:
         console.print(f"[{color}]{msg}[/]{suffix}")
     else:
         suffix = f" ({detail})" if detail else ""
-        console.print(f"{icon} {name}{suffix}")
+        console.print(f">>> {name.upper()}{suffix}")
 
 
 def ensemble_panel(message: str, level: str = "info") -> None:

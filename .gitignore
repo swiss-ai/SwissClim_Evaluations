@@ -49,3 +49,10 @@ logs
 output
 config/my_run.yaml
 .vscode/settings.json
+config/dev
+output_dirs.txt
+*.conf
+config/train_config_ESFMs*
+config/firat/*
+launchscript_train_config_ESFMs*
+test*

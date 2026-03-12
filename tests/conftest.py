@@ -143,6 +143,9 @@ class _DummyAxis:
     def plot(self, *a, **k):
         return None
 
+    def fill_between(self, *a, **k):
+        return None
+
     def loglog(self, *a, **k):
         return None
 
@@ -150,6 +153,12 @@ class _DummyAxis:
         return None
 
     def set_ylabel(self, *a, **k):
+        return None
+
+    def set_yticks(self, *a, **k):
+        return None
+
+    def set_yticklabels(self, *a, **k):
         return None
 
     def legend(self, *a, **k):
@@ -187,6 +196,9 @@ class _DummyAxis:
     def set_yscale(self, *a, **k):
         return None
 
+    def set_aspect(self, *a, **k):
+        return None
+
     def set_xticks(self, *a, **k):
         return None
 
@@ -214,6 +226,23 @@ class _DummyAxis:
     def get_lines(self):
         return []
 
+    def contourf(self, *a, **k):
+        return _DummyImage()
+
+    def contour(self, *a, **k):
+        return _DummyImage()
+
+    def get_figure(self):
+        return _DummyFig(self)
+
+
+class _DummyColorbar:
+    def set_label(self, *a, **k):
+        return None
+
+    def add_lines(self, *a, **k):
+        return None
+
 
 class _DummyFig:
     def __init__(self, axes):
@@ -222,10 +251,15 @@ class _DummyFig:
     def add_axes(self, *a, **k):
         return _DummyAxis()
 
+    def add_subplot(self, *a, **k):
+        return _DummyAxis()
+
     def colorbar(self, *a, **k):
-        return None
+        return _DummyColorbar()
 
     def savefig(self, *a, **k):
+        if a and isinstance(a[0], str | Path):
+            Path(a[0]).touch()
         return None
 
     def subplots_adjust(self, *a, **k):
@@ -244,6 +278,15 @@ def _fast_plots(monkeypatch):
     import matplotlib.pyplot as plt
 
     def _fast_subplots(nrows=1, ncols=1, *a, squeeze=True, **k):
+        if not squeeze:
+            # Always return 2D array if squeeze=False
+            arr = _np.empty((nrows, ncols), dtype=object)
+            for i in range(nrows):
+                for j in range(ncols):
+                    arr[i, j] = _DummyAxis()
+            axes = arr
+            return _DummyFig(axes), axes
+
         if nrows == 1 and ncols == 1:
             axes = _DummyAxis()
         elif nrows == 1:  # return 1D list like real matplotlib for single row multi-col
@@ -266,7 +309,12 @@ def _fast_plots(monkeypatch):
     )
     monkeypatch.setattr(plt, "gcf", lambda: _DummyFig(_np.empty((1, 1), dtype=object)))
     monkeypatch.setattr(plt, "colorbar", lambda *a, **k: None)
-    monkeypatch.setattr(plt, "savefig", lambda *a, **k: None)
+
+    def _mock_savefig(*args, **kwargs):
+        if args and isinstance(args[0], str | Path):
+            Path(args[0]).touch()
+
+    monkeypatch.setattr(plt, "savefig", _mock_savefig)
     monkeypatch.setattr(plt, "close", lambda *a, **k: None)
 
     class _DummyCRS:

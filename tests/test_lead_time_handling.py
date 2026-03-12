@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from swissclim_evaluations.metrics.probabilistic import run_probabilistic
@@ -86,31 +87,59 @@ def test_probabilistic_preserves_lead_times(tmp_path: Path):
 
     # Verify outputs exist
     prob_dir = out_root / "probabilistic"
-    # Must have CRPS summary with init/lead time ranges (simplified schema)
+    # For multi-lead, expect dedicated by-lead line outputs for CRPS and SSR.
     assert any(
-        f.name.startswith("crps_summary_averaged_init")
-        and "lead" in f.name
-        and f.name.endswith("_ensprob.csv")
-        for f in prob_dir.glob("crps_summary_*.csv")
-    ), "Expected CRPS summary file with init/lead time tokens (ensprob) under new schema"
+        f.name.startswith("crps_line_") and "by_lead" in f.name and f.name.endswith("_ensprob.csv")
+        for f in prob_dir.glob("crps_line_*.csv")
+    ), "Expected CRPS by-lead CSV artifacts (ensprob)."
 
-    # Load suffixed PIT/CRPS NPZ files (pick first match)
-    # Updated to NPZ format for memory efficiency (no OOM during write)
-    pit_npz = next(prob_dir.glob("pit_field_2m_temperature_*.npz"))
-    crps_npz = next(prob_dir.glob("crps_field_2m_temperature_*.npz"))
-    assert pit_npz.exists() and crps_npz.exists()
+    assert any(
+        f.name.startswith("ssr_line_") and "by_lead" in f.name and f.name.endswith("_ensprob.csv")
+        for f in prob_dir.glob("ssr_line_*.csv")
+    ), "Expected SSR by-lead CSV artifacts (ensprob)."
 
-    # Load NPZ files and reconstruct basic shape info
-    with np.load(pit_npz) as pit_data:
-        assert "lead_time" in pit_data
-        pit_lead = pit_data["lead_time"]
-        assert len(pit_lead) == 3
-        # Check that the lead_times equal the input lead times
-        expected_leads = np.array([0, 6, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
+    assert not list(prob_dir.glob("prob_crps_by_lead_long*.csv"))
+    assert not list(prob_dir.glob("prob_crps_by_lead_wide*.csv"))
+    assert not list(prob_dir.glob("prob_ssr_by_lead_long*.csv"))
+    assert not list(prob_dir.glob("prob_ssr_by_lead_wide*.csv"))
 
-    with np.load(crps_npz) as crps_data:
-        assert "lead_time" in crps_data
-        crps_lead = crps_data["lead_time"]
-        assert len(crps_lead) == 3
-    assert np.all(pit_lead == expected_leads)
-    assert np.all(crps_lead == expected_leads)
+    # Full-field PIT/CRPS NPZ artifacts are disabled by default to keep output minimal.
+    assert not list(prob_dir.glob("pit_field_2m_temperature_*.npz"))
+    assert not list(prob_dir.glob("crps_field_2m_temperature_*.npz"))
+
+
+def test_probabilistic_by_lead_tables_match_retrieval_schema(tmp_path: Path):
+    ds_target, ds_prediction = _make_multi_lead_datasets()
+
+    out_root = tmp_path / "out"
+    run_probabilistic(
+        ds_target=ds_target,
+        ds_prediction=ds_prediction,
+        out_root=out_root,
+        cfg_plot={"save_plot_data": True},
+        cfg_all={
+            "probabilistic": {
+                "init_time_chunk_size": None,
+                "lead_time_chunk_size": None,
+            }
+        },
+    )
+
+    prob_dir = out_root / "probabilistic"
+
+    crps_line = next(prob_dir.glob("crps_line_2m_temperature_by_lead_ensprob.csv"))
+    df_crps_line = pd.read_csv(crps_line)
+    assert {"lead_time_hours", "variable", "CRPS"}.issubset(df_crps_line.columns)
+    assert set(df_crps_line["lead_time_hours"].tolist()) == {0, 6, 12}
+    assert set(df_crps_line["variable"].tolist()) == {"2m_temperature"}
+    assert len(df_crps_line) == 3
+
+    temporal_alias = next(
+        prob_dir.glob("temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv")
+    )
+    df_temporal = pd.read_csv(temporal_alias)
+    assert {"lead_time_hours", "variable", "CRPS"}.issubset(df_temporal.columns)
+    assert "SSR" not in df_temporal.columns
+    assert set(df_temporal["lead_time_hours"].tolist()) == {0, 6, 12}
+    assert set(df_temporal["variable"].tolist()) == {"2m_temperature"}
+    assert len(df_temporal) == 3

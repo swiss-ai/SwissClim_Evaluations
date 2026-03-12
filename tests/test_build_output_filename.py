@@ -42,8 +42,10 @@ def test_lead_only_range():
 
 def test_init_only_range():
     fn = build_output_filename(
-        metric="wd_kde_wasserstein",
+        metric="wd_kde_evolve",
+        qualifier="ridgeline",
         init_time_range=("2023010100", "2023010300"),
         ensemble=None,
+        ext="png",
     )
-    assert fn == "wd_kde_wasserstein_init2023010100-2023010300_ensmean.csv"
+    assert fn == "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensmean.png"

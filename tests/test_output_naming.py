@@ -100,10 +100,12 @@ def test_build_output_filename_matrix():
             "exp": "ets_metrics_lead000h-048h_ensmean.csv",
         },
         {
-            "metric": "wd_kde_wasserstein",
+            "metric": "wd_kde_evolve",
+            "qualifier": "ridgeline",
             "init_time_range": ("2023010100", "2023010300"),
             "ensemble": None,
-            "exp": "wd_kde_wasserstein_init2023010100-2023010300_ensmean.csv",
+            "ext": "png",
+            "exp": "wd_kde_evolve_ridgeline_init2023010100-2023010300_ensmean.png",
         },
     ]
     for c in cases:

@@ -1,7 +1,7 @@
 [project]
 name = "swissclim-evaluations"
 version = "0.1.0"
-description = "Add your description here"
+description = "Evaluation toolkit for deterministic and probabilistic weather/climate forecast verification."
 readme = "README.md"
 authors = [{ name = "SwissClim Team" }]
 requires-python = ">=3.11"
@@ -14,10 +14,12 @@ dependencies = [
     "ipykernel>=6.29.5",
     "jinja2>=3.1",
     "matplotlib>=3.10.0,<3.11",
+    "nbconvert>=7.16",
     "numpy>=2.0",
     "pyyaml>=6.0",
     "opt-einsum>=3.4.0",
     "pandas>=2.2",
+    "papermill>=2.6.0",
     "pytest>=7.4",
     "scikit-image>=0.24",
     "scikit-learn>=1.5",
@@ -36,7 +38,7 @@ dependencies = [
 dev = ["ruff>=0.6.8", "pre-commit>=3.8", "mypy>=1.11.2", "types-PyYAML>=6.0.12.20250915"]
 
 [tool.uv.sources]
-weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git" }
+weatherbenchx = { git = "https://github.com/google-research/weatherbenchX.git", rev = "3e9cf1f7193c11b563e4d1970091dabe45166a24" }
 
 [project.scripts]
 swissclim-evaluations = "swissclim_evaluations.cli:main"

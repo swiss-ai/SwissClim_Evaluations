@@ -2,7 +2,23 @@
 
 This document explains the naming conventions of the output files, but the user should not need to care about this in general use cases. Files are read automatically by the notebooks and this is the main interaction the user has with outputs.
 
+`plotting.output_mode` supports `plot`, `npz`, `both`, and `none`.
+With `none`, PNG/NPZ artifacts are not generated; only CSV outputs listed here are emitted.
+In `none` mode, artifact-only modules (`maps`, `histograms`, `vertical_profiles`) are skipped and
+the run log prints explicit skip messages.
+
 The evaluation generates organized results for each enabled module.
+
+## Derived Variables
+
+The `derived_variables` config block computes new variables (e.g. wind speed) lazily from existing
+data_vars **before any module runs**. Derived variables therefore appear as ordinary variables in
+all module outputs — outputs are named after the derived variable (e.g. `wind_speed`,
+`10m_wind_speed`) exactly as they would be for any raw variable.
+
+Currently available recipes: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹.
+
+See `README.md § Derived Variables` for the config syntax and [WIND_UV_ASSESSMENT.md](WIND_UV_ASSESSMENT.md) for a per-module impact analysis of wind variables.
 
 ## Ensemble handling: modes and filename tokens
 
@@ -21,10 +37,10 @@ Modes → tokens:
 If the dataset contains multiple ensembles, metrics can be computed on the mean of all ensembles (mean setting below), individually per ensemble (members setting below), or pooled across all members (pooled setting below).
 
 - **maps**: mean, members
-- **vertical_profiles**: mean, pooled, members
 - **histograms**: mean, pooled, members
 - **wd_kde**: mean, pooled, members
 - **energy_spectra**: mean, pooled, members
+- **vertical_profiles**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
 - **probabilistic**: prob only
@@ -33,12 +49,14 @@ The ensemble dimension is always present (size 1 for deterministic datasets). Fo
 
 Notes: Members mode may include mean aggregates in some summaries (e.g., energy spectra LSD tables).
 
+For modules where 3D variables are applicable, outputs are reported per level by default.
+
 ### Deterministic Metrics
 
 Filenames encode only information that is actually present:
 
 - Metric family (e.g. `deterministic_metrics`)
-- Optional qualifier (`averaged`, `init_time`, `standardized`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
+- Optional qualifier (`averaged`, `init_time`, `standardized`, `per_lead_time`, combinations thereof). Note: `averaged` implies scalar mean over all dimensions (including levels for 3D variables).
 - Optional time range tokens if an init and/or lead range exists: `initYYYYMMDDHH-YYYYMMDDHH` and `leadXXXh-YYYh`
 - Ensemble token (always; see "Ensemble Tokens" below)
 
@@ -49,8 +67,45 @@ deterministic_metrics_ensmean.csv
 deterministic_metrics_averaged_init2023010200-2023010412_lead000h-036h_ensmean.csv
 deterministic_metrics_standardized_ensmean.csv
 deterministic_metrics_per_level_ensmean.csv
+deterministic_metrics_per_lead_time_ensmean.csv
 deterministic_metrics_standardized_per_level_ensmean.csv
 deterministic_metrics_ens0.csv            # members mode example (member 0)
+deterministic_metrics_members_mean_enspooled.csv
+deterministic_metrics_by_lead_long_ensmean.csv
+deterministic_metrics_by_lead_wide_ensmean.csv
+det_line_2m_temperature_MAE_by_lead_ensmean.csv
+det_line_2m_temperature_MAE_ensmean.png
+det_line_2m_temperature_MAE_data_ensmean.npz
+det_line_temperature_500_MAE_by_lead_ensmean.csv   # 3D variable with level token
+```
+
+#### Spatial Metric Maps (MAE / RMSE / Bias)
+
+When `output_mode` is `plot`, `npz`, or `both`, the deterministic module also produces
+spatial-field metric maps for every selected variable (2-D and 3-D at each pressure level).
+Only metrics present in `deterministic.include` are generated (by default all three).
+For multi-lead runs each lead time is shown as a separate row in the figure.
+
+```text
+det_mae_map_2m_temperature_ensmean.png
+det_mae_map_2m_temperature_ensmean.npz
+det_rmse_map_2m_temperature_ensmean.png
+det_bias_map_2m_temperature_lead000h-072h_ensmean.png   # multi-lead
+det_mae_map_temperature_500_init2023010200-2023010412_ensmean.png   # 3D per-level
+det_mae_map_temperature_500_init2023010200-2023010412_ensmean.npz
+```
+
+NPZ keys: `mae` (or `rmse`/`bias`) — mean spatial field, `latitude`, `longitude`,
+`variable`, `units`, and optionally `level`, `<metric>_per_lead` (3-D stack), `lead_labels`.
+
+### Spread-Skill Ratio (SSR)
+
+SSR filenames follow a similar pattern:
+
+```text
+ssr_summary_averaged_init2023010200-2023010412_ensprob.csv
+ssr_line_2m_temperature_by_lead_ensprob.csv
+ssr_line_temperature_500_by_lead_ensprob.csv   # 3D variable with level token
 ```
 
 ### Extreme Threshold Statistics (ETS)
@@ -62,22 +117,34 @@ ets_metrics_ensmean.csv
 ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
 ets_metrics_per_level_ensmean.csv
 ets_metrics_init_time_ens0.csv   # members mode per-member file
+ets_line_2m_temperature_by_lead_ensmean.csv
+ets_line_2m_temperature_ensmean.png
+ets_line_2m_temperature_data_ensmean.npz
 ```
 
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
-is exported per init_time/lead_time and summarized. Outputs:
+is exported per init_time/lead_time and summarized. Outputs are split into single-lead (standard) and per-lead variants.
 
-- Figures / NPZ (subset init_time for plotting) : `energy_spectra/lsd_<variable>[_<level>]_spectrum[_init...][_lead...]_ens*.{png|npz}`
-- LSD per-time (2D): `energy_spectra/lsd_2d_metrics_per_init_time_<range>.csv` or `per_lead_time` depending on dims
-- LSD averaged (2D mean): `energy_spectra/lsd_2d_metrics_averaged_<range>.csv`
-- LSD init_time (2D): `energy_spectra/lsd_2d_metrics_init_time_<range>.csv` (mean over other time dims, retaining init_time)
-- LSD per-time (3D): `energy_spectra/lsd_3d_metrics_per_init_time_<range>.csv` (or per_lead_time)
-- LSD averaged (3D): `energy_spectra/lsd_3d_metrics_averaged_<range>.csv` (scalar mean over levels and time)
-- LSD per-level (3D): `energy_spectra/lsd_3d_metrics_per_level_<range>.csv` (only if `report_per_level=true`)
-- LSD init_time (3D): `energy_spectra/lsd_3d_metrics_init_time_<range>.csv`
-- LSD (banded by wavelength) — new: `energy_spectra/lsd_bands_2d_metrics_*` and `lsd_bands_3d_metrics_*` variants for detailed, averaged (scalar), per-level, and init_time summaries.
+**Standard (Single Lead or averaged):**
+
+- Figures / NPZ: `energy_spectra/energy_spectrum_<variable>[_<level>][_init<start>-<end>]...`
+- LSD averaged (2D): `energy_spectra/energy_ratios_averaged_<range>.csv`
+- LSD lead_time (2D): `energy_spectra/energy_ratios_lead_time_<range>.csv`
+- LSD plot_datetime (2D): `energy_spectra/energy_ratios_plot_datetime_<range>.csv`
+- LSD averaged (3D): `energy_spectra/energy_ratios_3d_averaged_<range>.csv`
+- LSD per-level (3D): `energy_spectra/energy_ratios_3d_per_level_<range>.csv`
+- LSD lead_time (3D): `energy_spectra/energy_ratios_3d_lead_time_<range>.csv`
+- LSD plot_datetime (3D): `energy_spectra/energy_ratios_3d_plot_datetime_<range>.csv`
+- LSD Banded: `energy_spectra/energy_ratios_bands_averaged_<range>.csv` (and 3D variants)
+
+**Per Lead (Multi Lead):**
+
+- Spectrograms: `energy_spectra/energy_spectra_per_lead_<variable>...`
+- LSD per-lead (2D): `energy_spectra/energy_ratios_per_lead_by_lead_long_<range>.csv` (and wide format)
+- LSD Banded per-lead: `energy_spectra/energy_ratios_bands_per_lead_per_lead_time_<range>.csv`
+- LSD Line Plot: `energy_spectra/energy_ratios_line_per_lead_<variable>...`
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
@@ -94,10 +161,10 @@ By default, histograms and KDEs are computed globally (`*_global.npz`). To also 
 Examples (pooled vs members):
 
 ```text
-hist_2m_temperature_global_enspooled.npz
-hist_2m_temperature_latbands_enspooled.npz
-wd_kde_2m_temperature_global_enspooled.npz
-wd_kde_2m_temperature_latbands_enspooled.npz
+hist_2m_temperature_surface_global_enspooled.npz
+hist_2m_temperature_surface_latbands_enspooled.npz
+wd_kde_2m_temperature_surface_global_enspooled.npz
+wd_kde_2m_temperature_surface_latbands_enspooled.npz
 wd_kde_wasserstein_averaged_enspooled.csv
 ```
 
@@ -107,8 +174,10 @@ Time ranges (if present) appear just before the ensemble token: `..._init2023010
 
 Outputs (standardized naming):
 
-- Plot: `vertical_profiles/vprof_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
-- Combined band data (NPZ): `vertical_profiles/vprof_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Plot: `vertical_profiles/vertical_profiles_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.png`
+- Plot data (CSV): `vertical_profiles/vertical_profiles_nmae_<variable>_multi_plot[_init...][_lead...]_ens*.csv`
+- Combined band data (NPZ): `vertical_profiles/vertical_profiles_nmae_<variable>_multi_combined[_init...][_lead...]_ens*.npz`
+- Optional evolution/global bundles (NPZ/PNG): `..._evolve*`, `..._global_profile*`, `..._all_leads*`
 - Summaries (CSV) may be produced by intercomparison rather than the module itself.
 
 ### Spatial Maps
@@ -121,47 +190,136 @@ map_temperature_500_init2023010200-2023010412_ensmean.png        # mean reductio
 map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (output_mode=npz/both)
 ```
 
+**3D variables and multi-lead NPZ files**: For 3D atmospheric variables evaluated with more than one lead time, the NPZ files are saved **per pressure level** (one file per level) with the full lead-time stack preserved:
+
+```text
+map_temperature_500_init2023010200-2023010412_lead000h-072h_ens0.npz  # level 500 hPa, shape (n_leads, lat, lon)
+map_temperature_850_init2023010200-2023010412_lead000h-072h_ens0.npz  # level 850 hPa
+```
+
+For single-lead or purely single-init 3D runs, a combined NPZ is written instead (all levels in one file). The intercomparison tool automatically prefers per-level files and ignores the combined `_to_`-range equivalent when it finds the individual level files.
+
 ### Probabilistic Verification (combined xarray + WeatherBenchX)
 
 All probabilistic artifacts use the dedicated token `ensprob` (never `ensmean` / `enspooled`). This distinguishes probabilistic semantics (ensemble retained for PIT/CRPS computation) from deterministic or pooled reductions.
 
-Per-variable artifacts (NPZ format):
+Per-variable artifacts (NPZ/CSV/PNG):
 
 ```text
-pit_hist_2m_temperature_ensprob.npz
-pit_field_2m_temperature_ensprob.npz
-crps_field_2m_temperature_ensprob.npz
-crps_map_2m_temperature_ensprob.png        # optional map (if plotting enabled)
+pit_hist_2m_temperature_ensprob.npz                  # single-lead histogram
+pit_hist_2m_temperature_grid_ensprob.png              # per-lead-time grid (multi-lead only)
+pit_hist_2m_temperature_grid_ensprob.npz              # per-lead-time grid data (multi-lead only)
+pit_hist_temperature_500_ensprob.npz                  # 3D variable with level token (single-lead)
+pit_hist_temperature_500_grid_ensprob.png             # 3D variable per-lead grid
+crps_map_2m_temperature_ensprob.png                   # optional (if plotting enabled)
+crps_line_2m_temperature_by_lead_ensprob.csv
+crps_line_2m_temperature_ensprob.png
+crps_line_2m_temperature_data_ensprob.npz             # optional (if output_mode includes npz)
+crps_line_temperature_500_by_lead_ensprob.csv         # 3D variable with level token
+ssr_line_2m_temperature_by_lead_ensprob.csv
+ssr_line_temperature_500_by_lead_ensprob.csv          # 3D variable with level token
+temporal_probabilistic_metrics_2m_temperature_per_lead_time_ensprob.csv  # legacy-compatible alias
+ssr_temporal_2m_temperature_ensprob.png               # optional (SSR temporal plot)
+ssr_map_2m_temperature_ensprob.png                    # optional (SSR map plot)
+ssr_regions_2m_temperature_ensprob.png                # optional (SSR regional plot)
 ```
 
-WeatherBenchX per-variable temporal/spatial aggregations (NPZ format):
+Note: For multi-lead runs, only the per-lead-time grid is produced (no separate averaged/global PIT
+histogram). For single-lead runs, the individual histogram is emitted. 3D variables emit one
+histogram per pressure level.
+
+WeatherBenchX per-variable spatial aggregations (NPZ format):
 
 ```text
-crps_temporal_wbx_2m_temperature_ensprob.npz
-crps_spatial_wbx_2m_temperature_ensprob.npz
-ssr_temporal_wbx_2m_temperature_ensprob.npz
-ssr_spatial_wbx_2m_temperature_ensprob.npz
-crps_map_wbx_2m_temperature_ensprob.png    # WeatherBenchX CRPS map (optional)
+crps_spatial_2m_temperature_ensprob.npz
+crps_spatial_temperature_500_ensprob.npz
+ssr_spatial_2m_temperature_ensprob.npz
+ssr_spatial_temperature_500_ensprob.npz
+
 ```
 
 Summary tables:
 
 ```text
-spread_skill_ratio_ensprob.csv
-crps_ensemble_ensprob.csv
+ssr_summary_ensprob.csv
 crps_summary_ensprob.csv
 crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
-crps_summary_per_level_ensprob.csv
 ```
 
 ### Details for probabilistic outputs
 
 - CRPS and PIT are computed per variable using the ensemble along the `ensemble` dimension.
+- WBX CRPS/SSR fields are computed once per variable batch and reused for summary and by-lead line outputs.
+- `crps_line_*_by_lead*.csv` and `ssr_line_*_by_lead*.csv` are written for multi-lead runs independent of plot mode.
+- Legacy CRPS aliases `temporal_probabilistic_metrics_*_per_lead_time*.csv` are also written to preserve older analysis scripts.
+- Spatial NPZ artifacts (`*_spatial_*.npz`) are emitted when `plotting.output_mode` includes `npz` (`npz` or `both`).
 - CRPS returned by the library functions is a DataArray (not a Dataset). In notebooks, use the DataArray directly and then reduce over time-like dims to make maps.
-- PIT histograms are stored as NPZ (counts, edges) for reproducibility; corresponding PIT fields are also written to NPZ.
+- PIT histograms are stored as NPZ (counts, edges) for reproducibility.
+- For multi-lead runs, PIT histograms are produced only as a per-lead-time grid (no
+  averaged/global histogram). Single-lead runs emit a single histogram per variable.
+- For 3D variables, PIT histograms are computed and stored per pressure level.
+- Full PIT/CRPS fields are not written to keep output size manageable.
+- For 3D variables, level-resolved outputs are produced by default where supported.
 
 All modules print concise progress like:
 
 - [swissclim] Module: deterministic — variables=5
 - [histograms] variable: 10m_u_component_of_wind
 - [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_spectrum.png
+
+## Intercomparison Outputs
+
+Intercomparison outputs are written under `output/intercomparison/<module>/` and are consumed by `notebooks/model_intercomparison.ipynb` via folder-level display helpers.
+
+All intercomparison plots use **consistent model colours**: each label in `intercomparison.yaml → labels` is assigned a fixed colour from the `tab10` palette in the order it appears in the list. This colour is shared across every module (bar charts, line plots, histograms, KDE, spectra, PIT, CRPS).
+
+- **maps**
+	- `maps/map_<var>[_<level>]_compare.png`: Target + per-model panels. Multi-lead 2D variables produce a row per lead time labelled `(+Xh)` on the left; multi-lead 3D variables produce one gridded figure per pressure level.
+	- `maps/det_mae_map_*_compare.png`: MAE spatial map comparison (panels per model).
+	- `maps/det_mae_map_*_per_lead_compare.png`: MAE per-lead gridded comparison with `(+Xh)` row labels.
+	- `maps/det_rmse_map_*_compare.png`: RMSE spatial map comparison.
+	- `maps/det_rmse_map_*_per_lead_compare.png`: RMSE per-lead gridded comparison.
+	- `maps/det_bias_map_*_compare.png`: Bias spatial map comparison.
+	- `maps/det_bias_map_*_per_lead_compare.png`: Bias per-lead gridded comparison.
+- **histograms**
+	- `histograms/*_compare.png`
+- **wd_kde**
+	- `wd_kde/*_compare.png`
+	- `wd_kde/*_ridgeline_compare.png`
+	- `wd_kde/wd_kde_wasserstein_averaged_combined.csv`
+- **energy_spectra**
+	- `energy_spectra/*_compare.png`
+	- `energy_spectra/*_ratio_compare.png`
+	- `energy_spectra/*_spectrogram_delta_compare.png`
+	- `energy_spectra/lsd_metrics_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_per_level_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_per_level_combined.csv`
+	- `energy_spectra/lsd_metrics_3d_averaged_combined.csv`
+	- `energy_spectra/lsd_metrics_lead_time_combined.csv`
+	- `energy_spectra/lsd_metrics_3d_lead_time_combined.csv`
+	- `energy_spectra/lsd_metrics_banded_lead_time_combined.csv`
+- **vertical_profiles**
+	- `vertical_profiles/*_compare.png`
+	- `vertical_profiles/*_summary.csv`
+- **deterministic**
+	- `deterministic/metrics_combined.csv`
+	- `deterministic/metrics_standardized_combined.csv`
+	- `deterministic/metrics_per_level_combined.csv`
+	- `deterministic/metrics_standardized_per_level_combined.csv`
+	- `deterministic/temporal_metrics_combined.csv`
+	- `deterministic/temporal_*_compare.png`
+- **ets**
+	- `ets/ets_metrics_combined.csv`
+	- `ets/ets_*_compare.png`
+- **probabilistic**
+	- `probabilistic/crps_summary_combined.csv`
+	- `probabilistic/crps_summary_per_level_combined.csv`
+	- `probabilistic/ssr_combined.csv`
+	- `probabilistic/ssr_per_level_combined.csv`
+	- `probabilistic/crps_ensemble_combined.csv`
+	- `probabilistic/temporal_metrics_combined.csv`
+	- `probabilistic/temporal_*_compare.png`
+	- `probabilistic/pit_hist_*_compare.png`
+	- `probabilistic/crps_map_*_compare.png`
+	- `probabilistic/crps_spatial_*_per_lead_compare.png`

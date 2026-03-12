@@ -1,9 +1,9 @@
 import contextlib
 import logging
-import warnings
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
+import numpy as np
 import xarray as xr
 
 from . import console as c, customizations as custom
@@ -191,6 +191,28 @@ def enforce_chunking(
             break
 
     if needs_rechunk:
+        # Heuristic: skip rechunk warnings for very small or already in-memory test datasets.
+        # Total element count below threshold -> leave unchunked; avoids noisy test warnings.
+        try:
+            total_size = sum(int(v.size) for v in ds.data_vars.values())
+        except Exception:
+            total_size = 0
+        SMALL_THRESHOLD = 20000  # configurable if needed
+        # If no existing chunking (numpy) AND tiny dataset -> skip rechunk silently.
+        all_unchunked = True
+        for v_da in ds.data_vars.values():
+            try:
+                if getattr(v_da, "chunks", None) is not None:
+                    all_unchunked = False
+                    break
+            except Exception as e:
+                logger.debug(
+                    "Exception while checking 'chunks' attribute for variable %r: %s",
+                    getattr(v_da, "name", None),
+                    e,
+                )
+        if all_unchunked and total_size <= SMALL_THRESHOLD:
+            return ds  # no warning, no rechunk
         name = dataset_name or "dataset"
         # Downgrade to log message to avoid noisy warnings during tests; users can enable
         # logging to see this information. Rechunking remains functional.
@@ -200,6 +222,118 @@ def enforce_chunking(
             policy,
         )
         return ds.chunk(chunk_map)
+    return ds
+
+
+def standardize_dims(
+    ds: xr.Dataset,
+    dataset_name: str,
+    *,
+    first_lead_only: bool | None = None,
+    preserve_all_leads: bool | None = None,
+) -> xr.Dataset:
+    """Standardize dataset dims and coords for this pipeline.
+        - Normalize alias names (initial_time->init_time, number/member->ensemble,
+            prediction_timedelta->lead_time, etc.).
+        - Convert legacy 'time' -> 'init_time' and add singleton zero 'lead_time' if absent.
+    - Ensure 'lead_time' exists and is timedelta64[ns]; coerce numeric to hours.
+    - Ensure spatial dims latitude/longitude exist.
+    - Do NOT add synthetic 'level' dimension. Only retain if truly present in data.
+    - Accept schemas with or without optional 'level' / 'ensemble' dims.
+    """
+
+    # (debug logging removed)
+
+    # Normalize alias dimension/coordinate names first
+    dim_aliases = {
+        "initial_time": "init_time",
+        "init": "init_time",
+        "prediction_timedelta": "lead_time",
+        "lead": "lead_time",
+        "number": "ensemble",
+        "member": "ensemble",
+    }
+    rename_dims_map = {k: v for k, v in dim_aliases.items() if k in ds.dims}
+    if rename_dims_map:
+        ds = ds.rename_dims(rename_dims_map)
+    rename_coords_map = {k: v for k, v in dim_aliases.items() if k in ds.coords}
+    if rename_coords_map:
+        ds = ds.rename(rename_coords_map)
+
+    # Forbid any use of valid_time
+    if "valid_time" in ds.dims or "valid_time" in ds.coords:
+        raise ValueError(
+            f"Dataset '{dataset_name}' must use ('init_time','lead_time'); "
+            "'valid_time' is not allowed."
+        )
+
+    # Convert old-style time -> init_time while keeping an index for
+    # label-based selection (single-lead case)
+    if "time" in ds.dims:
+        if "time" in ds.coords:
+            # Rename both the dimension and its coordinate in one go
+            ds = ds.rename({"time": "init_time"})
+            # On newer xarray, rename may drop the xindex; restore it only if not already indexed.
+            try:
+                existing_indexes = getattr(ds, "xindexes", {}) or getattr(ds, "_indexes", {})
+                if "init_time" not in existing_indexes:
+                    ds = ds.set_xindex("init_time")
+            except Exception:
+                # Deterministic fallback: if re-indexing fails we proceed without raising here.
+                pass
+        else:
+            # Fallback: only dimension exists (no coord var)
+            ds = ds.rename_dims({"time": "init_time"})
+
+    # Ensure latitude/longitude present
+    for d in ("latitude", "longitude"):
+        if d not in ds.dims:
+            raise ValueError(f"Dataset '{dataset_name}' is missing required spatial dim '{d}'.")
+
+    # Ensure lead_time exists; add singleton zero if absent when init_time exists
+    if "init_time" in ds.dims and "lead_time" not in ds.dims:
+        zero_lead = np.array([0], dtype="timedelta64[h]").astype("timedelta64[ns]")
+        ds = ds.expand_dims({"lead_time": zero_lead})
+    # Coerce lead_time dtype to timedelta64[ns]
+    if "lead_time" in ds.dims:
+        lt = ds["lead_time"].values
+        if not np.issubdtype(lt.dtype, np.timedelta64):
+            ds = ds.assign_coords(
+                lead_time=np.array(lt, dtype="timedelta64[h]").astype("timedelta64[ns]")
+            )
+        # Optional policy: restrict to first lead_time (no forecasting). Default True when None.
+        if (first_lead_only is None or bool(first_lead_only)) and int(
+            ds.lead_time.size
+        ) > 1:  # SIM102
+            lead0 = ds["lead_time"].values[0]
+            ds = ds.sel(lead_time=[lead0])
+
+    # If the dataset already has 'level' keep it; absence means purely 2D vars.
+
+    # Enforce allowed dims only
+    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
+    if bad_dims:
+        raise ValueError(
+            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. "
+            f"Only {ALLOWED_DIMS} are allowed. Please preprocess your data accordingly."
+        )
+
+    # Relax schema: Required core dims
+    core_required = {"latitude", "longitude", "init_time", "lead_time"}
+    missing_core = [d for d in core_required if d not in ds.dims]
+    if missing_core:
+        raise ValueError(
+            f"Dataset '{dataset_name}' missing required dims {missing_core}. "
+            "Expected at least (latitude, longitude, init_time, lead_time) plus optional "
+            "level/ensemble."
+        )
+    # Validate that no unsupported dims remain
+    bad_dims = [d for d in ds.dims if d not in ALLOWED_DIMS]
+    if bad_dims:
+        raise ValueError(
+            f"Dataset '{dataset_name}' has unsupported dims {bad_dims}. Allowed: {ALLOWED_DIMS}."
+        )
+    # (debug logging removed)
     return ds
 
 
@@ -250,35 +384,30 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
 
     # Harmonize 'level' coordinate across shards to a canonical sorted union to avoid
     # non-monotonic global indexes during combine_by_coords.
-    try:
-        levels_list = [
-            ds.coords["level"].values
-            for ds in dsets
-            if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
-        ]
-        if levels_list:
-            import numpy as _np
+    levels_list = [
+        ds.coords["level"].values
+        for ds in dsets
+        if ("level" in ds.coords and ds.level.ndim == 1 and ds.level.size > 0)
+    ]
+    if levels_list:
+        import numpy as _np
 
-            canon_level = _np.unique(_np.concatenate(levels_list))
-            canon_level.sort()
-            dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
-    except Exception:
-        # Best-effort; if harmonization fails, proceed and let combine raise a clearer error
-        pass
+        canon_level = _np.unique(_np.concatenate(levels_list))
+        canon_level.sort()
+        dsets = [(ds.reindex(level=canon_level) if "level" in ds.dims else ds) for ds in dsets]
     if not dsets:
         raise ValueError("No Zarr paths provided.")
     if len(dsets) == 1:
         return dsets[0]
-    # Combine strictly by coords; override attrs to avoid conflicts. Join outer to allow
-    # non-overlapping time ranges.
     combined: xr.Dataset = cast(
         xr.Dataset,
         xr.combine_by_coords(
             dsets,
             combine_attrs="override",
+            coords="minimal",
             data_vars="all",
             join="outer",
-            compat="no_conflicts",
+            compat="override",
         ),
     )
     return combined
@@ -290,7 +419,7 @@ def open_prediction(path: str | Sequence[str], variables: list[str] | None = Non
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
     """
-    if isinstance(path, (list | tuple)):
+    if isinstance(path, list | tuple):
         return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
@@ -311,7 +440,7 @@ def open_target(path: str | Sequence[str], variables: list[str] | None = None) -
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
     """
-    if isinstance(path, (list | tuple)):
+    if isinstance(path, list | tuple):
         return _open_many_zarr(list(path), variables)
     ds = xr.open_zarr(path, decode_timedelta=True)
     if variables:
@@ -335,7 +464,6 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
@@ -344,28 +472,6 @@ def apply_ensemble_policy(
           * int: select that single member (keeping 'ensemble' dimension).
           * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
-    # Backward compatibility: allow legacy 'ensemble_member' kw
-    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
-        ensemble_members = legacy_kwargs.pop("ensemble_member")
-        warnings.warn(
-            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
-    if "probabilistic_enabled" in legacy_kwargs:
-        legacy_kwargs.pop("probabilistic_enabled")
-    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
-    if "preserve_ensemble_dimension" in legacy_kwargs:
-        legacy_kwargs.pop("preserve_ensemble_dimension")
-
-    if legacy_kwargs:
-        warnings.warn(
-            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
     if "ensemble" not in ds.dims:
         return ds
 
@@ -382,5 +488,145 @@ def apply_ensemble_policy(
         # subset but keep ensemble dimension
         return ds.isel(ensemble=indices_list, drop=False)
 
-    # No explicit selection: keep full ensemble
+    # No explicit selection: do NOT pre-reduce. Keep ensemble for modules to decide.
     return ds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Derived-variable machinery
+# ─────────────────────────────────────────────────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+def _wind_speed(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Lazy wind speed magnitude: sqrt(U² + V²).  Units: m s⁻¹."""
+    da = np.sqrt(ds[u_var] ** 2 + ds[v_var] ** 2)
+    da.attrs["units"] = "m s**-1"
+    da.attrs["long_name"] = "Wind Speed"
+    return da
+
+
+# Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
+# Available recipes that a user may reference via ``kind:`` in config:
+#   wind_speed  — sqrt(U² + V²), m s⁻¹, suitable for all modules
+_DERIVED_RECIPES: dict[str, Any] = {
+    "wind_speed": _wind_speed,
+}
+
+
+def _parse_derived_cfg(
+    derived_cfg: dict[str, Any],
+) -> list[tuple[str, str, str, str]]:
+    """Parse the ``derived_variables`` config block.
+
+    Returns a list of ``(output_name, kind, u_var, v_var)`` tuples.
+
+    Each sub-key becomes the output variable name::
+
+        10m_wind_speed:
+          kind: wind_speed                    # see _DERIVED_RECIPES for available kinds
+          u: 10m_u_component_of_wind
+          v: 10m_v_component_of_wind
+    """
+    entries: list[tuple[str, str, str, str]] = []
+
+    for key, block in derived_cfg.items():
+        if not isinstance(block, dict):
+            c.warn(f"derived_variables.{key}: expected a mapping, skipping.")
+            continue
+
+        if "kind" not in block:
+            c.warn(
+                f"derived_variables.{key}: missing required 'kind' key. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}. Skipping."
+            )
+            continue
+
+        kind = str(block["kind"])
+        if kind not in _DERIVED_RECIPES:
+            c.warn(
+                f"derived_variables.{key}: unknown kind '{kind}'. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}."
+            )
+            continue
+
+        u_var = str(block.get("u") or block.get("u_var") or "")
+        v_var = str(block.get("v") or block.get("v_var") or "")
+        if not u_var or not v_var:
+            c.warn(f"derived_variables.{key}: requires 'u' and 'v' keys. Skipping.")
+            continue
+
+        entries.append((key, kind, u_var, v_var))
+
+    return entries
+
+
+def add_derived_variables(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    derived_cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Compute derived variables and append them to both datasets.
+
+    Currently supported recipes (see ``_DERIVED_RECIPES``):
+
+    * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
+
+    **Inner-join guard**: a derived variable is only added when *both* source
+    components are present in *both* the target and prediction datasets.  If a
+    component is missing from either dataset the variable is skipped with a
+    warning.
+
+    All computations are **lazy** — no Dask graphs are evaluated here.
+
+    .. note::
+        Not all evaluation metrics are physically or statistically meaningful
+        for every variable — derived or otherwise.  The user is responsible for
+        choosing sensible module combinations.  See the README for guidance.
+
+    Parameters
+    ----------
+    ds_target, ds_prediction : xr.Dataset
+        Datasets returned by :func:`data_selection.prepare_datasets`.
+    derived_cfg : dict
+        The ``derived_variables`` config block.
+
+    Returns
+    -------
+    tuple[xr.Dataset, xr.Dataset]
+        Updated ``(ds_target, ds_prediction)`` with derived variables appended.
+    """
+    if not derived_cfg:
+        return ds_target, ds_prediction
+
+    entries = _parse_derived_cfg(derived_cfg)
+    added: list[str] = []
+    skipped: list[str] = []
+
+    for out_name, kind, u_var, v_var in entries:
+        # Inner-join guard
+        missing_target = {u_var, v_var} - set(ds_target.data_vars)
+        missing_pred = {u_var, v_var} - set(ds_prediction.data_vars)
+        if missing_target or missing_pred:
+            parts: list[str] = []
+            if missing_target:
+                parts.append(f"target missing {sorted(missing_target)}")
+            if missing_pred:
+                parts.append(f"prediction missing {sorted(missing_pred)}")
+            c.warn(f"Skipping derived '{out_name}' ({kind}): {'; '.join(parts)}.")
+            skipped.append(out_name)
+            continue
+
+        recipe = _DERIVED_RECIPES[kind]
+        ds_target = ds_target.assign({out_name: recipe(ds_target, u_var, v_var)})
+        ds_prediction = ds_prediction.assign({out_name: recipe(ds_prediction, u_var, v_var)})
+        added.append(out_name)
+        logger.info("Derived variable '%s' (%s) added to both datasets.", out_name, kind)
+
+    if added:
+        c.info(f"Derived variables added to both datasets: {added}")
+    if skipped:
+        c.warn(f"Derived variables skipped (missing source components): {skipped}")
+
+    return ds_target, ds_prediction
