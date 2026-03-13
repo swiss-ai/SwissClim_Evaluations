@@ -127,7 +127,7 @@ selection:
     maps: members            # members | mean
     histograms: pooled       # pooled | members | mean
     wd_kde: pooled           # pooled | members | mean
-    energy_spectra: mean     # mean | pooled | members
+    energy_spectra: pooled   # mean | pooled | members
     vertical_profiles: mean  # mean | pooled | members
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
