@@ -783,9 +783,6 @@ def run(
                                 ds_lev_t_npz = ds_lev_t_npz.isel({dim_drop: 0})
                             if dim_drop in ds_lev_p_npz.dims and ds_lev_p_npz.sizes[dim_drop] == 1:
                                 ds_lev_p_npz = ds_lev_p_npz.isel({dim_drop: 0})
-                        # Drop level dim (now scalar after .sel)
-                        ds_lev_t_npz = ds_lev_t_npz.squeeze(dim="level", drop=True)
-                        ds_lev_p_npz = ds_lev_p_npz.squeeze(dim="level", drop=True)
                         ds_lev_t_npz = unwrap_longitude_for_plot(ds_lev_t_npz)
                         ds_lev_p_npz = unwrap_longitude_for_plot(ds_lev_p_npz)
                         # Transpose to (lead_time, latitude, longitude)
