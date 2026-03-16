@@ -263,16 +263,17 @@ metrics:
   #   "FSS", "Relative L1", "Relative L2"
   #   "SEEPS" (only for precipitation)
   #
-  # Spatial metric maps: When MAE, RMSE, or Bias are included (and output_mode
-  # is not "none"), the deterministic module also generates per-variable spatial
-  # error maps (PNG + NPZ). For 3D variables, one map per pressure level is
-  # produced. Multi-lead runs show each lead time as a separate row.
-  #
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
     # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report metrics per pressure level (for 3D variables).
     report_per_level: true
+
+    # If true, generate spatial error maps (PNG + NPZ) for MAE, RMSE, and Bias.
+    # For 3D variables one map per pressure level is produced; multi-lead runs
+    # show each lead time as a separate row. Disabled by default because these
+    # maps are memory-intensive (the full spatial field must be materialised).
+    spatial_maps: false
 
     # In members mode, also emit a mean-of-members summary CSV.
     # aggregate_members_mean: true
