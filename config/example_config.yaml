@@ -368,6 +368,12 @@ performance:
   # dask_processes: true
   # dask_memory_limit: 24GiB
 
+  # Apply the repository chunking policy (init_time:1, lead_time:1, level:1, lat/lon/ens:-1)
+  # after loading. Set false to preserve native zarr chunking — useful when the target
+  # uses a different layout (e.g. WeatherBench2 ERA5 with all levels in one spatial chunk)
+  # where rechunking would create an expensive graph transpose and severe memory pressure.
+  enforce_chunking: true
+
   # Optional Dask performance report (distributed scheduler only).
   # When enabled, wraps the evaluation in dask.distributed.performance_report
   # and writes an HTML report for post-run analysis.

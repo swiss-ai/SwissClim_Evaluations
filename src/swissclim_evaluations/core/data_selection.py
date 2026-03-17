@@ -893,9 +893,20 @@ def prepare_datasets(
         except Exception as e:
             c.warn(f"Failed to check for dropped forecast leads: {e}")
 
-    # Enforce repository-wide chunking policy to ensure predictable performance
-    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target")
-    ds_prediction = data_mod.enforce_chunking(ds_prediction, dataset_name="prediction")
+    # Enforce repository-wide chunking policy (can be disabled via performance.enforce_chunking).
+    perf_cfg = cfg.get("performance", {}) or {}
+    enforce_chunks = bool(perf_cfg.get("enforce_chunking", True))
+    ds_target = data_mod.enforce_chunking(ds_target, dataset_name="target", enforce=enforce_chunks)
+    ds_prediction = data_mod.enforce_chunking(
+        ds_prediction, dataset_name="prediction", enforce=enforce_chunks
+    )
+    # When enforce_chunking=false the full policy is skipped, but we still rechunk the target
+    # to level:1 here. By this point time selection has already reduced the dataset to a handful
+    # of time steps, so level:3→1 creates ~O(n_times * n_levels) tasks — trivial. Without this,
+    # each metric computation triggers an implicit level rechunk (pred has level:1, target has
+    # level:N), and dask reads the full N-level zarr chunk for every level independently.
+    if not enforce_chunks and "level" in ds_target.dims:
+        ds_target = ds_target.chunk({"level": 1})
 
     # Optional: strict check for missing values in inputs
     try:

@@ -493,5 +493,5 @@ def calculate_multi_lead_metrics_split(
         compute=True,
         weights=weights,
         performance_cfg=performance_cfg,
-        log_variable_progress=False,
+        log_variable_progress=True,
     )

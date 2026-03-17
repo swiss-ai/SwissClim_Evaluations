@@ -148,12 +148,20 @@ def enforce_chunking(
     ds: xr.Dataset,
     desired_policy: dict[str, int] | None = None,
     dataset_name: str | None = None,
+    enforce: bool = True,
 ) -> xr.Dataset:
     """Ensure the dataset uses the desired Dask chunking pattern.
 
-    If existing chunks differ (or dataset is not chunked), rechunk and warn that this may
-    increase memory usage and runtime.
+    If existing chunks differ (or dataset is not chunked), rechunk and warn that this may increase
+    memory usage and runtime.
+
+    When enforce=False the dataset is returned as-is, preserving native zarr chunking.
+        This is useful for datasets with a different layout (e.g., WeatherBench2 ERA5 with all
+        levels in one spatial chunk). Note that our dask graph optimizations assume the policy
+        chunking, so some operations may be less efficient.
     """
+    if not enforce:
+        return ds
     policy = desired_policy or DESIRED_CHUNKS
     # Build chunk map only for dimensions present
     chunk_map: dict[str, int] = {}
