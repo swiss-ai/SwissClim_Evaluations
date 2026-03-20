@@ -15,6 +15,7 @@ import xarray as xr
 import yaml
 
 from . import console as c, data as data_mod
+from .core import config as config_mod
 from .dask_utils import calculate_dynamic_chunk_size
 from .helpers import (
     format_ensemble_log,
@@ -1950,8 +1951,9 @@ def main(argv: list[str] | None = None) -> None:
             set_color_mode("never")
     except Exception:
         pass
+
     args = build_parser().parse_args(argv)
-    cfg = _load_yaml(args.config)
+    cfg = config_mod.load_config(args.config)
     # Record the original config path for reproducibility actions (not part of user schema)
     with contextlib.suppress(Exception):
         cfg["_config_path"] = args.config

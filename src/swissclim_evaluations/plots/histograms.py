@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -10,8 +11,6 @@ import xarray as xr
 from .. import console as c
 from ..dask_utils import (
     as_float_array,
-    calculate_dynamic_chunk_size,
-    compute_jobs,
     dask_histogram,
     to_finite_array,
 )
@@ -49,19 +48,36 @@ def run(
     mode = str(plotting_cfg.get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
+    if not save_fig and not save_npz:
+        c.print("[histograms] Skipping module: output_mode=none (no PNG/NPZ outputs requested).")
+        return
     dpi = int(plotting_cfg.get("dpi", 48))
-    # Optional subsampling  to avoid loading full arrays.
-    max_samples = plotting_cfg.get("histogram_max_samples")
+    # Optional subsampling to avoid loading full arrays.
+    # Behavior:
+    # - missing key / "auto" => conservative default
+    # - null => disable subsampling (advanced; can be memory intensive)
+    raw_hist_samples = plotting_cfg.get("histogram_max_samples", "auto")
+    max_samples: int | None
     try:
-        max_samples = int(max_samples) if max_samples is not None else None
-        if max_samples is not None and max_samples <= 0:
+        if isinstance(raw_hist_samples, str) and raw_hist_samples.strip().lower() == "auto":
+            max_samples = 200_000
+        elif raw_hist_samples is None:
             max_samples = None
+        else:
+            max_samples = int(raw_hist_samples)
+            if max_samples <= 0:
+                max_samples = None
     except Exception:
-        max_samples = None
+        max_samples = 200_000
     base_seed = int(plotting_cfg.get("random_seed", 42))
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
 
-    dynamic_chunk = calculate_dynamic_chunk_size(config_chunk_size=chunk_size_cfg, ds=ds_target)
+    perf = performance_cfg or {}
+    dask_profile = str(perf.get("dask_profile", "safe")).strip().lower()
+    if max_samples is None and dask_profile == "safe":
+        c.warn(
+            "[histograms] histogram_max_samples=null disables subsampling and can be memory "
+            "intensive. Consider histogram_max_samples=200000 for safer execution."
+        )
 
     section_output = out_root / "histograms"
 
@@ -114,6 +130,7 @@ def run(
     ):
         if not per_lat_band:
             return
+        level_desc = "" if level_val is None else f" level={level_val}"
 
         i = 0  # retained for seeding when needed (simplified for 3D reuse)
         c.print(f"[histograms] lat_bands: {variable_name}")
@@ -193,13 +210,26 @@ def run(
 
         # Step 1: Compute subsamples or quantiles
         if max_samples is not None:
-            compute_jobs(
-                jobs,
-                key_map={"sub_true_lazy": "sub_true", "sub_pred_lazy": "sub_pred"},
-                post_process={"sub_true": to_finite_array, "sub_pred": to_finite_array},
-                chunk_size=dynamic_chunk,
-                desc="Computing subsamples",
-            )
+            # Remove manual batching
+            lazy_true = []
+            lazy_pred = []
+            job_indices = []
+            for i, job in enumerate(jobs):
+                lazy_true.append(job["sub_true_lazy"])
+                lazy_pred.append(job["sub_pred_lazy"])
+                job_indices.append(i)
+
+            if lazy_true:
+                c.print(f"Computing histogram subsamples variable={variable_name}{level_desc}...")
+                results_true, results_pred = dask.compute(lazy_true, lazy_pred)
+
+                for idx, r_true, r_pred in zip(
+                    job_indices, results_true, results_pred, strict=False
+                ):
+                    job = jobs[idx]
+                    job["sub_true"] = to_finite_array(r_true)
+                    job["sub_pred"] = to_finite_array(r_pred)
+
             for job in jobs:
                 # Calculate edges immediately (fast in memory)
                 if job["sub_true"].size == 0 or job["sub_pred"].size == 0:
@@ -214,12 +244,19 @@ def run(
                         qlow, qhigh = -1.0, 1.0
                     job["edges"] = np.linspace(qlow, qhigh, 1001)
         else:
-            compute_jobs(
-                jobs,
-                key_map={"quantile_lazy": "quantile_res"},
-                chunk_size=dynamic_chunk,
-                desc="Computing quantiles",
-            )
+            lazy_quantiles = []
+            job_indices = []
+            for i, job in enumerate(jobs):
+                if "quantile_lazy" in job:
+                    lazy_quantiles.append(job["quantile_lazy"])
+                    job_indices.append(i)
+
+            if lazy_quantiles:
+                c.print(f"Computing histogram quantiles variable={variable_name}{level_desc}...")
+                results_quantiles = dask.compute(*lazy_quantiles)
+                for idx, r_q in zip(job_indices, results_quantiles, strict=False):
+                    jobs[idx]["quantile_res"] = r_q
+
             for job in jobs:
                 q = job.get("quantile_res")
                 if q is not None:
@@ -233,17 +270,26 @@ def run(
 
         # Step 2: Compute histograms
         if max_samples is None:
-            for job in jobs:
-                job["hist_true_lazy"] = dask_histogram(job["da_true"], job["edges"])
-                job["hist_pred_lazy"] = dask_histogram(job["da_pred"], job["edges"])
+            lazy_true = []
+            lazy_pred = []
+            job_indices = []
 
-            compute_jobs(
-                jobs,
-                key_map={"hist_true_lazy": "counts_ds", "hist_pred_lazy": "counts_prediction"},
-                post_process={"counts_ds": as_float_array, "counts_prediction": as_float_array},
-                chunk_size=dynamic_chunk,
-                desc="Computing histograms",
-            )
+            for i, job in enumerate(jobs):
+                ht = dask_histogram(job["da_true"], job["edges"])
+                hp = dask_histogram(job["da_pred"], job["edges"])
+                lazy_true.append(ht)
+                lazy_pred.append(hp)
+                job_indices.append(i)
+
+            if lazy_true:
+                c.print(f"Computing histograms variable={variable_name}{level_desc}...")
+                results_true, results_pred = dask.compute(lazy_true, lazy_pred)
+
+                for idx, r_true, r_pred in zip(
+                    job_indices, results_true, results_pred, strict=False
+                ):
+                    jobs[idx]["counts_ds"] = as_float_array(r_true)
+                    jobs[idx]["counts_prediction"] = as_float_array(r_pred)
         else:
             for job in jobs:
                 # Compute histogram on in-memory subsamples
@@ -398,8 +444,9 @@ def run(
             a_true = subsample_values(da_target_var, max_samples, base_seed + 9001)
             a_pred = subsample_values(da_pred_var, max_samples, base_seed + 9001)
         else:
-            a_true = np.asarray(da_target_var.compute().values).ravel()
-            a_pred = np.asarray(da_pred_var.compute().values).ravel()
+            da_true_comp, da_pred_comp = dask.compute(da_target_var, da_pred_var)
+            a_true = np.asarray(da_true_comp.values).ravel()
+            a_pred = np.asarray(da_pred_comp.values).ravel()
             a_true = a_true[np.isfinite(a_true)]
             a_pred = a_pred[np.isfinite(a_pred)]
         edges = _choose_edges_arr(a_true, a_pred, bins=400)
@@ -487,6 +534,7 @@ def run(
         level_token: str,
         ens_token: str | None,
         lead_time_range: tuple[str, str] | None,
+        level_val: Any = None,
     ) -> None:
         """Plot global histograms gridded by lead_time (one subplot per lead)."""
         if "lead_time" not in da_pred_var.dims:
@@ -558,13 +606,23 @@ def run(
             jobs.append(job)
 
         # Compute all
-        compute_jobs(
-            jobs,
-            key_map={"sub_t_lazy": "val_t", "sub_p_lazy": "val_p"},
-            post_process={"val_t": to_finite_array, "val_p": to_finite_array},
-            chunk_size=dynamic_chunk,
-            desc="Computing global histograms",
-        )
+        lazy_t = []
+        lazy_p = []
+        for job in jobs:
+            lazy_t.append(job["sub_t_lazy"])
+            lazy_p.append(job["sub_p_lazy"])
+
+        if lazy_t:
+            desc = (
+                f"Computing global histograms variable={variable_name}"
+                if level_val is None
+                else f"Computing global histograms variable={variable_name} level={level_val}"
+            )
+            c.print(f"{desc}...")
+            results_t, results_p = dask.compute(lazy_t, lazy_p)
+            for i, (r_t, r_p) in enumerate(zip(results_t, results_p, strict=False)):
+                jobs[i]["val_t"] = to_finite_array(r_t)
+                jobs[i]["val_p"] = to_finite_array(r_p)
 
         # Calculate edges from edge_job
         edge_job = jobs[0]
@@ -640,7 +698,13 @@ def run(
             yield None, ds_target, ds_prediction
         else:
             for i in range(int(ds_prediction.sizes["ensemble"])):
-                tgt_m = ds_target.isel(ensemble=i) if "ensemble" in ds_target.dims else ds_target
+                if "ensemble" in ds_target.dims:
+                    if ds_target.sizes["ensemble"] == 1:
+                        tgt_m = ds_target.isel(ensemble=0)
+                    else:
+                        tgt_m = ds_target.isel(ensemble=i)
+                else:
+                    tgt_m = ds_target
                 pred_m = ds_prediction.isel(ensemble=i)
                 yield i, tgt_m, pred_m
 
@@ -809,8 +873,9 @@ def run(
                             np.ndarray, subsample_values(da_p, max_samples, base_seed + 9001 + i)
                         )
                     else:
-                        a_true = np.asarray(da_t.compute().values).ravel()
-                        a_pred = np.asarray(da_p.compute().values).ravel()
+                        da_t_comp, da_p_comp = dask.compute(da_t, da_p)
+                        a_true = np.asarray(da_t_comp.values).ravel()
+                        a_pred = np.asarray(da_p_comp.values).ravel()
                         a_true = a_true[np.isfinite(a_true)]
                         a_pred = a_pred[np.isfinite(a_pred)]
                     both = (

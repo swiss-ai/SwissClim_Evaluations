@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,7 +13,6 @@ from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
 
 from .. import console as c
-from ..dask_utils import calculate_dynamic_chunk_size, compute_jobs
 from ..helpers import (
     COLOR_GROUND_TRUTH,
     COLOR_MODEL_PREDICTION,
@@ -26,6 +26,7 @@ from ..helpers import (
     save_data,
     save_dataframe,
     save_figure as save_fig_helper,
+    save_metric_by_lead_tables,
 )
 
 EARTH_RADIUS_KM = 6371.0
@@ -212,6 +213,20 @@ def _compute_banded_lsd_da(
     return lsd_banded
 
 
+# Kinetic energy proxy map: derived wind-speed variable name → (U source, V source).
+# When a variable in this map is requested, the spectra module computes
+# KE = 0.5 * (spec_U + spec_V) instead of the spectrum of wind_speed directly.
+# This is physically correct: E_k = 0.5*(|FFT(U)|² + |FFT(V)|²) while
+# |FFT(√(U²+V²))|² ≠ 0.5*(|FFT(U)|² + |FFT(V)|²).
+# The U/V source variables must be present in both datasets (they will be if
+# the user keeps them in variables_2d/3d, which is required for derived-variable
+# computation anyway).
+_KE_PAIRS: dict[str, tuple[str, str]] = {
+    "wind_speed": ("u_component_of_wind", "v_component_of_wind"),
+    "10m_wind_speed": ("10m_u_component_of_wind", "10m_v_component_of_wind"),
+}
+
+
 def _compute_spectra_pair(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -224,7 +239,44 @@ def _compute_spectra_pair(
     """Compute and align spectra for target and prediction once.
 
     Returns (spectrum_target, spectrum_prediction) with identical coordinates.
+
+    For wind-speed variables listed in ``_KE_PAIRS`` the function computes the
+    physically correct kinetic-energy proxy spectrum
+    ``KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)`` using the underlying U/V components
+    instead of the spectrum of the derived scalar wind-speed field.  If the
+    required U/V source variables are not present in the dataset the function
+    falls back to the direct spectrum of the wind-speed variable with a warning.
     """
+    # ── Kinetic-energy proxy for wind-speed variables ─────────────────────────
+    if var in _KE_PAIRS:
+        u_var, v_var = _KE_PAIRS[var]
+        has_uv_target = u_var in ds_target.data_vars and v_var in ds_target.data_vars
+        has_uv_pred = u_var in ds_prediction.data_vars and v_var in ds_prediction.data_vars
+        if has_uv_target and has_uv_pred:
+            spec_t_u, spec_p_u = _compute_spectra_pair(
+                ds_target,
+                ds_prediction,
+                u_var,
+                level,
+                reduce_ensemble=reduce_ensemble,
+                weights=weights,
+            )
+            spec_t_v, spec_p_v = _compute_spectra_pair(
+                ds_target,
+                ds_prediction,
+                v_var,
+                level,
+                reduce_ensemble=reduce_ensemble,
+                weights=weights,
+            )
+            return 0.5 * (spec_t_u + spec_t_v), 0.5 * (spec_p_u + spec_p_v)
+        else:
+            c.warn(
+                f"Energy spectra: '{var}' is a wind-speed variable but source components "
+                f"'{u_var}'/'{v_var}' are not both present in the datasets. "
+                "Falling back to direct spectrum of the scalar field (not a true KE spectrum)."
+            )
+    # ── Standard path ─────────────────────────────────────────────────────────
     if level is not None:
         da_target = ds_target[var].sel(level=level, drop=True)
         da_prediction = ds_prediction[var].sel(level=level, drop=True)
@@ -290,6 +342,7 @@ def _plot_single_spectrum(
     k_min = float(np.nanmin(wavenumber[wavenumber > 0]))
     k_max = float(np.nanmax(wavenumber))
     if k_min <= 0 or not np.isfinite(k_min):  # safety
+        plt.close(fig)
         return
     ax.set_xlim(k_min, k_max)
 
@@ -346,8 +399,7 @@ def _plot_single_spectrum(
             ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
             ax_r.set_ylabel("Ratio (Prediction / Target)")
             ax_r.set_xlim(k_min, k_max)
-            # Auto-scale y but keep 1.0 centered or visible
-            # ax_r.set_ylim(0.5, 2.0) # Optional: fixed range
+            ax_r.set_ylim(0, 2.0)  # Fixed 0–200 % range
 
             add_wavelength_axis(ax_r, k_min, k_max)
 
@@ -388,7 +440,7 @@ def _plot_energy_spectra(
     save_plot_data: bool = False,
     save_figure: bool = True,
     override_ensemble_token: str | None = None,
-    chunk_size_cfg: int | str | None = None,
+    performance_cfg: dict[str, Any] | None = None,
     weights: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
@@ -565,45 +617,173 @@ def _plot_energy_spectra(
             }
         )
 
-    # Compute all
-    n_points = int(spectrum_target.size + spectrum_pred.size)
-    num_vars = 1
-    dynamic_chunk = calculate_dynamic_chunk_size(
-        n_points=n_points, num_vars=num_vars, config_chunk_size=chunk_size_cfg
-    )
-
-    compute_jobs(
-        jobs,
-        key_map={"t_lazy": "arr_t", "p_lazy": "arr_p", "lsd_lazy": "lsd_val"},
-        chunk_size=dynamic_chunk,
-        desc="Computing energy spectra",
-    )
-
-    # Distribute and plot
     wn = spectrum_target["wavenumber"].values
 
-    for job in jobs:
-        arr_t = job["arr_t"]
-        arr_p = job["arr_p"]
-        lsd_val = float(job["lsd_val"])
+    def _process_batch(batch_jobs: list[dict[str, Any]]):
+        for job in batch_jobs:
+            if "arr_t" not in job:
+                continue
+
+            arr_t = job["arr_t"]
+            arr_p = job["arr_p"]
+            lsd_val = float(job["lsd_val"])
+
+            _plot_single_spectrum(
+                wn,
+                np.asarray(arr_t),
+                np.asarray(arr_p),
+                lsd_val,
+                var,
+                level,
+                job["init_label"],
+                job["lead_label"],
+                job["target_path"],
+                dpi,
+                save_plot_data,
+                save_figure,
+                date_str=job.get("date_str", ""),
+            )
+            # Clear large arrays from memory
+            job["arr_t"] = None
+            job["arr_p"] = None
+
+    c.print(
+        f"[energy_spectra] Computing spectra for {var}"
+        f"{'' if level is None else f' level={level}'}..."
+    )
+
+    # Collect all lazy arrays
+    lazy_work = []
+    job_indices = []
+
+    for i, job in enumerate(jobs):
+        lazy_work.extend([job["t_lazy"], job["p_lazy"], job["lsd_lazy"]])
+        job_indices.append(i)
+
+    if lazy_work:
+        results = dask.compute(lazy_work)[0]
+
+        # Unpack results: each job has 3 items
+        for i, idx in enumerate(job_indices):
+            job = jobs[idx]
+            job["arr_t"] = results[3 * i]
+            job["arr_p"] = results[3 * i + 1]
+            job["lsd_val"] = results[3 * i + 2]
+
+        # Process plots after computation
+        _process_batch(jobs)
+
+    return lsd_da  # shape: time dims only (no wavenumber)
+
+
+def _plot_averaged_spectra(
+    spec_t: xr.DataArray,
+    spec_p: xr.DataArray,
+    var: str,
+    level: int | None,
+    out_dir: Path,
+    init_range: tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+    ens_token: str | None,
+    dpi: int,
+    save_plot_data: bool,
+    save_figure: bool,
+) -> None:
+    """Plot spectra averaged over init_time.
+
+    This generates a single plot (per lead time) where the power spectra have been
+    averaged over all initialization times. The filename will reflect the full
+    initialization range (e.g. init2020010100-2020123123).
+    """
+    if "init_time" not in spec_t.dims or spec_t.sizes["init_time"] <= 1:
+        return
+
+    # Average over init_time
+    # Note: docstring says "Time / lead dimensions are never implicitly averaged".
+    # Here we explicitly average over init_time to get the mean spectrum.
+    spec_t_avg = spec_t.mean(dim="init_time")
+    spec_p_avg = spec_p.mean(dim="init_time")
+
+    # Compute LSD of the averaged spectra
+    lsd_avg_da = _compute_lsd_da(spec_t_avg, spec_p_avg)
+    wn = spec_t_avg["wavenumber"].values
+
+    # Determine iteration dims (likely lead_time)
+    if "lead_time" in spec_t_avg.dims:
+        leads = spec_t_avg["lead_time"].values
+        for lt in leads:
+            st = spec_t_avg.sel(lead_time=lt)
+            sp = spec_p_avg.sel(lead_time=lt)
+            lsd = float(lsd_avg_da.sel(lead_time=lt).values)
+
+            # Format lead label
+            try:
+                hours = int(pd.Timedelta(lt).total_seconds() / 3600)
+                lead_label = f"{hours:03d}h"
+            except Exception:
+                # Handle potential numpy/other types
+                val = lt.item() if hasattr(lt, "item") else lt
+                hours = int(val / 3600 / 1e9) if isinstance(val, int) else 0
+                lead_label = f"{hours:03d}h"
+
+            # Construct filename with full init range
+            fname = build_output_filename(
+                metric="energy_spectrum",
+                variable=var,
+                level=f"{level}hPa" if level is not None else None,
+                qualifier=None,
+                init_time_range=init_range,
+                lead_time_range=(lead_label, lead_label),
+                ensemble=ens_token,
+                ext="png",
+            )
+            out_path = out_dir / fname
+            init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
+
+            _plot_single_spectrum(
+                wn,
+                st.values,
+                sp.values,
+                lsd,
+                var,
+                level,
+                init_label=init_label_str,
+                lead_label=lead_label,
+                out_path=out_path,
+                dpi=dpi,
+                save_plot_data=save_plot_data,
+                save_figure=save_figure,
+            )
+    else:
+        # No lead time dim (scalar or missing)
+        lead_label = "noLead"
+        fname = build_output_filename(
+            metric="energy_spectrum",
+            variable=var,
+            level=f"{level}hPa" if level is not None else None,
+            qualifier=None,
+            init_time_range=init_range,
+            lead_time_range=lead_range,  # Default lead range from dataset
+            ensemble=ens_token,
+            ext="png",
+        )
+        out_path = out_dir / fname
+        init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
 
         _plot_single_spectrum(
             wn,
-            np.asarray(arr_t),
-            np.asarray(arr_p),
-            lsd_val,
+            spec_t_avg.values,
+            spec_p_avg.values,
+            float(lsd_avg_da.values),
             var,
             level,
-            job["init_label"],
-            job["lead_label"],
-            job["target_path"],
-            dpi,
-            save_plot_data,
-            save_figure,
-            date_str=job.get("date_str", ""),
+            init_label=init_label_str,
+            lead_label=lead_label,
+            out_path=out_path,
+            dpi=dpi,
+            save_plot_data=save_plot_data,
+            save_figure=save_figure,
         )
-
-    return lsd_da  # shape: time dims only (no wavenumber)
 
 
 def run(
@@ -626,7 +806,7 @@ def run(
     section_output = out_root / "energy_spectra"
     section_output.mkdir(parents=True, exist_ok=True)
 
-    chunk_size_cfg = (performance_cfg or {}).get("chunk_size")
+    perf_cfg = performance_cfg or {}
 
     # Helper to place x-ticks exactly at selected lead hours (downsample if many)
     def _apply_lead_ticks(ax: Any, hours: np.ndarray) -> None:
@@ -647,6 +827,10 @@ def run(
     # Extract config
     es_cfg = (cfg or {}).get("metrics", {}).get("energy_spectra", {})
     report_per_level = bool(es_cfg.get("report_per_level", True))
+    # When False (default) and a multi-lead dataset is detected, per-init/lead
+    # individual spectrum PNGs and NPZ files are suppressed.  CSVs and
+    # spectrograms are always written regardless of this flag.
+    individual_plots = bool(es_cfg.get("individual_plots", False))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -793,43 +977,69 @@ def run(
             lsd_mean = float(lsd_da.mean().values)
             summary_rows.append({"variable": str(var), "lsd_mean": lsd_mean})
 
-            # Per Lead Time (averaged over init_time)
-            if "lead_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
-                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                # Compute once
-                lsd_lead = lsd_lead.compute()
-                for t in lsd_lead["lead_time"].values:
-                    val = float(lsd_lead.sel(lead_time=t).values)
-                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
-                    lsd_lead_time_rows.append(
+            # Per Lead Time + Plot Datetime LSD — batch-compute together
+            _has_lead = "lead_time" in lsd_da.dims
+            _has_init = "init_time" in lsd_da.dims
+            if _has_lead or _has_init:
+                lazy_items: list = []
+                lazy_tags: list[str] = []
+
+                if _has_lead:
+                    red_dims_lt = [d for d in lsd_da.dims if d != "lead_time"]
+                    _lead_lazy = lsd_da.mean(dim=red_dims_lt) if red_dims_lt else lsd_da
+                    lazy_items.append(_lead_lazy)
+                    lazy_tags.append("lead")
+
+                if _has_init:
+                    _plot_lazy = lsd_da.isel(init_time=time_index).mean()
+                    lazy_items.append(_plot_lazy)
+                    lazy_tags.append("plot")
+
+                _computed = dask.compute(*lazy_items)
+                _results = dict(zip(lazy_tags, _computed, strict=False))
+
+                if _has_lead:
+                    lsd_lead = _results["lead"]
+                    for t in lsd_lead["lead_time"].values:
+                        val = float(lsd_lead.sel(lead_time=t).values)
+                        hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                        lsd_lead_time_rows.append(
+                            {
+                                "variable": str(var),
+                                "lead_time": f"{hours:03d}h",
+                                "lsd_mean": val,
+                            }
+                        )
+
+                if _has_init:
+                    lsd_plot_val = float(_results["plot"])
+                    t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                    try:
+                        t_str = np.datetime_as_string(t_val, unit="h")
+                    except Exception:
+                        t_str = str(t_val)
+
+                    lsd_plot_rows.append(
                         {
                             "variable": str(var),
-                            "lead_time": f"{hours:03d}h",
-                            "lsd_mean": val,
+                            "init_time": t_str,
+                            "lsd_mean": lsd_plot_val,
                         }
                     )
 
-            # Plot Datetime specific LSD
-            if "init_time" in lsd_da.dims:
-                # Calculate LSD for the specific plot datetime only
-                # Use time_index which was computed earlier for plot_dt
-                lsd_plot_da = lsd_da.isel(init_time=time_index)
-                lsd_plot_val = float(lsd_plot_da.mean().compute())
-
-                # Get the actual datetime string
-                t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                try:
-                    t_str = np.datetime_as_string(t_val, unit="h")
-                except Exception:
-                    t_str = str(t_val)
-
-                lsd_plot_rows.append(
-                    {
-                        "variable": str(var),
-                        "init_time": t_str,
-                        "lsd_mean": lsd_plot_val,
-                    }
+            if save_plot or save_npz:
+                _plot_averaged_spectra(
+                    spec_t,
+                    spec_p,
+                    str(var),
+                    None,
+                    section_output,
+                    init_range,
+                    lead_range,
+                    ens_token,
+                    dpi,
+                    save_plot_data=save_npz,
+                    save_figure=save_plot,
                 )
 
             # Compute banded LSD metrics (2D)
@@ -894,8 +1104,10 @@ def run(
                 c.print(f"[energy_spectra] saved {out_csv_banded}")
 
     # Generate plots and NPZ for 2D variables
-    if save_plot or save_npz:
+    # Skipped in multi-lead mode unless individual_plots=True (too many files).
+    if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
         for var in variables_2d:
+            c.print(f"[energy_spectra] outputs variable: {var}")
             for ens_idx in ensemble_members:
                 t_p = tgt_plot
                 p_p = pred_plot
@@ -905,7 +1117,10 @@ def run(
                     if "ensemble" in p_p.dims:
                         p_p = p_p.isel(ensemble=ens_idx)
                     if "ensemble" in t_p.dims:
-                        t_p = t_p.isel(ensemble=ens_idx)
+                        if t_p.sizes["ensemble"] == 1:
+                            t_p = t_p.isel(ensemble=0)
+                        else:
+                            t_p = t_p.isel(ensemble=ens_idx)
                     curr_ens_token = ensemble_mode_to_token("members", ens_idx)
 
                 _plot_energy_spectra(
@@ -918,7 +1133,7 @@ def run(
                     save_plot_data=save_npz,
                     save_figure=save_plot,
                     override_ensemble_token=curr_ens_token,
-                    chunk_size_cfg=chunk_size_cfg,
+                    performance_cfg=perf_cfg,
                     weights=weights,
                 )
 
@@ -950,14 +1165,24 @@ def run(
             lsd_da = _compute_lsd_da(spec_t, spec_p)
             # Average over all dims except level
             red_dims = [d for d in lsd_da.dims if d != "level"]
-            lsd_means_per_level = lsd_da.mean(dim=red_dims).compute()
 
             # 2. Banded LSD per level
             lsd_bands_da = _compute_banded_lsd_da(spec_t, spec_p)
             red_dims_band = [d for d in lsd_bands_da.dims if d not in ["level", "band"]]
-            lsd_bands_mean_per_level = (
-                lsd_bands_da.mean(dim=red_dims_band).compute() if red_dims_band else lsd_bands_da
+
+            # Batch-compute both reductions in a single dask.compute() to avoid
+            # re-executing the shared FFT graph twice.
+            _lsd_lazy = lsd_da.mean(dim=red_dims)
+            _lsd_bands_lazy = (
+                lsd_bands_da.mean(dim=red_dims_band) if red_dims_band else lsd_bands_da
             )
+            if red_dims_band:
+                lsd_means_per_level, lsd_bands_mean_per_level = dask.compute(
+                    _lsd_lazy, _lsd_bands_lazy
+                )
+            else:
+                lsd_means_per_level = _lsd_lazy.compute()
+                lsd_bands_mean_per_level = _lsd_bands_lazy
 
             var_lsd_values = []
             for lvl in levels:
@@ -985,41 +1210,72 @@ def run(
             )
 
             # Per Lead Time (averaged over init_time and level)
-            if "lead_time" in lsd_da.dims:
-                red_dims = [d for d in lsd_da.dims if d != "lead_time"]
-                lsd_lead = lsd_da.mean(dim=red_dims) if red_dims else lsd_da
-                lsd_lead = lsd_lead.compute()
-                for t in lsd_lead["lead_time"].values:
-                    val = float(lsd_lead.sel(lead_time=t).values)
-                    hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
-                    lsd_3d_lead_time_rows.append(
+            # + Plot Datetime specific LSD
+            # Batch-compute both in one call when both are needed.
+            _has_lead = "lead_time" in lsd_da.dims
+            _has_init = "init_time" in lsd_da.dims
+            if _has_lead or _has_init:
+                lazy_items = []
+                lazy_tags = []
+
+                if _has_lead:
+                    red_dims_lt = [d for d in lsd_da.dims if d != "lead_time"]
+                    _lead_lazy = lsd_da.mean(dim=red_dims_lt) if red_dims_lt else lsd_da
+                    lazy_items.append(_lead_lazy)
+                    lazy_tags.append("lead")
+
+                if _has_init:
+                    _plot_lazy = lsd_da.isel(init_time=time_index).mean()
+                    lazy_items.append(_plot_lazy)
+                    lazy_tags.append("plot")
+
+                _computed = dask.compute(*lazy_items)
+                _results = dict(zip(lazy_tags, _computed, strict=False))
+
+                if _has_lead:
+                    lsd_lead = _results["lead"]
+                    for t in lsd_lead["lead_time"].values:
+                        val = float(lsd_lead.sel(lead_time=t).values)
+                        hours = int(np.timedelta64(t) / np.timedelta64(1, "h"))
+                        lsd_3d_lead_time_rows.append(
+                            {
+                                "variable": str(var),
+                                "lead_time": f"{hours:03d}h",
+                                "lsd_mean": val,
+                            }
+                        )
+
+                if _has_init:
+                    lsd_plot_val = float(_results["plot"])
+                    t_val = lsd_da["init_time"].isel(init_time=time_index).values
+                    try:
+                        t_str = np.datetime_as_string(t_val, unit="h")
+                    except Exception:
+                        t_str = str(t_val)
+
+                    lsd_3d_plot_rows.append(
                         {
                             "variable": str(var),
-                            "lead_time": f"{hours:03d}h",
-                            "lsd_mean": val,
+                            "init_time": t_str,
+                            "lsd_mean": lsd_plot_val,
                         }
                     )
 
-            # Plot Datetime specific LSD
-            if "init_time" in lsd_da.dims:
-                # Calculate LSD for the specific plot datetime only
-                lsd_plot_da = lsd_da.isel(init_time=time_index)
-                # Average over other dims (like lead_time, level)
-                lsd_plot_val = float(lsd_plot_da.mean().compute())
-
-                t_val = lsd_da["init_time"].isel(init_time=time_index).values
-                try:
-                    t_str = np.datetime_as_string(t_val, unit="h")
-                except Exception:
-                    t_str = str(t_val)
-
-                lsd_3d_plot_rows.append(
-                    {
-                        "variable": str(var),
-                        "init_time": t_str,
-                        "lsd_mean": lsd_plot_val,
-                    }
-                )
+            if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
+                for lvl in levels:
+                    _plot_averaged_spectra(
+                        spec_t.sel(level=lvl),
+                        spec_p.sel(level=lvl),
+                        str(var),
+                        int(lvl),
+                        section_output,
+                        init_range,
+                        lead_range,
+                        ens_token,
+                        dpi,
+                        save_plot_data=save_npz,
+                        save_figure=save_plot,
+                    )
 
         if report_per_level and lsd_3d_rows:
             import pandas as _pd
@@ -1088,7 +1344,8 @@ def run(
             save_dataframe(df_3d_lead, out_csv_3d_lead, index=False, module="energy_spectra")
 
         # Generate plots and NPZ for 3D variables per level
-        if save_plot or save_npz:
+        # Skipped in multi-lead mode unless individual_plots=True (too many files).
+        if (individual_plots or not is_multi_lead) and (save_plot or save_npz):
             for var in variables_3d:
                 for lvl in levels:
                     for ens_idx in ensemble_members:
@@ -1100,7 +1357,10 @@ def run(
                             if "ensemble" in p_p.dims:
                                 p_p = p_p.isel(ensemble=ens_idx)
                             if "ensemble" in t_p.dims:
-                                t_p = t_p.isel(ensemble=ens_idx)
+                                if t_p.sizes["ensemble"] == 1:
+                                    t_p = t_p.isel(ensemble=0)
+                                else:
+                                    t_p = t_p.isel(ensemble=ens_idx)
                             curr_ens_token = ensemble_mode_to_token("members", ens_idx)
 
                         _plot_energy_spectra(
@@ -1128,6 +1388,7 @@ def run(
         dpi = int((plotting_cfg or {}).get("dpi", 48))
 
         for var in variables_2d:
+            c.print(f"[energy_spectra] member NPZ variable: {var}")
             for mi in range(int(pred_plot.sizes["ensemble"])):
                 token = ensemble_mode_to_token("members", mi)
                 ds_t_m = tgt_plot.isel(ensemble=mi) if "ensemble" in tgt_plot.dims else tgt_plot
@@ -1142,6 +1403,7 @@ def run(
                     save_plot_data=True,
                     save_figure=False,
                     override_ensemble_token=token,
+                    performance_cfg=perf_cfg,
                 )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
@@ -1162,6 +1424,7 @@ def run(
 
         dpi = int((plotting_cfg or {}).get("dpi", 48))
         for var in variables_2d:
+            c.print(f"[energy_spectra] spectrogram variable: {var}")
             # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
             spec_t, spec_p = _compute_spectra_pair(
                 tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights
@@ -1195,6 +1458,22 @@ def run(
             Zt = np.asarray(spec_t2.transpose("lead_time", "wavenumber").values)
             Zp = np.asarray(spec_p2.transpose("lead_time", "wavenumber").values)
 
+            # Preserve full-resolution arrays for NPZ output / downstream analysis
+            kvals_full, Zt_full, Zp_full = kvals.copy(), Zt.copy(), Zp.copy()
+
+            # Apply 4Δx wavenumber cutoff for plotting (consistent with energy
+            # spectra line plots which trim [2:-2] and mask at k_max/2).
+            _k_max_spec = float(np.nanmax(kvals))
+            if np.isfinite(_k_max_spec) and _k_max_spec > 0 and len(kvals) > 4:
+                _k_cutoff_spec = _k_max_spec / 2.0
+                _cut_mask = np.ones(len(kvals), dtype=bool)
+                _cut_mask[:2] = False  # skip first 2 large-scale bins
+                _cut_mask &= kvals <= _k_cutoff_spec
+                if np.any(_cut_mask):
+                    kvals = kvals[_cut_mask]
+                    Zt = Zt[:, _cut_mask]
+                    Zp = Zp[:, _cut_mask]
+
             def _plot_spec_img(
                 Z: np.ndarray,
                 qualifier: str,
@@ -1203,6 +1482,8 @@ def run(
                 _kvals=kvals,
                 _var=str(var),
             ) -> None:
+                if not save_plot:
+                    return
                 fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
                 # log10 color scale with small epsilon to avoid -inf
                 eps = 1e-10
@@ -1241,35 +1522,46 @@ def run(
             logZt = np.log10(Zt + eps)
             logZp = np.log10(Zp + eps)
             Zdiff = (logZp - logZt).T  # shape (k, leads) for plotting convenience
-            fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
-            vmax = np.nanmax(np.abs(Zdiff))
-            im = ax.pcolormesh(
-                x_hours,
-                kvals,
-                Zdiff,
-                shading="auto",
-                cmap="coolwarm",
-                vmin=-vmax,
-                vmax=vmax,
-            )
-            ax.set_xlabel("lead_time (h)")
-            ax.set_ylabel("wavenumber (cycles/km)")
-            _apply_lead_ticks(ax, x_hours)
-            cb = fig.colorbar(im, ax=ax, orientation="vertical")
-            cb.set_label("Δ log10 energy (model - target)")
-            out_png = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="difference",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            plt.tight_layout()
-            save_fig_helper(fig, out_png, module="energy_spectra")
-            plt.close(fig)
+            # Mild Gaussian smoothing to remove pixel-level artifacts
+            try:
+                from scipy.ndimage import gaussian_filter
+
+                Zdiff = gaussian_filter(Zdiff, sigma=[1.0, 0.5])
+            except Exception:
+                pass
+            if save_plot:
+                fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+                # Robust vmax: 98th percentile so outliers don't compress colour range
+                vmax = float(np.nanpercentile(np.abs(Zdiff), 98))
+                if not (np.isfinite(vmax) and vmax > 0):
+                    vmax = float(np.nanmax(np.abs(Zdiff)))
+                im = ax.pcolormesh(
+                    x_hours,
+                    kvals,
+                    Zdiff,
+                    shading="auto",
+                    cmap="coolwarm",
+                    vmin=-vmax,
+                    vmax=vmax,
+                )
+                ax.set_xlabel("lead_time (h)")
+                ax.set_ylabel("wavenumber (cycles/km)")
+                _apply_lead_ticks(ax, x_hours)
+                cb = fig.colorbar(im, ax=ax, orientation="vertical")
+                cb.set_label("Δ log10 energy (model - target)")
+                out_png = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier="difference",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                save_fig_helper(fig, out_png, module="energy_spectra")
+                plt.close(fig)
 
             # Also compute LSD versus lead_time and emit one plot per variable
             lsd_da = _compute_lsd_da(spec_t2, spec_p2)  # sqrt(mean((log Et - log Em)^2) over k)
@@ -1286,27 +1578,29 @@ def run(
                         "LSD": float(v),
                     }
                 )
-            fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
-            ax.plot(x_hours, lsd_vals, marker="o")
-            ax.set_xlabel("Lead Time [h]")
-            ax.set_ylabel("LSD")
-            display_var = str(var).split(".", 1)[1] if "." in str(var) else str(var)
-            ax.set_title(
-                f"{format_variable_name(display_var)} — LSD (Global) vs Lead Time", fontsize=10
-            )
-            out_png = section_output / build_output_filename(
-                metric="energy_ratios_line_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier=None,
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            plt.tight_layout()
-            save_fig_helper(fig, out_png, module="energy_spectra")
-            plt.close(fig)
+            if save_plot:
+                fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+                ax.plot(x_hours, lsd_vals, marker="o")
+                ax.set_xlabel("Lead Time [h]")
+                ax.set_ylabel("LSD")
+                display_var = str(var).split(".", 1)[1] if "." in str(var) else str(var)
+                ax.set_title(
+                    f"{format_variable_name(display_var)} — LSD (Global) vs Lead Time",
+                    fontsize=10,
+                )
+                out_png = section_output / build_output_filename(
+                    metric="energy_ratios_line_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier=None,
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="png",
+                )
+                plt.tight_layout()
+                save_fig_helper(fig, out_png, module="energy_spectra")
+                plt.close(fig)
 
             # Compute Banded LSD versus lead_time
             lsd_bands_da = _compute_banded_lsd_da(spec_t2, spec_p2)
@@ -1330,199 +1624,449 @@ def run(
                         }
                     )
 
-                # Plot
-                fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
-                ax.plot(x_hours, lsd_vals_band, marker="o")
-                ax.set_xlabel("Lead Time [h]")
-                ax.set_ylabel("LSD")
-                formatted_bname = str(bname).replace("_", " ").title()
-                ax.set_title(
-                    f"{format_variable_name(display_var)} — LSD ({formatted_bname}) vs Lead Time",
-                    fontsize=10,
-                )
+                if save_plot:
+                    fig, ax = plt.subplots(figsize=(6, 3), dpi=dpi * 2)
+                    ax.plot(x_hours, lsd_vals_band, marker="o")
+                    ax.set_xlabel("Lead Time [h]")
+                    ax.set_ylabel("LSD")
+                    formatted_bname = str(bname).replace("_", " ").title()
+                    ax.set_title(
+                        f"{format_variable_name(display_var)} — LSD ({formatted_bname}) vs Lead "
+                        "Time",
+                        fontsize=10,
+                    )
 
-                out_png_band = section_output / build_output_filename(
-                    metric="energy_ratios_line_per_lead",
+                    out_png_band = section_output / build_output_filename(
+                        metric="energy_ratios_line_per_lead",
+                        variable=str(var),
+                        level=None,
+                        qualifier=f"band_{bname}",
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    plt.tight_layout()
+                    save_fig_helper(fig, out_png_band, module="energy_spectra")
+                    plt.close(fig)
+
+            # Save bundle NPZ for programmatic use
+            if save_npz:
+                out_npz = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
                     variable=str(var),
                     level=None,
-                    qualifier=f"band_{bname}",
+                    qualifier="bundle",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble=ens_token,
+                    ext="npz",
+                )
+                save_data(
+                    out_npz,
+                    lead_hours=x_hours,
+                    wavenumber=kvals_full,
+                    energy_target=Zt_full,
+                    energy_prediction=Zp_full,
+                    log_energy_diff=(np.log10(Zp_full + 1e-10) - np.log10(Zt_full + 1e-10)),
+                    variable=str(var),
+                    module="energy_spectra",
+                )
+
+            # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
+            if save_plot:
+                from matplotlib import gridspec as _gridspec
+
+                fig = plt.figure(figsize=(18, 5), dpi=dpi * 2, constrained_layout=True)
+                gs = _gridspec.GridSpec(
+                    1,
+                    4,
+                    figure=fig,
+                    width_ratios=[1.25, 1.25, 0.10, 1.25],
+                    wspace=0.08,
+                )
+                axs = [
+                    fig.add_subplot(gs[0, 0]),
+                    fig.add_subplot(gs[0, 1]),
+                    fig.add_subplot(gs[0, 2]),
+                    fig.add_subplot(gs[0, 3]),
+                ]
+                eps = 1e-10
+                logZt = np.log10(Zt.T + eps)
+                logZp = np.log10(Zp.T + eps)
+                vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
+                vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
+                diff = logZp - logZt
+                # Mild Gaussian smoothing to remove pixel-level artifacts
+                try:
+                    from scipy.ndimage import gaussian_filter
+
+                    diff = gaussian_filter(diff, sigma=[1.0, 0.5])
+                except Exception:
+                    pass
+                axs[0].pcolormesh(
+                    x_hours,
+                    kvals,
+                    logZt,
+                    shading="auto",
+                    cmap="viridis",
+                    vmin=vmin_shared,
+                    vmax=vmax_shared,
+                )
+                im1 = axs[1].pcolormesh(
+                    x_hours,
+                    kvals,
+                    logZp,
+                    shading="auto",
+                    cmap="viridis",
+                    vmin=vmin_shared,
+                    vmax=vmax_shared,
+                )
+                # Robust vmax: 98th percentile so outliers don't compress colour range
+                vmax_d = float(np.nanpercentile(np.abs(diff), 98))
+                if not (np.isfinite(vmax_d) and vmax_d > 0):
+                    vmax_d = float(np.nanmax(np.abs(diff)))
+                im2 = axs[3].pcolormesh(
+                    x_hours,
+                    kvals,
+                    diff,
+                    shading="auto",
+                    cmap="coolwarm",
+                    vmin=-vmax_d,
+                    vmax=vmax_d,
+                )
+                titles = ["Target log10 energy", "Model log10 energy", "Δ log10 energy (M-T)"]
+                for i, ax in enumerate([axs[0], axs[1], axs[3]]):
+                    ax.set_xlabel("lead_time (h)")
+                    ax.set_title(titles[i if i < 2 else 2], fontsize=11)
+                    _apply_lead_ticks(ax, x_hours)
+                ymin = float(np.nanmin(kvals))
+                ymax = float(np.nanmax(kvals))
+                for ax in [axs[0], axs[1], axs[3]]:
+                    ax.set_ylim(ymin, ymax)
+                axs[0].set_ylabel("wavenumber (cycles/km)")
+                axs[0].tick_params(axis="y", which="both", labelleft=True)
+                if not axs[0].get_yticklabels():
+                    locs = axs[0].get_yticks()
+                    axs[0].set_yticks(locs)
+                    axs[0].set_yticklabels([f"{v:g}" for v in locs])
+                cbar1 = fig.colorbar(
+                    im1,
+                    ax=axs[1],
+                    orientation="vertical",
+                    fraction=0.046,
+                    pad=0.02,
+                )
+                cbar1.set_label("log10 energy")
+                cbar2 = fig.colorbar(
+                    im2,
+                    ax=axs[3],
+                    orientation="vertical",
+                    fraction=0.046,
+                    pad=0.05,
+                )
+                cbar2.set_label("Δ log10 energy")
+                axs[1].set_ylabel("")
+                axs[1].tick_params(axis="y", labelleft=False)
+                axs[1].set_yticklabels([])
+                axs[3].set_ylabel("wavenumber (cycles/km)")
+                axs[3].tick_params(axis="y", labelleft=True)
+                div_ax = axs[2]
+                div_ax.set_xticks([])
+                div_ax.set_yticks([])
+                for sp in div_ax.spines.values():
+                    sp.set_visible(False)
+                div_ax.set_xlim(0, 1)
+                div_ax.set_ylim(0, 1)
+                div_ax.add_line(
+                    Line2D(
+                        [0.5, 0.5],
+                        [0.0, 1.0],
+                        transform=div_ax.transAxes,
+                        color="#666",
+                        linewidth=1.6,
+                        alpha=0.8,
+                    )
+                )
+
+                t_str = f"Energy Spectrogram — {format_variable_name(var)}"
+                if init_range:
+                    start_t, end_t = init_range
+                    if start_t == end_t:
+                        t_str += f" ({start_t})"
+                    else:
+                        t_str += f" ({start_t} — {end_t})"
+                fig.suptitle(t_str, fontsize=13)
+
+                out_tripanel = section_output / build_output_filename(
+                    metric="energy_spectra_per_lead",
+                    variable=str(var),
+                    level=None,
+                    qualifier="tripanel",
                     init_time_range=init_range,
                     lead_time_range=lead_range,
                     ensemble=ens_token,
                     ext="png",
                 )
-                plt.tight_layout()
-                save_fig_helper(fig, out_png_band, module="energy_spectra")
+                c.print(f"[energy_spectra] Saved {out_tripanel}")
+                save_fig_helper(fig, out_tripanel, module="energy_spectra")
                 plt.close(fig)
 
-            # Save bundle NPZ for programmatic use
-            out_npz = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="bundle",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="npz",
-            )
-            save_data(
-                out_npz,
-                lead_hours=x_hours,
-                wavenumber=kvals,
-                energy_target=Zt,
-                energy_prediction=Zp,
-                log_energy_diff=(np.log10(Zp + 1e-10) - np.log10(Zt + 1e-10)),
-                variable=str(var),
-                module="energy_spectra",
-            )
+        # 3D per-level spectrograms and bundle NPZs
+        # Always compute spectra and save NPZ bundles so the intercomparison
+        # pipeline can produce 3D spectrograms / band plots.  Only gate the
+        # individual per-lead PNG plots behind individual_plots.
+        if (
+            (save_plot or save_npz)
+            and variables_3d
+            and "level" in (tgt.dims if hasattr(tgt, "dims") else [])
+        ):
+            levels_3d = tgt["level"].values
+            for var in variables_3d:
+                c.print(f"[energy_spectra] spectrogram 3D variable: {var}")
+                for lvl in levels_3d:
+                    spec_t3, spec_p3 = _compute_spectra_pair(
+                        tgt,
+                        pred,
+                        str(var),
+                        level=int(lvl),
+                        reduce_ensemble=(resolved == "mean"),
+                        weights=weights,
+                    )
+                    spec_t3 = _reduce_time_like(spec_t3)
+                    spec_p3 = _reduce_time_like(spec_p3)
+                    spec_t3, spec_p3 = xr.align(spec_t3, spec_p3, join="inner")
+                    for _da, _name in [(spec_t3, "t3"), (spec_p3, "p3")]:
+                        extra = [d for d in _da.dims if d not in ("lead_time", "wavenumber")]
+                        if extra:
+                            if _name == "t3":
+                                spec_t3 = _da.mean(dim=extra, skipna=True)
+                            else:
+                                spec_p3 = _da.mean(dim=extra, skipna=True)
+                    if "lead_time" not in spec_t3.dims:
+                        continue
+                    leads_3d = spec_t3["lead_time"].values
+                    try:
+                        x_hours_3d = np.array(
+                            [int(np.timedelta64(lt) / np.timedelta64(1, "h")) for lt in leads_3d]
+                        )
+                    except Exception:
+                        x_hours_3d = np.arange(len(leads_3d))
+                    kvals_3d = spec_t3["wavenumber"].values
+                    Zt3 = np.asarray(spec_t3.transpose("lead_time", "wavenumber").values)
+                    Zp3 = np.asarray(spec_p3.transpose("lead_time", "wavenumber").values)
 
-            # Tripanel shared-y spectrogram (target | model | diff) for quick comparison
-            from matplotlib import gridspec as _gridspec
+                    if save_npz:
+                        out_npz_3d = section_output / build_output_filename(
+                            metric="energy_spectra_per_lead",
+                            variable=str(var),
+                            level=int(lvl),
+                            qualifier="bundle",
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="npz",
+                        )
+                        save_data(
+                            out_npz_3d,
+                            lead_hours=x_hours_3d,
+                            wavenumber=kvals_3d,
+                            energy_target=Zt3,
+                            energy_prediction=Zp3,
+                            log_energy_diff=(np.log10(Zp3 + 1e-10) - np.log10(Zt3 + 1e-10)),
+                            variable=str(var),
+                            level=int(lvl),
+                            module="energy_spectra",
+                        )
 
-            fig = plt.figure(figsize=(18, 5), dpi=dpi * 2, constrained_layout=True)
-            gs = _gridspec.GridSpec(
-                1,
-                4,
-                figure=fig,
-                width_ratios=[1.25, 1.25, 0.10, 1.25],
-                wspace=0.08,
-            )
-            axs = [
-                fig.add_subplot(gs[0, 0]),  # target
-                fig.add_subplot(gs[0, 1]),  # model
-                fig.add_subplot(gs[0, 2]),  # divider axis
-                fig.add_subplot(gs[0, 3]),  # diff
-            ]
-            eps = 1e-10
-            logZt = np.log10(Zt.T + eps)
-            logZp = np.log10(Zp.T + eps)
-            vmin_shared = float(np.nanmin([np.nanmin(logZt), np.nanmin(logZp)]))
-            vmax_shared = float(np.nanmax([np.nanmax(logZt), np.nanmax(logZp)]))
-            diff = logZp - logZt
-            axs[0].pcolormesh(
-                x_hours,
-                kvals,
-                logZt,
-                shading="auto",
-                cmap="viridis",
-                vmin=vmin_shared,
-                vmax=vmax_shared,
-            )
-            im1 = axs[1].pcolormesh(
-                x_hours,
-                kvals,
-                logZp,
-                shading="auto",
-                cmap="viridis",
-                vmin=vmin_shared,
-                vmax=vmax_shared,
-            )
-            vmax_d = np.nanmax(np.abs(diff))
-            im2 = axs[3].pcolormesh(
-                x_hours,
-                kvals,
-                diff,
-                shading="auto",
-                cmap="coolwarm",
-                vmin=-vmax_d,
-                vmax=vmax_d,
-            )
-            titles = ["Target log10 energy", "Model log10 energy", "Δ log10 energy (M-T)"]
-            for i, ax in enumerate([axs[0], axs[1], axs[3]]):
-                ax.set_xlabel("lead_time (h)")
-                ax.set_title(titles[i if i < 2 else 2], fontsize=11)
-                _apply_lead_ticks(ax, x_hours)
-            ymin = float(np.nanmin(kvals))
-            ymax = float(np.nanmax(kvals))
-            for ax in [axs[0], axs[1], axs[3]]:
-                ax.set_ylim(ymin, ymax)
-            axs[0].set_ylabel("wavenumber (cycles/km)")
-            axs[0].tick_params(axis="y", which="both", labelleft=True)
-            if not axs[0].get_yticklabels():
-                locs = axs[0].get_yticks()
-                axs[0].set_yticks(locs)
-                axs[0].set_yticklabels([f"{v:g}" for v in locs])
-            cbar1 = fig.colorbar(im1, ax=axs[1], orientation="vertical", fraction=0.046, pad=0.02)
-            cbar1.set_label("log10 energy")
-            cbar2 = fig.colorbar(im2, ax=axs[3], orientation="vertical", fraction=0.046, pad=0.05)
-            cbar2.set_label("Δ log10 energy")
-            axs[1].set_ylabel("")
-            axs[1].tick_params(axis="y", labelleft=False)
-            axs[1].set_yticklabels([])
-            axs[3].set_ylabel("wavenumber (cycles/km)")
-            axs[3].tick_params(axis="y", labelleft=True)
-            div_ax = axs[2]
-            div_ax.set_xticks([])
-            div_ax.set_yticks([])
-            for sp in div_ax.spines.values():
-                sp.set_visible(False)
-            div_ax.set_xlim(0, 1)
-            div_ax.set_ylim(0, 1)
-            div_ax.add_line(
-                Line2D(
-                    [0.5, 0.5],
-                    [0.0, 1.0],
-                    transform=div_ax.transAxes,
-                    color="#666",
-                    linewidth=1.6,
-                    alpha=0.8,
-                )
-            )
+                    # ── LSD per lead for this 3D level ──
+                    var_level_label = f"{var}@{int(lvl)}hPa"
+                    try:
+                        lsd_da_3d = _compute_lsd_da(spec_t3, spec_p3)
+                        red_dims_3d = [d for d in lsd_da_3d.dims if d != "lead_time"]
+                        if red_dims_3d:
+                            lsd_da_3d = lsd_da_3d.mean(dim=red_dims_3d, skipna=True)
+                        lsd_vals_3d = np.asarray(lsd_da_3d.values).ravel()
+                        for h, v in zip(x_hours_3d.tolist(), lsd_vals_3d.tolist(), strict=False):
+                            lsd_long_rows.append(
+                                {
+                                    "lead_time_hours": float(h),
+                                    "variable": var_level_label,
+                                    "LSD": float(v),
+                                }
+                            )
+                    except Exception:
+                        pass
 
-            # Add suptitle
-            t_str = f"Energy Spectrogram — {format_variable_name(var)}"
-            if init_range:
-                start_t, end_t = init_range
-                if start_t == end_t:
-                    t_str += f" ({start_t})"
-                else:
-                    t_str += f" ({start_t} — {end_t})"
-            fig.suptitle(t_str, fontsize=13)
+                    # ── Banded LSD per lead for this 3D level ──
+                    try:
+                        lsd_bands_3d = _compute_banded_lsd_da(spec_t3, spec_p3)
+                        red_dims_b3 = [
+                            d for d in lsd_bands_3d.dims if d not in ["lead_time", "band"]
+                        ]
+                        if red_dims_b3:
+                            lsd_bands_3d = lsd_bands_3d.mean(dim=red_dims_b3, skipna=True)
+                        for bname3 in lsd_bands_3d["band"].values:
+                            band_da_3d = lsd_bands_3d.sel(band=bname3)
+                            lsd_vals_b3 = np.asarray(band_da_3d.values).ravel()
+                            for h, v in zip(
+                                x_hours_3d.tolist(), lsd_vals_b3.tolist(), strict=False
+                            ):
+                                lsd_banded_long_rows.append(
+                                    {
+                                        "lead_time_hours": float(h),
+                                        "variable": var_level_label,
+                                        "band": str(bname3),
+                                        "LSD": float(v),
+                                    }
+                                )
+                    except Exception:
+                        pass
 
-            out_tripanel = section_output / build_output_filename(
-                metric="energy_spectra_per_lead",
-                variable=str(var),
-                level=None,
-                qualifier="tripanel",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="png",
-            )
-            c.print(f"[energy_spectra] Saved {out_tripanel}")
-            save_fig_helper(fig, out_tripanel, module="energy_spectra")
-            plt.close(fig)
+                    # Apply 4Δx wavenumber cutoff for plotting (same as 2D)
+                    _k_max_3d = float(np.nanmax(kvals_3d))
+                    if np.isfinite(_k_max_3d) and _k_max_3d > 0 and len(kvals_3d) > 4:
+                        _k_cut_3d = _k_max_3d / 2.0
+                        _cm3 = np.ones(len(kvals_3d), dtype=bool)
+                        _cm3[:2] = False
+                        _cm3 &= kvals_3d <= _k_cut_3d
+                        if np.any(_cm3):
+                            kvals_3d = kvals_3d[_cm3]
+                            Zt3 = Zt3[:, _cm3]
+                            Zp3 = Zp3[:, _cm3]
+
+                    if save_plot and (individual_plots or not is_multi_lead):
+                        from matplotlib.gridspec import GridSpec as _GS3
+
+                        eps = 1e-10
+                        logZt3 = np.log10(Zt3.T + eps)
+                        logZp3 = np.log10(Zp3.T + eps)
+                        vmin_s3 = float(np.nanmin([np.nanmin(logZt3), np.nanmin(logZp3)]))
+                        vmax_s3 = float(np.nanmax([np.nanmax(logZt3), np.nanmax(logZp3)]))
+                        diff3 = logZp3 - logZt3
+                        # Mild Gaussian smoothing to remove pixel-level artifacts
+                        try:
+                            from scipy.ndimage import gaussian_filter
+
+                            diff3 = gaussian_filter(diff3, sigma=[1.0, 0.5])
+                        except Exception:
+                            pass
+                        # Robust vmax: 98th percentile so outliers don't compress colour range
+                        vmax_d3 = float(np.nanpercentile(np.abs(diff3), 98))
+                        if not (np.isfinite(vmax_d3) and vmax_d3 > 0):
+                            vmax_d3 = float(np.nanmax(np.abs(diff3)))
+                        fig3 = plt.figure(figsize=(22, 5), dpi=dpi)
+                        gs3 = _GS3(1, 4, figure=fig3, width_ratios=[1, 1, 0.06, 1])
+                        axs3 = [
+                            fig3.add_subplot(gs3[0, 0]),
+                            fig3.add_subplot(gs3[0, 1]),
+                            fig3.add_subplot(gs3[0, 2]),
+                            fig3.add_subplot(gs3[0, 3]),
+                        ]
+                        axs3[0].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            logZt3,
+                            shading="auto",
+                            cmap="viridis",
+                            vmin=vmin_s3,
+                            vmax=vmax_s3,
+                        )
+                        im3_p = axs3[1].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            logZp3,
+                            shading="auto",
+                            cmap="viridis",
+                            vmin=vmin_s3,
+                            vmax=vmax_s3,
+                        )
+                        im3_d = axs3[3].pcolormesh(
+                            x_hours_3d,
+                            kvals_3d,
+                            diff3,
+                            shading="auto",
+                            cmap="coolwarm",
+                            vmin=-vmax_d3,
+                            vmax=vmax_d3,
+                        )
+                        for _, (ax3, ttl3) in enumerate(
+                            zip(
+                                [axs3[0], axs3[1], axs3[3]],
+                                [
+                                    "Target log10 energy",
+                                    "Model log10 energy",
+                                    "Δ log10 energy (M-T)",
+                                ],
+                                strict=False,
+                            )
+                        ):
+                            ax3.set_xlabel("lead_time (h)")
+                            ax3.set_title(ttl3, fontsize=11)
+                            _apply_lead_ticks(ax3, x_hours_3d)
+                        y3min = float(np.nanmin(kvals_3d))
+                        y3max = float(np.nanmax(kvals_3d))
+                        for ax3 in [axs3[0], axs3[1], axs3[3]]:
+                            ax3.set_ylim(y3min, y3max)
+                        axs3[0].set_ylabel("wavenumber (cycles/km)")
+                        axs3[1].tick_params(axis="y", labelleft=False)
+                        axs3[1].set_yticklabels([])
+                        axs3[3].set_ylabel("wavenumber (cycles/km)")
+                        axs3[3].tick_params(axis="y", labelleft=True)
+                        fig3.colorbar(
+                            im3_p, ax=axs3[1], orientation="vertical", fraction=0.046, pad=0.02
+                        ).set_label("log10 energy")
+                        fig3.colorbar(
+                            im3_d, ax=axs3[3], orientation="vertical", fraction=0.046, pad=0.05
+                        ).set_label("Δ log10 energy")
+                        div3 = axs3[2]
+                        div3.set_xticks([])
+                        div3.set_yticks([])
+                        for sp in div3.spines.values():
+                            sp.set_visible(False)
+                        div3.add_line(
+                            Line2D(
+                                [0.5, 0.5],
+                                [0.0, 1.0],
+                                transform=div3.transAxes,
+                                color="#666",
+                                linewidth=1.6,
+                                alpha=0.8,
+                            )
+                        )
+                        t3_str = f"Energy Spectrogram — {format_variable_name(var)} L{int(lvl)}"
+                        if init_range:
+                            s3, e3 = init_range
+                            t3_str += f" ({s3})" if s3 == e3 else f" ({s3} — {e3})"
+                        fig3.suptitle(t3_str, fontsize=13)
+                        out_tripanel_3d = section_output / build_output_filename(
+                            metric="energy_spectra_per_lead",
+                            variable=str(var),
+                            level=int(lvl),
+                            qualifier="tripanel",
+                            init_time_range=init_range,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        c.print(f"[energy_spectra] Saved {out_tripanel_3d}")
+                        save_fig_helper(fig3, out_tripanel_3d, module="energy_spectra")
+                        plt.close(fig3)
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:
             import pandas as _pd
 
             ldf = _pd.DataFrame(lsd_long_rows)
-            out_long = section_output / build_output_filename(
+            save_metric_by_lead_tables(
+                long_df=ldf,
+                section_output=section_output,
                 metric="energy_ratios_per_lead",
-                variable=None,
-                level=None,
-                qualifier="by_lead_long",
                 init_time_range=init_range,
                 lead_time_range=lead_range,
                 ensemble=ens_token,
-                ext="csv",
+                module="energy_spectra",
             )
-            save_dataframe(ldf, out_long, index=False, module="energy_spectra")
-            wdf = ldf.pivot_table(index="lead_time_hours", columns="variable", values="LSD")
-            wdf = wdf.reset_index()
-            out_wide = section_output / build_output_filename(
-                metric="energy_ratios_per_lead",
-                variable=None,
-                level=None,
-                qualifier="by_lead_wide",
-                init_time_range=init_range,
-                lead_time_range=lead_range,
-                ensemble=ens_token,
-                ext="csv",
-            )
-            save_dataframe(wdf, out_wide, index=False, module="energy_spectra")
 
         if lsd_banded_long_rows:
             bdf = _pd.DataFrame(lsd_banded_long_rows)

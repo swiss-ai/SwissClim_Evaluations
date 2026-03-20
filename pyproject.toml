@@ -1,6 +1,6 @@
 [project]
 name = "swissclim-evaluations"
-version = "0.1.0"
+version = "0.2.0"
 description = "Evaluation toolkit for deterministic and probabilistic weather/climate forecast verification."
 readme = "README.md"
 authors = [{ name = "SwissClim Team" }]

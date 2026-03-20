@@ -148,12 +148,20 @@ def enforce_chunking(
     ds: xr.Dataset,
     desired_policy: dict[str, int] | None = None,
     dataset_name: str | None = None,
+    enforce: bool = True,
 ) -> xr.Dataset:
     """Ensure the dataset uses the desired Dask chunking pattern.
 
-    If existing chunks differ (or dataset is not chunked), rechunk and warn that this may
-    increase memory usage and runtime.
+    If existing chunks differ (or dataset is not chunked), rechunk and warn that this may increase
+    memory usage and runtime.
+
+    When enforce=False the dataset is returned as-is, preserving native zarr chunking.
+        This is useful for datasets with a different layout (e.g., WeatherBench2 ERA5 with all
+        levels in one spatial chunk). Note that our dask graph optimizations assume the policy
+        chunking, so some operations may be less efficient.
     """
+    if not enforce:
+        return ds
     policy = desired_policy or DESIRED_CHUNKS
     # Build chunk map only for dimensions present
     chunk_map: dict[str, int] = {}
@@ -507,67 +515,12 @@ def _wind_speed(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
     return da
 
 
-def _geopotential_height(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
-    """Lazy geopotential height: Z = geopotential / g₀.  Units: m.
-
-    Only the *source* variable (``u_var``) is used; ``v_var`` is a no-op and
-    should be left as an empty string in the config.
-    """
-    g0 = 9.80665  # standard gravity, m s⁻²
-    da = ds[u_var] / g0
-    da.attrs["units"] = "m"
-    da.attrs["long_name"] = "Geopotential Height"
-    return da
-
-
-def _geopotential_height_gradient(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
-    """Horizontal gradient magnitude of geopotential height |∇Z|.  Units: m m⁻¹.
-
-    Computes |∇Z| = sqrt((∂Z/∂y)² + (∂Z/∂x)²) using centred finite differences
-    along the ``latitude`` and ``longitude`` coordinates.  The partial derivatives
-    are converted from degrees⁻¹ to m⁻¹ using the WGS-84 mean Earth radius.
-
-    Only the *source* variable (``u_var``) is used; the variable must already be
-    in **metres** (geopotential height, not raw geopotential).  Use the
-    ``geopotential_height`` recipe first if you have raw geopotential.
-    """
-    R_earth = 6_371_000.0  # WGS-84 mean radius, m
-    deg2rad = np.pi / 180.0
-
-    Z = ds[u_var]
-
-    lat = Z["latitude"]  # degrees
-    cos_lat = np.cos(lat * deg2rad)  # broadcast-ready DataArray
-
-    # ∂Z/∂lat  [m / degree] → [m / m] via R_earth [m / rad] and deg2rad
-    dZ_dlat = Z.differentiate("latitude") / (R_earth * deg2rad)  # m m⁻¹
-
-    # ∂Z/∂lon  [m / degree] → [m / m]; longitude arc-length shrinks with cos(lat)
-    dZ_dlon = Z.differentiate("longitude") / (R_earth * deg2rad * cos_lat)  # m m⁻¹
-
-    grad = np.sqrt(dZ_dlat**2 + dZ_dlon**2)
-    grad.attrs["units"] = "m m**-1"
-    grad.attrs["long_name"] = "Geopotential Height Gradient Magnitude"
-    return grad
-
-
 # Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
 # Available recipes that a user may reference via ``kind:`` in config:
-#   wind_speed                  — sqrt(U² + V²), m s⁻¹, suitable for all modules
-#   geopotential_height         — geopotential / 9.80665, m (single-input: only 'u' required)
-#   geopotential_height_gradient — |∇Z|, m m⁻¹ (single-input: supply geopotential_height variable)
+#   wind_speed  — sqrt(U² + V²), m s⁻¹, suitable for all modules
 _DERIVED_RECIPES: dict[str, Any] = {
     "wind_speed": _wind_speed,
-    "geopotential_height": _geopotential_height,
-    "geopotential_height_gradient": _geopotential_height_gradient,
 }
-
-# Recipes that require only a single source variable.
-# For these kinds the config block only needs the ``u`` (or ``source``) key;
-# the ``v`` key is optional and ignored.
-_SINGLE_INPUT_KINDS: frozenset[str] = frozenset(
-    {"geopotential_height", "geopotential_height_gradient"}
-)
 
 
 def _parse_derived_cfg(
@@ -583,13 +536,6 @@ def _parse_derived_cfg(
           kind: wind_speed                    # see _DERIVED_RECIPES for available kinds
           u: 10m_u_component_of_wind
           v: 10m_v_component_of_wind
-
-        For single-input recipes (e.g. ``geopotential_height``) only ``u``
-        (or the synonym ``source``) is required; ``v`` is unused::
-
-        geopotential_height:
-          kind: geopotential_height
-          u: geopotential
     """
     entries: list[tuple[str, str, str, str]] = []
 
@@ -613,16 +559,10 @@ def _parse_derived_cfg(
             )
             continue
 
-        # Accept 'source' as an alias for 'u' (clearer for single-input recipes).
-        u_var = str(block.get("source") or block.get("u") or block.get("u_var") or "")
+        u_var = str(block.get("u") or block.get("u_var") or "")
         v_var = str(block.get("v") or block.get("v_var") or "")
-
-        if not u_var:
-            c.warn(f"derived_variables.{key}: requires 'u' (or 'source') key. Skipping.")
-            continue
-
-        if kind not in _SINGLE_INPUT_KINDS and not v_var:
-            c.warn(f"derived_variables.{key}: kind '{kind}' requires 'v' key. Skipping.")
+        if not u_var or not v_var:
+            c.warn(f"derived_variables.{key}: requires 'u' and 'v' keys. Skipping.")
             continue
 
         entries.append((key, kind, u_var, v_var))
@@ -640,9 +580,6 @@ def add_derived_variables(
     Currently supported recipes (see ``_DERIVED_RECIPES``):
 
     * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
-    * ``geopotential_height`` — ``geopotential / 9.80665`` (m); single-input, only ``u`` required
-    * ``geopotential_height_gradient`` — ``|∇Z|`` (m m⁻¹); single-input, supply geopotential height
-    variable
 
     **Inner-join guard**: a derived variable is only added when *both* source
     components are present in *both* the target and prediction datasets.  If a
@@ -676,10 +613,9 @@ def add_derived_variables(
     skipped: list[str] = []
 
     for out_name, kind, u_var, v_var in entries:
-        # Inner-join guard: single-input recipes only need u_var
-        src_vars = {u_var} if kind in _SINGLE_INPUT_KINDS else {u_var, v_var}
-        missing_target = src_vars - set(ds_target.data_vars)
-        missing_pred = src_vars - set(ds_prediction.data_vars)
+        # Inner-join guard
+        missing_target = {u_var, v_var} - set(ds_target.data_vars)
+        missing_pred = {u_var, v_var} - set(ds_prediction.data_vars)
         if missing_target or missing_pred:
             parts: list[str] = []
             if missing_target:

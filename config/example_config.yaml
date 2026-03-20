@@ -32,16 +32,21 @@ selection:
   # otherwise along init_time. Set to null to disable.
   temporal_resolution_hours: null
 
-  # Time selection (one of the following):
-  #   1) Single range [start, end]:
-  #      datetimes: ["2023-01-02T12", "2023-01-03T00"]
-  #   2) Multiple ranges:
-  #      datetimes: ["2023-01-02T00:2023-01-02T06", "2023-01-03T12:2023-01-03T18"]
-  #      # or as pairs: datetimes: [["2023-01-02T00","2023-01-02T06"], ["2023-01-03T12","2023-01-03T18"]]
-  #   3) Explicit non-contiguous timestamps:
-  #      datetimes_list: ["2023-01-10T00","2023-01-10T06","2023-04-10T00","2023-07-10T00","2023-10-10T00", ...]
-  # For target ERA5 (time) and prediction: (init_time+lead_time), the CLI aligns by
-  # valid_time = init_time + lead_time.
+  # Time selection via `datetimes`; three forms (freely mixed in the same list):
+  #
+  #   1) Ranges  — "start:end" selects all timestamps in [start, end] (inclusive):
+  #      datetimes: ["2023-01-02T00:2023-01-08T23", "2023-07-01T00:2023-07-07T23"]
+  #      Pair-list syntax is also accepted: [["2023-01-02T00","2023-01-08T23"], ...]
+  #
+  #   2) Single points — a bare timestamp (no colon) selects exactly that step:
+  #      datetimes: ["2023-01-10T00", "2023-04-10T00", "2023-07-10T00", "2023-10-10T00"]
+  #
+  #   3) No filtering — empty list or omit the key entirely:
+  #      datetimes: []
+  #
+  # Forms 1 and 2 can be combined freely in the same list.
+  # For ERA5 targets the end bound is automatically extended by max_hour so that
+  # valid_time = init_time + lead_time remains covered.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
     "2023-04-02T00:2023-04-08T23",
@@ -64,6 +69,9 @@ selection:
   longitudes: [0.0, 359.75]
 
   # Variables without a level dimension present in BOTH datasets.
+  # Note: if derived_variables is configured, all source components (U and V)
+  # must be included here for the derived variable to be computed. Missing
+  # components are skipped with a warning (inner-join guard).
   variables_2d: [
     "10m_u_component_of_wind",
     "10m_v_component_of_wind",
@@ -72,12 +80,13 @@ selection:
   ]
 
   # Variables with a level dimension present in BOTH datasets (pressure levels).
+  # Same rule applies: include both U and V if you want wind_speed derived.
   variables_3d: [
     # "geopotential",
     # "specific_humidity",
     # "temperature",
-    # "u_component_of_wind",
-    # "v_component_of_wind",
+    "u_component_of_wind",
+    "v_component_of_wind",
   ]
 
   # Optional pre-selection of ensemble members BEFORE any module logic runs.
@@ -96,6 +105,19 @@ selection:
   #       members-capable modules without discarding others for metrics.
   ensemble_members: null
 
+  # Per-module ensemble member selection — pure overrides.
+  # Accepts the same entries as the global 'ensemble_members' above.
+  # Indices are zero-based and refer to positions in the *full* (unfiltered) ensemble.
+  ensemble_members_per_module:
+    maps: null               # e.g. [0, 1] → use members 0 and 1 from the full ensemble
+    histograms: null         # e.g. null    → use globally-filtered dataset
+    wd_kde: null
+    energy_spectra: null
+    vertical_profiles: null
+    deterministic: null
+    ets: null
+    probabilistic: null
+
   # Per-module ensemble modes (override defaults if needed):
   #   mean     → reduce to mean (ensmean)
   #   pooled   → pooled sample (enspooled)
@@ -105,7 +127,7 @@ selection:
     maps: members            # members | mean
     histograms: pooled       # pooled | members | mean
     wd_kde: pooled           # pooled | members | mean
-    energy_spectra: mean     # mean | pooled | members
+    energy_spectra: pooled   # mean | pooled | members
     vertical_profiles: mean  # mean | pooled | members
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
@@ -149,37 +171,89 @@ plotting:
 
   # Maximum number of samples per latitude band used for KDE/Wasserstein in wd_kde.
   # Larger values improve smoothness but increase compute and memory. Typical: 50_000–200_000.
+  # Accepts:
+  #   - integer: explicit cap
+  #   - auto: conservative default (recommended)
+  #   - null: disable subsampling (advanced; can increase memory strongly)
   # Note: Provide as a plain integer (no underscores) in YAML.
-  kde_max_samples: 200000
+  kde_max_samples: auto
 
   # Maximum number of samples per latitude band for histograms.
   # When provided, histograms are built from a deterministic subsample (mirrors wd_kde logic)
-  # rather than the full arrays. Set to null/omit to use full data. Typical: 50000–200000.
-  histogram_max_samples: 200000
+  # rather than the full arrays.
+  # Accepts:
+  #   - integer: explicit cap
+  #   - auto: conservative default (recommended)
+  #   - null: disable subsampling (advanced; can increase memory strongly)
+  # Typical: 50000–200000.
+  histogram_max_samples: auto
 
   # If true, generate histograms for each latitude band in addition to the global histogram.
   # Global histograms are always produced.
   histograms_per_lat_band: false
 
+  # 3D histogram handling defaults:
+  # - 3D variables are included by default (per level)
+  # - all available selected levels are processed by default
+  # histograms_include_3d: true
+  # histograms_max_levels: null
+
   # If true, generate KDE plots for each latitude band in addition to the global KDE.
   # Global KDEs are always produced.
   wd_kde_per_lat_band: false
+
+  # 3D WD/KDE handling defaults:
+  # - 3D variables are included by default (per level)
+  # - all available selected levels are processed by default
+  # wd_kde_include_3d: true
+  # wd_kde_max_levels: null
 
   # Unified plotting output mode:
   #   - plot: save PNG figures only
   #   - npz: export numeric data files only (NPZ) for supported modules
   #   - both: save PNGs and export NPZ
+  #   - none: disable PNG/NPZ artifact generation; keep CSV outputs only
   # Notes:
-  #   - Energy spectra NPZ and probabilistic CRPS/PIT artifacts are always saved regardless of this mode.
+  #   - In 'none' mode, artifact-only modules are skipped and mixed modules emit CSV only.
   output_mode: both
+
+  # Number of columns in PIT histogram per-lead-time grid plots (default: 2).
+  # panel_cols: 2
+
+  # If true, bin WBX CRPS/SSR temporal summaries by meteorological season (DJF, MAM, JJA, SON).
+  # group_by_season: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Derived variables
+# Compute new variables lazily from existing data_vars before any module runs.
+# Only variables present in BOTH the target and prediction datasets can be
+# derived (inner-join guard). Missing source components are skipped with a
+# warning instead of raising an error.
+#
+# Each entry becomes a new variable in both datasets. The sub-key name is the
+# output variable name. Required fields per entry:
+#   kind:  the recipe to apply. Currently available:
+#            wind_speed  — sqrt(U² + V²), m s⁻¹
+#   u:     name of the U-component variable in both datasets
+#   v:     name of the V-component variable in both datasets
+# ─────────────────────────────────────────────────────────────────────────────
+derived_variables:
+  10m_wind_speed:
+    kind: wind_speed
+    u: 10m_u_component_of_wind
+    v: 10m_v_component_of_wind
+  wind_speed:
+    kind: wind_speed
+    u: u_component_of_wind
+    v: v_component_of_wind
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
   maps: true                 # Global and per-level maps (Cartopy)
   histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
   wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: true       # Zonal energy spectra + LSD table; NPZ always saved
-  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D)
+  energy_spectra: true       # Zonal energy spectra + LSD table
+  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
@@ -192,10 +266,21 @@ metrics:
   #   "MAE", "RMSE", "MSE", "Relative MAE", "Bias", "Pearson R",
   #   "FSS", "Relative L1", "Relative L2"
   #   "SEEPS" (only for precipitation)
+  #
   # Ensemble behaviour now controlled by ensemble.deterministic (mean|members).
   deterministic:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report metrics per pressure level (for 3D variables).
     report_per_level: true
+
+    # If true, generate spatial error maps (PNG + NPZ) for MAE, RMSE, and Bias.
+    # For 3D variables one map per pressure level is produced; multi-lead runs
+    # show each lead time as a separate row. Disabled by default because these
+    # maps are memory-intensive (the full spatial field must be materialised).
+    spatial_maps: false
+
+    # In members mode, also emit a mean-of-members summary CSV.
+    # aggregate_members_mean: true
 
     include: ["MAE", "RMSE", "MSE", "Bias", "Relative MAE", "Relative L1", "Relative L2", "Pearson R", "FSS"]
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
@@ -209,13 +294,11 @@ metrics:
     # - window_size: integer (square window) or two-element list [height, width]
     # Typical defaults for global verification: quantile=0.90, window_size=9 (i.e., 9x9)
     # Optional: use absolute thresholds instead of quantiles:
-    #   - threshold: single float applied to all variables (units must match each variable)
-    #   - thresholds: mapping of variable name -> float (overrides 'threshold' for those vars)
+    #   - thresholds: mapping of variable name -> list of floats (absolute thresholds)
     fss:
       quantile: 0.95
       window_size: 9            # Example: square window of 9x9
-      # threshold: 10.0          # Example: global absolute threshold (e.g., 10 m/s or 1 mm)
-      # thresholds:              # Example: per-variable thresholds (units must match dataset)
+      # thresholds:              # Example: per-variable absolute thresholds (units must match dataset)
       #   "total_precipitation": [0.001, 0.005]     # e.g., 1 mm over accumulation period
       #   "10m_u_component_of_wind": [10.0]  # e.g., 10 m/s event
       #
@@ -224,15 +307,36 @@ metrics:
   # observed distribution at the given percentile.
   # Ensemble behaviour now controlled by ensemble.ets (mean|members).
   ets:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report ETS per pressure level (for 3D variables).
     report_per_level: true
+
+    # In members mode, also emit a mean-of-members summary CSV.
+    # aggregate_members_mean: true
 
     thresholds: [50, 70, 90]
 
   # Energy Spectra configuration.
   energy_spectra:
+    # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report LSD metrics per pressure level (for 3D variables).
     report_per_level: true
+
+    # Controls whether individual per-spectrum overlay plots (energy_spectrum_*_compare.png,
+    # *_compare_ratio.png) and per-lead individual PNG tripanel spectrograms
+    # (energy_spectra_per_lead_*_tripanel*.png) are generated in both single-model runs
+    # and intercomparison.
+    # NOTE: This flag does NOT suppress bundle NPZ files (energy_spectra_per_lead_*_bundle*.npz)
+    # or LSD/banded-LSD CSVs — those are always written for multi-lead runs so the
+    # intercomparison pipeline can produce 3D per-level spectrograms and band plots.
+    # Set to true only if you need per-variable per-time-slice spectral overlays;
+    # the spectrograms already summarise the full lead-time evolution in one figure.
+    individual_plots: false
+
+    # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
+    # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
+    # instead of the spectrum of the scalar wind-speed field, which would be
+    # physically incorrect.
 
   # SSIM configuration
   ssim:
@@ -240,7 +344,8 @@ metrics:
     # win_size: 7           # Window size (optional, defaults to 7 or derived from sigma)
 
   probabilistic:
-    # If true, compute and report CRPS summaries per pressure level (for 3D variables).
+    # Per-level reporting for 3D variables is enabled by default.
+    # If true, compute and report CRPS/SSR summaries per pressure level (for 3D variables).
     report_per_level: true
 
   # Multivariate metrics configuration.
@@ -268,3 +373,64 @@ performance:
   # Controls chunking for metric computation. Set to integer or "no-chunk" to disable.
   # Smaller chunk sizes help prevent OOM but add overhead. Default is dynamically calculated.
   # chunk_size: 20
+
+performance:
+  # Dask scheduler choice.
+  #   - distributed: LocalCluster + spill-over controls (recommended default).
+  #   - threaded:    In-process threaded scheduler.
+  #                  Note: in threaded mode, distributed-only profile knobs are ignored
+  #                  (`dask_threads_per_worker`, `dask_processes`, `dask_memory_limit`).
+  #                  `dask_profile` still affects the derived worker count used as
+  #                  `num_workers`, and profile-aware batching/splitting defaults still apply.
+  dask_scheduler: distributed
+
+  # Dask execution profile (new): safe | balanced | fast
+  # - safe (default): conservative parallelism.
+  # - balanced: moderate parallelism.
+  # - fast: higher parallelism and throughput.
+  # On GH200-class nodes (>=192 CPUs), defaults are tuned to:
+  #   safe=16x1 workers/threads, balanced=32x1, fast=64x1
+  #   with memory_limit 24GiB / 12GiB / 8GiB per worker.
+  dask_profile: safe
+
+  # Coalesce batch callbacks across N compute batches before calling writer logic.
+  # batch_callback_stride: 1
+  # quiet_dask_logs: false
+
+  # Optional explicit overrides for the profile above:
+  # dask_n_workers: 16
+  # dask_threads_per_worker: 1
+  # dask_processes: true
+  # dask_memory_limit: 24GiB
+
+  # Apply the repository chunking policy (init_time:1, lead_time:1, level:1, lat/lon/ens:-1)
+  # after loading. Set false to preserve native zarr chunking — useful when the target
+  # uses a different layout (e.g. WeatherBench2 ERA5 with all levels in one spatial chunk)
+  # where rechunking would create an expensive graph transpose and severe memory pressure.
+  enforce_chunking: true
+
+  # Optional Dask performance report (distributed scheduler only).
+  # When enabled, wraps the evaluation in dask.distributed.performance_report
+  # and writes an HTML report for post-run analysis.
+  # dask_performance_report: false
+
+  # Output path template for the performance report.
+  # Supported placeholders:
+  #   - {job_id}: SLURM job id (or 'nojid' if unavailable)
+  #   - {timestamp}: run timestamp (YYYYMMDD_HHMMSS)
+  # dask_performance_report_path: "logs/dask_performance_{job_id}_{timestamp}.html"
+
+  # Batch-size compatibility override (legacy/future hook).
+  # Current metrics/plots modules execute direct dask graphs via dask.compute(...)
+  # and do not use per-module manual batching. Keep this commented unless you are
+  # developing experimental batching paths.
+  # batch_size: 32
+
+  # Optional compatibility auto-batch tuning knobs (legacy/future hooks).
+  # Retained for backwards compatibility and experimentation.
+  # safe_points_per_batch: auto
+  # max_dynamic_batch_size: auto
+
+  # Shared split flags across all batching modules.
+  # This controls job partitioning by pressure level (for 3D variables) before batch execution.
+  # split_3d_by_level: true
