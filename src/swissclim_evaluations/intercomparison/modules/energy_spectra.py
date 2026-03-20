@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
@@ -19,6 +18,7 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
     report_checklist,
     report_missing,
@@ -26,9 +26,195 @@ from swissclim_evaluations.intercomparison.core import (
 )
 from swissclim_evaluations.plots.energy_spectra import add_wavelength_axis
 
+# Canonical spectral band ordering and human-readable labels used by comparison plots.
+_BAND_ORDER = ["planetary", "synoptic", "upper_mesoscale", "lower_mesoscale"]
+_BAND_LABELS: dict[str, str] = {
+    "planetary": "Planetary\n(5–20 Mm)",
+    "synoptic": "Synoptic\n(1–5 Mm)",
+    "upper_mesoscale": "Upper Meso\n(250–1000 km)",
+    "lower_mesoscale": "Lower Meso\n(10–250 km)",
+}
 
-def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root: Path) -> None:
-    """Overlay energy spectra (and ratios) from multiple models."""
+
+def _plot_banded_lsd_bar(
+    combined: pd.DataFrame,
+    labels: list[str],
+    dst: Path,
+    out_root: Path,
+) -> None:
+    """Grouped bar chart of mean LSD per spectral band, one subplot per variable.
+
+    x-axis: spectral band (planetary → lower_mesoscale)
+    y-axis: mean LSD
+    hue/colour: model
+    """
+    variables = sorted(combined["variable"].dropna().unique().tolist())
+    if not variables:
+        return
+
+    ncols = min(3, len(variables))
+    nrows = (len(variables) + ncols - 1) // ncols
+    colors = list(model_color_map(labels).values())
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(5, 4 * ncols), max(3.5, 3 * nrows)),
+        dpi=160,
+        squeeze=False,
+    )
+    flat_axes = axes.ravel()
+
+    # Build model→colour mapping so colours are consistent across subplots.
+    model_colors = {lab: colors[i % len(colors)] for i, lab in enumerate(labels)}
+
+    # Ordered bands (keep only those present in the data).
+    bands_present = [b for b in _BAND_ORDER if b in combined["band"].values]
+    x = np.arange(len(bands_present))
+    n_models = len(labels)
+    bar_w = 0.8 / max(n_models, 1)
+
+    for ax_idx, var in enumerate(variables):
+        ax = flat_axes[ax_idx]
+        sub = combined[combined["variable"] == var]
+
+        for m_idx, lab in enumerate(labels):
+            sub_m = sub[sub["model"] == lab]
+            heights = []
+            for band in bands_present:
+                row = sub_m[sub_m["band"] == band]
+                heights.append(float(row["lsd_mean"].mean()) if not row.empty else float("nan"))
+
+            offset = (m_idx - (n_models - 1) / 2) * bar_w
+            ax.bar(
+                x + offset,
+                heights,
+                width=bar_w * 0.9,
+                label=lab,
+                color=model_colors.get(lab, colors[m_idx % len(colors)]),
+                alpha=0.85,
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([_BAND_LABELS.get(b, b) for b in bands_present], fontsize=8)
+        ax.set_ylabel("LSD", fontsize=9)
+        ax.set_title(format_variable_name(var), fontsize=9)
+        ax.grid(axis="y", ls="--", alpha=0.4)
+        ax.set_ylim(bottom=0)
+        if ax_idx == 0:
+            ax.legend(frameon=False, fontsize=8)
+
+    # Hide unused axes.
+    for ax in flat_axes[len(variables) :]:
+        ax.set_visible(False)
+
+    fig.suptitle("LSD per Spectral Band — Model Comparison", fontsize=11, y=1.01)
+    out_png = dst / "lsd_banded_bar_compare.png"
+    plt.tight_layout()
+    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+    plt.close(fig)
+    c.success(f"Saved {out_png.relative_to(out_root)}")
+
+
+def _plot_banded_lsd_by_lead(
+    combined: pd.DataFrame,
+    labels: list[str],
+    dst: Path,
+    out_root: Path,
+) -> None:
+    """LSD vs lead time per spectral band, one figure per variable.
+
+    Each figure has one subplot per band.  Each subplot has one line per model.
+    """
+    variables = sorted(combined["variable"].dropna().unique().tolist())
+    if not variables:
+        return
+
+    colors = list(model_color_map(labels).values())
+    model_colors = {lab: colors[i % len(colors)] for i, lab in enumerate(labels)}
+
+    bands_present = [b for b in _BAND_ORDER if b in combined["band"].values]
+    if not bands_present:
+        return
+
+    # LSD column may be 'LSD' or 'lsd_mean' depending on source.
+    lsd_col = "LSD" if "LSD" in combined.columns else "lsd_mean"
+
+    for var in variables:
+        sub_var = combined[combined["variable"] == var]
+        ncols = len(bands_present)
+        fig, axes = plt.subplots(
+            1,
+            ncols,
+            figsize=(max(5, 4 * ncols), 3.5),
+            dpi=160,
+            squeeze=False,
+            sharey=False,
+        )
+
+        for b_idx, band in enumerate(bands_present):
+            ax = axes[0, b_idx]
+            sub_band = sub_var[sub_var["band"] == band]
+
+            for lab in labels:
+                sub_m = sub_band[sub_band["model"] == lab].copy()
+                if sub_m.empty:
+                    continue
+                sub_m = sub_m.sort_values("lead_time_hours")
+                grouped = sub_m.groupby("lead_time_hours", sort=True)[lsd_col].mean()
+                ax.plot(
+                    grouped.index,
+                    grouped.values,
+                    marker="o",
+                    markersize=3,
+                    label=lab,
+                    color=model_colors.get(lab, "tab:blue"),
+                )
+
+            ax.set_title(_BAND_LABELS.get(band, band), fontsize=9)
+            ax.set_xlabel("Lead Time [h]", fontsize=8)
+            if b_idx == 0:
+                ax.set_ylabel("LSD", fontsize=9)
+            ax.grid(ls="--", alpha=0.4)
+            ax.set_ylim(bottom=0)
+            if b_idx == 0:
+                ax.legend(frameon=False, fontsize=7)
+
+        fig.suptitle(
+            f"LSD per Band vs Lead Time — {format_variable_name(var)}",
+            fontsize=10,
+            y=1.02,
+        )
+        safe_var = str(var).replace("/", "_").replace(" ", "_")
+        out_png = dst / f"lsd_banded_lead_time_{safe_var}_compare.png"
+        plt.tight_layout()
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        plt.close(fig)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
+
+
+def intercompare_energy_spectra(
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    *,
+    individual_plots: bool = False,
+) -> None:
+    """Overlay energy spectra (and ratios) from multiple models.
+
+    Args:
+        models: List of model output root directories.
+        labels: Display names for each model.
+        out_root: Root directory for intercomparison outputs.
+        individual_plots: When *True*, generate per-spectrum overlay plots
+            (``*_compare.png``, ``*_compare_ratio.png``) and per-lead individual
+            spectrum plots (``energy_spectrum_*_lead{h}h_compare.png``) in
+            addition to the delta spectrograms.  When *False* (default) and a
+            multi-lead dataset is detected, only the compact delta spectrograms
+            (``*_spectrogram_delta_compare.png``) are produced.  For single-lead
+            datasets (no bundle NPZ files found) individual plots are always
+            generated regardless of this flag.
+    """
     dst = ensure_dir(out_root / "energy_spectra")
 
     # Availability report
@@ -87,13 +273,18 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         has_2d = any("3d" not in f for f in files)
         return (1 if has_3d else 0) + (1 if has_2d else 0)
 
+    # Separate banded-per-lead from global lead_time files.
+    band_lead_time = [f for f in all_metrics if "bands" in f and "per_lead_time" in f]
+    lead_time_global = [f for f in lead_time if "bands" not in f]
+
     results["LSD Averaged Metrics"] = _count_2d_3d(avg_no_bands)
     results["LSD Banded Averaged Metrics"] = _count_2d_3d(avg_bands)
     results["LSD Per-Level Metrics"] = _count_2d_3d(lvl_no_bands)
     results["LSD Banded Per-Level Metrics"] = _count_2d_3d(lvl_bands)
     results["LSD 3D Averaged Metrics"] = _count_2d_3d(avg_3d)
 
-    results["LSD Lead Time Metrics"] = _count_2d_3d(lead_time)
+    results["LSD Lead Time Metrics"] = _count_2d_3d(lead_time_global)
+    results["LSD Banded Lead Time Metrics"] = len(band_lead_time)
     results["LSD Plot Datetime Metrics"] = _count_2d_3d(plot_datetime)
     results["LSD 3D Lead Time Metrics"] = _count_2d_3d(lead_time_3d)
     results["LSD 3D Plot Datetime Metrics"] = _count_2d_3d(plot_datetime_3d)
@@ -155,6 +346,9 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             out_csv = dst / "lsd_metrics_banded_averaged_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
+            # Grouped bar chart: LSD per band, one subplot per variable.
+            if "band" in combined.columns and "variable" in combined.columns:
+                _plot_banded_lsd_bar(combined, labels, dst, out_root)
 
     # 3. Per-Level (Global)
     frames_lvl: list[pd.DataFrame] = []
@@ -244,7 +438,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-    # 8. 2D Lead Time (New)
+    # 8. 2D Lead Time (New) — global LSD only (excluding banded-per-lead handled below)
     frames_lead: list[pd.DataFrame] = []
     for lab, m in zip(labels, models, strict=False):
         cands = [
@@ -253,7 +447,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
         cands += [
             f
             for f in (m / "energy_spectra").glob("energy_ratios_*lead_time*.csv")
-            if "3d" not in f.name
+            if "3d" not in f.name and "bands" not in f.name
         ]
         for f in cands:
             try:
@@ -270,6 +464,45 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             out_csv = dst / "lsd_metrics_lead_time_combined.csv"
             combined.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
+
+    # 9. Banded Per-Lead (from multi-lead bundle pipeline)
+    frames_band_lead: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        cands = list((m / "energy_spectra").glob("energy_ratios_bands_per_lead_per_lead_time*.csv"))
+        # Also pick up per-variable files (variable name sits between per_lead_ and _per_lead_time)
+        cands += [
+            f
+            for f in (m / "energy_spectra").glob(
+                "energy_ratios_bands_per_lead_*_per_lead_time*.csv"
+            )
+            if f not in cands
+        ]
+        for f in cands:
+            try:
+                df = pd.read_csv(f)
+                df.insert(0, "model", lab)
+                df["source_file"] = f.name
+                frames_band_lead.append(df)
+            except Exception:
+                pass
+
+    if frames_band_lead:
+        combined_bl = pd.concat(frames_band_lead, ignore_index=True)
+        # De-duplicate rows that appear in both the combined CSV and per-variable CSVs
+        dedup_cols = [
+            c
+            for c in ["model", "lead_time_hours", "variable", "band", "LSD"]
+            if c in combined_bl.columns
+        ]
+        if dedup_cols:
+            combined_bl = combined_bl.drop_duplicates(subset=dedup_cols, keep="first")
+        if combined_bl["model"].nunique() >= 2:
+            out_csv = dst / "lsd_metrics_banded_lead_time_combined.csv"
+            combined_bl.to_csv(out_csv, index=False)
+            c.success(f"Saved {out_csv.relative_to(out_root)}")
+            # Line chart per variable: LSD vs lead time, one panel per band.
+            if "band" in combined_bl.columns and "lead_time_hours" in combined_bl.columns:
+                _plot_banded_lsd_by_lead(combined_bl, labels, dst, out_root)
 
     # Helper to plot a group of NPZ with baseline
     def _plot_group(basenames: list[str]) -> None:
@@ -304,7 +537,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     )
                 except Exception:  # pragma: no cover
                     pass
-            colors = sns.color_palette("tab10", n_colors=len(models))
+            colors = list(model_color_map(labels).values())
             for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                 specm = dat.get("spectrum_prediction")
                 wnm = dat.get("wavenumber")
@@ -373,7 +606,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 for i, (lab, dat) in enumerate(zip(labels, datas, strict=False)):
                     specm = dat.get("spectrum_prediction")
                     if specm is None:
-                        specm = dat.get("spectrum_prediction")
+                        specm = dat.get("spectrum_pred")
 
                     # Try to get the matching target spectrum for this model
                     spec_t = dat.get("spectrum_target")
@@ -444,6 +677,7 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                 ax_r.grid(True, which="both", ls="--", alpha=0.4)
                 ax_r.legend(frameon=False)
                 ax_r.axhline(100, color="k", linestyle="--", lw=1.0, alpha=0.5)
+                ax_r.set_ylim(0, 200)
 
                 # Add secondary top axis for Wavelength (km)
                 k_min_plot, k_max_plot = ax_r.get_xlim()
@@ -460,13 +694,22 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
                     c.warn("No lines were added to the plot; no output saved.")
                 plt.close(fig_r)
 
-    # Call the helper to actually generate plots
-    if spectra_files:
+    # Call the helper to actually generate plots.
+    # In multi-lead mode (bundles exist) individual per-spectrum plots are skipped
+    # unless explicitly enabled via individual_plots=True.  For single-lead
+    # datasets (no bundles) we always fall through to preserve existing behaviour.
+    bundles = common_files(models, "energy_spectra/energy_spectra_per_lead_*_bundle*.npz")
+    if spectra_files and (individual_plots or not bundles):
         _plot_group(spectra_files)
+    elif spectra_files and not individual_plots and bundles:
+        c.info(
+            "[energy_spectra] Skipping individual spectrum/ratio plots "
+            "(individual_plots=False; multi-lead dataset detected). "
+            "Set metrics.energy_spectra.individual_plots: true to enable."
+        )
 
     # 4) Plot Energy Spectra per Lead Time (from bundle NPZ)
     # Look for energy_spectra_per_lead_*_bundle.npz
-    bundles = common_files(models, "energy_spectra/energy_spectra_per_lead_*_bundle*.npz")
     if bundles:
         print_file_list(f"Found {len(bundles)} common energy spectra bundles", bundles)
 
@@ -485,52 +728,173 @@ def intercompare_energy_spectra(models: list[Path], labels: list[str], out_root:
             wavenumber = payloads[0]["wavenumber"]
             variable = payloads[0].get("variable", "var")
 
-            # Iterate over lead times
-            for i, h in enumerate(lead_hours):
-                fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+            # Per-lead individual spectrum plots — only when explicitly enabled.
+            if individual_plots:
+                for i, h in enumerate(lead_hours):
+                    fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
-                # Plot Target (from first model, assuming same target)
-                if "energy_target" in payloads[0]:
-                    et = payloads[0]["energy_target"]
-                    if et.ndim == 2 and et.shape[0] > i:
-                        with contextlib.suppress(Exception):
-                            ax.loglog(
-                                wavenumber[2:-2],
-                                et[i, 2:-2],
-                                color=COLOR_GROUND_TRUTH,
-                                lw=2.0,
-                                label="Target",
-                            )
+                    # Plot Target (from first model, assuming same target)
+                    if "energy_target" in payloads[0]:
+                        et = payloads[0]["energy_target"]
+                        if et.ndim == 2 and et.shape[0] > i:
+                            with contextlib.suppress(Exception):
+                                ax.loglog(
+                                    wavenumber[2:-2],
+                                    et[i, 2:-2],
+                                    color=COLOR_GROUND_TRUTH,
+                                    lw=2.0,
+                                    label="Target",
+                                )
 
-                colors = sns.color_palette("tab10", n_colors=len(models))
-                for j, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                    em = pay["energy_prediction"]
-                    if em.ndim == 2 and em.shape[0] > i:
-                        with contextlib.suppress(Exception):
-                            ax.loglog(
-                                wavenumber[2:-2],
-                                em[i, 2:-2],
-                                label=lab,
-                                color=colors[j],
-                            )
+                    colors = list(model_color_map(labels).values())
+                    for j, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                        em = pay["energy_prediction"]
+                        if em.ndim == 2 and em.shape[0] > i:
+                            with contextlib.suppress(Exception):
+                                ax.loglog(
+                                    wavenumber[2:-2],
+                                    em[i, 2:-2],
+                                    label=lab,
+                                    color=colors[j],
+                                )
 
-                ax.set_xlabel("Zonal Wavenumber (cycles/km)")
-                ax.set_ylabel("Energy Density (weighted)")
-                ax.set_title(
-                    f"Energy Spectra — {format_variable_name(str(variable))} (Lead {int(h)}h)"
+                    ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+                    ax.set_ylabel("Energy Density (weighted)")
+                    ax.set_title(
+                        f"Energy Spectra — {format_variable_name(str(variable))} (Lead {int(h)}h)"
+                    )
+                    ax.grid(True, which="both", ls="--", alpha=0.4)
+
+                    # Add wavelength axis
+                    k_min, k_max = ax.get_xlim()
+                    add_wavelength_axis(ax, k_min, k_max)
+
+                    ax.legend(frameon=False)
+
+                    # Save plot
+                    out_png = dst / f"energy_spectrum_{variable}_lead{int(h):03d}h_compare.png"
+                    plt.tight_layout()
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    plt.close(fig)
+
+            # Compact delta spectrogram — always generated for multi-lead bundles.
+            # Optional compact compare: one delta spectrogram panel per model
+            # Δlog10 energy = log10(model) - log10(target)
+            if "energy_target" in payloads[0]:
+                try:
+                    x_hours = np.asarray(lead_hours, dtype=float)
+                except Exception:
+                    x_hours = np.arange(len(lead_hours), dtype=float)
+
+                # Extract level from the bundle (None for 2D surface vars)
+                level_raw = payloads[0].get("level")
+                level_val = (
+                    int(level_raw.item())
+                    if hasattr(level_raw, "item")
+                    else (int(level_raw) if level_raw is not None else None)
                 )
-                ax.grid(True, which="both", ls="--", alpha=0.4)
+                level_suffix = format_level_label(level_val) if level_val is not None else ""
 
-                # Add wavelength axis
-                k_min, k_max = ax.get_xlim()
-                add_wavelength_axis(ax, k_min, k_max)
+                target_energy = np.asarray(payloads[0]["energy_target"])
+                if target_energy.ndim == 2 and target_energy.shape[1] == len(wavenumber):
+                    # Use an eps relative to each spectrum so near-zero wavenumber
+                    # bins don't explode the log ratio and create line artifacts.
+                    t_median = (
+                        float(np.nanmedian(target_energy[target_energy > 0]))
+                        if np.any(target_energy > 0)
+                        else 1e-10
+                    )
+                    eps = max(t_median * 1e-6, 1e-30)
+                    diffs: list[np.ndarray] = []
+                    for pay in payloads:
+                        pred_energy = np.asarray(pay["energy_prediction"])
+                        if pred_energy.shape != target_energy.shape:
+                            continue
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            diff = np.log10(pred_energy + eps) - np.log10(target_energy + eps)
+                        # Mild Gaussian smoothing to remove pixel-level artifacts
+                        # (σ=1 along wavenumber axis, 0.5 along lead axis)
+                        try:
+                            from scipy.ndimage import gaussian_filter
 
-                ax.legend(frameon=False)
+                            diff = gaussian_filter(diff, sigma=[0.5, 1.0])
+                        except Exception:
+                            pass
+                        diffs.append(diff)
 
-                # Save plot
-                out_png = dst / f"energy_spectrum_{variable}_lead{int(h):03d}h_compare.png"
-                plt.tight_layout()
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
-                plt.close(fig)
+                    if diffs:
+                        # Apply 4Δx wavenumber cutoff: trim first 2 large-scale bins
+                        # and high-frequency bins beyond k_max/2 (consistent with
+                        # energy spectra line plots).
+                        _k_max_ic = float(np.nanmax(wavenumber))
+                        if np.isfinite(_k_max_ic) and _k_max_ic > 0 and len(wavenumber) > 4:
+                            _k_cut_ic = _k_max_ic / 2.0
+                            _cm_ic = np.ones(len(wavenumber), dtype=bool)
+                            _cm_ic[:2] = False
+                            _cm_ic &= wavenumber <= _k_cut_ic
+                            if np.any(_cm_ic):
+                                wavenumber = wavenumber[_cm_ic]
+                                diffs = [d[:, _cm_ic] for d in diffs]
+
+                        # Robust vmax: use 98th percentile so outlier rows don't
+                        # compress the colour range for the bulk of the data.
+                        all_vals = np.abs(np.stack(diffs, axis=0))
+                        vmax = float(np.nanpercentile(all_vals, 98))
+                        if not (np.isfinite(vmax) and vmax > 0):
+                            vmax = float(np.nanmax(all_vals))
+                        if np.isfinite(vmax) and vmax > 0:
+                            ncols = len(diffs)
+                            fig, axes = plt.subplots(
+                                1,
+                                ncols,
+                                figsize=(max(5, 4 * ncols), 5.5),
+                                dpi=160,
+                                squeeze=False,
+                                sharey=True,
+                            )
+                            plotted = False
+                            for j, (ax, lab, diff) in enumerate(
+                                zip(axes[0], labels, diffs, strict=False)
+                            ):
+                                im = ax.pcolormesh(
+                                    x_hours,
+                                    wavenumber,
+                                    diff.T,
+                                    shading="gouraud",
+                                    cmap="coolwarm",
+                                    vmin=-vmax,
+                                    vmax=vmax,
+                                )
+                                ax.set_yscale("log")
+                                ax.set_title(lab, fontsize=9)
+                                ax.set_xlabel("Lead Time [h]")
+                                if j == 0:
+                                    ax.set_ylabel("Wavenumber (cycles/km)")
+                                plotted = plotted or im is not None
+
+                            if plotted:
+                                fig.subplots_adjust(bottom=0.28)
+                                cbar = fig.colorbar(
+                                    im,
+                                    ax=axes.ravel().tolist(),
+                                    orientation="horizontal",
+                                    location="bottom",
+                                    pad=0.25,
+                                    shrink=0.6,
+                                    aspect=40,
+                                )
+                                cbar.set_label("Δ log10 energy (model - target)")
+                                fig.suptitle(
+                                    f"Energy Spectrogram Δ — "
+                                    f"{format_variable_name(str(variable))}{level_suffix}",
+                                    fontsize=11,
+                                    y=1.02,
+                                )
+                                out_spec = dst / base.replace(
+                                    ".npz", "_spectrogram_delta_compare.png"
+                                )
+                                plt.savefig(out_spec, bbox_inches="tight", dpi=200)
+                                c.success(f"Saved {out_spec.relative_to(out_root)}")
+                            plt.close(fig)
 
         c.success(f"Saved per-lead energy spectra plots to {dst.relative_to(out_root)}")

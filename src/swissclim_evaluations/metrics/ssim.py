@@ -7,6 +7,7 @@ import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
 
+from .. import console as c
 from ..dask_utils import compute_jobs
 from ..helpers import (
     build_output_filename,
@@ -24,10 +25,22 @@ def calculate_ssim(
     gaussian_weights: bool = True,
     use_sample_covariance: bool = True,
 ) -> pd.DataFrame:
-    """
-    Calculate SSIM for each variable.
+    """Calculate SSIM for each variable.
 
-    SSIM is calculated for each 2D spatial slice (lat/lon) and averaged over other dimensions.
+    SSIM is calculated for each 2-D spatial slice (lat/lon) and averaged over
+    all other dimensions (time, level, etc.).
+
+    Args:
+        ds_target: Target/reference dataset.
+        ds_prediction: Prediction dataset.
+        sigma: Standard deviation for the Gaussian kernel.
+        K1: Algorithm constant (luminance).
+        K2: Algorithm constant (contrast).
+        gaussian_weights: If ``True``, use Gaussian weighting.
+        use_sample_covariance: If ``True``, normalize covariance with N-1.
+
+    Returns:
+        DataFrame indexed by variable with a single ``SSIM`` column.
     """
     variables = list(ds_target.data_vars)
     metrics_dict: dict[str, dict[str, float]] = {}
@@ -156,8 +169,16 @@ def run(
     metrics_cfg: dict[str, Any] | None,
     ensemble_mode: str | None = None,
 ) -> None:
-    """
-    Compute and write SSIM metrics CSVs.
+    """Compute and write SSIM metrics CSVs.
+
+    Args:
+        ds_target: Target/reference dataset.
+        ds_prediction: Prediction dataset.
+        out_root: Root output directory. A ``ssim/`` sub-folder is created.
+        metrics_cfg: Full ``metrics`` config dict (reads ``metrics_cfg["ssim"]``
+            for ``sigma``, ``K1``, ``K2``, ``gaussian_weights``,
+            ``use_sample_covariance``).
+        ensemble_mode: Resolved ensemble handling mode.
     """
     cfg = (metrics_cfg or {}).get("ssim", {})
 
@@ -172,7 +193,7 @@ def run(
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
 
     # Helper to save output
-    def _save_output(df: pd.DataFrame, ens_token: str | None):
+    def _save_output(df: pd.DataFrame, ens_token: str | None) -> None:
         if df.empty:
             return
 
@@ -187,7 +208,7 @@ def run(
         out_path = out_root / "ssim" / filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df_final.to_csv(out_path, index_label="variable")
-        print(f"[ssim] saved {out_path}")
+        c.info(f"[ssim] saved {out_path}")
 
     # Handle ensemble dimension
     if "ensemble" in ds_prediction.dims and mode == "mean":
@@ -218,7 +239,7 @@ def run(
             _save_output(df, ens_token)
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
-        # Stack ensemble into the sample dimension (e.g., "time")
+        # Stack ensemble into the sample dimension
         sample_dim = (
             "init_time"
             if "init_time" in ds_prediction.dims
@@ -246,7 +267,7 @@ def run(
         _save_output(df, ens_token)
 
     else:
-        # Single output (mean, none, or pooled if supported)
+        # Single output (mean or no ensemble)
         df = calculate_ssim(
             ds_target,
             ds_prediction,

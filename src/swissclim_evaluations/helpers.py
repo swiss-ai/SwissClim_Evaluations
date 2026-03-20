@@ -656,6 +656,36 @@ def format_level_label(level: str | int | float | None) -> str:
     return f" (Level {level})"
 
 
+# ── Spatial metric map specifications (MAE / RMSE / Bias) ────────────────────
+# Single source-of-truth used by the deterministic orchestrator (generation)
+# and the intercomparison maps module (comparison).  Keys are title-case to
+# match the deterministic ``include`` config list; the ``key`` field gives the
+# lower-case token used in filenames and NPZ arrays.
+SPATIAL_METRIC_SPECS: dict[str, dict] = {
+    "MAE": {
+        "key": "mae",
+        "fn": lambda pred, tgt: np.abs(pred - tgt),
+        "cmap": "RdBu_r",
+        "vmin_zero": True,
+        "diverging": False,
+    },
+    "RMSE": {
+        "key": "rmse",
+        "fn": lambda pred, tgt: np.sqrt((pred - tgt) ** 2),
+        "cmap": "RdBu_r",
+        "vmin_zero": True,
+        "diverging": False,
+    },
+    "Bias": {
+        "key": "bias",
+        "fn": lambda pred, tgt: pred - tgt,
+        "cmap": "RdBu_r",
+        "vmin_zero": False,
+        "diverging": True,
+    },
+}
+
+
 # Common variable units fallback mapping
 VARIABLE_UNITS = {
     "2m_temperature": "K",
@@ -664,6 +694,12 @@ VARIABLE_UNITS = {
     "10m_v_component_of_wind": "m s**-1",
     "u_component_of_wind": "m s**-1",
     "v_component_of_wind": "m s**-1",
+    # Derived wind variables
+    "wind_speed": "m s**-1",
+    "10m_wind_speed": "m s**-1",
+    # Derived geopotential height and its gradient
+    "geopotential_height": "m",
+    "geopotential_height_gradient": "m m**-1",
     "geopotential": "m**2 s**-2",
     "specific_humidity": "kg kg**-1",
     "mean_sea_level_pressure": "Pa",
@@ -789,9 +825,84 @@ def save_dataframe(
 ) -> None:
     """Save pandas DataFrame to CSV file, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=index, index_label=index_label, **kwargs)
+    df.to_csv(path, index=index, index_label=index_label, na_rep="NaN", **kwargs)
     prefix = f"[{module}] " if module else ""
     c.print(f"{prefix}Saved {path}")
+
+
+def save_metric_by_lead_tables(
+    long_df: pd.DataFrame,
+    section_output: Path,
+    metric: str,
+    init_time_range: tuple[str, str] | None,
+    lead_time_range: tuple[str, str] | None,
+    ensemble: str | int | None,
+    module: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Save long and wide by-lead metric tables with standardized naming.
+
+    Expects long_df with columns:
+    - required: lead_time_hours, variable
+    - optional: level
+    - one or more metric value columns
+    """
+    if long_df.empty:
+        return long_df, pd.DataFrame()
+
+    if "lead_time_hours" not in long_df.columns or "variable" not in long_df.columns:
+        raise ValueError("long_df must contain 'lead_time_hours' and 'variable' columns")
+
+    id_cols = ["lead_time_hours", "variable"]
+    if "level" in long_df.columns:
+        id_cols.append("level")
+
+    cols = id_cols + [col for col in long_df.columns if col not in id_cols]
+    long_df = long_df[cols].copy()
+    long_df = long_df.sort_values(id_cols).reset_index(drop=True)
+
+    out_long = section_output / build_output_filename(
+        metric=metric,
+        variable=None,
+        level=None,
+        qualifier="by_lead_long",
+        init_time_range=init_time_range,
+        lead_time_range=lead_time_range,
+        ensemble=ensemble,
+        ext="csv",
+    )
+    save_dataframe(long_df, out_long, index=False, module=module)
+
+    melted = long_df.melt(id_vars=id_cols, var_name="metric", value_name="value")
+    if "level" in melted.columns:
+        level_token = (
+            pd.to_numeric(melted["level"], errors="coerce")
+            .astype("Int64")
+            .astype(str)
+            .replace("<NA>", "")
+        )
+        level_suffix = np.where(level_token != "", "_" + level_token, "")
+        melted["key"] = (
+            melted["variable"].astype(str) + level_suffix + "_" + melted["metric"].astype(str)
+        )
+    else:
+        melted["key"] = melted["variable"].astype(str) + "_" + melted["metric"].astype(str)
+
+    wide_df = melted.pivot(index="lead_time_hours", columns="key", values="value").reset_index()
+    wide_df.columns.name = None
+
+    out_wide = section_output / build_output_filename(
+        metric=metric,
+        variable=None,
+        level=None,
+        qualifier="by_lead_wide",
+        init_time_range=init_time_range,
+        lead_time_range=lead_time_range,
+        ensemble=ensemble,
+        ext="csv",
+    )
+    save_dataframe(wide_df, out_wide, index=False, module=module)
+
+    return long_df, wide_df
 
 
 def unwrap_longitude_for_plot(da: xr.DataArray, lon_name: str = "longitude") -> xr.DataArray:

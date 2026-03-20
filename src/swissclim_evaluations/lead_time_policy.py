@@ -14,7 +14,7 @@ Core Fields
 subset_hours     : Explicit hours to retain (subset mode).
 stride_hours     : Interval for stride selection (stride mode).
 max_hour         : Inclusive upper bound (applies to all modes except 'first').
-chunk_size       : Reserved for future adaptive chunking optimisations.
+batch_size       : Reserved for future adaptive batching optimisations.
 store_full_fields: Hint allowing modules to persist full per-lead arrays.
 
 Helper Functions
@@ -39,7 +39,7 @@ class LeadTimePolicy:
     subset_hours: list[int] | None = None
     stride_hours: int | None = None
     max_hour: int | None = None  # hard cap (inclusive) on lead hours retained
-    chunk_size: int = 8
+    batch_size: int = 8
     panel_selection: str = "first"  # first | evenly_spaced | specific
     panel_specific_hours: list[int] | None = None
     max_panels: int = 4
@@ -47,7 +47,17 @@ class LeadTimePolicy:
 
     def as_dict(self) -> dict[str, Any]:  # for serialization
         d = asdict(self)
+        d["chunk_size"] = d["batch_size"]
         return d
+
+    @property
+    def chunk_size(self) -> int:
+        """Backward-compatible alias for `batch_size`."""
+        return int(self.batch_size)
+
+    @chunk_size.setter
+    def chunk_size(self, value: int) -> None:
+        self.batch_size = int(value)
 
     def select_panel_hours(self, available_hours: list[int]) -> list[int]:
         # Deprecated; now always returns full list (panel concept removed).
@@ -64,6 +74,15 @@ def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
     if cfg is None:
         return LeadTimePolicy(mode="first")
     mode = str(cfg.get("mode", "first")).lower()
+    valid_modes = {"first", "full", "subset", "stride", "bins"}
+    if mode not in valid_modes:
+        from . import console as _c
+
+        _c.warn(
+            f"lead_time.mode='{mode}' is not recognised "
+            f"(valid: {sorted(valid_modes - {'bins'})}). Falling back to 'first'."
+        )
+        mode = "first"
     # Accept both flat 'subset_hours' and nested 'subset: { hours: [...] }'
     subset_val = cfg.get("subset")
     if isinstance(subset_val, dict):
@@ -96,7 +115,7 @@ def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
     )
     # prefer 'max_panels' flat, else nested 'count'
     max_panels = int(cfg.get("max_panels", panel_cfg.get("count", 4)))
-    chunk_size = int(cfg.get("chunk_size", 8))
+    batch_size = int(cfg.get("batch_size", cfg.get("chunk_size", 8)))
     store_full_fields = bool(cfg.get("store_full_fields", False))
 
     policy = LeadTimePolicy(
@@ -104,7 +123,7 @@ def parse_lead_time_policy(cfg: dict[str, Any] | None) -> LeadTimePolicy:
         subset_hours=subset_hours,
         stride_hours=stride_hours,
         max_hour=max_hour,
-        chunk_size=chunk_size,
+        batch_size=batch_size,
         panel_selection=panel_selection,
         panel_specific_hours=panel_specific_hours,
         max_panels=max_panels,

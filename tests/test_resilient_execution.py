@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import swissclim_evaluations.cli as cli
-
 from ._smoke_data import make_synthetic_datasets
 
 
@@ -35,7 +33,9 @@ def test_module_failure_is_captured(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.setattr(data_mod, "open_prediction", lambda *a, **k: p)
 
     # Run
-    cli.run_selected(cfg)
+    from swissclim_evaluations.core import runner
+
+    runner.run_selected(cfg)
 
     out = capsys.readouterr().out
     # Expect error line and ets success line

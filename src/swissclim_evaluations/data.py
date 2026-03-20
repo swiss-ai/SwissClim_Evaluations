@@ -1,8 +1,7 @@
 import contextlib
 import logging
-import warnings
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import xarray as xr
@@ -465,7 +464,6 @@ def land_sea_mask(path: str) -> xr.DataArray:
 def apply_ensemble_policy(
     ds: xr.Dataset,
     ensemble_members: int | list[int] | None = None,
-    **legacy_kwargs,
 ) -> xr.Dataset:
     """Apply ensemble selection/aggregation policy.
 
@@ -474,28 +472,6 @@ def apply_ensemble_policy(
           * int: select that single member (keeping 'ensemble' dimension).
           * list[int]: subset to those members (keeping 'ensemble' dimension).
     """
-    # Backward compatibility: allow legacy 'ensemble_member' kw
-    if "ensemble_member" in legacy_kwargs and ensemble_members is None:
-        ensemble_members = legacy_kwargs.pop("ensemble_member")
-        warnings.warn(
-            "Config key 'ensemble_member' is deprecated; use 'ensemble_members' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    # Also consume 'probabilistic_enabled' if passed as legacy kwarg to avoid warning
-    if "probabilistic_enabled" in legacy_kwargs:
-        legacy_kwargs.pop("probabilistic_enabled")
-    # Also consume 'preserve_ensemble_dimension' if passed as legacy kwarg to avoid warning
-    if "preserve_ensemble_dimension" in legacy_kwargs:
-        legacy_kwargs.pop("preserve_ensemble_dimension")
-
-    if legacy_kwargs:
-        warnings.warn(
-            f"Unused legacy kwargs passed to apply_ensemble_policy: {list(legacy_kwargs)}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
     if "ensemble" not in ds.dims:
         return ds
 
@@ -514,3 +490,215 @@ def apply_ensemble_policy(
 
     # No explicit selection: do NOT pre-reduce. Keep ensemble for modules to decide.
     return ds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Derived-variable machinery
+# ─────────────────────────────────────────────────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+def _wind_speed(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Lazy wind speed magnitude: sqrt(U² + V²).  Units: m s⁻¹."""
+    da = np.sqrt(ds[u_var] ** 2 + ds[v_var] ** 2)
+    da.attrs["units"] = "m s**-1"
+    da.attrs["long_name"] = "Wind Speed"
+    return da
+
+
+def _geopotential_height(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Lazy geopotential height: Z = geopotential / g₀.  Units: m.
+
+    Only the *source* variable (``u_var``) is used; ``v_var`` is a no-op and
+    should be left as an empty string in the config.
+    """
+    g0 = 9.80665  # standard gravity, m s⁻²
+    da = ds[u_var] / g0
+    da.attrs["units"] = "m"
+    da.attrs["long_name"] = "Geopotential Height"
+    return da
+
+
+def _geopotential_height_gradient(ds: xr.Dataset, u_var: str, v_var: str) -> xr.DataArray:
+    """Horizontal gradient magnitude of geopotential height |∇Z|.  Units: m m⁻¹.
+
+    Computes |∇Z| = sqrt((∂Z/∂y)² + (∂Z/∂x)²) using centred finite differences
+    along the ``latitude`` and ``longitude`` coordinates.  The partial derivatives
+    are converted from degrees⁻¹ to m⁻¹ using the WGS-84 mean Earth radius.
+
+    Only the *source* variable (``u_var``) is used; the variable must already be
+    in **metres** (geopotential height, not raw geopotential).  Use the
+    ``geopotential_height`` recipe first if you have raw geopotential.
+    """
+    R_earth = 6_371_000.0  # WGS-84 mean radius, m
+    deg2rad = np.pi / 180.0
+
+    Z = ds[u_var]
+
+    lat = Z["latitude"]  # degrees
+    cos_lat = np.cos(lat * deg2rad)  # broadcast-ready DataArray
+
+    # ∂Z/∂lat  [m / degree] → [m / m] via R_earth [m / rad] and deg2rad
+    dZ_dlat = Z.differentiate("latitude") / (R_earth * deg2rad)  # m m⁻¹
+
+    # ∂Z/∂lon  [m / degree] → [m / m]; longitude arc-length shrinks with cos(lat)
+    dZ_dlon = Z.differentiate("longitude") / (R_earth * deg2rad * cos_lat)  # m m⁻¹
+
+    grad = np.sqrt(dZ_dlat**2 + dZ_dlon**2)
+    grad.attrs["units"] = "m m**-1"
+    grad.attrs["long_name"] = "Geopotential Height Gradient Magnitude"
+    return grad
+
+
+# Maps recipe name → callable(ds, u_var, v_var) → xr.DataArray
+# Available recipes that a user may reference via ``kind:`` in config:
+#   wind_speed                  — sqrt(U² + V²), m s⁻¹, suitable for all modules
+#   geopotential_height         — geopotential / 9.80665, m (single-input: only 'u' required)
+#   geopotential_height_gradient — |∇Z|, m m⁻¹ (single-input: supply geopotential_height variable)
+_DERIVED_RECIPES: dict[str, Any] = {
+    "wind_speed": _wind_speed,
+    "geopotential_height": _geopotential_height,
+    "geopotential_height_gradient": _geopotential_height_gradient,
+}
+
+# Recipes that require only a single source variable.
+# For these kinds the config block only needs the ``u`` (or ``source``) key;
+# the ``v`` key is optional and ignored.
+_SINGLE_INPUT_KINDS: frozenset[str] = frozenset(
+    {"geopotential_height", "geopotential_height_gradient"}
+)
+
+
+def _parse_derived_cfg(
+    derived_cfg: dict[str, Any],
+) -> list[tuple[str, str, str, str]]:
+    """Parse the ``derived_variables`` config block.
+
+    Returns a list of ``(output_name, kind, u_var, v_var)`` tuples.
+
+    Each sub-key becomes the output variable name::
+
+        10m_wind_speed:
+          kind: wind_speed                    # see _DERIVED_RECIPES for available kinds
+          u: 10m_u_component_of_wind
+          v: 10m_v_component_of_wind
+
+        For single-input recipes (e.g. ``geopotential_height``) only ``u``
+        (or the synonym ``source``) is required; ``v`` is unused::
+
+        geopotential_height:
+          kind: geopotential_height
+          u: geopotential
+    """
+    entries: list[tuple[str, str, str, str]] = []
+
+    for key, block in derived_cfg.items():
+        if not isinstance(block, dict):
+            c.warn(f"derived_variables.{key}: expected a mapping, skipping.")
+            continue
+
+        if "kind" not in block:
+            c.warn(
+                f"derived_variables.{key}: missing required 'kind' key. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}. Skipping."
+            )
+            continue
+
+        kind = str(block["kind"])
+        if kind not in _DERIVED_RECIPES:
+            c.warn(
+                f"derived_variables.{key}: unknown kind '{kind}'. "
+                f"Available kinds: {sorted(_DERIVED_RECIPES)}."
+            )
+            continue
+
+        # Accept 'source' as an alias for 'u' (clearer for single-input recipes).
+        u_var = str(block.get("source") or block.get("u") or block.get("u_var") or "")
+        v_var = str(block.get("v") or block.get("v_var") or "")
+
+        if not u_var:
+            c.warn(f"derived_variables.{key}: requires 'u' (or 'source') key. Skipping.")
+            continue
+
+        if kind not in _SINGLE_INPUT_KINDS and not v_var:
+            c.warn(f"derived_variables.{key}: kind '{kind}' requires 'v' key. Skipping.")
+            continue
+
+        entries.append((key, kind, u_var, v_var))
+
+    return entries
+
+
+def add_derived_variables(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    derived_cfg: dict[str, Any],
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Compute derived variables and append them to both datasets.
+
+    Currently supported recipes (see ``_DERIVED_RECIPES``):
+
+    * ``wind_speed`` — ``sqrt(U² + V²)`` (m s⁻¹)
+    * ``geopotential_height`` — ``geopotential / 9.80665`` (m); single-input, only ``u`` required
+    * ``geopotential_height_gradient`` — ``|∇Z|`` (m m⁻¹); single-input, supply geopotential height
+    variable
+
+    **Inner-join guard**: a derived variable is only added when *both* source
+    components are present in *both* the target and prediction datasets.  If a
+    component is missing from either dataset the variable is skipped with a
+    warning.
+
+    All computations are **lazy** — no Dask graphs are evaluated here.
+
+    .. note::
+        Not all evaluation metrics are physically or statistically meaningful
+        for every variable — derived or otherwise.  The user is responsible for
+        choosing sensible module combinations.  See the README for guidance.
+
+    Parameters
+    ----------
+    ds_target, ds_prediction : xr.Dataset
+        Datasets returned by :func:`data_selection.prepare_datasets`.
+    derived_cfg : dict
+        The ``derived_variables`` config block.
+
+    Returns
+    -------
+    tuple[xr.Dataset, xr.Dataset]
+        Updated ``(ds_target, ds_prediction)`` with derived variables appended.
+    """
+    if not derived_cfg:
+        return ds_target, ds_prediction
+
+    entries = _parse_derived_cfg(derived_cfg)
+    added: list[str] = []
+    skipped: list[str] = []
+
+    for out_name, kind, u_var, v_var in entries:
+        # Inner-join guard: single-input recipes only need u_var
+        src_vars = {u_var} if kind in _SINGLE_INPUT_KINDS else {u_var, v_var}
+        missing_target = src_vars - set(ds_target.data_vars)
+        missing_pred = src_vars - set(ds_prediction.data_vars)
+        if missing_target or missing_pred:
+            parts: list[str] = []
+            if missing_target:
+                parts.append(f"target missing {sorted(missing_target)}")
+            if missing_pred:
+                parts.append(f"prediction missing {sorted(missing_pred)}")
+            c.warn(f"Skipping derived '{out_name}' ({kind}): {'; '.join(parts)}.")
+            skipped.append(out_name)
+            continue
+
+        recipe = _DERIVED_RECIPES[kind]
+        ds_target = ds_target.assign({out_name: recipe(ds_target, u_var, v_var)})
+        ds_prediction = ds_prediction.assign({out_name: recipe(ds_prediction, u_var, v_var)})
+        added.append(out_name)
+        logger.info("Derived variable '%s' (%s) added to both datasets.", out_name, kind)
+
+    if added:
+        c.info(f"Derived variables added to both datasets: {added}")
+    if skipped:
+        c.warn(f"Derived variables skipped (missing source components): {skipped}")
+
+    return ds_target, ds_prediction

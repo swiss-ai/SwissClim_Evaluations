@@ -6,7 +6,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 from swissclim_evaluations.helpers import (
     extract_date_from_filename,
@@ -17,6 +16,7 @@ from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
     load_npz,
+    model_color_map,
     print_file_list,
     report_checklist,
     report_missing,
@@ -55,6 +55,24 @@ def _find_vertical_profile_global_files(models: list[Path]) -> list[str]:
     vp_dir = Path("vertical_profiles")
     patterns = [
         "vertical_profiles_nmae_*_global_profile*.npz",
+    ]
+    sets: list[set[str]] = []
+    for m in models:
+        model_files: set[str] = set()
+        for pat in patterns:
+            model_files.update({f.name for f in (m / vp_dir).glob(pat) if f.is_file()})
+        sets.append(model_files)
+    if not sets:
+        return []
+    common = set.intersection(*sets) if len(sets) > 1 else sets[0]
+    return sorted(common)
+
+
+def _find_vertical_profile_all_leads_files(models: list[Path]) -> list[str]:
+    """Return common vertical profile all-leads NPZ basenames (per-lead data)."""
+    vp_dir = Path("vertical_profiles")
+    patterns = [
+        "vertical_profiles_nmae_*_all_leads*.npz",
     ]
     sets: list[set[str]] = []
     for m in models:
@@ -113,7 +131,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         return
     print_file_list(f"Found {len(basenames)} common vertical profile files", basenames)
     dst = ensure_dir(out_root / "vertical_profiles")
-    color_palette = sns.color_palette("tab10", n_colors=len(models))
+    color_palette = list(model_color_map(labels).values())
     for base in basenames:
         payloads = []
         for m in models:
@@ -150,8 +168,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             # South (Row 0)
             axsou = axs[0, j]
             for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get(key_neg))
-                if arr is None or arr.shape[0] <= j:
+                raw = pay.get(key_neg)
+                if raw is None:
+                    continue
+                arr = np.asarray(raw)
+                if arr.ndim == 0 or arr.shape[0] <= j:
                     continue
                 axsou.plot(arr[j], level_values, label=lab, color=color_palette[idx])
             if neg_lat_min is not None and neg_lat_max is not None:
@@ -165,8 +186,11 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             # North (Row 1)
             axn = axs[1, j]
             for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get(key_pos))
-                if arr is None or arr.shape[0] <= j:
+                raw = pay.get(key_pos)
+                if raw is None:
+                    continue
+                arr = np.asarray(raw)
+                if arr.ndim == 0 or arr.shape[0] <= j:
                     continue
                 axn.plot(arr[j], level_values, label=lab, color=color_palette[idx])
             if pos_lat_min is not None and pos_lat_max is not None:
@@ -220,9 +244,13 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         plt.close(fig)
         rows = []
         for lab, pay in zip(labels, payloads, strict=False):
-            neg_arr = np.asarray(pay.get(key_neg))
-            pos_arr = np.asarray(pay.get(key_pos))
-            if neg_arr is None or pos_arr is None:
+            raw_neg = pay.get(key_neg)
+            raw_pos = pay.get(key_pos)
+            if raw_neg is None or raw_pos is None:
+                continue
+            neg_arr = np.asarray(raw_neg)
+            pos_arr = np.asarray(raw_pos)
+            if neg_arr.ndim == 0 or pos_arr.ndim == 0:
                 continue
             for j in range(bands):
                 with np.errstate(all="ignore"):
@@ -278,18 +306,80 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
 
             level_values = payloads[0]["level"]
 
-            fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
-            for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
-                arr = np.asarray(pay.get("nmae"))
-                if arr is None:
-                    continue
-                ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
+            # Detect multi-lead: nmae may be 2D (n_leads × n_levels)
+            sample_nmae = np.asarray(payloads[0]["nmae"])
+            is_multi_lead = sample_nmae.ndim == 2
+            lead_hours_arr = payloads[0].get("lead_hours")
 
-            ax.set_xlabel("NMAE [%]")
-            ax.set_ylabel("Level")
-            ax.invert_yaxis()
-            ax.grid(True, linestyle=":", alpha=0.6)
-            ax.legend()
+            if is_multi_lead:
+                _n_levels = len(np.asarray(level_values))
+                if sample_nmae.shape[0] == _n_levels and sample_nmae.shape[1] != _n_levels:
+                    sample_nmae = sample_nmae.T
+                n_leads = sample_nmae.shape[0]
+                # Derive lead labels
+                if lead_hours_arr is not None and len(np.asarray(lead_hours_arr)) == n_leads:
+                    lead_labels = [f"+{int(h)}h" for h in np.asarray(lead_hours_arr)]
+                else:
+                    lead_labels = [f"lead {i}" for i in range(n_leads)]
+
+                fig, axes = plt.subplots(
+                    1,
+                    n_leads,
+                    figsize=(max(6, 4 * n_leads), 10),
+                    dpi=160,
+                    sharey=True,
+                )
+                if n_leads == 1:
+                    axes = [axes]
+
+                for li, (ax_l, lead_lbl) in enumerate(zip(axes, lead_labels, strict=False)):
+                    for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                        raw_nmae = pay.get("nmae")
+                        if raw_nmae is None:
+                            continue
+                        arr = np.asarray(raw_nmae)
+                        # Normalise per-payload: saved as (n_levels, n_leads).
+                        if (
+                            arr.ndim == 2
+                            and arr.shape[0] == _n_levels
+                            and arr.shape[1] != _n_levels
+                        ):
+                            arr = arr.T
+                        if arr.ndim < 2 or arr.shape[0] <= li:
+                            continue
+                        ax_l.plot(
+                            arr[li], level_values, label=lab, color=color_palette[idx], linewidth=2
+                        )
+                    ax_l.set_xlabel("NMAE [%]")
+                    ax_l.set_title(lead_lbl)
+                    ax_l.grid(True, linestyle=":", alpha=0.6)
+                    if li == 0:
+                        ax_l.set_ylabel("Level")
+                        ax_l.invert_yaxis()
+
+                handles, labels_leg = axes[0].get_legend_handles_labels()
+                if handles:
+                    fig.legend(
+                        handles,
+                        labels_leg,
+                        loc="lower center",
+                        ncol=min(6, len(models)),
+                        bbox_to_anchor=(0.5, -0.02),
+                    )
+            else:
+                fig, ax = plt.subplots(figsize=(8, 10), dpi=160)
+                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    raw_nmae = pay.get("nmae")
+                    if raw_nmae is None:
+                        continue
+                    arr = np.asarray(raw_nmae)
+                    ax.plot(arr, level_values, label=lab, color=color_palette[idx], linewidth=2)
+
+                ax.set_xlabel("NMAE [%]")
+                ax.set_ylabel("Level")
+                ax.invert_yaxis()
+                ax.grid(True, linestyle=":", alpha=0.6)
+                ax.legend()
 
             # Variable name extraction
             var = base[:-4]
@@ -298,8 +388,121 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
                     var = var.split("vertical_profiles_nmae_")[1].split("_multi_global_profile")[0]
 
             date_suffix = extract_date_from_filename(base)
-            ax.set_title(
-                f"Global Vertical Profile — {format_variable_name(var)}{date_suffix}", fontsize=14
+            fig.suptitle(
+                f"Global Vertical Profile — {format_variable_name(var)}{date_suffix}",
+                fontsize=14,
+                y=1.02,
+            )
+
+            out_png = dst / base.replace(".npz", "_compare.png")
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+            plt.close(fig)
+
+    # Per-Lead Vertical Profiles (all_leads NPZ files)
+    all_leads_basenames = _find_vertical_profile_all_leads_files(models)
+    if all_leads_basenames:
+        print_file_list(
+            f"Found {len(all_leads_basenames)} common per-lead vertical profile files",
+            all_leads_basenames,
+        )
+        for base in all_leads_basenames:
+            payloads = []
+            for m in models:
+                try:
+                    payloads.append(load_npz(m / "vertical_profiles" / base))
+                except Exception:
+                    payloads.append({})
+
+            valid_models = [
+                p for p in payloads if p.get("nmae") is not None and p.get("level") is not None
+            ]
+            if len(valid_models) < 2:
+                continue
+
+            level_values = payloads[0]["level"]
+            sample_nmae = np.asarray(payloads[0]["nmae"])
+            if sample_nmae.ndim < 2:
+                continue  # Not multi-lead; the global_profile section already covers 1-D
+
+            _n_levels = len(np.asarray(level_values))
+            if sample_nmae.shape[0] == _n_levels and sample_nmae.shape[1] != _n_levels:
+                sample_nmae = sample_nmae.T
+
+            n_leads = sample_nmae.shape[0]
+
+            # Derive lead labels from lead_time (timedelta64) stored in NPZ
+            lead_time_raw = payloads[0].get("lead_time")
+            if lead_time_raw is not None:
+                lt_arr = np.asarray(lead_time_raw)
+                if np.issubdtype(lt_arr.dtype, np.timedelta64):
+                    lead_labels = [f"+{int(v / np.timedelta64(1, 'h'))}h" for v in lt_arr]
+                else:
+                    lead_labels = [f"+{int(v)}h" for v in lt_arr]
+            else:
+                # Fallback: try lead_hours key
+                lead_hours_arr = payloads[0].get("lead_hours")
+                if lead_hours_arr is not None and len(np.asarray(lead_hours_arr)) == n_leads:
+                    lead_labels = [f"+{int(h)}h" for h in np.asarray(lead_hours_arr)]
+                else:
+                    lead_labels = [f"lead {i}" for i in range(n_leads)]
+
+            fig, axes = plt.subplots(
+                1,
+                n_leads,
+                figsize=(max(6, 4 * n_leads), 10),
+                dpi=160,
+                sharey=True,
+            )
+            if n_leads == 1:
+                axes = [axes]
+
+            for li, (ax_l, lead_lbl) in enumerate(zip(axes, lead_labels, strict=False)):
+                for idx, (lab, pay) in enumerate(zip(labels, payloads, strict=False)):
+                    raw_nmae = pay.get("nmae")
+                    if raw_nmae is None:
+                        continue
+                    arr = np.asarray(raw_nmae)
+                    # Normalise per-payload: saved as (n_levels, n_leads).
+                    if arr.ndim == 2 and arr.shape[0] == _n_levels and arr.shape[1] != _n_levels:
+                        arr = arr.T
+                    if arr.ndim < 2 or arr.shape[0] <= li:
+                        continue
+                    ax_l.plot(
+                        arr[li],
+                        level_values,
+                        label=lab,
+                        color=color_palette[idx],
+                        linewidth=2,
+                    )
+                ax_l.set_xlabel("NMAE [%]")
+                ax_l.set_title(lead_lbl)
+                ax_l.grid(True, linestyle=":", alpha=0.6)
+                if li == 0:
+                    ax_l.set_ylabel("Level")
+                    ax_l.invert_yaxis()
+
+            handles, labels_leg = axes[0].get_legend_handles_labels()
+            if handles:
+                fig.legend(
+                    handles,
+                    labels_leg,
+                    loc="lower center",
+                    ncol=min(6, len(models)),
+                    bbox_to_anchor=(0.5, -0.02),
+                )
+
+            # Variable name extraction
+            var = base[:-4]
+            if "vertical_profiles_nmae_" in var:
+                with contextlib.suppress(IndexError):
+                    var = var.split("vertical_profiles_nmae_")[1].split("_multi_all_leads")[0]
+
+            date_suffix = extract_date_from_filename(base)
+            fig.suptitle(
+                f"Vertical Profile per Lead Time — {format_variable_name(var)}{date_suffix}",
+                fontsize=14,
+                y=1.02,
             )
 
             out_png = dst / base.replace(".npz", "_compare.png")

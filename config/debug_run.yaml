@@ -51,6 +51,8 @@ modules:
   ssim: true
   ets: true
   probabilistic: false
+  multivariate: false
+  ssim: false
 
 metrics:
   deterministic:

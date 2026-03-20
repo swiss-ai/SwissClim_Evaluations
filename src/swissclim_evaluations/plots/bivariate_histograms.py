@@ -7,7 +7,6 @@ import dask.array as da
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
 import xarray as xr
 from matplotlib.colors import LogNorm
@@ -17,15 +16,6 @@ from matplotlib.lines import Line2D
 from .. import console as c
 from ..dask_utils import compute_jobs
 from ..helpers import format_variable_name, get_variable_units
-
-
-def _get_label(da: xr.DataArray, var_name: str) -> str:
-    """Get a formatted label with unit for a variable from DataArray attributes."""
-    name = format_variable_name(var_name)
-    unit = get_variable_units(da, var_name)
-    if unit:
-        return f"{name} [{unit}]"
-    return name
 
 
 def _is_geopotential_height(name: str) -> bool:
@@ -54,6 +44,15 @@ def _format_level_suffix(level_hpa: float | None) -> str:
     if float(level_hpa).is_integer():
         return f"_level{int(level_hpa)}"
     return f"_level{level_hpa:g}"
+
+
+def _get_label(da: xr.DataArray, var_name: str) -> str:
+    """Get a formatted label with unit for a variable from DataArray attributes."""
+    name = format_variable_name(var_name)
+    unit = get_variable_units(da, var_name)
+    if unit:
+        return f"{name} [{unit}]"
+    return name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,7 +139,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Saturation $q_\mathrm{sat}(T)$",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -176,7 +175,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Saturation $q_\mathrm{sat}(T)$",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -205,7 +204,7 @@ def _get_physical_constraints(
     # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
     if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
         g = 9.81
-        f_abs = 1.13e-4  # mid-latitude Coriolis parameter for Europe (~50°N), s⁻¹
+        f_abs = 1.0e-4  # mid-latitude Coriolis parameter, s⁻¹
         slope = g / f_abs  # ≈ 98 100  (m s⁻¹) / (m m⁻¹)
 
         if is_zgrad_x and is_ws_y:
@@ -220,7 +219,8 @@ def _get_physical_constraints(
                     "color": "#ff7f0e",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Geostrophic wind $U_g$",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
                 }
             )
         elif is_zgrad_y and is_ws_x:
@@ -235,7 +235,8 @@ def _get_physical_constraints(
                     "color": "#ff7f0e",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Geostrophic wind $U_g$",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
                 }
             )
 
@@ -566,29 +567,6 @@ def _plot_bivariate_per_lead_grid(
         desc=f"Computing bivariate histograms by lead: {var_x} vs {var_y}",
     )
 
-    # ── Global norm across all lead times ────────────────────────────────────
-    dx = np.diff(xedges).mean()
-    dy = np.diff(yedges).mean()
-    bin_area = dx * dy
-    all_valid: list[np.ndarray] = []
-    for job in hist_jobs:
-        for key in ("hist_pred", "hist_target"):
-            h = job.get(key)
-            if h is not None:
-                total = h.sum()
-                if total > 0:
-                    dens = h / (total * bin_area)
-                    valid = dens[dens > 0]
-                    if len(valid):
-                        all_valid.append(valid)
-    if all_valid:
-        all_vals = np.concatenate(all_valid)
-        global_vmin = max(all_vals.min(), 1e-10)
-        global_vmax = all_vals.max()
-        global_norm: LogNorm | None = LogNorm(vmin=global_vmin, vmax=global_vmax)
-    else:
-        global_norm = None
-
     # ── Grid layout ───────────────────────────────────────────────────────────
     cols = min(3, n_leads)
     rows = int(np.ceil(n_leads / cols))
@@ -598,16 +576,13 @@ def _plot_bivariate_per_lead_grid(
         figsize=(6 * cols, 5 * rows),
         dpi=150,
         constrained_layout=True,
-        sharex=True,
-        sharey=True,
     )
     axs_flat = np.atleast_1d(np.array(axs)).flatten()
 
-    xlabel_str = _get_label(ds_prediction[var_x], var_x)
-    ylabel_str = _get_label(ds_prediction[var_y], var_y)
-
+    last_i = 0
     for i, job in enumerate(hist_jobs):
         lt = job["lt"]
+        # Format lead-time label (timedelta64 → '+Nh', otherwise string)
         if np.issubdtype(type(lt), np.timedelta64):
             hours = int(lt / np.timedelta64(1, "h"))
             lead_label = f"+{hours}h"
@@ -619,10 +594,13 @@ def _plot_bivariate_per_lead_grid(
         hist_target = job.get("hist_target")
 
         if hist_pred is None:
-            ax.set_title(lead_label, fontsize=10)
+            ax.set_title(f"Lead: {lead_label} (no data)")
             ax.axis("off")
+            last_i = i
             continue
 
+        # When target is unavailable, pass a zero array so plot_bivariate_histogram
+        # can still render the prediction contours without crashing.
         if hist_target is None:
             hist_target = np.zeros_like(hist_pred)
 
@@ -641,50 +619,20 @@ def _plot_bivariate_per_lead_grid(
                 var_y=var_y,
                 level_hpa=level_hpa,
                 ax=ax,
-                xlabel=xlabel_str,
-                ylabel=ylabel_str,
-                norm=global_norm,
-                show_colorbar=False,
-                full_legend=(i == 0),
+                xlabel=_get_label(ds_prediction[var_x], var_x),
+                ylabel=_get_label(ds_prediction[var_y], var_y),
             )
-        ax.set_title(lead_label, fontsize=10)
-
-    # ── Hide surplus subplots ─────────────────────────────────────────────────
-    for j in range(n_leads, len(axs_flat)):
-        axs_flat[j].axis("off")
-
-    # ── Shared axis labels — only edges show labels and ticks ─────────────────
-    for i in range(n_leads):
-        _ax = axs_flat[i]
-        col = i % cols
-        if col != 0:
-            _ax.set_ylabel("")
-            _ax.tick_params(labelleft=False)
-        # Effective bottom: no active subplot one full row below this one
-        if i + cols < n_leads:
-            _ax.set_xlabel("")
-            _ax.tick_params(labelbottom=False)
-
-    # ── Shared colorbar at the bottom ─────────────────────────────────────────
-    if global_norm is not None:
-        sm = plt.cm.ScalarMappable(cmap="plasma", norm=global_norm)
-        sm.set_array([])
-        n_levels = 5
-        cbar_levels = np.logspace(
-            np.log10(global_norm.vmin), np.log10(global_norm.vmax), n_levels + 2
-        )[1:-1]
-        cbar = fig.colorbar(
-            sm,
-            ax=list(axs_flat[:n_leads]),
-            orientation="horizontal",
-            location="bottom",
-            pad=0.04,
-            fraction=0.04,
-            shrink=1.0,
-            ticks=cbar_levels,
+        # Replace the per-subplot title set inside plot_bivariate_histogram with
+        # one that also carries the lead-time label.
+        ax.set_title(
+            f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}\n{lead_label}",
+            fontsize=10,
         )
-        cbar.ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.1e"))
-        cbar.set_label("Density (log scale)")
+        last_i = i
+
+    # ── Hide any surplus subplots beyond n_leads ──────────────────────────────
+    for j in range(last_i + 1, len(axs_flat)):
+        axs_flat[j].axis("off")
 
     lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
@@ -712,16 +660,25 @@ def calculate_and_plot_bivariate_histograms(
     bins: int = 100,
     ensemble_token: str | None = None,
 ) -> None:
-    """
-    Calculate and save bivariate histograms for specified pairs.
+    """Calculate and save bivariate histograms for specified pairs.
+
     Also generates the plot immediately if target is available.
+
+    Args:
+        ds_prediction: Prediction dataset.
+        ds_target: Target/reference dataset. If None, pairs are skipped.
+        pairs: List of [var_x, var_y] pairs to plot.
+        out_root: Root output directory. A ``multivariate/`` sub-folder is
+            created automatically.
+        bins: Number of histogram bins along each axis.
+        ensemble_token: Optional token appended to output filenames
+            (e.g. ``ensmean``, ``ens0``).
     """
     plotted_pairs = []
     skipped_pairs = []
 
     # 1. First pass: Collect lazy min/max computations for all pairs
     range_jobs = []
-    valid_pairs_indices = []
 
     for i, pair in enumerate(pairs):
         if len(pair) != 2:
@@ -742,28 +699,69 @@ def calculate_and_plot_bivariate_histograms(
             skipped_pairs.append(f"{var_x} vs {var_y} (missing in target)")
             continue
 
-        # Compute for Prediction
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        pred_x = ds_prediction[var_x]
+        pred_y = ds_prediction[var_y]
+        targ_x = ds_target[var_x]
+        targ_y = ds_target[var_y]
 
-        # Compute min/max lazily to determine range and handle NaNs
-        min_x_lazy = da.nanmin(da_x)
-        max_x_lazy = da.nanmax(da_x)
-        min_y_lazy = da.nanmin(da_y)
-        max_y_lazy = da.nanmax(da_y)
+        x_has_level = "level" in pred_x.dims
+        y_has_level = "level" in pred_y.dims
 
-        range_jobs.append(
-            {
-                "min_x": min_x_lazy,
-                "max_x": max_x_lazy,
-                "min_y": min_y_lazy,
-                "max_y": max_y_lazy,
-                "pair_idx": i,
-                "var_x": var_x,
-                "var_y": var_y,
-            }
-        )
-        valid_pairs_indices.append(i)
+        levels_to_process: list[float | None]
+        if x_has_level or y_has_level:
+            level_values: np.ndarray | None = None
+
+            def _merge_levels(level_arr: np.ndarray) -> None:
+                nonlocal level_values
+                if level_values is None:
+                    level_values = np.asarray(level_arr)
+                else:
+                    level_values = np.intersect1d(level_values, np.asarray(level_arr))
+
+            if x_has_level:
+                _merge_levels(pred_x["level"].values)
+            if "level" in targ_x.dims:
+                _merge_levels(targ_x["level"].values)
+            if y_has_level:
+                _merge_levels(pred_y["level"].values)
+            if "level" in targ_y.dims:
+                _merge_levels(targ_y["level"].values)
+
+            if level_values is None or len(level_values) == 0:
+                skipped_pairs.append(f"{var_x} vs {var_y} (no common levels)")
+                continue
+
+            levels_to_process = [float(v) for v in np.asarray(level_values, dtype=float)]
+        else:
+            levels_to_process = [None]
+
+        for level_hpa in levels_to_process:
+            pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
+            pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
+
+            da_x = pred_x_sel.data.flatten()
+            da_y = pred_y_sel.data.flatten()
+
+            # Compute min/max lazily to determine range and handle NaNs
+            min_x_lazy = da.nanmin(da_x)
+            max_x_lazy = da.nanmax(da_x)
+            min_y_lazy = da.nanmin(da_y)
+            max_y_lazy = da.nanmax(da_y)
+
+            range_jobs.append(
+                {
+                    "min_x": min_x_lazy,
+                    "max_x": max_x_lazy,
+                    "min_y": min_y_lazy,
+                    "max_y": max_y_lazy,
+                    "pair_idx": i,
+                    "var_x": var_x,
+                    "var_y": var_y,
+                    "level_hpa": level_hpa,
+                    "x_has_level": x_has_level,
+                    "y_has_level": y_has_level,
+                }
+            )
 
     if not range_jobs:
         if skipped_pairs:
@@ -789,6 +787,9 @@ def calculate_and_plot_bivariate_histograms(
     for job in range_jobs:
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_hpa = job["level_hpa"]
+        x_has_level = bool(job.get("x_has_level", False))
+        y_has_level = bool(job.get("y_has_level", False))
 
         try:
             min_x = float(job["min_x_res"])
@@ -811,8 +812,10 @@ def calculate_and_plot_bivariate_histograms(
         fill_y = min_y - 1.0
 
         # Re-access data (dask arrays)
-        da_x = ds_prediction[var_x].data.flatten()
-        da_y = ds_prediction[var_y].data.flatten()
+        pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]
+        pred_y = ds_prediction[var_y].sel(level=level_hpa) if y_has_level else ds_prediction[var_y]
+        da_x = pred_x.data.flatten()
+        da_y = pred_y.data.flatten()
 
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
@@ -827,8 +830,18 @@ def calculate_and_plot_bivariate_histograms(
 
         # Target data
         if ds_target is not None:
-            da_x_t = ds_target[var_x].data.flatten()
-            da_y_t = ds_target[var_y].data.flatten()
+            targ_x = (
+                ds_target[var_x].sel(level=level_hpa)
+                if "level" in ds_target[var_x].dims and level_hpa is not None
+                else ds_target[var_x]
+            )
+            targ_y = (
+                ds_target[var_y].sel(level=level_hpa)
+                if "level" in ds_target[var_y].dims and level_hpa is not None
+                else ds_target[var_y]
+            )
+            da_x_t = targ_x.data.flatten()
+            da_y_t = targ_y.data.flatten()
 
             da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
             da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
@@ -848,6 +861,7 @@ def calculate_and_plot_bivariate_histograms(
                 "yedges": yedges,
                 "var_x": var_x,
                 "var_y": var_y,
+                "level_hpa": level_hpa,
                 "range_x": range_x,
                 "range_y": range_y,
             }
@@ -874,10 +888,14 @@ def calculate_and_plot_bivariate_histograms(
         yedges = job["yedges"]
         var_x = job["var_x"]
         var_y = job["var_y"]
+        level_hpa = job.get("level_hpa")
+        level_suffix = _format_level_suffix(level_hpa)
 
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
-        out_file = out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{suffix}.npz"
+        out_file = (
+            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{level_suffix}{suffix}.npz"
+        )
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         np.savez(
@@ -886,6 +904,9 @@ def calculate_and_plot_bivariate_histograms(
             bins_x=xedges,
             bins_y=yedges,
             hist_target=hist_target,
+            var_x=var_x,
+            var_y=var_y,
+            level_hpa=np.nan if level_hpa is None else float(level_hpa),
         )
 
         # Generate plot immediately
@@ -896,6 +917,16 @@ def calculate_and_plot_bivariate_histograms(
             warnings.filterwarnings(
                 "ignore", message="Log scale: values of z <= 0 have been masked"
             )
+            label_da_x = (
+                ds_prediction[var_x].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_x].dims and level_hpa is not None)
+                else ds_prediction[var_x]
+            )
+            label_da_y = (
+                ds_prediction[var_y].sel(level=level_hpa)
+                if ("level" in ds_prediction[var_y].dims and level_hpa is not None)
+                else ds_prediction[var_y]
+            )
             plot_bivariate_histogram(
                 hist_1=hist_pred,
                 hist_2=hist_target,
@@ -905,24 +936,47 @@ def calculate_and_plot_bivariate_histograms(
                 label_2="Ground Truth",
                 var_x=var_x,
                 var_y=var_y,
+                level_hpa=level_hpa,
                 ax=ax,
-                xlabel=_get_label(ds_prediction[var_x], var_x),
-                ylabel=_get_label(ds_prediction[var_y], var_y),
+                xlabel=_get_label(label_da_x, var_x),
+                ylabel=_get_label(label_da_y, var_y),
             )
 
-        plot_out = out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{suffix}.png"
+        plot_out = (
+            out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{level_suffix}{suffix}.png"
+        )
         fig.savefig(plot_out, bbox_inches="tight")
         plt.close(fig)
 
-        print(f"[multivariate] Saved bivariate plot: {plot_out.name}")
-        plotted_pairs.append(f"{var_x} vs {var_y}")
+        c.info(f"[multivariate] Saved bivariate plot: {plot_out.name}")
+        if level_hpa is None:
+            plotted_pairs.append(f"{var_x} vs {var_y}")
+        else:
+            plotted_pairs.append(f"{var_x} vs {var_y} @ {level_hpa:g} hPa")
+
+        # ── Per-lead-time grid ────────────────────────────────────────────────
+        # When the prediction dataset has multiple lead times we additionally
+        # produce one figure per level (for 3-D variables) that arranges a
+        # bivariate-histogram panel for each lead time in a grid.  The same
+        # bin edges computed above are reused so all panels are comparable.
+        if "lead_time" in ds_prediction[var_x].dims and ds_prediction.sizes.get("lead_time", 1) > 1:
+            _plot_bivariate_per_lead_grid(
+                ds_prediction=ds_prediction,
+                ds_target=ds_target,
+                var_x=var_x,
+                var_y=var_y,
+                xedges=xedges,
+                yedges=yedges,
+                out_root=out_root,
+                ensemble_token=ensemble_token,
+                level_hpa=level_hpa,
+            )
 
     # Summary output
     if plotted_pairs:
-        print(f"[multivariate] Plotted {len(plotted_pairs)} pairs: {', '.join(plotted_pairs)}")
+        c.info(f"[multivariate] Plotted {len(plotted_pairs)} pairs: {', '.join(plotted_pairs)}")
 
     if skipped_pairs:
-        # Only show unique reasons
         unique_skips = sorted(set(skipped_pairs))
         c.warn("[multivariate] Skipped pairs:\n  • " + "\n  • ".join(unique_skips))
 
@@ -942,19 +996,15 @@ def plot_bivariate_histogram(
     ylabel: str | None = None,
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
-    norm: LogNorm | None = None,
-    show_colorbar: bool = True,
-    full_legend: bool = True,
 ) -> plt.Axes:
-    """
-    Plot bivariate histograms for two models/datasets.
+    """Plot bivariate histograms for two models/datasets.
 
-    Model 1 is plotted with greyscale contour lines.
-    Model 2 is plotted with filled color contours.
+    Model 1 (prediction) is plotted with greyscale contour lines.
+    Model 2 (reference/ground truth) is plotted with filled color contours.
 
     Args:
-        hist_1: 2D histogram counts for model 1. Shape (nx, ny).
-        hist_2: 2D histogram counts for model 2. Shape (nx, ny).
+        hist_1: 2D histogram counts for model 1 (prediction). Shape (nx, ny).
+        hist_2: 2D histogram counts for model 2 (reference). Shape (nx, ny).
         bins_x: Bin edges for x variable.
         bins_y: Bin edges for y variable.
         label_1: Label for model 1 (contours).
@@ -968,20 +1018,35 @@ def plot_bivariate_histogram(
             these limits are applied before physical overlays are drawn.
         ylim: Optional explicit y-axis limits. When provided with ``xlim``,
             these limits are applied before physical overlays are drawn.
-        norm: Optional pre-computed ``LogNorm`` to use for both contourf and
-            contour.  When ``None`` (default) the norm is derived from the
-            reference distribution (``hist_2``).
-        show_colorbar: Whether to attach a per-axes colorbar.  Set to
-            ``False`` when the caller manages a shared colorbar.
-        full_legend: When ``True`` (default) the full legend is rendered
-            (target patches + model line + physical constraints).  When
-            ``False`` only the model name (``label_1``) is shown.
 
     Returns:
         The axes with the plot.
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 8))
+
+    # For geopotential-height (or its gradient) vs wind-speed, enforce a physically
+    # intuitive view: x-axis = wind speed / gradient, y-axis = geopotential height.
+    if _is_geopotential_height_gradient(var_x) and _is_wind_speed(var_y):
+        # Keep gradient on x, wind speed on y — natural geostrophic axes.
+        pass
+    elif _is_geopotential_height_gradient(var_y) and _is_wind_speed(var_x):
+        # Swap so gradient is on x and wind speed is on y.
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
+        if xlim is not None and ylim is not None:
+            xlim, ylim = ylim, xlim
+    elif _is_geopotential_height(var_x) and _is_wind_speed(var_y):
+        hist_1 = np.asarray(hist_1).T
+        hist_2 = np.asarray(hist_2).T
+        bins_x, bins_y = bins_y, bins_x
+        var_x, var_y = var_y, var_x
+        xlabel, ylabel = ylabel, xlabel
+        if xlim is not None and ylim is not None:
+            xlim, ylim = ylim, xlim
 
     # Calculate centers
     x_centers = (bins_x[:-1] + bins_x[1:]) / 2
@@ -1017,7 +1082,7 @@ def plot_bivariate_histogram(
     dens_2 = hist_2 / (sum_2 * bin_area) if sum_2 > 0 else hist_2
 
     # Logarithmic scale
-    # Define levels based on the filled distribution (Model 2)
+    # Define levels based on the filled distribution (Model 2 / ground truth)
     valid_2 = dens_2[dens_2 > 0]
     if len(valid_2) == 0:
         ax.text(
@@ -1030,30 +1095,29 @@ def plot_bivariate_histogram(
         )
         return ax
 
-    if norm is None:
-        vmin = valid_2.min()
-        vmax = valid_2.max()
-        # Ensure vmin is positive for log scale
-        if vmin <= 0:
-            vmin = 1e-10
-        norm = LogNorm(vmin=vmin, vmax=vmax)
+    vmin = valid_2.min()
+    vmax = valid_2.max()
+
+    # Ensure vmin is positive for log scale
+    if vmin <= 0:
+        vmin = 1e-10
 
     # Create log-spaced levels
     # We generate N+2 levels and take the inner N to ensure the contour lines are visible
     # and not at the absolute min/max (which are hard to see).
     # This aligns the number of visible lines on the plot with the lines on the colorbar.
-    # Using 5 internal levels gives a clean look similar to the reference paper.
+    # Using 5 internal levels gives a clean look.
     n_levels = 5
-    full_levels = np.logspace(np.log10(norm.vmin), np.log10(norm.vmax), n_levels + 2)
+    full_levels = np.logspace(np.log10(vmin), np.log10(vmax), n_levels + 2)
     levels = full_levels[1:-1]
 
-    # Plot Model 2 (Filled, Color) - Reference
+    # Plot Model 2 (Filled, Color) - Reference / Ground Truth
     cs2 = ax.contourf(
         X,
         Y,
         dens_2,
         levels=levels,
-        norm=norm,
+        norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap="plasma",
         extend="both",
     )
@@ -1069,35 +1133,31 @@ def plot_bivariate_histogram(
         Y,
         dens_1,
         levels=levels,
-        norm=norm,
+        norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap=cmap_greys,
         linewidths=1.5,
     )
 
-    if show_colorbar:
-        fig = ax.get_figure()
-        if fig:
-            cbar = fig.colorbar(cs2, ax=ax, ticks=levels)
-            cbar.ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1e"))
-            cbar.set_label("Density (log scale)", fontsize=13)
-            cbar.ax.tick_params(labelsize=12)
-            cbar.add_lines(cs1)
+    fig = ax.get_figure()
+    if fig:
+        cbar = fig.colorbar(cs2, ax=ax, format="%.2e")
+        cbar.set_label("Density (log scale)")
+        cbar.add_lines(cs1)
 
-    ax.set_xlabel(xlabel if xlabel else var_x, fontsize=13)
-    ax.set_ylabel(ylabel if ylabel else var_y, fontsize=13)
-    ax.tick_params(labelsize=12)
+    ax.set_xlabel(xlabel if xlabel else var_x)
+    ax.set_ylabel(ylabel if ylabel else var_y)
 
     if _is_geostrophic_gradient_pair(var_x, var_y):
-        ax.tick_params(axis="x", labelrotation=45, labelsize=12)
+        ax.tick_params(axis="x", labelrotation=45)
         for tick in ax.get_xticklabels():
             tick.set_ha("right")
 
     title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
     if level_hpa is not None:
         title += f" ({level_hpa:g} hPa)"
-    ax.set_title(title, fontsize=13)
+    ax.set_title(title)
 
-    # Expand x by ~12.5% each side, y by ~5% each side (zoomed in more on y).
+    # Zoom out by 25%, unless explicit limits are provided by the caller.
     if xlim is not None and ylim is not None:
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
@@ -1111,8 +1171,9 @@ def plot_bivariate_histogram(
         x_center = (x_max + x_min) / 2
         y_center = (y_max + y_min) / 2
 
+        # Expand by 25% (factor 1.25)
         ax.set_xlim(x_center - 0.625 * x_range, x_center + 0.625 * x_range)
-        ax.set_ylim(y_center - 0.525 * y_range, y_center + 0.525 * y_range)
+        ax.set_ylim(y_center - 0.625 * y_range, y_center + 0.625 * y_range)
 
     # ── Physical-constraint overlays ─────────────────────────────────────────
     final_xlim = ax.get_xlim()
@@ -1135,43 +1196,30 @@ def plot_bivariate_histogram(
     ax.set_ylim(final_ylim)
 
     # ── Legend ───────────────────────────────────────────────────────────────
-    _lx, _ly = var_x.lower(), var_y.lower()
-    if _is_geostrophic_gradient_pair(var_x, var_y):
-        _legend_loc = "lower right"
-    elif ("temperature" in _lx and "specific_humidity" in _ly) or (
-        "specific_humidity" in _lx and "temperature" in _ly
-    ):
-        _legend_loc = "upper left"
-    else:
-        _legend_loc = "best"
+    # Use 3 representative colors for the filled contours (low, mid, high)
+    cmap = plt.get_cmap("plasma")
+    patch1 = mpatches.Patch(color=cmap(0.2))
+    patch2 = mpatches.Patch(color=cmap(0.5))
+    patch3 = mpatches.Patch(color=cmap(0.8))
 
-    if full_legend:
-        # Use 3 representative colors for the filled contours (low, mid, high)
-        cmap = plt.get_cmap("plasma")
-        patch1 = mpatches.Patch(color=cmap(0.2))
-        patch2 = mpatches.Patch(color=cmap(0.5))
-        patch3 = mpatches.Patch(color=cmap(0.8))
+    handles = [
+        (patch1, patch2, patch3),
+        Line2D([0], [0], color="grey", lw=1.5),
+    ]
+    labels = [label_2, label_1]
 
-        handles: list = [
-            (patch1, patch2, patch3),
-            Line2D([0], [0], color="grey", lw=1.5),
-        ]
-        labels: list = [label_2, label_1]
+    # Append physical-constraint artists
+    for artist, lbl in constraint_entries:
+        handles.append(artist)
+        labels.append(lbl)
 
-        # Append physical-constraint artists
-        for artist, lbl in constraint_entries:
-            handles.append(artist)
-            labels.append(lbl)
-
-        ax.legend(
-            handles=handles,
-            labels=labels,
-            loc=_legend_loc,
-            handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
-            fontsize=11,
-            framealpha=0.85,
-        )
-    else:
-        ax.legend_ = None  # no legend for non-primary subplots
+    ax.legend(
+        handles=handles,
+        labels=labels,
+        loc="upper right",
+        handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+        fontsize="small",
+        framealpha=0.85,
+    )
 
     return ax

@@ -230,6 +230,16 @@ def compute_quantile_preserving(da: Any, q: list[float], preserve_dims: list[str
     return da_sub.quantile(q, dim="sample", skipna=True)
 
 
+def resolve_module_batching_options(
+    performance_cfg: dict[str, Any] | None = None,
+    default_split_level: bool = True,
+) -> dict[str, Any]:
+    """Return batching options extracted from performance config."""
+    cfg = performance_cfg or {}
+    split_level = cfg.get("split_level", default_split_level)
+    return {"split_level": bool(split_level)}
+
+
 def calculate_dynamic_chunk_size(
     n_points: int | None = None,
     num_vars: int | None = None,

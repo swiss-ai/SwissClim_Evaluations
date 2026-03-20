@@ -25,7 +25,6 @@ We recommend the container workflow for fastest, reproducible setup.
     You can also run the provided notebooks from the command line to generate reports with your specific configuration:
 
     ```bash
-    pip
     papermill notebooks/deterministic_verification.ipynb output/my_run_report.ipynb -p config_path_str config/my_run.yaml
     ```
 
@@ -39,6 +38,7 @@ We recommend the container workflow for fastest, reproducible setup.
 
     1.  List your config files in `eval_configs.txt` (one absolute path per line).
     1.  Adjust `--nodes` in the SBATCH directives to number of config files / 4.
+    1.  Practical tuning: running 2–3 evals concurrently on one node usually works well; the main bottleneck is system RAM, so reduce concurrency if jobs spill or OOM.
     1.  Submit: `sbatch launchscript_multi.sh`
 
     Both scripts automatically handle container setup, Dask spillover directories, and will render
@@ -51,6 +51,35 @@ For detailed installation instructions, including Podman, uenv, and conda setups
 The YAML config is the single source of truth.
 
 See [config/example_config.yaml](config/example_config.yaml) for a fully commented example explaining every key and valid value.
+For batching/memory tuning knobs (under `performance`), see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The default Dask runtime profile is safety-first (`dask_profile: safe`); opt into faster behavior via profile/worker overrides in YAML when memory headroom is known.
+For post-run Dask diagnostics, set `performance.dask_performance_report: true` (optionally customize `performance.dask_performance_report_path`).
+
+## Derived Variables
+
+The pipeline supports computing derived variables on-the-fly from raw data variables, before any module runs. Configure with the `derived_variables` block in your YAML.
+
+Each sub-key becomes the output variable name. Required fields:
+
+| Field | Description |
+|---|---|
+| `kind` | Recipe to apply. Available: `wind_speed` — `sqrt(U²+V²)`, m s⁻¹; `geopotential_height` — `geopotential / 9.80665`, m |
+| `u` / `source` | Name of the U-component or sole source variable in both datasets |
+| `v` | Name of the V-component variable (dual-input recipes `wind_speed` only; omit for `geopotential_height`) |
+
+Example for geostrophic balance analysis:
+```yaml
+derived_variables:
+  wind_speed:
+    kind: wind_speed
+    u: u_component_of_wind
+    v: v_component_of_wind
+  geopotential_height:
+    kind: geopotential_height
+    source: geopotential
+```
+
+> For a detailed per-module impact analysis of wind variables specifically, see [docs/WIND_UV_ASSESSMENT.md](docs/WIND_UV_ASSESSMENT.md).
 
 ## Dataset Requirements
 
@@ -137,37 +166,6 @@ You can explore the outputs interactively using the provided notebooks:
 Notebook tips
 
 - Use the YAML config and `prepare_datasets` to ensure alignment, selection, and chunking are consistent with the CLI.
-
-## Intercomparison of Saved Artifacts
-
-This repo includes a lightweight CLI to combine plots and CSVs from multiple model runs that wrote artifacts (NPZ/CSV) to disk. It reuses the saved outputs under each model's output folder and generates combined visualizations for quick model-vs-model comparisons. A separate config is available for intercomparison.
-
-Run the intercomparison:
-
-```bash
-python -m swissclim_evaluations.intercompare --config config/intercomparison.yaml
-```
-
-Or if installed via pip/uv:
-
-```bash
-swissclim-evaluations-compare --config config/intercomparison.yaml
-```
-
-Outputs are written under `output/intercomparison/` mirroring the module folders. The tool is read-only on the source folders and will only generate figures/CSVs by loading the existing artifacts.
-
-What gets combined:
-
-- energy_spectra: overlays of DS baseline + model spectra per variable (and per level), plus `lsd_metrics_averaged_combined.csv`, `lsd_metrics_per_level_combined.csv`, and banded variants when available.
-- histograms: per-latitude band distributions (DS line + model lines) using saved combined NPZs.
-- wd_kde: standardized KDE overlays by latitude band (DS + models) using saved NPZs.
-- maps: panel maps with DS in the first column and each model as subsequent columns.
-- deterministic: merged CSVs (`metrics_combined.csv`, `metrics_standardized_combined.csv`, `metrics_per_level_combined.csv`, `metrics_standardized_per_level_combined.csv`) and simple bar charts for MAE/RMSE/FSS when data is present.
-- ets: merged CSVs (`ets_metrics_combined.csv`, `ets_metrics_per_level_combined.csv`).
-- probabilistic: merged CSVs (`crps_summary_combined.csv`, `crps_summary_per_level_combined.csv`, `spread_skill_ratio_combined.csv`), PIT histogram overlays, and CRPS map panels when NPZ map exports exist.
-  - Additionally merges WBX spatial and temporal aggregates from `prob_metrics_{spatial,temporal}_*.nc` (or legacy names) into (`spatial_metrics_combined.csv`, `temporal_metrics_combined.csv`), with simple region-wise bar charts and time-bin line plots if the corresponding dimensions are present.
-  - A single availability panel covers all probabilistic artifacts (PIT, CRPS maps, spatial/temporal WBX).
-- vertical profiles (vprof): overlay plots per variable of latitude-band vertical NMAE across models — saved as `vertical_profiles/vertical_profiles_nmae_<variable>_multi_combined_compare.png` — plus per-variable summary tables (`vertical_profiles_nmae_<variable>_multi_combined_summary.csv`) listing mean metric by band, hemisphere, and model. Legacy `*_pl_nmae_combined*` files are still supported as input.
 
 ## Development
 

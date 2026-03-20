@@ -4,9 +4,7 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
-from matplotlib.colors import LogNorm
 
 from swissclim_evaluations import console as c
 from swissclim_evaluations.helpers import format_variable_name
@@ -173,36 +171,8 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 f"Affected: {', '.join(off_grid_labels)}"
             )
 
-        # ── Global norm: compute from all target distributions ─────────────────
-        global_vmin = np.inf
-        global_vmax = -np.inf
-        for entry in model_entries:
-            _ht = np.asarray(entry["hist_target"])
-            _bx = np.asarray(entry["bins_x"])
-            _by = np.asarray(entry["bins_y"])
-            _dx = np.diff(_bx).mean()
-            _dy = np.diff(_by).mean()
-            if _dx > 0 and _dy > 0:
-                _s = _ht.sum()
-                _dens = _ht / (_s * _dx * _dy) if _s > 0 else _ht
-                _valid = _dens[_dens > 0]
-                if len(_valid) > 0:
-                    global_vmin = min(global_vmin, float(_valid.min()))
-                    global_vmax = max(global_vmax, float(_valid.max()))
-        if not np.isfinite(global_vmin) or global_vmin <= 0:
-            global_vmin = 1e-10
-        global_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
-
         n_cols = len(model_entries)
-        fig, axes = plt.subplots(
-            1,
-            n_cols,
-            figsize=(6 * n_cols, 7),
-            squeeze=False,
-            sharex=True,
-            sharey=True,
-            constrained_layout=True,
-        )
+        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 6), squeeze=False)
 
         for idx, entry in enumerate(model_entries):
             ax = axes[0, idx]
@@ -226,31 +196,8 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 ylabel=format_variable_name(var_y) if var_y else None,
                 xlim=shared_xlim,
                 ylim=shared_ylim,
-                norm=global_norm,
-                show_colorbar=False,
-                full_legend=(idx == 0),
             )
             ax.set_title(label)
-            # Hide y-axis labels/ticks for all but the leftmost panel
-            if idx != 0:
-                ax.set_ylabel("")
-                ax.tick_params(labelleft=False)
-
-        # ── Shared horizontal colorbar at the bottom ───────────────────────────
-        sm = plt.cm.ScalarMappable(cmap="plasma", norm=global_norm)
-        sm.set_array([])
-        cbar = fig.colorbar(
-            sm,
-            ax=axes[0, :],
-            orientation="horizontal",
-            location="bottom",
-            pad=0.04,
-            fraction=0.04,
-            shrink=1.0,
-        )
-        cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
-        cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
-        cbar.set_label("Density (log scale)")
 
         if var_x and var_y:
             title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
@@ -259,6 +206,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             fig.suptitle(title)
         else:
             fig.suptitle(fname.replace("bivariate_hist_", "").replace(".npz", ""))
+        fig.tight_layout()
 
         stem = fname.replace("bivariate_hist_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"

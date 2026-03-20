@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
+import seaborn as sns
 
 from swissclim_evaluations.helpers import format_variable_name
 
@@ -29,6 +30,27 @@ except ImportError:
 
 # Global flag for quiet mode
 quiet = False
+
+
+def model_color_map(labels: list[str]) -> dict[str, tuple]:
+    """Return a stable label → colour mapping using the tab10 palette.
+
+    Every intercomparison module should call this once and use the
+    returned dict so that colours stay consistent across all plots.
+    """
+    palette = sns.color_palette("tab10", n_colors=max(len(labels), 1))
+    return {lab: palette[i % len(palette)] for i, lab in enumerate(labels)}
+
+
+def reorder_pivot_columns(pivot, labels: list[str]):
+    """Reorder a pivot table's columns to match the original *labels* order.
+
+    Returns the reordered DataFrame. Columns not present in *labels*
+    are appended at the end; labels missing from the pivot are skipped.
+    """
+    ordered = [lab for lab in labels if lab in pivot.columns]
+    extra = [c for c in pivot.columns if c not in ordered]
+    return pivot[ordered + extra]
 
 
 def as_paths(items: Iterable[str]) -> list[Path]:

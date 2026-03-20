@@ -10,7 +10,9 @@ from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
     ensure_dir,
+    model_color_map,
     print_file_list,
+    reorder_pivot_columns,
     report_checklist,
     report_missing,
     scan_model_sets,
@@ -20,6 +22,7 @@ from swissclim_evaluations.intercomparison.core import (
 def intercompare_deterministic_metrics(
     models: list[Path], labels: list[str], out_root: Path
 ) -> None:
+    _cmap = model_color_map(labels)
     # Availability report
     per_model, _, uni = scan_model_sets(models, "deterministic/deterministic_metrics*.csv")
     report_missing("deterministic_metrics", models, labels, per_model, uni)
@@ -219,7 +222,7 @@ def intercompare_deterministic_metrics(
                     first = df.columns[0]
                     df = df.rename(columns={first: "variable"})
             df.insert(0, "model", lab)
-            frames_std.append(df)
+            frames_lvl_std.append(df)
 
     if frames:
         comb = pd.concat(frames, ignore_index=True)
@@ -287,7 +290,9 @@ def intercompare_deterministic_metrics(
                     plt.close(fig)
                     c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
-                ax = pivot.plot(kind="bar", figsize=(12, 6))
+                pivot = reorder_pivot_columns(pivot, labels)
+                _bar_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
+                ax = pivot.plot(kind="bar", figsize=(12, 6), color=_bar_colors or None)
                 ax.set_title(f"{metric} by variable and model".title())
                 ax.set_ylabel(metric)
                 ax.set_xlabel("")
@@ -364,8 +369,12 @@ def intercompare_deterministic_metrics(
                 if "variable" not in df.columns:
                     continue
 
+                id_vars = ["model", "variable", "lead_time"]
+                if "level" in df.columns:
+                    id_vars.append("level")
+
                 melted = df.melt(
-                    id_vars=["model", "variable", "lead_time"],
+                    id_vars=id_vars,
                     value_vars=metric_cols,
                     var_name="metric",
                     value_name="value",
@@ -384,29 +393,53 @@ def intercompare_deterministic_metrics(
             temporal_df.to_csv(out_csv, index=False)
             c.success(f"Saved {out_csv.relative_to(out_root)}")
 
-            pairs = temporal_df[["metric", "variable"]].drop_duplicates().values
+            pair_cols = ["metric", "variable"]
+            has_level = "level" in temporal_df.columns
+            if has_level:
+                pair_cols.append("level")
 
-            for metric, variable in pairs:
+            pairs = temporal_df[pair_cols].drop_duplicates().to_dict("records")
+
+            for pair in pairs:
+                metric = pair["metric"]
+                variable = pair["variable"]
                 subset = temporal_df[
                     (temporal_df["metric"] == metric) & (temporal_df["variable"] == variable)
                 ].copy()
+                level_token = ""
+                if has_level:
+                    level_val = pair.get("level")
+                    if pd.notna(level_val):
+                        subset = subset[subset["level"] == level_val]
+                        level_int = int(level_val)
+                        level_token = f"_level{level_int}"
+                    else:
+                        subset = subset[subset["level"].isna()]
 
                 pivot = subset.pivot_table(
                     index="lead_time", columns="model", values="value", aggfunc="mean"
                 ).sort_index()
 
                 if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                    pivot = reorder_pivot_columns(pivot, labels)
+                    _line_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
+                    pivot.plot(
+                        kind="line", ax=ax, marker="o", markersize=4, color=_line_colors or None
+                    )
 
-                    ax.set_title(f"{metric} vs Lead Time — {format_variable_name(variable)}")
+                    level_has_value = has_level and pd.notna(pair.get("level"))
+                    level_title = f" @ {int(level_val)}" if level_has_value else ""
+                    ax.set_title(
+                        f"{metric} vs Lead Time — {format_variable_name(variable)}{level_title}"
+                    )
                     ax.set_ylabel(metric)
                     ax.set_xlabel("Lead Time (h)")
                     ax.grid(True, linestyle="--", alpha=0.6)
                     ax.legend(title=None)
                     plt.tight_layout()
 
-                    out_png = dst_det / f"temporal_{metric}_{variable}_compare.png"
+                    out_png = dst_det / f"temporal_{metric}_{variable}{level_token}_compare.png"
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)

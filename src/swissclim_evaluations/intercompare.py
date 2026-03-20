@@ -21,6 +21,7 @@ from swissclim_evaluations.intercomparison.modules.histograms import (
     intercompare_histograms,
 )
 from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
+from swissclim_evaluations.intercomparison.modules.multivariate import intercompare_multivariate
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
@@ -105,6 +106,8 @@ def run_from_config(cfg: dict) -> None:
         )
     if "ssim" in mods:
         intercompare_ssim(models, labels, out_root)
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 

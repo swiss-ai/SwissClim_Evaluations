@@ -1,8 +1,2 @@
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_2t_surf_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_10u_surf_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_10v_surf_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_msl_surf_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_t_atmos_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_u_atmos_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_v_atmos_var.yaml
-/capstor/store/cscs/swissai/a122/firat/SwissClim_Evaluations/config/train_config_ESFMs_AA_unmask_v3/mask_var_q_atmos_var.yaml
+config/example_config.yaml
+config/debug_run.yaml

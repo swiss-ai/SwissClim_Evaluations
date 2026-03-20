@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from swissclim_evaluations.cli import _slice_common
+from swissclim_evaluations.core.data_selection import _slice_common
 
 
 # Helper to create dummy dataset
