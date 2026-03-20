@@ -671,15 +671,43 @@ VARIABLE_UNITS = {
 }
 
 
+def _to_latex_units(unit_str: str) -> str:
+    """Convert CF-style unit strings to LaTeX ratio notation.
+
+    Examples: 'm s**-1' -> '$\\mathrm{m/s}$', 'kg kg**-1' -> '$\\mathrm{kg/kg}$',
+    's**-1' -> '$\\mathrm{1/s}$', 'm**2 s**-2' -> '$\\mathrm{m^{2}/s^{2}}$'.
+    """
+    if not unit_str:
+        return unit_str
+    if "$" in unit_str or "\\" in unit_str:
+        return unit_str  # already LaTeX
+    # Convert ** exponent notation to ^{N}
+    s = re.sub(r"\*\*(-?\d+)", lambda m: f"^{{{m.group(1)}}}", unit_str)
+    # Split tokens and separate into numerator / denominator by exponent sign
+    _neg = re.compile(r"^(.+?)\^\{(-\d+)\}$")
+    numer: list[str] = []
+    denom: list[str] = []
+    for tok in s.split():
+        m = _neg.match(tok)
+        if m:
+            base, abs_exp = m.group(1), -int(m.group(2))
+            denom.append(base if abs_exp == 1 else f"{base}^{{{abs_exp}}}")
+        else:
+            numer.append(tok)
+    numer_str = r"\,".join(numer) if numer else "1"
+    combined = numer_str + "/" + r"\,".join(denom) if denom else numer_str
+    return rf"$\mathrm{{{combined}}}$"
+
+
 def get_variable_units(ds: xr.Dataset | xr.DataArray | None, var_name: str) -> str:
     """Get units for a variable, falling back to a default mapping if missing."""
     if ds is not None:
         if isinstance(ds, xr.DataArray):
             if "units" in ds.attrs:
-                return str(ds.attrs["units"])
+                return _to_latex_units(str(ds.attrs["units"]))
         elif var_name in ds and "units" in ds[var_name].attrs:
-            return str(ds[var_name].attrs["units"])
-    return VARIABLE_UNITS.get(var_name, "")
+            return _to_latex_units(str(ds[var_name].attrs["units"]))
+    return _to_latex_units(VARIABLE_UNITS.get(var_name, ""))
 
 
 def subsample_values(

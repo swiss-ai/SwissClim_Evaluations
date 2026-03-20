@@ -8,7 +8,27 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 
-# Resolve config relative to the job submission directory (SLURM_SUBMIT_DIR)
+# =============================================================
+# USER INPUT (edit this section only)
+# =============================================================
+# Evaluation config to run (absolute path or relative to submit/project directory)
+CONFIG_FILE="config/firat/train_config_ESFMs_umv3_1aa8et_esfmi_meanmaeafcrps_sgd_atm_adalndecsb0scposemb_ro.yaml"
+
+# Enroot/EDF TOML (or EDF name if your site supports it)
+EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
+
+# Dask spill directory
+DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+
+# PYTHONPATH behavior for project src directory:
+# - prepend  : PROJECT_ROOT/src:$PYTHONPATH
+# - overwrite: PROJECT_ROOT/src only
+# - keep     : do not modify PYTHONPATH (default)
+PYTHONPATH_MODE="prepend"
+# =============================================================
+
+# Resolve paths relative to the job submission directory when running under Slurm.
+# Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 
 # -------------------------------------------------------------

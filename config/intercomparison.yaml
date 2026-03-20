@@ -9,16 +9,16 @@
 # - max_crps_map_panels: limit CRPS map panels in probabilistic section
 
 models:
-  - output/modelA
-  - output/modelB
+  - output/esfm_small_nm_1aa8et_meanmaeafcrps_esfmi_sgd_atm_adalndecsb1_scposemb
+  - output/esfm_small_umv3_1aa8et_meanmaeafcrps_esfmi_sgd_atm_adalndecsb0_scposemb
 
 labels:
-  - Model A
-  - Model B
+  - Without Masking
+  - With Masking
 
-output_root: output/intercomparison
+output_root: output/intercomparison_preprint
 
-modules: [maps, hist, kde, spectra, vprof, metrics, ets, prob]
+modules: [maps, hist, kde, spectra, vprof, metrics, ets, prob, ]
 
 max_map_panels: 4
 max_crps_map_panels: 4
