@@ -31,13 +31,12 @@ def test_multivariate_smoke(tmp_path: Path):
     targets, predictions = make_synthetic_datasets(with_ensemble=False, lat=10, lon=10)
     out_root = tmp_path / "output"
 
-    # Need to know variable names from make_synthetic_datasets
-    # Usually it creates 'var_2d' and 'var_3d'
-    vars = list(targets.data_vars)
-    if len(vars) < 2:
+    # Select a deterministic bivariate pair: sort data_vars before picking
+    var_names = sorted(targets.data_vars)
+    if len(var_names) < 2:
         return  # Skip if not enough vars
 
-    pair = [vars[0], vars[1]]
+    pair = [var_names[0], var_names[1]]
 
     run_multivariate(
         ds_target=targets,
