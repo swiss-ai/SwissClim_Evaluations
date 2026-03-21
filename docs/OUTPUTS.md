@@ -44,6 +44,7 @@ If the dataset contains multiple ensembles, metrics can be computed on the mean 
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
 - **probabilistic**: prob only
+- **ssim**: mean, pooled, members
 
 The ensemble dimension is always present (size 1 for deterministic datasets). For such datasets, the ensemble mean is identical to the single member. Output filenames will reflect the configured mode (e.g., `_ensmean` for mean, `_ens0` for members). Legacy `_ensnone` tokens are also accepted by the intercomparison tool.
 
@@ -121,6 +122,28 @@ ets_line_2m_temperature_by_lead_ensmean.csv
 ets_line_2m_temperature_ensmean.png
 ets_line_2m_temperature_data_ensmean.npz
 ```
+
+### SSIM
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode.
+
+Up to four CSV files are written per ensemble token:
+
+- **Overall** (always written): one row per variable with a scalar mean SSIM.
+- **Per-level** (`report_per_level: true`, default): long-form table with one row per (variable, pressure level) for 3D variables. Written only when at least one variable has a `level` dimension.
+- **Per-lead** (`report_per_lead: true`, default): long-form table with one row per (variable, lead time in hours) for datasets that have a `lead_time` dimension.
+- **Per-level-by-lead** (written when both `report_per_level` and `report_per_lead` are true): long-form table with one row per (variable, pressure level, lead time) for 3D variables that also have a `lead_time` dimension.
+
+```text
+ssim/ssim_ssim_ensmean.csv                        # overall mean per variable
+ssim/ssim_ssim_per_level_ensmean.csv              # per pressure level (3D variables)
+ssim/ssim_ssim_by_lead_ensmean.csv                # per lead time in hours
+ssim/ssim_ssim_per_level_by_lead_ensmean.csv      # per pressure level AND lead time (3D + lead_time)
+ssim/ssim_ssim_enspooled.csv                      # pooled ensemble mode
+ssim/ssim_ssim_ens0.csv                           # members mode per-member file
+```
+
+The per-level and per-lead outputs can be disabled individually via `metrics.ssim.report_per_level: false` and `metrics.ssim.report_per_lead: false` in the config. Disabling either flag also suppresses the per-level-by-lead output.
 
 ### Energy Spectra Analysis
 
