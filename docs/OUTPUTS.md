@@ -122,6 +122,37 @@ ets_line_2m_temperature_ensmean.png
 ets_line_2m_temperature_data_ensmean.npz
 ```
 
+### Multivariate Metrics
+
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours).
+
+**Recommended Bivariate Pairs:**
+
+To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
+
+1.  **Surface Dynamics (Wind Vector):** `10m_u_component_of_wind` vs `10m_v_component_of_wind`.
+    *   *Suggested Level:* Surface (10m).
+    *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
+2.  **Upper-level Dynamics (Wind Vector):** `u_component_of_wind` vs `v_component_of_wind`.
+    *   *Suggested Level:* 250 hPa (Jet Stream).
+    *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
+3.  **Thermodynamics (Clausius-Clapeyron):** `temperature` vs `specific_humidity`.
+    *   *Suggested Level:* 850 hPa (Lower Troposphere).
+    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve, which follows the Clausius-Clapeyron relation. Points beyond this curve indicate unphysical supersaturation.
+4.  **Hydrostatics:** `geopotential` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
+5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapour`.
+    *   *Suggested Level:* Surface / Column-integrated.
+    *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
+6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
+
+Outputs:
+- `bivariate_hist_<var1>_<var2>.npz`: Saved histogram counts and bin edges.
+- `bivariate_<var1>_<var2>.png`: The generated density plot comparing the current model (Prediction) against the reference.
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
@@ -189,6 +220,13 @@ map_10m_u_component_of_wind_init2023010200-2023010412_ens0.png   # member 0
 map_temperature_500_init2023010200-2023010412_ensmean.png        # mean reduction
 map_10m_u_component_of_wind_init2023010200-2023010412_ens3.npz   # NPZ export (output_mode=npz/both)
 ```
+
+### Bivariate Histograms
+
+Outputs (standardized naming):
+
+- Plot: `multivariate/bivariate_<var1>_<var2>_ens*.png`
+- Data (NPZ): `multivariate/bivariate_hist_<var1>_<var2>_ens*.npz`
 
 **3D variables and multi-lead NPZ files**: For 3D atmospheric variables evaluated with more than one lead time, the NPZ files are saved **per pressure level** (one file per level) with the full lead-time stack preserved:
 

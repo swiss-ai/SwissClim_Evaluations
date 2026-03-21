@@ -22,6 +22,7 @@ from swissclim_evaluations.intercomparison.modules.histograms import (
     intercompare_histograms,
 )
 from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
+from swissclim_evaluations.intercomparison.modules.multivariate import intercompare_multivariate
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
@@ -292,6 +293,8 @@ def run_from_config(cfg: dict) -> None:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 
