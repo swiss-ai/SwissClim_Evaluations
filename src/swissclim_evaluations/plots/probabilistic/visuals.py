@@ -381,7 +381,7 @@ def generate_spaghetti_plots(
 
             # Compute via dask
             member_vals, target_vals = _dask_mod.compute(
-                da_pred_mean.values, da_tgt_mean.values, optimize_graph=False
+                da_pred_mean.data, da_tgt_mean.data, optimize_graph=False
             )
             member_vals = np.asarray(member_vals)  # (n_members, n_leads)
             target_vals = np.asarray(target_vals)  # (n_leads,)
