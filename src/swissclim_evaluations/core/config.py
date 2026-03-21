@@ -115,6 +115,17 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
     if module == "energy_spectra":
         return "LSD", "n/a"
 
+    if module == "multivariate":
+        module_cfg = cfg.get("metrics", {}).get("multivariate", {})
+        pairs = module_cfg.get("bivariate_pairs", [])
+        n_pairs = len(pairs) if isinstance(pairs, list) else 0
+        return f"Bivariate Histograms ({n_pairs} pairs)", "n/a"
+
+    if module == "ssim":
+        ssim_cfg = cfg.get("metrics", {}).get("ssim", {})
+        sigma = ssim_cfg.get("sigma", 1.5) if isinstance(ssim_cfg, dict) else 1.5
+        return f"SSIM (sigma={sigma})", "n/a"
+
     return "n/a", "n/a"
 
 
@@ -128,6 +139,8 @@ def print_module_config_summary(cfg: dict[str, Any], chapter_flags: dict[str, An
         "deterministic",
         "ets",
         "probabilistic",
+        "ssim",
+        "multivariate",
     ]
     c.section("Configured Metrics/Thresholds")
     for module in module_order:

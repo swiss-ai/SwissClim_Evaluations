@@ -122,6 +122,15 @@ ets_line_2m_temperature_ensmean.png
 ets_line_2m_temperature_data_ensmean.npz
 ```
 
+### SSIM
+
+SSIM filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+
+```text
+ssim/ssim_ssim_ensmean.csv
+ssim/ssim_ssim_ens0.csv   # members mode per-member file
+```
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)
