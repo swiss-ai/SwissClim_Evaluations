@@ -235,6 +235,9 @@ class _DummyAxis:
     def get_lines(self):
         return []
 
+    def get_xticklabels(self):
+        return []
+
     def contourf(self, *a, **k):
         return _DummyImage()
 

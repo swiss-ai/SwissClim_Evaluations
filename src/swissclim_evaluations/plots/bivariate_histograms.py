@@ -1235,11 +1235,16 @@ def plot_bivariate_histogram(
     # ── Physical-constraint overlays ─────────────────────────────────────────
     final_xlim = ax.get_xlim()
     final_ylim = ax.get_ylim()
+    # Use axis limits (not bin edges) so curves and fills extend to the full
+    # visible area — bin edges end at the data range, but the plot is zoomed
+    # out 25% beyond that, leaving an unshaded/truncated gap at the edges.
+    axis_bins_x = np.array([final_xlim[0], final_xlim[1]])
+    axis_bins_y = np.array([final_ylim[0], final_ylim[1]])
     constraints = _get_physical_constraints(
         var_x,
         var_y,
-        bins_x,
-        bins_y,
+        axis_bins_x,
+        axis_bins_y,
         level_hpa=level_hpa,
     )
     constraint_entries = _draw_physical_constraints(
