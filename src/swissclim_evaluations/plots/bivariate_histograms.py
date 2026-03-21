@@ -7,8 +7,10 @@ import dask.array as da
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import xarray as xr
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LogNorm
 from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
@@ -567,6 +569,24 @@ def _plot_bivariate_per_lead_grid(
         desc=f"Computing bivariate histograms by lead: {var_x} vs {var_y}",
     )
 
+    # ── Compute global norm across all lead times for a consistent shared colorbar ──
+    all_vals = []
+    for job in hist_jobs:
+        h = job.get("hist_target") if job.get("hist_target") is not None else job.get("hist_pred")
+        if h is not None:
+            pos = h[h > 0]
+            if pos.size:
+                all_vals.append(pos)
+    if all_vals:
+        combined = np.concatenate(all_vals)
+        global_vmin = float(combined.min())
+        global_vmax = float(combined.max())
+    else:
+        global_vmin, global_vmax = 1e-10, 1.0
+    if global_vmin <= 0:
+        global_vmin = 1e-10
+    global_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
+
     # ── Grid layout ───────────────────────────────────────────────────────────
     cols = min(3, n_leads)
     rows = int(np.ceil(n_leads / cols))
@@ -621,6 +641,7 @@ def _plot_bivariate_per_lead_grid(
                 ax=ax,
                 xlabel=_get_label(ds_prediction[var_x], var_x),
                 ylabel=_get_label(ds_prediction[var_y], var_y),
+                show_colorbar=False,
             )
         # Replace the per-subplot title set inside plot_bivariate_histogram with
         # one that also carries the lead-time label.
@@ -633,6 +654,22 @@ def _plot_bivariate_per_lead_grid(
     # ── Hide any surplus subplots beyond n_leads ──────────────────────────────
     for j in range(last_i + 1, len(axs_flat)):
         axs_flat[j].axis("off")
+
+    # ── Shared horizontal colorbar at the bottom ──────────────────────────────
+    sm = ScalarMappable(cmap="plasma", norm=global_norm)
+    sm.set_array([])
+    cbar = fig.colorbar(
+        sm,
+        ax=axs_flat[: last_i + 1].tolist(),
+        orientation="horizontal",
+        location="bottom",
+        pad=0.04,
+        fraction=0.04,
+        shrink=0.8,
+    )
+    cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
+    cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
+    cbar.set_label("Density (log scale)")
 
     lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
@@ -1006,6 +1043,7 @@ def plot_bivariate_histogram(
     ylabel: str | None = None,
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
+    show_colorbar: bool = True,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1149,7 +1187,7 @@ def plot_bivariate_histogram(
     )
 
     fig = ax.get_figure()
-    if fig:
+    if show_colorbar and fig:
         cbar = fig.colorbar(cs2, ax=ax, format="%.2e")
         cbar.set_label("Density (log scale)")
         cbar.add_lines(cs1)
