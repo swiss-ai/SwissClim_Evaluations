@@ -43,8 +43,12 @@ def _is_geostrophic_gradient_pair(var_x: str, var_y: str) -> bool:
 def _format_level_suffix(level_hpa: float | None) -> str:
     if level_hpa is None:
         return ""
-    if float(level_hpa).is_integer():
-        return f"_level{int(level_hpa)}"
+    # Round to nearest integer when within 0.1 hPa to handle floating-point
+    # rounding from NetCDF level coordinates (e.g. 499.9999 → 500).
+    # Using 0.1 instead of 0.5 to preserve non-integer labels like 500.6.
+    rounded = int(round(float(level_hpa)))
+    if abs(float(level_hpa) - rounded) < 0.1:
+        return f"_level{rounded}"
     return f"_level{level_hpa:g}"
 
 
@@ -108,10 +112,6 @@ def _get_physical_constraints(
         Bin-edge arrays produced by the histogram step.
     """
     constraints: list[dict] = []
-
-    # Draw physical overlays only for 500 hPa views.
-    if level_hpa is None or not np.isclose(float(level_hpa), 500.0):
-        return constraints
     lx, ly = var_x.lower(), var_y.lower()
 
     is_temp_x = "temperature" in lx
@@ -123,13 +123,18 @@ def _get_physical_constraints(
     is_ws_x = "wind_speed" in lx
     is_ws_y = "wind_speed" in ly
 
+    # Pressure for the saturation curve [Pa]: use actual level when available,
+    # fall back to surface (~1013 hPa) for 2-D variables.
+    P_Pa = float(level_hpa) * 100.0 if level_hpa is not None else 101325.0
+    level_label = f"{int(round(float(level_hpa)))} hPa" if level_hpa is not None else "surface"
+
     # ── Temperature vs Specific Humidity ────────────────────────────────────
     # Physical upper bound: q ≤ q_sat(T) — Clausius–Clapeyron.
     # Physical lower bound: q ≥ 0.
     if (is_temp_x and is_q_y) or (is_q_x and is_temp_y):
         if is_temp_x:  # temperature on x-axis, q on y-axis
             T_arr = np.linspace(bins_x[0], bins_x[-1], 400)
-            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=P_Pa)
             constraints.append(
                 {
                     "type": "curve",
@@ -141,7 +146,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "label": rf"$q_\mathrm{{sat}}(T)$ — Bolton (1980), {level_label}",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -165,7 +170,7 @@ def _get_physical_constraints(
             )
         else:  # q on x-axis, temperature on y-axis
             T_arr = np.linspace(bins_y[0], bins_y[-1], 400)
-            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=P_Pa)
             constraints.append(
                 {
                     "type": "curve",
@@ -177,7 +182,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "label": rf"$q_\mathrm{{sat}}(T)$ — Bolton (1980), {level_label}",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -503,8 +508,13 @@ def _plot_bivariate_per_lead_grid(
         return
 
     # ── Pre-compute fill sentinels (out-of-range substitutes for NaN) ────────
-    fill_x = float(xedges[0]) - 1.0
-    fill_y = float(yedges[0]) - 1.0
+    # Use one full data-range width below the minimum so the sentinel is always
+    # outside the histogram range, even when floating-point rounding shifts
+    # individual per-lead values slightly outside [xedges[0], xedges[-1]].
+    _x_span = max(float(xedges[-1]) - float(xedges[0]), 1.0)
+    _y_span = max(float(yedges[-1]) - float(yedges[0]), 1.0)
+    fill_x = float(xedges[0]) - _x_span
+    fill_y = float(yedges[0]) - _y_span
     range_x = [float(xedges[0]), float(xedges[-1])]
     range_y = [float(yedges[0]), float(yedges[-1])]
 
@@ -854,9 +864,10 @@ def calculate_and_plot_bivariate_histograms(
         range_x = [min_x, max_x]
         range_y = [min_y, max_y]
 
-        # Replace NaNs with out-of-range value to filter them during histogram2d
-        fill_x = min_x - 1.0
-        fill_y = min_y - 1.0
+        # Replace NaNs with a sentinel that is one full data-range width below the
+        # minimum — always outside the histogram range regardless of the data scale.
+        fill_x = min_x - max(max_x - min_x, 1.0)
+        fill_y = min_y - max(max_y - min_y, 1.0)
 
         # Re-access data (dask arrays)
         pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]

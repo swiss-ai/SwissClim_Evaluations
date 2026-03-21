@@ -112,6 +112,12 @@ def _fast_plot_algorithms(monkeypatch):
 
 
 # Existing fast plotting surface simplifications -----------------------------------------
+class _DummyLine:
+    """Minimal Line2D stand-in for tests that unpack ax.plot() results."""
+
+    pass
+
+
 class _DummyImage:
     def __init__(self):
         self.cmap = None
@@ -141,9 +147,12 @@ class _DummyAxis:
         return None
 
     def plot(self, *a, **k):
-        return None
+        return [_DummyLine()]
 
     def fill_between(self, *a, **k):
+        return None
+
+    def fill_betweenx(self, *a, **k):
         return None
 
     def loglog(self, *a, **k):
@@ -236,7 +245,22 @@ class _DummyAxis:
         return _DummyFig(self)
 
 
+class _DummyXAxis:
+    def set_major_locator(self, *a, **k):
+        return None
+
+    def set_major_formatter(self, *a, **k):
+        return None
+
+
+class _DummyColorbarAx:
+    xaxis = _DummyXAxis()
+    yaxis = _DummyXAxis()
+
+
 class _DummyColorbar:
+    ax = _DummyColorbarAx()
+
     def set_label(self, *a, **k):
         return None
 
