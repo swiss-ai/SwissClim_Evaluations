@@ -258,7 +258,7 @@ def generate_spaghetti_plots(
     through the standard ``select_plot_datetime`` mechanism.
 
     The function honours ``plotting.output_mode``: plots are skipped when the
-    mode is ``"none"`` or ``"npz"``.
+    mode is ``"none"``.
 
     Args:
         ds_target: Target / ground-truth dataset (may contain ``init_time``,
