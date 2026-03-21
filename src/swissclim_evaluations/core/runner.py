@@ -89,9 +89,10 @@ def run_selected(cfg: dict[str, Any]) -> None:
     derived_cfg = cfg.get("derived_variables") or {}
     if derived_cfg:
         ds_target, ds_prediction = add_derived_variables(ds_target, ds_prediction, derived_cfg)
-        # Re-standardize so derived variables are present in the normalised datasets
-        # used by wd_kde (and any other module that uses ds_target_std / ds_prediction_std).
-        ds_target_std, ds_prediction_std = data_selection.standardize_pair(ds_target, ds_prediction)
+        if cfg.get("__ds_prediction_pre_ens") is not None:
+            _, cfg["__ds_prediction_pre_ens"] = add_derived_variables(
+                ds_target, cfg["__ds_prediction_pre_ens"], derived_cfg
+            )
 
     # Retrieve the parsed lead time policy AFTER preparation
     lead_policy = cfg.get("__lead_time_policy")
@@ -352,9 +353,18 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 c.info("No ensemble dimension → deterministic inputs.")
             _t = time.time()
             try:
+                _ds_pred_maps, _ds_pred_std_maps = data_selection.resolve_module_prediction(
+                    "maps", ds_prediction, ds_prediction_std, ds_target, cfg
+                )
+                _ds_target_plot_maps, _ds_pred_plot_maps = data_selection.select_plot_datetime(
+                    ds_target, _ds_pred_maps, cfg
+                )
+                _ds_pred_plot_maps, _ = data_selection.select_plot_ensemble(
+                    _ds_pred_plot_maps, _ds_pred_std_maps, cfg
+                )
                 maps_mod.run(
-                    ds_target_plot,
-                    ds_prediction_plot,
+                    _ds_target_plot_maps,
+                    _ds_pred_plot_maps,
                     out_root,
                     plotting,
                     ensemble_mode=ensemble_cfg.get("maps"),
@@ -407,9 +417,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 c.info("No ensemble dimension → deterministic inputs.")
             _t = time.time()
             try:
+                _ds_pred_hist, _ = data_selection.resolve_module_prediction(
+                    "histograms", ds_prediction, ds_prediction_std, ds_target, cfg
+                )
                 hist_mod.run(
                     ds_target,
-                    ds_prediction,
+                    _ds_pred_hist,
                     out_root,
                     plotting,
                     ensemble_mode=ensemble_cfg.get("histograms"),
@@ -448,11 +461,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic standardized inputs.")
         _t = time.time()
         try:
+            _ds_pred_wdkde, _ds_pred_std_wdkde = data_selection.resolve_module_prediction(
+                "wd_kde", ds_prediction, ds_prediction_std, ds_target, cfg
+            )
             wd_mod.run(
                 ds_target,
-                ds_prediction,
+                _ds_pred_wdkde,
                 ds_target_std,
-                ds_prediction_std,
+                _ds_pred_std_wdkde,
                 out_root,
                 plotting,
                 ensemble_mode=ensemble_cfg.get("wd_kde"),
@@ -495,9 +511,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
+            _ds_pred_es, _ = data_selection.resolve_module_prediction(
+                "energy_spectra", ds_prediction, ds_prediction_std, ds_target, cfg
+            )
             es_mod.run(
                 ds_target,
-                ds_prediction,
+                _ds_pred_es,
                 out_root,
                 plotting,
                 cfg.get("selection", {}),
@@ -555,9 +574,12 @@ def run_selected(cfg: dict[str, Any]) -> None:
                 c.info("No ensemble dimension → deterministic inputs.")
             _t = time.time()
             try:
+                _ds_pred_vp, _ = data_selection.resolve_module_prediction(
+                    "vertical_profiles", ds_prediction, ds_prediction_std, ds_target, cfg
+                )
                 vp_mod.run(
                     ds_target,
-                    ds_prediction,
+                    _ds_pred_vp,
                     out_root,
                     plotting,
                     cfg.get("selection", {}),
@@ -600,12 +622,15 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
+            _ds_pred_det, _ds_pred_std_det = data_selection.resolve_module_prediction(
+                "deterministic", ds_prediction, ds_prediction_std, ds_target, cfg
+            )
             # Pass lead_policy through so per-lead deterministic artifacts are generated
             det_mod.run(
                 ds_target,
-                ds_prediction,
+                _ds_pred_det,
                 ds_target_std,
-                ds_prediction_std,
+                _ds_pred_std_det,
                 out_root,
                 plotting,
                 cfg.get("metrics", {}),
@@ -647,12 +672,16 @@ def run_selected(cfg: dict[str, Any]) -> None:
             c.info("No ensemble dimension → deterministic inputs.")
         _t = time.time()
         try:
+            _ds_pred_ets, _ = data_selection.resolve_module_prediction(
+                "ets", ds_prediction, ds_prediction_std, ds_target, cfg
+            )
             # Provide lead_policy to unlock by-lead ETS artifacts
             ets_mod.run(
                 ds_target,
-                ds_prediction,
+                _ds_pred_ets,
                 out_root,
                 cfg.get("metrics", {}),
+                plotting_cfg=plotting,
                 ensemble_mode=ensemble_cfg.get("ets"),
                 lead_policy=lead_policy,
                 performance_cfg=performance_cfg,
@@ -716,11 +745,14 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     # 1. PIT diagnostics (computation + plotting)
                     # The orchestrator currently keeps compute and plotting as split calls.
 
+                    _ds_pred_prob, _ = data_selection.resolve_module_prediction(
+                        "probabilistic", ds_prediction, ds_prediction_std, ds_target, cfg
+                    )
                     if mode != "none":
                         c.info("[probabilistic] Stage 1/2: PIT metric computation + plotting")
                         orchestrator.run_probabilistic(
                             ds_target,
-                            ds_prediction,
+                            _ds_pred_prob,
                             out_root,
                             cfg_plot=plotting,
                             cfg_all=cfg,
@@ -738,7 +770,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     c.info("[probabilistic] Stage 2/2: WBX CRPS/SSR aggregation and outputs")
                     orchestrator.run_probabilistic_wbx(
                         ds_target,
-                        ds_prediction,
+                        _ds_pred_prob,
                         out_root,
                         plotting,
                         cfg,

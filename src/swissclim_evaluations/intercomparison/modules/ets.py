@@ -11,7 +11,9 @@ from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
     ensure_dir,
+    model_color_map,
     print_file_list,
+    reorder_pivot_columns,
     report_checklist,
     report_missing,
     scan_model_sets,
@@ -21,6 +23,7 @@ from swissclim_evaluations.intercomparison.core import (
 def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Combine ETS metrics from multiple models and plot vs lead time."""
     dst_ets = ensure_dir(out_root / "ets")
+    _cmap = model_color_map(labels)
 
     # Availability report
     # Look for any ETS metrics CSV
@@ -95,8 +98,10 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                     # Pivot to get models side-by-side for each threshold
                     pivot = group.pivot(index="threshold", columns="model", values="ETS")
                     if not pivot.empty:
+                        pivot = reorder_pivot_columns(pivot, labels)
+                        _bar_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
                         fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-                        pivot.plot(kind="bar", ax=ax, width=0.8)
+                        pivot.plot(kind="bar", ax=ax, width=0.8, color=_bar_colors or None)
                         ax.set_title(f"ETS by Threshold — {format_variable_name(str(var))}")
                         ax.set_ylabel("ETS")
                         ax.set_xlabel("Threshold")
@@ -116,7 +121,8 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                     var_part, thresh_part = col.split("_ETS ", 1)
                     wide_metrics.setdefault(var_part, []).append((thresh_part, col))
                 except ValueError:
-                    # Column name is not in the expected "<variable>_ETS <threshold>" format; skip
+                    # Column name is not in the expected
+                    # "<variable>_ETS <threshold>" format; skip it.
                     pass
 
         for var, items in wide_metrics.items():
@@ -152,7 +158,9 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                         pass
 
                     fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
-                    df_plot.plot(kind="bar", ax=ax, width=0.8)
+                    df_plot = reorder_pivot_columns(df_plot, labels)
+                    _bar_colors = [_cmap[c] for c in df_plot.columns if c in _cmap]
+                    df_plot.plot(kind="bar", ax=ax, width=0.8, color=_bar_colors or None)
                     ax.set_title(
                         f"ETS by Threshold (Mean over Leads) — {format_variable_name(str(var))}"
                     )
@@ -168,8 +176,19 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
 
         # Plot ETS vs Lead Time per (Variable, Threshold)
         # Columns are: model, lead_time_hours, <var>_ETS <thresh>%
-        meta_cols = {"model", "lead_time_hours", "Unnamed: 0"}
-        metric_cols = [c for c in combined.columns if c not in meta_cols]
+        meta_cols = {
+            "model",
+            "lead_time_hours",
+            "Unnamed: 0",
+            "variable",
+            "threshold",
+            "level",
+            "init_time",
+            "valid_time",
+            "source_file",
+            "member",
+        }
+        metric_cols = [col for col in combined.columns if col not in meta_cols]
 
         # Group by variable and threshold
         # Expected format: "{var}_ETS {thresh}%"
@@ -185,13 +204,18 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                 var_part = col
                 thresh_part = ""
 
-            pivot = combined.pivot(
-                index="lead_time_hours", columns="model", values=col
+            pivot = combined.pivot_table(
+                index="lead_time_hours",
+                columns="model",
+                values=col,
+                aggfunc="mean",
             ).sort_index()
 
             if not pivot.empty and pivot.notna().sum().sum() > 0 and pivot.shape[1] >= 2:
+                pivot = reorder_pivot_columns(pivot, labels)
+                _line_colors = [_cmap[c] for c in pivot.columns if c in _cmap]
                 fig, ax = plt.subplots(figsize=(10, 6))
-                pivot.plot(kind="line", ax=ax, marker="o", markersize=4)
+                pivot.plot(kind="line", ax=ax, marker="o", markersize=4, color=_line_colors or None)
 
                 title = f"ETS vs Lead Time — {format_variable_name(var_part)}"
                 if thresh_part:

@@ -292,6 +292,7 @@ def run(
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
+    spatial_maps = bool(cfg.get("spatial_maps", False))
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
@@ -530,20 +531,21 @@ def run(
                 c.print(standardized_metrics.head())
 
         # ── Spatial metric maps (MAE / RMSE / Bias) ──────────────────────────
-        try:
-            _generate_spatial_metric_maps(
-                ds_target,
-                ds_prediction,
-                include=include,
-                section_output=section_output,
-                init_range=init_range,
-                lead_range=lead_range,
-                ens_token=ens_token,
-                save_fig=save_fig,
-                save_npz=save_npz,
-            )
-        except Exception:
-            c.warn("[deterministic] Spatial metric map generation failed")
+        if spatial_maps:
+            try:
+                _generate_spatial_metric_maps(
+                    ds_target,
+                    ds_prediction,
+                    include=include,
+                    section_output=section_output,
+                    init_range=init_range,
+                    lead_range=lead_range,
+                    ens_token=ens_token,
+                    save_fig=save_fig,
+                    save_npz=save_npz,
+                )
+            except Exception:
+                c.warn("[deterministic] Spatial metric map generation failed")
 
     else:
         pooled_metrics: list[pd.DataFrame] = []

@@ -2,7 +2,7 @@
 #SBATCH --job-name=swissclim-eval-single
 #SBATCH --output=logs/swissclim_single_%j.out
 #SBATCH --error=logs/swissclim_single_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=06:00:00
 #SBATCH --account=a122
 #SBATCH --partition=normal
 #SBATCH --nodes=1
@@ -12,7 +12,7 @@
 # USER INPUT (edit this section only)
 # =============================================================
 # Evaluation config to run (absolute path or relative to submit/project directory)
-CONFIG_FILE="config/firat/train_config_ESFMs_umv3_1aa8et_esfmi_meanmaeafcrps_sgd_atm_adalndecsb0scposemb_ro.yaml"
+CONFIG_FILE="config/example_config.yaml"
 
 # Enroot/EDF TOML (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
@@ -24,29 +24,115 @@ DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
 # - prepend  : PROJECT_ROOT/src:$PYTHONPATH
 # - overwrite: PROJECT_ROOT/src only
 # - keep     : do not modify PYTHONPATH (default)
-PYTHONPATH_MODE="prepend"
+PYTHONPATH_MODE="keep"
 # =============================================================
 
 # Resolve paths relative to the job submission directory when running under Slurm.
 # Using BASH_SOURCE alone is not reliable because Slurm can execute a spool copy.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SUBMIT_DIR"
+if [ ! -d "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+fi
+LOG_DIR="${PROJECT_ROOT}/logs"
 
-# -------------------------------------------------------------
-# CONFIG TO RUN - EDIT THIS TO POINT TO YOUR DESIRED CONFIG FILE
-CONFIG_FILE="/capstor/store/cscs/swissai/a122/sadamov/SwissClim_Evaluations/config/example_config.yaml"
+cd "$PROJECT_ROOT" || {
+    echo "ERROR: Failed to change directory to project root: $PROJECT_ROOT"
+    exit 1
+}
 
-# -------------------------------------------------------------
-# EDIT THESE TWO LINES FOR YOUR SETUP
-# 1) Path to your Enroot/EDF TOML file (or EDF name if your site supports it)
-EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
-# -------------------------------------------------------------
-export PYTHONPATH="${SUBMIT_DIR}/src:${PYTHONPATH}"
+# Resolve CONFIG_FILE robustly (absolute or relative to submit directory)
+_abs_path() {
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$1"
+    else
+        (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")")
+    fi
+}
+resolve_config_path() {
+    local cfg="$1"
+    if [ -z "$cfg" ]; then
+        return 1
+    fi
+    if [ -f "$cfg" ]; then
+        _abs_path "$cfg"
+        return 0
+    fi
+    if [ -f "${SUBMIT_DIR}/${cfg}" ]; then
+        _abs_path "${SUBMIT_DIR}/${cfg}"
+        return 0
+    fi
+    if [ -f "${PROJECT_ROOT}/${cfg}" ]; then
+        _abs_path "${PROJECT_ROOT}/${cfg}"
+        return 0
+    fi
+    return 1
+}
 
-# -------------------------------------------------------------
-# DASK SCRATCH CONFIGURATION
-# Set the directory for Dask spillover to avoid filling /tmp
-# -------------------------------------------------------------
-export DASK_TEMPORARY_DIRECTORY="/iopsstor/scratch/cscs/$USER/dask-tmp"
+resolve_output_dir() {
+    local cfg_path="$1"
+    local project_root="$2"
+    local py_bin
+    py_bin=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+    [ -z "$py_bin" ] && return 0
+    "$py_bin" - <<'PY' "$cfg_path" "$project_root"
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+cfg_path = Path(sys.argv[1]).resolve()
+project_root = Path(sys.argv[2]).resolve()
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+out = cfg.get("output_root") or (cfg.get("paths", {}) or {}).get("output_root", "")
+if not out:
+    print("")
+    raise SystemExit(0)
+
+out_path = Path(out)
+if not out_path.is_absolute():
+    cfg_based = (cfg_path.parent / out_path).resolve()
+    project_based = (project_root / out_path).resolve()
+    out_path = cfg_based if cfg_based.exists() else project_based
+
+print(str(out_path))
+PY
+}
+
+if ! CONFIG_FILE_RESOLVED="$(resolve_config_path "$CONFIG_FILE")"; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
+    echo "Checked: '$CONFIG_FILE', '${SUBMIT_DIR}/${CONFIG_FILE}', '${PROJECT_ROOT}/${CONFIG_FILE}'"
+    exit 1
+fi
+if [ -z "$CONFIG_FILE_RESOLVED" ]; then
+    echo "ERROR: Failed to resolve absolute path for config: $CONFIG_FILE"
+    exit 1
+fi
+CONFIG_FILE="$CONFIG_FILE_RESOLVED"
+
+# Configure PYTHONPATH behavior
+SRC_PATH="${PROJECT_ROOT}/src"
+case "$PYTHONPATH_MODE" in
+    prepend)
+        export PYTHONPATH="${SRC_PATH}:${PYTHONPATH:-}"
+        echo "PYTHONPATH mode: prepend (${SRC_PATH} added first)"
+        ;;
+    overwrite)
+        export PYTHONPATH="${SRC_PATH}"
+        echo "PYTHONPATH mode: overwrite (set to ${SRC_PATH})"
+        ;;
+    keep)
+        echo "PYTHONPATH mode: keep (no changes)"
+        ;;
+    *)
+        echo "ERROR: Invalid PYTHONPATH_MODE='$PYTHONPATH_MODE'. Use: prepend|overwrite|keep"
+        exit 1
+        ;;
+esac
+
+export DASK_TEMPORARY_DIRECTORY
 mkdir -p "$DASK_TEMPORARY_DIRECTORY"
 
 
@@ -56,7 +142,12 @@ export PYTHONUNBUFFERED=1
 
 
 # Create logs directory if it doesn't exist
-mkdir -p logs
+mkdir -p "$LOG_DIR"
+
+cleanup() {
+    :
+}
+trap cleanup EXIT
 
 
 # Generate robust job name from config (parent_dir + filename)
@@ -75,14 +166,15 @@ EXIT_CODE=$?
 echo "Evaluation finished."
 
 # --- Copy Logs ---
-# Extract output_root using python
-OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_FILE')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+# Extract and resolve output_root robustly
+OUTDIR="$(resolve_output_dir "$CONFIG_FILE" "$PROJECT_ROOT")"
 
-if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
+if [ -n "$OUTDIR" ]; then
+    mkdir -p "$OUTDIR"
     echo "Copying logs to $OUTDIR"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
-    cp "logs/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
-    cp "logs/dask_distributed_${SLURM_JOB_ID}_0.log" "$OUTDIR/${job_name}_dask.log" 2>/dev/null || \
+    cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.out" "$OUTDIR/${job_name}.out" 2>/dev/null || echo "Could not copy .out log"
+    cp "${LOG_DIR}/swissclim_single_${SLURM_JOB_ID}.err" "$OUTDIR/${job_name}.err" 2>/dev/null || echo "Could not copy .err log"
+    cp "${LOG_DIR}/dask_distributed_${SLURM_JOB_ID}_0.log" "$OUTDIR/${job_name}_dask.log" 2>/dev/null || \
     echo "Could not copy dask log"
 fi
 
@@ -94,34 +186,75 @@ fi
 # --- Notebook Rendering ---
 echo "Rendering notebooks..."
 
-# Create a temporary bash script to handle notebook rendering
-cat <<'EOF' > render_single_notebook.sh
+NOTEBOOK_LOG="${LOG_DIR}/${job_name}_notebooks.log"
+srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
+    bash -s "$CONFIG_FILE" "$PROJECT_ROOT" "$OUTDIR" > "$NOTEBOOK_LOG" 2>&1 <<'RENDER_EOF'
 #!/bin/bash
 
-# Install missing dependencies for notebook rendering
-
 CONFIG_PATH="$1"
-
-# Extract output_root using python
-OUTDIR=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG_PATH')); print(cfg.get('output_root') or cfg.get('paths', {}).get('output_root', ''))")
+PROJECT_ROOT="$2"
+OUTDIR="$3"
 
 if [ -z "$OUTDIR" ]; then
     echo "No output_root found in $CONFIG_PATH"
     exit 1
 fi
 
-if [ ! -d "$OUTDIR" ]; then
-    echo "Output directory does not exist: $OUTDIR"
-    exit 1
-fi
+mkdir -p "$OUTDIR"
 
 echo "Output directory: $OUTDIR"
 
-# List of notebooks to render
-NOTEBOOKS=("deterministic_verification.ipynb" "probabilistic_verification.ipynb")
+# Select notebooks based on config type and available outputs.
+NOTEBOOKS_RAW=$(python - <<'PY' "$CONFIG_PATH"
+import yaml
+from pathlib import Path
+import sys
+
+cfg_path = Path(sys.argv[1])
+cfg = yaml.safe_load(cfg_path.read_text()) or {}
+paths_block = cfg.get("paths", {}) or {}
+
+is_intercomparison = bool(cfg.get("models")) and not (
+    paths_block.get("target")
+    or paths_block.get("nwp")
+    or paths_block.get("prediction")
+    or paths_block.get("ml")
+)
+
+outdir_val = cfg.get("output_root") or paths_block.get("output_root", "")
+outdir = Path(outdir_val)
+
+def has_files(p: Path) -> bool:
+    return p.exists() and any(x.is_file() for x in p.rglob("*"))
+
+notebooks: list[str] = []
+
+if is_intercomparison:
+    # Only render the intercomparison notebook; deterministic/probabilistic notebooks
+    # require zarr datasets and must not be rendered for intercomparison configs.
+    if has_files(outdir):
+        notebooks.append("model_intercomparison.ipynb")
+else:
+    if has_files(outdir / "deterministic"):
+        notebooks.append("deterministic_verification.ipynb")
+    if has_files(outdir / "probabilistic"):
+        notebooks.append("probabilistic_verification.ipynb")
+
+
+print(" ".join(notebooks))
+PY
+)
+
+if [ -z "$NOTEBOOKS_RAW" ]; then
+    echo "No matching deterministic/probabilistic/intercomparison outputs found; skipping notebook rendering."
+    exit 0
+fi
+
+read -r -a NOTEBOOKS <<< "$NOTEBOOKS_RAW"
+echo "Selected notebooks: ${NOTEBOOKS[*]}"
 
 for nb_name in "${NOTEBOOKS[@]}"; do
-    nb="notebooks/${nb_name}"
+    nb="${PROJECT_ROOT}/notebooks/${nb_name}"
     if [ ! -f "$nb" ]; then
         echo "Notebook not found: $nb"
         continue
@@ -142,13 +275,10 @@ for nb_name in "${NOTEBOOKS[@]}"; do
         echo "ERROR: Failed to convert $nb_name to HTML"
     fi
 done
-EOF
+RENDER_EOF
 
-# Run the rendering script
-srun --ntasks=1 --container-writable --environment="${EDF_CONFIG}" \
-    bash render_single_notebook.sh "$CONFIG_FILE"
-
-# Cleanup
-rm render_single_notebook.sh
+if [ -n "$OUTDIR" ] && [ -f "$NOTEBOOK_LOG" ]; then
+    cp "$NOTEBOOK_LOG" "$OUTDIR/${job_name}_notebooks.log" 2>/dev/null || echo "Could not copy notebook render log"
+fi
 
 echo "All tasks completed."
