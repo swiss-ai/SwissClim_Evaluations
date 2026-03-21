@@ -41,6 +41,26 @@ def run(
         if "ensemble" in ds_target.dims:
             ds_t_run = ds_target.mean(dim="ensemble", keep_attrs=True)
 
+    elif mode == "pooled" and "ensemble" in ds_prediction.dims:
+        # Stack ensemble with a sample dimension so downstream flatten() treats
+        # all ensemble members as independent samples (explicit pooling).
+        non_ens_dims = [d for d in ds_prediction.dims if d != "ensemble"]
+        sample_dim = next(
+            (d for d in ("init_time", "time", "lead_time") if d in non_ens_dims),
+            non_ens_dims[0] if non_ens_dims else None,
+        )
+        if sample_dim is None:
+            raise ValueError(
+                "Pooled ensemble mode requires at least one non-ensemble dimension to stack "
+                f"over, but only found: {tuple(ds_prediction.dims)!r}"
+            )
+        ds_p_run = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
+        ds_t_run = (
+            ds_target.stack(pooled_sample=("ensemble", sample_dim))
+            if "ensemble" in ds_target.dims
+            else ds_target
+        )
+
     # Bivariate histograms
     bivariate_pairs = cfg.get("bivariate_pairs")
     if not bivariate_pairs:
@@ -68,8 +88,6 @@ def run(
                 ensemble_token=ens_token,
             )
     else:
-        # mean mode: ds_p_run is already reduced above.
-        # pooled mode: pass full dataset; the plotter flattens all dims.
         ens_token = ensemble_mode_to_token(mode)
         calculate_and_plot_bivariate_histograms(
             ds_p_run,

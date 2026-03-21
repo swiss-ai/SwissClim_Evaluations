@@ -97,6 +97,12 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             continue
 
         var_x, var_y = _infer_var_pair(fname, first_payload)
+        if not var_x or not var_y:
+            c.warn(
+                f"[multivariate] Could not infer var_x/var_y from {fname}; "
+                "axis labels will be empty. Add a recognised pair to known_pairs or "
+                "ensure the NPZ was saved with var_x/var_y keys."
+            )
         level_hpa = _scalar_float(first_payload.get("level_hpa"))
 
         ref_hist_target = np.asarray(first_payload["hist_target"])
