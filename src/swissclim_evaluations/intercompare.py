@@ -62,6 +62,7 @@ MODULE_ALIASES: dict[str, str] = {
     "metrics": "metrics",
     "ets": "ets",
     "prob": "prob",
+    "ssim": "ssim",
     # long-form aliases
     "histograms": "hist",
     "wd_kde": "kde",
@@ -105,6 +106,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/pit_hist*.npz",
         "probabilistic/crps_map_*.npz",
     ),
+    "ssim": ("ssim/ssim_ssim_*.csv",),
 }
 
 

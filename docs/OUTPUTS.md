@@ -128,6 +128,7 @@ SSIM filenames follow the same minimal pattern as deterministic metrics and incl
 
 ```text
 ssim/ssim_ssim_ensmean.csv
+ssim/ssim_ssim_enspooled.csv   # pooled ensemble mode
 ssim/ssim_ssim_ens0.csv   # members mode per-member file
 ```
 

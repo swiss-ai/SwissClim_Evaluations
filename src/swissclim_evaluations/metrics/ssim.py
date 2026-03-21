@@ -184,8 +184,8 @@ def run(
 
     # Extract SSIM parameters
     sigma = float(cfg.get("sigma", 1.5))
-    K1 = float(cfg.get("K1", 0.01))
-    K2 = float(cfg.get("K2", 0.03))
+    K1 = float(cfg.get("k1", cfg.get("K1", 0.01)))
+    K2 = float(cfg.get("k2", cfg.get("K2", 0.03)))
     gaussian_weights = bool(cfg.get("gaussian_weights", True))
     use_sample_covariance = bool(cfg.get("use_sample_covariance", True))
 
@@ -222,7 +222,8 @@ def run(
         for m in range(n_members):
             ds_p_mem = ds_prediction.isel(ensemble=m, drop=True)
             if "ensemble" in ds_target.dims:
-                ds_t_mem = ds_target.isel(ensemble=m, drop=True)
+                ens_idx = 0 if ds_target.sizes.get("ensemble", 0) == 1 else m
+                ds_t_mem = ds_target.isel(ensemble=ens_idx, drop=True)
             else:
                 ds_t_mem = ds_target
 
@@ -240,15 +241,20 @@ def run(
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
         # Stack ensemble into the sample dimension
-        sample_dim = (
-            "init_time"
-            if "init_time" in ds_prediction.dims
-            else (
-                "lead_time"
-                if "lead_time" in ds_prediction.dims
-                else ("time" if "time" in ds_prediction.dims else list(ds_prediction.dims)[0])
+        non_ens_dims = [d for d in ds_prediction.dims if d != "ensemble"]
+        if "init_time" in non_ens_dims:
+            sample_dim = "init_time"
+        elif "lead_time" in non_ens_dims:
+            sample_dim = "lead_time"
+        elif "time" in non_ens_dims:
+            sample_dim = "time"
+        elif non_ens_dims:
+            sample_dim = non_ens_dims[0]
+        else:
+            raise ValueError(
+                "Pooled ensemble mode requires at least one non-ensemble dimension to stack "
+                f"over, but only found: {tuple(ds_prediction.dims)!r}"
             )
-        )
         ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
         ds_target_stacked = ds_target
         if "ensemble" in ds_target.dims:

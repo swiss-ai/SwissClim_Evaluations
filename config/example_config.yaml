@@ -339,7 +339,6 @@ metrics:
   # SSIM configuration
   ssim:
     sigma: 1.5               # Standard deviation for Gaussian kernel
-    # win_size: 7           # Window size (optional, defaults to 7 or derived from sigma)
 
   probabilistic:
     # Per-level reporting for 3D variables is enabled by default.
