@@ -54,7 +54,7 @@ def _infer_var_pair(fname: str, payload: dict[str, np.ndarray]) -> tuple[str, st
     if var_x and var_y:
         return var_x, var_y
 
-    stem = fname.replace("bivariate_hist_", "").replace(".npz", "")
+    stem = fname.replace("bivariate_", "").replace(".npz", "")
     stem = re.sub(r"_ens[a-zA-Z0-9]+$", "", stem)
 
     known_pairs = [
@@ -75,7 +75,7 @@ def _infer_var_pair(fname: str, payload: dict[str, np.ndarray]) -> tuple[str, st
 
 def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Compare multivariate bivariate-histogram artifacts across models."""
-    pattern = "multivariate/bivariate_hist_*.npz"
+    pattern = "multivariate/bivariate_*.npz"
 
     per_model, _, uni = scan_model_sets(models, pattern)
     report_missing("multivariate", models, labels, per_model, uni)
@@ -211,15 +211,15 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 title += f" ({level_hpa:g} hPa)"
             fig.suptitle(title)
         else:
-            fig.suptitle(fname.replace("bivariate_hist_", "").replace(".npz", ""))
+            fig.suptitle(fname.replace("bivariate_", "").replace(".npz", ""))
         fig.tight_layout()
 
-        stem = fname.replace("bivariate_hist_", "").replace(".npz", "")
+        stem = fname.replace("bivariate_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"
         fig.savefig(out_png, dpi=150)
         plt.close(fig)
 
-        out_npz = dst / f"bivariate_hist_{stem}_compare.npz"
+        out_npz = dst / f"bivariate_{stem}_compare.npz"
         valid_labels = [str(entry["label"]) for entry in model_entries]
         uniform_grid = all(
             np.array_equal(np.asarray(entry["bins_x"]), ref_bins_x)

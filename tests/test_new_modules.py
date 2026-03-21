@@ -47,6 +47,6 @@ def test_multivariate_smoke(tmp_path: Path):
     )
 
     multi_dir = out_root / "multivariate"
-    files = list(multi_dir.glob("bivariate_hist_*.npz"))
+    files = list(multi_dir.glob("bivariate_*.npz"))
     assert len(files) > 0
-    assert f"bivariate_hist_{pair[0]}_{pair[1]}_ensmean.npz" in [f.name for f in files]
+    assert f"bivariate_{pair[0]}_{pair[1]}_ensmean.npz" in [f.name for f in files]

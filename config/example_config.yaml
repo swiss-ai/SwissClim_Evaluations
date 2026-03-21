@@ -258,14 +258,14 @@ derived_variables:
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
-  maps: false                 # Global and per-level maps (Cartopy)
-  histograms: false           # Distributions by latitude bands (2D + optional per-level 3D variables)
-  wd_kde: false               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: false       # Zonal energy spectra + LSD table
-  vertical_profiles: false    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
-  deterministic: false        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
-  ets: false                  # Equitable Threat Score across quantile thresholds
-  probabilistic: false        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  maps: true                  # Global and per-level maps (Cartopy)
+  histograms: true            # Distributions by latitude bands (2D + optional per-level 3D variables)
+  wd_kde: true                # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
+  energy_spectra: true        # Zonal energy spectra + LSD table
+  vertical_profiles: true     # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
+  deterministic: true         # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: true                   # Equitable Threat Score across quantile thresholds
+  probabilistic: true         # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
   multivariate: true         # Multivariate metrics (e.g. Bivariate Histograms)
 
 metrics:

@@ -146,7 +146,7 @@ def test_npz_keys_present(tmp_path: Path):
     calculate_and_plot_bivariate_histograms(
         ds_p, ds_t, [["temperature", "specific_humidity"]], tmp_path, bins=20
     )
-    npzs = list((tmp_path / "multivariate").glob("bivariate_hist_*.npz"))
+    npzs = list((tmp_path / "multivariate").glob("bivariate_*.npz"))
     assert npzs, "Expected at least one NPZ"
     with np.load(npzs[0]) as f:
         for key in ("hist", "hist_target", "bins_x", "bins_y", "var_x", "var_y"):
@@ -159,7 +159,7 @@ def test_per_level_files_created(tmp_path: Path):
     calculate_and_plot_bivariate_histograms(
         ds_p, ds_t, [["temperature", "specific_humidity"]], tmp_path, bins=20
     )
-    npzs = list((tmp_path / "multivariate").glob("bivariate_hist_*_level*.npz"))
+    npzs = list((tmp_path / "multivariate").glob("bivariate_*_level*.npz"))
     assert len(npzs) == 2, f"Expected 2 level files, got {len(npzs)}"
     level_suffixes = {f.stem.split("_level")[-1] for f in npzs}
     assert level_suffixes == {"500", "850"}
@@ -183,7 +183,7 @@ def test_skip_missing_variable(tmp_path: Path):
         ds_p, ds_t, [["temperature", "specific_humidity"]], tmp_path, bins=20
     )
     # No crash; no NPZ written
-    assert not list((tmp_path / "multivariate").glob("bivariate_hist_*.npz"))
+    assert not list((tmp_path / "multivariate").glob("bivariate_*.npz"))
 
 
 def test_physical_constraints_any_level(tmp_path: Path):
@@ -197,7 +197,7 @@ def test_physical_constraints_any_level(tmp_path: Path):
         tmp_path,
         bins=20,
     )
-    npzs = list((tmp_path / "multivariate").glob("bivariate_hist_*_level850*.npz"))
+    npzs = list((tmp_path / "multivariate").glob("bivariate_*_level850*.npz"))
     assert npzs, "Expected NPZ for 850 hPa"
 
 
@@ -214,7 +214,7 @@ def test_run_mean_mode(tmp_path: Path):
         metrics_cfg={"multivariate": {"bivariate_pairs": [["temperature", "specific_humidity"]]}},
         ensemble_mode="mean",
     )
-    npzs = list((tmp_path / "multivariate").glob("bivariate_hist_*_ensmean.npz"))
+    npzs = list((tmp_path / "multivariate").glob("bivariate_*_ensmean.npz"))
     assert npzs
 
 
@@ -262,5 +262,5 @@ def test_run_pooled_mode(tmp_path: Path):
         metrics_cfg={"multivariate": {"bivariate_pairs": [["temperature", "specific_humidity"]]}},
         ensemble_mode="pooled",
     )
-    npzs = list((tmp_path / "multivariate").glob("bivariate_hist_*_enspooled.npz"))
+    npzs = list((tmp_path / "multivariate").glob("bivariate_*_enspooled.npz"))
     assert npzs

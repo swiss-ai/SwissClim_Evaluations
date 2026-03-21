@@ -130,18 +130,13 @@ def _get_physical_constraints(
     is_ws_x = "wind_speed" in lx
     is_ws_y = "wind_speed" in ly
 
-    # Pressure for the saturation curve [Pa]: use actual level when available,
-    # fall back to surface (~1013 hPa) for 2-D variables.
-    P_Pa = float(level_hpa) * 100.0 if level_hpa is not None else 101325.0
-    level_label = f"{int(round(float(level_hpa)))} hPa" if level_hpa is not None else "surface"
-
     # ── Temperature vs Specific Humidity ────────────────────────────────────
-    # Physical upper bound: q ≤ q_sat(T) — Clausius–Clapeyron.
+    # Physical upper bound: q ≤ q_sat(T) — Clausius–Clapeyron at 500 hPa.
     # Physical lower bound: q ≥ 0.
     if (is_temp_x and is_q_y) or (is_q_x and is_temp_y):
         if is_temp_x:  # temperature on x-axis, q on y-axis
             T_arr = np.linspace(bins_x[0], bins_x[-1], 400)
-            q_sat = _q_sat_at_pressure(T_arr, P_Pa=P_Pa)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
             constraints.append(
                 {
                     "type": "curve",
@@ -153,7 +148,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": rf"$q_\mathrm{{sat}}(T)$ — Bolton (1980), {level_label}",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -177,7 +172,7 @@ def _get_physical_constraints(
             )
         else:  # q on x-axis, temperature on y-axis
             T_arr = np.linspace(bins_y[0], bins_y[-1], 400)
-            q_sat = _q_sat_at_pressure(T_arr, P_Pa=P_Pa)
+            q_sat = _q_sat_at_pressure(T_arr, P_Pa=50000.0)
             constraints.append(
                 {
                     "type": "curve",
@@ -189,7 +184,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": rf"$q_\mathrm{{sat}}(T)$ — Bolton (1980), {level_label}",
+                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -216,43 +211,58 @@ def _get_physical_constraints(
     # Geostrophic balance: U_g = (g / f) * |∇Z|
     # Plotted as a diagonal reference line through the origin.
     # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
+    # Guard: only draw the line when the geostrophic equilibrium x values span
+    # at least 2 % of the visible x-axis range; otherwise the line is compressed
+    # to the left edge and looks like an artefact (vertical line at x≈0).
     if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
         g = 9.81
         f_abs = 1.0e-4  # mid-latitude Coriolis parameter, s⁻¹
         slope = g / f_abs  # ≈ 98 100  (m s⁻¹) / (m m⁻¹)
 
+        x_range_data = max(float(bins_x[-1]) - float(bins_x[0]), 1e-12)
+        y_range_data = max(float(bins_y[-1]) - float(bins_y[0]), 1e-12)
+
         if is_zgrad_x and is_ws_y:
             # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
-            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
-            y_arr = slope * x_arr
-            constraints.append(
-                {
-                    "type": "curve",
-                    "value_x": x_arr,
-                    "value_y": y_arr,
-                    "color": "#ff7f0e",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-                }
-            )
+            # x where the geostrophic line reaches the top of the visible y range
+            x_at_ymax = float(bins_y[-1]) / slope
+            if x_at_ymax > 0.02 * x_range_data:
+                x_end = min(float(bins_x[-1]), x_at_ymax * 1.05)
+                x_arr = np.linspace(max(float(bins_x[0]), 0.0), x_end, 400)
+                y_arr = slope * x_arr
+                constraints.append(
+                    {
+                        "type": "curve",
+                        "value_x": x_arr,
+                        "value_y": y_arr,
+                        "color": "#ff7f0e",
+                        "lw": 2.0,
+                        "ls": "--",
+                        "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                        r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                    }
+                )
         elif is_zgrad_y and is_ws_x:
             # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
-            x_arr = np.linspace(max(bins_x[0], 0.0), bins_x[-1], 400)
-            y_arr = x_arr / slope
-            constraints.append(
-                {
-                    "type": "curve",
-                    "value_x": x_arr,
-                    "value_y": y_arr,
-                    "color": "#ff7f0e",
-                    "lw": 2.0,
-                    "ls": "--",
-                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                    r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-                }
-            )
+            y_at_xmax = float(bins_x[-1]) / slope
+            if y_at_xmax > 0.02 * y_range_data:
+                y_end = min(float(bins_y[-1]), y_at_xmax * 1.05)
+                x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
+                y_arr = x_arr / slope
+                mask = y_arr <= y_end
+                x_arr, y_arr = x_arr[mask], y_arr[mask]
+                constraints.append(
+                    {
+                        "type": "curve",
+                        "value_x": x_arr,
+                        "value_y": y_arr,
+                        "color": "#ff7f0e",
+                        "lw": 2.0,
+                        "ls": "--",
+                        "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
+                        r"$f=10^{-4}\,\mathrm{s}^{-1}$",
+                    }
+                )
 
         # Wind speed ≥ 0 hard bound
         if is_ws_y:
@@ -662,8 +672,6 @@ def _plot_bivariate_per_lead_grid(
                 show_colorbar=False,
                 show_legend=(i == 0),
             )
-        # Force square subplot regardless of data unit scales.
-        ax.set_box_aspect(1)
         # Show only lead-time label as subplot title (e.g. "+6h").
         ax.set_title(lead_label, fontsize=10)
         last_i = i
@@ -681,8 +689,8 @@ def _plot_bivariate_per_lead_grid(
         orientation="horizontal",
         location="bottom",
         pad=0.04,
-        fraction=0.04,
-        shrink=1.6,
+        fraction=0.08,
+        shrink=1.0,
     )
     cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
     cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
@@ -959,7 +967,7 @@ def calculate_and_plot_bivariate_histograms(
         # Save and Plot
         suffix = f"_{ensemble_token}" if ensemble_token else ""
         out_file = (
-            out_root / "multivariate" / f"bivariate_hist_{var_x}_{var_y}{level_suffix}{suffix}.npz"
+            out_root / "multivariate" / f"bivariate_{var_x}_{var_y}{level_suffix}{suffix}.npz"
         )
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1286,10 +1294,25 @@ def plot_bivariate_histogram(
         labels.append(lbl)
 
     if show_legend:
+        # Pin legend to a fixed corner for pairs with known data-cloud position;
+        # for all other pairs let matplotlib choose the least-obstructed corner.
+        lx_leg, ly_leg = var_x.lower(), var_y.lower()
+        is_temp_q = ("temperature" in lx_leg or "temperature" in ly_leg) and (
+            "specific_humidity" in lx_leg or "specific_humidity" in ly_leg
+        )
+        is_zgrad_ws = (
+            "geopotential_height_gradient" in lx_leg or "geopotential_height_gradient" in ly_leg
+        ) and ("wind_speed" in lx_leg or "wind_speed" in ly_leg)
+        if is_temp_q:
+            legend_loc = "upper left"
+        elif is_zgrad_ws:
+            legend_loc = "lower right"
+        else:
+            legend_loc = "best"
         ax.legend(
             handles=handles,
             labels=labels,
-            loc="upper right",
+            loc=legend_loc,
             handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
             fontsize="small",
             framealpha=0.85,

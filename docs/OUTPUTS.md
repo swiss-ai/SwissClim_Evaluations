@@ -124,14 +124,14 @@ ets_line_2m_temperature_data_ensmean.npz
 
 ### Multivariate Metrics (Bivariate Histograms)
 
-Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours). Physical constraint overlays (e.g. Clausius–Clapeyron saturation curve, geostrophic balance line) are drawn automatically at the appropriate pressure level when the pair is recognised.
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours). Physical constraint overlays (Clausius–Clapeyron saturation curve, geostrophic balance line) are drawn automatically at **500 hPa** when the pair is recognised; at other levels the overlays are suppressed.
 
 **Output files** (per variable pair, per pressure level for 3D variables, per ensemble token):
 
 ```text
-multivariate/bivariate_<var1>_<var2>[_level<N>]_<ens>.png          # density plot
-multivariate/bivariate_hist_<var1>_<var2>[_level<N>]_<ens>.npz     # histogram data
-multivariate/bivariate_by_lead_<var1>_<var2>[_level<N>]_<ens>.png  # per-lead grid (multi-lead only)
+multivariate/bivariate_<var1>_<var2>[_level<N>]_<ens>.png         # density plot
+multivariate/bivariate_<var1>_<var2>[_level<N>]_<ens>.npz         # histogram data
+multivariate/bivariate_by_lead_<var1>_<var2>[_level<N>]_<ens>.png # per-lead grid (multi-lead only)
 ```
 
 NPZ keys: `hist` (prediction), `hist_target` (reference), `bins_x`, `bins_y`, `var_x`, `var_y`, `level_hpa`.
