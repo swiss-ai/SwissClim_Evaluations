@@ -739,15 +739,25 @@ def calculate_and_plot_bivariate_histograms(
             pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
             pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
 
-            da_x = pred_x_sel.data.flatten()
-            da_y = pred_y_sel.data.flatten()
+            # Select matching level for target variables when available
+            targ_x_sel = targ_x.sel(level=level_hpa) if "level" in targ_x.dims else targ_x
+            targ_y_sel = targ_y.sel(level=level_hpa) if "level" in targ_y.dims else targ_y
 
-            # Compute min/max lazily to determine range and handle NaNs
-            min_x_lazy = da.nanmin(da_x)
-            max_x_lazy = da.nanmax(da_x)
-            min_y_lazy = da.nanmin(da_y)
-            max_y_lazy = da.nanmax(da_y)
+            # Flatten prediction and target data to 1D Dask arrays
+            da_x_pred = pred_x_sel.data.flatten()
+            da_y_pred = pred_y_sel.data.flatten()
+            da_x_targ = targ_x_sel.data.flatten()
+            da_y_targ = targ_y_sel.data.flatten()
 
+            # Combine prediction and target for range computation
+            da_x_combined = da.concatenate([da_x_pred, da_x_targ])
+            da_y_combined = da.concatenate([da_y_pred, da_y_targ])
+
+            # Compute min/max lazily over both prediction and target, handling NaNs
+            min_x_lazy = da.nanmin(da_x_combined)
+            max_x_lazy = da.nanmax(da_x_combined)
+            min_y_lazy = da.nanmin(da_y_combined)
+            max_y_lazy = da.nanmax(da_y_combined)
             range_jobs.append(
                 {
                     "min_x": min_x_lazy,
