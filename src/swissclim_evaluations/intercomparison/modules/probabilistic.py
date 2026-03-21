@@ -57,14 +57,14 @@ def _intercompare_spaghetti(
     """Generate gridded spaghetti comparison plots.
 
     For each common spaghetti NPZ file (one per variable/level), produces a
-    figure with **models as columns** and **lead-time subsets as rows**.  Each
-    panel shows all ensemble members as thin lines in the model's assigned
-    colour and the shared ground-truth target as a thick black line.
+    figure with **models arranged as columns** in a single-row grid
+    (shape 1 × ``n_models``). Each panel shows all ensemble members as thin
+    lines in the model's assigned colour and the shared ground-truth target
+    as a thick black line, over the full lead-time range on the x-axis.
 
-    Because spaghetti plots already show the full lead-time range on the x-axis,
-    the "rows" here represent individual model panels rather than slicing by
-    lead time.  This gives a compact side-by-side view of ensemble spread
-    across models.
+    No lead-time slicing into separate rows is performed; the layout provides
+    a compact, side-by-side view of ensemble spread across models for the same
+    variable/level and target.
     """
     if not common_spaghetti:
         return
