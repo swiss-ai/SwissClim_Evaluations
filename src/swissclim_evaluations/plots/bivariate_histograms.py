@@ -49,7 +49,7 @@ def _format_level_suffix(level_hpa: float | None) -> str:
 def _get_label(da: xr.DataArray, var_name: str) -> str:
     """Get a formatted label with unit for a variable from DataArray attributes."""
     name = format_variable_name(var_name)
-    unit = get_variable_units(da, var_name)
+    unit = get_variable_units(da, var_name, latex=True)
     if unit:
         return f"{name} [{unit}]"
     return name

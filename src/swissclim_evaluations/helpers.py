@@ -733,15 +733,28 @@ def _to_latex_units(unit_str: str) -> str:
     return rf"$\mathrm{{{combined}}}$"
 
 
-def get_variable_units(ds: xr.Dataset | xr.DataArray | None, var_name: str) -> str:
-    """Get units for a variable, falling back to a default mapping if missing."""
+def get_variable_units(
+    ds: xr.Dataset | xr.DataArray | None, var_name: str, latex: bool = False
+) -> str:
+    """Get units for a variable, falling back to a default mapping if missing.
+
+    Args:
+        ds: Dataset or DataArray to read units from, or ``None``.
+        var_name: Variable name used for the fallback lookup.
+        latex: If ``True``, return LaTeX-formatted units suitable for plot
+            labels.  If ``False`` (default), return plain CF-style strings
+            suitable for metadata, CSV headers, and downstream unit parsing.
+    """
     if ds is not None:
         if isinstance(ds, xr.DataArray):
             if "units" in ds.attrs:
-                return _to_latex_units(str(ds.attrs["units"]))
+                raw = str(ds.attrs["units"])
+                return _to_latex_units(raw) if latex else raw
         elif var_name in ds and "units" in ds[var_name].attrs:
-            return _to_latex_units(str(ds[var_name].attrs["units"]))
-    return _to_latex_units(VARIABLE_UNITS.get(var_name, ""))
+            raw = str(ds[var_name].attrs["units"])
+            return _to_latex_units(raw) if latex else raw
+    raw = VARIABLE_UNITS.get(var_name, "")
+    return _to_latex_units(raw) if latex else raw
 
 
 def subsample_values(
