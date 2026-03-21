@@ -46,6 +46,7 @@ def run_probabilistic(
         ds_prediction=ds_prediction,
         out_root=out_root,
         plotting_cfg=effective_plot_cfg,
+        cfg_all=cfg_all,
     )
 
     if include_wbx_outputs:
@@ -64,8 +65,9 @@ def plot_probabilistic(
     ds_prediction: xr.Dataset,
     out_root: Path,
     plotting_cfg: dict[str, Any],
+    cfg_all: dict[str, Any] | None = None,
 ) -> None:
-    """Generate probabilistic plots (PIT histogram only).
+    """Generate probabilistic plots (PIT histogram + spaghetti timeseries).
 
     Saves under out_root/probabilistic. If output_mode in {'npz','both'} also
     writes NPZ data artifacts.
@@ -341,3 +343,20 @@ def plot_probabilistic(
                         ext="png",
                     )
                     save_figure(fig, out_png)
+
+    # --- Spaghetti time-series plots (ensemble members + target) ---
+    # Check whether spaghetti plots are enabled (default: true).
+    prob_cfg = ((cfg_all or {}).get("metrics", {}) or {}).get("probabilistic", {}) or {}
+    spaghetti_enabled = prob_cfg.get("spaghetti", True)
+    if spaghetti_enabled:
+        from ...plots.probabilistic.visuals import generate_spaghetti_plots
+
+        generate_spaghetti_plots(
+            ds_target=ds_target,
+            ds_prediction=ds_prediction,
+            out_root=out_root,
+            plotting_cfg=plotting_cfg,
+            cfg=cfg_all,
+        )
+    else:
+        c.print("[probabilistic] Spaghetti plots disabled via config.")

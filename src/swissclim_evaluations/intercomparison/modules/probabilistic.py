@@ -46,6 +46,129 @@ def _normalize_summary_lead_time(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _intercompare_spaghetti(
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    dst_prob: Path,
+    cmap: dict[str, tuple],
+    common_spaghetti: list[str],
+) -> None:
+    """Generate gridded spaghetti comparison plots.
+
+    For each common spaghetti NPZ file (one per variable/level), produces a
+    figure with **models as columns** and **lead-time subsets as rows**.  Each
+    panel shows all ensemble members as thin lines in the model's assigned
+    colour and the shared ground-truth target as a thick black line.
+
+    Because spaghetti plots already show the full lead-time range on the x-axis,
+    the "rows" here represent individual model panels rather than slicing by
+    lead time.  This gives a compact side-by-side view of ensemble spread
+    across models.
+    """
+    if not common_spaghetti:
+        return
+
+    from swissclim_evaluations.helpers import (
+        COLOR_GROUND_TRUTH,
+        format_level_token,
+    )
+
+    print_file_list(
+        f"Found {len(common_spaghetti)} common spaghetti NPZ files",
+        common_spaghetti,
+    )
+
+    for base in common_spaghetti:
+        payloads = []
+        for m in models:
+            p = load_npz(m / "probabilistic" / base)
+            payloads.append(p)
+
+        # Validate all payloads have required keys
+        required_keys = {"lead_hours", "member_values", "target_values"}
+        if not all(required_keys.issubset(p.keys()) for p in payloads):
+            continue
+
+        # Extract metadata from first model
+        variable = str(payloads[0].get("variable", ""))
+        units = str(payloads[0].get("units", ""))
+        level = payloads[0].get("level")
+        # NPZ stores scalars wrapped in 0-d arrays
+        if hasattr(variable, "item"):
+            variable = variable.item()
+        if hasattr(units, "item"):
+            units = units.item()
+        if level is not None and hasattr(level, "item"):
+            level = level.item()
+
+        n_models = len(models)
+
+        # --- Gridded figure: 1 row, n_models columns ---
+        fig, axes = plt.subplots(
+            1,
+            n_models,
+            figsize=(5.5 * n_models, 4),
+            dpi=160,
+            sharey=True,
+            constrained_layout=True,
+        )
+        if n_models == 1:
+            axes = [axes]
+
+        for mi, (ax, lab, pay) in enumerate(zip(axes, labels, payloads, strict=False)):
+            lead_h = np.asarray(pay["lead_hours"])
+            members = np.asarray(pay["member_values"])
+            target = np.asarray(pay["target_values"])
+
+            if members.ndim == 1:
+                members = members.reshape(1, -1)
+            n_mem = members.shape[0]
+            model_color = cmap.get(lab, "#D55E00")
+
+            # Ensemble member lines
+            for em in range(n_mem):
+                ax.plot(
+                    lead_h,
+                    members[em],
+                    color=model_color,
+                    alpha=max(0.15, min(0.6, 3.0 / n_mem)),
+                    linewidth=0.8,
+                    label="Members" if em == 0 else None,
+                )
+
+            # Target line (shared across models)
+            ax.plot(
+                lead_h,
+                target,
+                color=COLOR_GROUND_TRUTH,
+                linewidth=2.0,
+                label="Target",
+                zorder=10,
+            )
+
+            ax.set_title(lab, fontsize=10)
+            ax.set_xlabel("Lead Time [h]")
+            if mi == 0:
+                y_label = f"Spatial Mean [{units}]" if units else "Spatial Mean"
+                ax.set_ylabel(y_label)
+            ax.grid(True, linestyle="--", alpha=0.4)
+            ax.legend(loc="best", fontsize=7, frameon=False)
+
+        lvl_str = f" @ {format_level_token(level)}" if level is not None else ""
+        fig.suptitle(
+            f"Ensemble Spaghetti — " f"{format_variable_name(variable)}{lvl_str}",
+            fontsize=12,
+            y=1.08,
+        )
+
+        stem = base.replace(".npz", "")
+        out_png = dst_prob / f"{stem}_compare.png"
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
+        plt.close(fig)
+
+
 def intercompare_probabilistic(
     models: list[Path],
     labels: list[str],
@@ -92,6 +215,10 @@ def intercompare_probabilistic(
     # PIT
     pit = common_files(models, "probabilistic/pit_hist*.npz")
     results["PIT Histograms"] = len(pit)
+
+    # Spaghetti
+    spaghetti = common_files(models, "probabilistic/spaghetti_*.npz")
+    results["Spaghetti Timeseries"] = len(spaghetti)
 
     report_checklist("probabilistic", results)
 
@@ -738,3 +865,6 @@ def intercompare_probabilistic(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+
+    # --- 8. Spaghetti Timeseries Comparison ---
+    _intercompare_spaghetti(models, labels, out_root, dst_prob, _cmap, spaghetti)
