@@ -231,6 +231,10 @@ def run(
       with a ``lead_time`` dimension (written when ``report_per_lead: true``,
       the default).
 
+    All three outputs are derived from a single lazy SSIM array per variable so
+    the expensive per-slice computation runs exactly once per variable regardless
+    of how many output granularities are requested.
+
     Args:
         ds_target: Target/reference dataset.
         ds_prediction: Prediction dataset.
@@ -251,23 +255,9 @@ def run(
     report_per_level = bool(cfg.get("report_per_level", True))
     report_per_lead = bool(cfg.get("report_per_lead", True))
 
-    ssim_kwargs: dict[str, Any] = {
-        "sigma": sigma,
-        "K1": K1,
-        "K2": K2,
-        "gaussian_weights": gaussian_weights,
-        "use_sample_covariance": use_sample_covariance,
-    }
-
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
     out_dir = out_root / "ssim"
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    def _has_level(ds: xr.Dataset) -> bool:
-        return any("level" in ds[v].dims for v in ds.data_vars)
-
-    def _has_lead(ds: xr.Dataset) -> bool:
-        return any("lead_time" in ds[v].dims for v in ds.data_vars)
 
     def _save_overall(df: pd.DataFrame, ens_token: str | None) -> None:
         if df.empty:
@@ -304,20 +294,156 @@ def run(
         c.info(f"[ssim] saved {path.name}")
 
     def _run_one(ds_t: xr.Dataset, ds_p: xr.Dataset, ens_token: str | None) -> None:
-        """Compute all three output granularities for a single (ds_t, ds_p) pair."""
-        # Overall
-        df_overall = calculate_ssim(ds_t, ds_p, **ssim_kwargs)
-        _save_overall(df_overall, ens_token)
+        """Compute all output granularities in two dask passes.
 
-        # Per-level
-        if report_per_level and _has_level(ds_t):
-            df_lvl = calculate_ssim(ds_t, ds_p, preserve_dims=["level"], **ssim_kwargs)
-            _save_per_level(df_lvl, ens_token)
+        Pass 1 – data ranges (one scalar per variable).
+        Pass 2 – all reductions (overall, per-level, per-lead) derived from a
+        single lazy SSIM DataArray per variable so the expensive per-spatial-
+        slice computation runs exactly once.  All lazy arrays are submitted to
+        dask.compute() together so dask can deduplicate the shared task graph.
+        """
+        variables = list(ds_t.data_vars)
 
-        # Per-lead
-        if report_per_lead and _has_lead(ds_p):
-            df_lead = calculate_ssim(ds_t, ds_p, preserve_dims=["lead_time"], **ssim_kwargs)
-            _save_by_lead(df_lead, ens_token)
+        # ── Pass 1: data ranges ───────────────────────────────────────────────
+        range_jobs: list[dict] = []
+        for var in variables:
+            if var not in ds_p:
+                continue
+            da_t = ds_t[var]
+            spatial_dims = [d for d in da_t.dims if d in {"latitude", "longitude", "lat", "lon"}]
+            if len(spatial_dims) != 2:
+                continue
+            range_jobs.append(
+                {
+                    "t_min": da_t.min(skipna=True),
+                    "t_max": da_t.max(skipna=True),
+                    "p_min": ds_p[var].min(skipna=True),
+                    "p_max": ds_p[var].max(skipna=True),
+                    "var": var,
+                }
+            )
+
+        if not range_jobs:
+            return
+
+        compute_jobs(
+            range_jobs,
+            key_map={
+                "t_min": "t_min_res",
+                "t_max": "t_max_res",
+                "p_min": "p_min_res",
+                "p_max": "p_max_res",
+            },
+            desc="SSIM: data ranges",
+        )
+
+        # ── Pass 2: one ssim_da per variable → all lazy reductions ───────────
+        # Every entry always has "overall".  "per_level" / "per_lead" are added
+        # only when the corresponding dimension is present, so compute_jobs will
+        # only schedule those arrays for variables that actually need them.
+        batch: list[dict] = []
+        for job in range_jobs:
+            var = job["var"]
+            data_range = max(float(job["t_max_res"]), float(job["p_max_res"])) - min(
+                float(job["t_min_res"]), float(job["p_min_res"])
+            )
+            if data_range == 0:
+                data_range = 1.0
+
+            da_t = ds_t[var]
+            da_p = ds_p[var]
+            spatial_dims = [d for d in da_t.dims if d in {"latitude", "longitude", "lat", "lon"}]
+
+            def _wrapper(t, p, dr=data_range):
+                return ssim(
+                    t,
+                    p,
+                    data_range=dr,
+                    gaussian_weights=gaussian_weights,
+                    sigma=sigma,
+                    use_sample_covariance=use_sample_covariance,
+                    K1=K1,
+                    K2=K2,
+                )
+
+            # One lazy SSIM array for this variable; all reductions share this graph.
+            ssim_da = xr.apply_ufunc(
+                _wrapper,
+                da_t,
+                da_p,
+                input_core_dims=[spatial_dims, spatial_dims],
+                output_core_dims=[[]],
+                vectorize=True,
+                dask="parallelized",
+                output_dtypes=[float],
+            )
+
+            # Eagerly capture coordinates — they won't survive dask.compute().
+            _coords: dict[str, np.ndarray] = {
+                d: np.asarray(ssim_da[d].values) for d in ssim_da.dims if d in ssim_da.coords
+            }
+
+            entry: dict[str, Any] = {"var": var, "_coords": _coords}
+
+            # Overall: reduce all non-spatial dims to a scalar.
+            entry["overall"] = ssim_da.mean(skipna=True)
+
+            # Per-level: reduce everything except level (same ssim_da).
+            if report_per_level and "level" in ssim_da.dims:
+                reduce = [d for d in ssim_da.dims if d != "level"]
+                entry["per_level"] = ssim_da.mean(dim=reduce, skipna=True) if reduce else ssim_da
+
+            # Per-lead: reduce everything except lead_time (same ssim_da).
+            if report_per_lead and "lead_time" in ssim_da.dims:
+                reduce = [d for d in ssim_da.dims if d != "lead_time"]
+                entry["per_lead"] = ssim_da.mean(dim=reduce, skipna=True) if reduce else ssim_da
+
+            batch.append(entry)
+
+        # One dask.compute() for all reductions; dask deduplicates the shared
+        # ssim_da task graph so each per-slice SSIM value is computed once.
+        compute_jobs(
+            batch,
+            key_map={
+                "overall": "overall_res",
+                "per_level": "per_level_res",
+                "per_lead": "per_lead_res",
+            },
+            desc="SSIM: computing metrics",
+        )
+
+        # ── Pass 3: build DataFrames and save ─────────────────────────────────
+        rows_overall: list[dict] = []
+        rows_level: list[dict] = []
+        rows_lead: list[dict] = []
+
+        for entry in batch:
+            var = entry["var"]
+            _coords = entry["_coords"]
+
+            rows_overall.append({"variable": var, "SSIM": float(np.asarray(entry["overall_res"]))})
+
+            if "per_level_res" in entry:
+                arr = np.asarray(entry["per_level_res"])
+                level_vals = _coords.get("level", np.arange(arr.size))
+                for i, val in enumerate(arr.ravel()):
+                    rows_level.append({"variable": var, "level": level_vals[i], "SSIM": float(val)})
+
+            if "per_lead_res" in entry:
+                arr = np.asarray(entry["per_lead_res"])
+                lead_vals = _coords.get("lead_time", np.arange(arr.size))
+                for i, val in enumerate(arr.ravel()):
+                    rows_lead.append(
+                        {"variable": var, "lead_time": lead_vals[i], "SSIM": float(val)}
+                    )
+
+        if rows_overall:
+            df_overall = pd.DataFrame(rows_overall).set_index("variable")
+            _save_overall(df_overall, ens_token)
+        if rows_level:
+            _save_per_level(pd.DataFrame(rows_level), ens_token)
+        if rows_lead:
+            _save_by_lead(pd.DataFrame(rows_lead), ens_token)
 
     # ── Ensemble dispatch ─────────────────────────────────────────────────────
     if "ensemble" in ds_prediction.dims and mode == "mean":
