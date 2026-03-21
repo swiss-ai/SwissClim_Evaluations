@@ -222,7 +222,7 @@ def run(
 ) -> None:
     """Compute and write SSIM metrics CSVs.
 
-    Produces up to three CSV files per ensemble token:
+    Produces up to four CSV files per ensemble token:
 
     * ``ssim/ssim_ssim_<ens>.csv`` — overall mean SSIM per variable.
     * ``ssim/ssim_ssim_per_level_<ens>.csv`` — per-pressure-level SSIM for 3-D
@@ -230,8 +230,11 @@ def run(
     * ``ssim/ssim_ssim_by_lead_<ens>.csv`` — per-lead-time SSIM for datasets
       with a ``lead_time`` dimension (written when ``report_per_lead: true``,
       the default).
+    * ``ssim/ssim_ssim_per_level_by_lead_<ens>.csv`` — per-pressure-level and
+      per-lead-time SSIM for 3-D variables that also have a ``lead_time``
+      dimension (written when both flags are true).
 
-    All three outputs are derived from a single lazy SSIM array per variable so
+    All outputs are derived from a single lazy SSIM array per variable so
     the expensive per-slice computation runs exactly once per variable regardless
     of how many output granularities are requested.
 
@@ -273,7 +276,9 @@ def run(
     def _save_per_level(df: pd.DataFrame, ens_token: str | None) -> None:
         if df.empty or "level" not in df.columns:
             return
-        df = df.copy()
+        df = df.dropna(subset=["level"]).copy()
+        if df.empty:
+            return
         df["level"] = df["level"].astype(int)
         path = out_dir / build_output_filename(
             metric="ssim", qualifier="ssim_per_level", ensemble=ens_token, ext="csv"
@@ -289,6 +294,21 @@ def run(
         df = df.drop(columns=["lead_time"])
         path = out_dir / build_output_filename(
             metric="ssim", qualifier="ssim_by_lead", ensemble=ens_token, ext="csv"
+        )
+        df.to_csv(path, index=False)
+        c.info(f"[ssim] saved {path.name}")
+
+    def _save_per_level_by_lead(df: pd.DataFrame, ens_token: str | None) -> None:
+        if df.empty or "level" not in df.columns or "lead_time" not in df.columns:
+            return
+        df = df.dropna(subset=["level"]).copy()
+        if df.empty:
+            return
+        df["level"] = df["level"].astype(int)
+        df["lead_time_hours"] = df["lead_time"].apply(_lead_time_to_hours)
+        df = df.drop(columns=["lead_time"])
+        path = out_dir / build_output_filename(
+            metric="ssim", qualifier="ssim_per_level_by_lead", ensemble=ens_token, ext="csv"
         )
         df.to_csv(path, index=False)
         c.info(f"[ssim] saved {path.name}")
@@ -398,6 +418,21 @@ def run(
                 reduce = [d for d in ssim_da.dims if d != "lead_time"]
                 entry["per_lead"] = ssim_da.mean(dim=reduce, skipna=True) if reduce else ssim_da
 
+            # Per-level AND per-lead: keep both dims, reduce the rest (same ssim_da).
+            if (
+                report_per_level
+                and report_per_lead
+                and "level" in ssim_da.dims
+                and "lead_time" in ssim_da.dims
+            ):
+                keep = {"level", "lead_time"}
+                reduce = [d for d in ssim_da.dims if d not in keep]
+                entry["per_level_lead"] = (
+                    ssim_da.mean(dim=reduce, skipna=True) if reduce else ssim_da
+                )
+                # Store dim order so array axes can be mapped back to coords.
+                entry["_per_level_lead_dims"] = [d for d in ssim_da.dims if d in keep]
+
             batch.append(entry)
 
         # One dask.compute() for all reductions; dask deduplicates the shared
@@ -408,6 +443,7 @@ def run(
                 "overall": "overall_res",
                 "per_level": "per_level_res",
                 "per_lead": "per_lead_res",
+                "per_level_lead": "per_level_lead_res",
             },
             desc="SSIM: computing metrics",
         )
@@ -416,6 +452,7 @@ def run(
         rows_overall: list[dict] = []
         rows_level: list[dict] = []
         rows_lead: list[dict] = []
+        rows_level_lead: list[dict] = []
 
         for entry in batch:
             var = entry["var"]
@@ -437,6 +474,24 @@ def run(
                         {"variable": var, "lead_time": lead_vals[i], "SSIM": float(val)}
                     )
 
+            if "per_level_lead_res" in entry:
+                arr = np.asarray(entry["per_level_lead_res"])
+                dim_order = entry.get("_per_level_lead_dims", ["level", "lead_time"])
+                d0, d1 = dim_order[0], dim_order[1]
+                c0 = _coords.get(d0, np.arange(arr.shape[0]))
+                c1 = _coords.get(d1, np.arange(arr.shape[1] if arr.ndim > 1 else 1))
+                if arr.ndim < 2:
+                    for i, val in enumerate(arr.ravel()):
+                        rows_level_lead.append(
+                            {"variable": var, d0: c0[i], d1: c1[0], "SSIM": float(val)}
+                        )
+                else:
+                    for i in range(arr.shape[0]):
+                        for j in range(arr.shape[1]):
+                            rows_level_lead.append(
+                                {"variable": var, d0: c0[i], d1: c1[j], "SSIM": float(arr[i, j])}
+                            )
+
         if rows_overall:
             df_overall = pd.DataFrame(rows_overall).set_index("variable")
             _save_overall(df_overall, ens_token)
@@ -444,6 +499,8 @@ def run(
             _save_per_level(pd.DataFrame(rows_level), ens_token)
         if rows_lead:
             _save_by_lead(pd.DataFrame(rows_lead), ens_token)
+        if rows_level_lead:
+            _save_per_level_by_lead(pd.DataFrame(rows_level_lead), ens_token)
 
     # ── Ensemble dispatch ─────────────────────────────────────────────────────
     if "ensemble" in ds_prediction.dims and mode == "mean":
