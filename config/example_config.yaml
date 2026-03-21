@@ -245,6 +245,16 @@ derived_variables:
     kind: wind_speed
     u: u_component_of_wind
     v: v_component_of_wind
+  # geopotential_height_gradient — |∇Z|, m m⁻¹.  Enables the geostrophic-balance
+  # physical-constraint overlay in bivariate histograms.  Two-step derivation:
+  # first convert raw geopotential (m² s⁻²) → height Z (m), then take |∇Z|.
+  # Uncomment both blocks below (and add 'geopotential' to the variables list).
+  # geopotential_height:
+  #   kind: geopotential_height
+  #   source: geopotential          # raw geopotential variable (m² s⁻²)
+  # geopotential_height_gradient:
+  #   kind: geopotential_height_gradient
+  #   source: geopotential_height   # output of the block above
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
