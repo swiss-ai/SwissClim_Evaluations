@@ -112,6 +112,13 @@ def _get_physical_constraints(
         Bin-edge arrays produced by the histogram step.
     """
     constraints: list[dict] = []
+
+    # Physical overlays are only meaningful at 500 hPa — at other levels the
+    # saturation-curve shape / geostrophic slope differ enough that the overlay
+    # would either lie off-screen or be misleading.
+    if level_hpa is None or not np.isclose(float(level_hpa), 500.0):
+        return constraints
+
     lx, ly = var_x.lower(), var_y.lower()
 
     is_temp_x = "temperature" in lx
@@ -600,10 +607,11 @@ def _plot_bivariate_per_lead_grid(
     # ── Grid layout ───────────────────────────────────────────────────────────
     cols = min(3, n_leads)
     rows = int(np.ceil(n_leads / cols))
+    # Extra height for the shared horizontal colorbar below the grid.
     fig, axs = plt.subplots(
         rows,
         cols,
-        figsize=(6 * cols, 5 * rows),
+        figsize=(6 * cols, 6 * rows + 1),
         dpi=150,
         constrained_layout=True,
     )
@@ -654,6 +662,8 @@ def _plot_bivariate_per_lead_grid(
                 show_colorbar=False,
                 show_legend=(i == 0),
             )
+        # Force square subplot regardless of data unit scales.
+        ax.set_box_aspect(1)
         # Show only lead-time label as subplot title (e.g. "+6h").
         ax.set_title(lead_label, fontsize=10)
         last_i = i
