@@ -342,6 +342,7 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "deterministic": "mean",
     "ets": "mean",
     "probabilistic": "prob",
+    "multivariate": "mean",
     # plots / diagnostics
     "energy_spectra": "mean",
     "vertical_profiles": "mean",
@@ -362,6 +363,7 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "energy_spectra": {"mean", "pooled", "members"},
     "deterministic": {"mean", "pooled", "members"},
     "ets": {"mean", "pooled", "members"},
+    "multivariate": {"mean", "pooled", "members"},
 }
 
 
@@ -693,6 +695,9 @@ VARIABLE_UNITS = {
     # Derived wind variables
     "wind_speed": "m s**-1",
     "10m_wind_speed": "m s**-1",
+    # Derived geopotential height and its gradient
+    "geopotential_height": "m",
+    "geopotential_height_gradient": "m m**-1",
     "geopotential": "m**2 s**-2",
     "specific_humidity": "kg kg**-1",
     "mean_sea_level_pressure": "Pa",
@@ -700,15 +705,56 @@ VARIABLE_UNITS = {
 }
 
 
-def get_variable_units(ds: xr.Dataset | xr.DataArray | None, var_name: str) -> str:
-    """Get units for a variable, falling back to a default mapping if missing."""
+def _to_latex_units(unit_str: str) -> str:
+    """Convert CF-style unit strings to LaTeX ratio notation.
+
+    Examples: 'm s**-1' -> '$\\mathrm{m/s}$', 'kg kg**-1' -> '$\\mathrm{kg/kg}$',
+    's**-1' -> '$\\mathrm{1/s}$', 'm**2 s**-2' -> '$\\mathrm{m^{2}/s^{2}}$'.
+    """
+    if not unit_str:
+        return unit_str
+    if "$" in unit_str or "\\" in unit_str:
+        return unit_str  # already LaTeX
+    # Convert ** exponent notation to ^{N}
+    s = re.sub(r"\*\*(-?\d+)", lambda m: f"^{{{m.group(1)}}}", unit_str)
+    # Split tokens and separate into numerator / denominator by exponent sign
+    _neg = re.compile(r"^(.+?)\^\{(-\d+)\}$")
+    numer: list[str] = []
+    denom: list[str] = []
+    for tok in s.split():
+        m = _neg.match(tok)
+        if m:
+            base, abs_exp = m.group(1), -int(m.group(2))
+            denom.append(base if abs_exp == 1 else f"{base}^{{{abs_exp}}}")
+        else:
+            numer.append(tok)
+    numer_str = r"\,".join(numer) if numer else "1"
+    combined = numer_str + "/" + r"\,".join(denom) if denom else numer_str
+    return rf"$\mathrm{{{combined}}}$"
+
+
+def get_variable_units(
+    ds: xr.Dataset | xr.DataArray | None, var_name: str, latex: bool = False
+) -> str:
+    """Get units for a variable, falling back to a default mapping if missing.
+
+    Args:
+        ds: Dataset or DataArray to read units from, or ``None``.
+        var_name: Variable name used for the fallback lookup.
+        latex: If ``True``, return LaTeX-formatted units suitable for plot
+            labels.  If ``False`` (default), return plain CF-style strings
+            suitable for metadata, CSV headers, and downstream unit parsing.
+    """
     if ds is not None:
         if isinstance(ds, xr.DataArray):
             if "units" in ds.attrs:
-                return str(ds.attrs["units"])
+                raw = str(ds.attrs["units"])
+                return _to_latex_units(raw) if latex else raw
         elif var_name in ds and "units" in ds[var_name].attrs:
-            return str(ds[var_name].attrs["units"])
-    return VARIABLE_UNITS.get(var_name, "")
+            raw = str(ds[var_name].attrs["units"])
+            return _to_latex_units(raw) if latex else raw
+    raw = VARIABLE_UNITS.get(var_name, "")
+    return _to_latex_units(raw) if latex else raw
 
 
 def subsample_values(
