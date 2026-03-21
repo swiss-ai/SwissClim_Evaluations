@@ -67,6 +67,7 @@ def run(
         return
 
     bins = int(cfg.get("bins", 100))
+    coriolis_parameter = float(cfg.get("coriolis_parameter", 1.0e-4))
 
     # If mode is members, produce per-member plots
     if mode == "members" and "ensemble" in ds_prediction.dims:
@@ -86,6 +87,7 @@ def run(
                 out_root,
                 bins=bins,
                 ensemble_token=ens_token,
+                coriolis_parameter=coriolis_parameter,
             )
     else:
         ens_token = ensemble_mode_to_token(mode)
@@ -96,4 +98,5 @@ def run(
             out_root,
             bins=bins,
             ensemble_token=ens_token,
+            coriolis_parameter=coriolis_parameter,
         )

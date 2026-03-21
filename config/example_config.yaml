@@ -375,7 +375,12 @@ metrics:
       - ["vertical_velocity", "temperature"]
       # Uncomment the line below to enable geostrophic-balance overlay (★).
       # Requires geopotential_height_gradient and wind_speed in derived_variables.
-      # - ["geopotential_height_gradient", "wind_speed"]
+    # Coriolis parameter f [s⁻¹] for the geostrophic reference line overlay.
+    # f = 2 * Ω * sin(φ), where Ω = 7.2921e-5 rad s⁻¹.
+    # Generic mid-latitude default: 1.0e-4 s⁻¹  (≈ 43 °N)
+    # Central Europe (~50 °N):      1.12e-4 s⁻¹
+    # Switzerland / Alps (~47 °N):  1.07e-4 s⁻¹
+    coriolis_parameter: 1.0e-4
 
 performance:
   # Dask scheduler choice.

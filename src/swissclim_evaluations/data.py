@@ -545,6 +545,9 @@ def _geopotential_height_gradient(ds: xr.Dataset, u_var: str, v_var: str) -> xr.
     Z = ds[u_var]
     lat = Z["latitude"]  # degrees
     cos_lat = np.cos(lat * deg2rad)  # broadcast-ready DataArray
+    # Clamp cos_lat to cos(85°) ≈ 0.087 to prevent near-pole singularities
+    # from blowing up the dZ/dlon term at high latitudes.
+    cos_lat = cos_lat.clip(min=float(np.cos(85.0 * deg2rad)))
 
     # ∂Z/∂lat  [m / degree] → [m / m] via R_earth [m / rad] and deg2rad
     dZ_dlat = Z.differentiate("latitude") / (R_earth * deg2rad)  # m m⁻¹

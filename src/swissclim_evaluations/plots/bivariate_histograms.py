@@ -93,6 +93,7 @@ def _get_physical_constraints(
     bins_x: np.ndarray,
     bins_y: np.ndarray,
     level_hpa: float | None = None,
+    coriolis_parameter: float = 1.0e-4,
 ) -> list[dict]:
     """Return a list of physical-constraint specs for the given variable pair.
 
@@ -148,7 +149,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "label": r"$q_\mathrm{sat}(T)$ (Bolton)",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -184,7 +185,7 @@ def _get_physical_constraints(
                     "color": "#d62728",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"$q_\mathrm{sat}(T)$ — Bolton (1980), 500 hPa",
+                    "label": r"$q_\mathrm{sat}(T)$ (Bolton)",
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
@@ -211,58 +212,41 @@ def _get_physical_constraints(
     # Geostrophic balance: U_g = (g / f) * |∇Z|
     # Plotted as a diagonal reference line through the origin.
     # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
-    # Guard: only draw the line when the geostrophic equilibrium x values span
-    # at least 2 % of the visible x-axis range; otherwise the line is compressed
-    # to the left edge and looks like an artefact (vertical line at x≈0).
     if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
         g = 9.81
-        f_abs = 1.0e-4  # mid-latitude Coriolis parameter, s⁻¹
-        slope = g / f_abs  # ≈ 98 100  (m s⁻¹) / (m m⁻¹)
-
-        x_range_data = max(float(bins_x[-1]) - float(bins_x[0]), 1e-12)
-        y_range_data = max(float(bins_y[-1]) - float(bins_y[0]), 1e-12)
+        f_abs = coriolis_parameter  # Coriolis parameter, s⁻¹
+        slope = g / f_abs  # (m s⁻¹) / (m m⁻¹)
 
         if is_zgrad_x and is_ws_y:
             # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
-            # x where the geostrophic line reaches the top of the visible y range
-            x_at_ymax = float(bins_y[-1]) / slope
-            if x_at_ymax > 0.02 * x_range_data:
-                x_end = min(float(bins_x[-1]), x_at_ymax * 1.05)
-                x_arr = np.linspace(max(float(bins_x[0]), 0.0), x_end, 400)
-                y_arr = slope * x_arr
-                constraints.append(
-                    {
-                        "type": "curve",
-                        "value_x": x_arr,
-                        "value_y": y_arr,
-                        "color": "#ff7f0e",
-                        "lw": 2.0,
-                        "ls": "--",
-                        "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                        r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-                    }
-                )
+            x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
+            y_arr = slope * x_arr
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$",
+                }
+            )
         elif is_zgrad_y and is_ws_x:
             # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
-            y_at_xmax = float(bins_x[-1]) / slope
-            if y_at_xmax > 0.02 * y_range_data:
-                y_end = min(float(bins_y[-1]), y_at_xmax * 1.05)
-                x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
-                y_arr = x_arr / slope
-                mask = y_arr <= y_end
-                x_arr, y_arr = x_arr[mask], y_arr[mask]
-                constraints.append(
-                    {
-                        "type": "curve",
-                        "value_x": x_arr,
-                        "value_y": y_arr,
-                        "color": "#ff7f0e",
-                        "lw": 2.0,
-                        "ls": "--",
-                        "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$, "
-                        r"$f=10^{-4}\,\mathrm{s}^{-1}$",
-                    }
-                )
+            x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
+            y_arr = x_arr / slope
+            constraints.append(
+                {
+                    "type": "curve",
+                    "value_x": x_arr,
+                    "value_y": y_arr,
+                    "color": "#ff7f0e",
+                    "lw": 2.0,
+                    "ls": "--",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$",
+                }
+            )
 
         # Wind speed ≥ 0 hard bound
         if is_ws_y:
@@ -475,6 +459,7 @@ def _plot_bivariate_per_lead_grid(
     out_root: Path,
     ensemble_token: str | None = None,
     level_hpa: float | None = None,
+    coriolis_parameter: float = 1.0e-4,
 ) -> None:
     """Generate a per-lead-time grid of bivariate histograms for one variable pair.
 
@@ -671,9 +656,14 @@ def _plot_bivariate_per_lead_grid(
                 ylabel=_get_label(ds_prediction[var_y], var_y),
                 show_colorbar=False,
                 show_legend=(i == 0),
+                coriolis_parameter=coriolis_parameter,
             )
         # Show only lead-time label as subplot title (e.g. "+6h").
         ax.set_title(lead_label, fontsize=10)
+        # Hide y-axis label and tick labels on every column except the leftmost.
+        if i % cols != 0:
+            ax.set_ylabel("")
+            ax.tick_params(axis="y", labelleft=False)
         last_i = i
 
     # ── Hide any surplus subplots beyond n_leads ──────────────────────────────
@@ -721,6 +711,7 @@ def calculate_and_plot_bivariate_histograms(
     out_root: Path,
     bins: int = 100,
     ensemble_token: str | None = None,
+    coriolis_parameter: float = 1.0e-4,
 ) -> None:
     """Calculate and save bivariate histograms for specified pairs.
 
@@ -735,6 +726,9 @@ def calculate_and_plot_bivariate_histograms(
         bins: Number of histogram bins along each axis.
         ensemble_token: Optional token appended to output filenames
             (e.g. ``ensmean``, ``ens0``).
+        coriolis_parameter: Coriolis parameter f [s⁻¹] used for the
+            geostrophic reference line overlay. Default 1e-4 s⁻¹ (generic
+            mid-latitude); set to e.g. 1.13e-4 for central Europe (~50 °N).
     """
     plotted_pairs = []
     skipped_pairs = []
@@ -980,6 +974,7 @@ def calculate_and_plot_bivariate_histograms(
             var_x=var_x,
             var_y=var_y,
             level_hpa=np.nan if level_hpa is None else float(level_hpa),
+            coriolis_parameter=float(coriolis_parameter),
         )
 
         # Generate plot immediately
@@ -1013,6 +1008,7 @@ def calculate_and_plot_bivariate_histograms(
                 ax=ax,
                 xlabel=_get_label(label_da_x, var_x),
                 ylabel=_get_label(label_da_y, var_y),
+                coriolis_parameter=coriolis_parameter,
             )
 
         plot_out = (
@@ -1043,6 +1039,7 @@ def calculate_and_plot_bivariate_histograms(
                 out_root=out_root,
                 ensemble_token=ensemble_token,
                 level_hpa=level_hpa,
+                coriolis_parameter=coriolis_parameter,
             )
 
     # Summary output
@@ -1071,6 +1068,7 @@ def plot_bivariate_histogram(
     ylim: tuple[float, float] | None = None,
     show_colorbar: bool = True,
     show_legend: bool = True,
+    coriolis_parameter: float = 1.0e-4,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1264,6 +1262,7 @@ def plot_bivariate_histogram(
         axis_bins_x,
         axis_bins_y,
         level_hpa=level_hpa,
+        coriolis_parameter=coriolis_parameter,
     )
     constraint_entries = _draw_physical_constraints(
         ax,

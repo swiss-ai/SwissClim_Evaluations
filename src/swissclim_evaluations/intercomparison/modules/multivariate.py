@@ -4,7 +4,10 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import LogNorm
 
 from swissclim_evaluations import console as c
 from swissclim_evaluations.helpers import format_variable_name
@@ -104,6 +107,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 "ensure the NPZ was saved with var_x/var_y keys."
             )
         level_hpa = _scalar_float(first_payload.get("level_hpa"))
+        coriolis_parameter = _scalar_float(first_payload.get("coriolis_parameter")) or 1.0e-4
 
         ref_hist_target = np.asarray(first_payload["hist_target"])
         ref_bins_x = np.asarray(first_payload["bins_x"])
@@ -177,8 +181,28 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 f"Affected: {', '.join(off_grid_labels)}"
             )
 
+        # ── Global log-norm across all model histograms for a shared colorbar ──
+        all_vals = []
+        for entry in model_entries:
+            for key in ("hist", "hist_target"):
+                h = np.asarray(entry[key])
+                pos = h[h > 0]
+                if pos.size:
+                    all_vals.append(pos)
+        if all_vals:
+            combined = np.concatenate(all_vals)
+            global_vmin = float(combined.min())
+            global_vmax = float(combined.max())
+        else:
+            global_vmin, global_vmax = 1e-10, 1.0
+        if global_vmin <= 0:
+            global_vmin = 1e-10
+        global_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
+
         n_cols = len(model_entries)
-        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 6), squeeze=False)
+        fig, axes = plt.subplots(
+            1, n_cols, figsize=(6 * n_cols, 7), dpi=150, constrained_layout=True, squeeze=False
+        )
 
         for idx, entry in enumerate(model_entries):
             ax = axes[0, idx]
@@ -192,7 +216,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 hist_2=hist_target,
                 bins_x=bins_x,
                 bins_y=bins_y,
-                label_1=label,
+                label_1="Prediction",
                 label_2="Target",
                 var_x=var_x,
                 var_y=var_y,
@@ -202,8 +226,30 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 ylabel=format_variable_name(var_y) if var_y else None,
                 xlim=shared_xlim,
                 ylim=shared_ylim,
+                show_colorbar=False,
+                show_legend=(idx == 0),
+                coriolis_parameter=coriolis_parameter,
             )
             ax.set_title(label)
+            if idx != 0:
+                ax.set_ylabel("")
+                ax.tick_params(axis="y", labelleft=False)
+
+        # ── Shared horizontal colorbar at the bottom ──────────────────────────
+        sm = ScalarMappable(cmap="plasma", norm=global_norm)
+        sm.set_array([])
+        cbar = fig.colorbar(
+            sm,
+            ax=axes[0, :].tolist(),
+            orientation="horizontal",
+            location="bottom",
+            pad=0.04,
+            fraction=0.08,
+            shrink=1.0,
+        )
+        cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
+        cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
+        cbar.set_label("Density (log scale)")
 
         if var_x and var_y:
             title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
@@ -212,7 +258,6 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             fig.suptitle(title)
         else:
             fig.suptitle(fname.replace("bivariate_", "").replace(".npz", ""))
-        fig.tight_layout()
 
         stem = fname.replace("bivariate_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"

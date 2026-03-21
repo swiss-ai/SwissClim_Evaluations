@@ -73,6 +73,7 @@ MODULE_ALIASES: dict[str, str] = {
     "deterministic_metrics": "metrics",
     "energy": "spectra",
     "vertical": "vprof",
+    "multivariate": "multivariate",
 }
 
 
@@ -105,6 +106,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/pit_hist*.npz",
         "probabilistic/crps_map_*.npz",
     ),
+    "multivariate": ("multivariate/bivariate_*.npz",),
 }
 
 
@@ -247,6 +249,7 @@ def run_from_config(cfg: dict) -> None:
         "ets",
         "prob",
         "vprof",
+        "multivariate",
     ]
     modules = [str(m).lower() for m in modules]
     # Other options
