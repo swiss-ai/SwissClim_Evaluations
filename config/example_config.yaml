@@ -339,6 +339,12 @@ metrics:
   # SSIM configuration
   ssim:
     sigma: 1.5               # Standard deviation for Gaussian kernel
+    k1: 0.01                 # Algorithm constant (luminance stability)
+    k2: 0.03                 # Algorithm constant (contrast stability)
+    gaussian_weights: true   # Use Gaussian weighting
+    use_sample_covariance: true  # Normalise covariance with N-1
+    report_per_level: true   # Write per-pressure-level CSV for 3D variables
+    report_per_lead: true    # Write per-lead-time CSV when lead_time dim is present
 
   probabilistic:
     # Per-level reporting for 3D variables is enabled by default.

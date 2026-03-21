@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 from skimage.metrics import structural_similarity as ssim
@@ -24,11 +25,12 @@ def calculate_ssim(
     K2: float = 0.03,
     gaussian_weights: bool = True,
     use_sample_covariance: bool = True,
+    preserve_dims: list[str] | None = None,
 ) -> pd.DataFrame:
     """Calculate SSIM for each variable.
 
-    SSIM is calculated for each 2-D spatial slice (lat/lon) and averaged over
-    all other dimensions (time, level, etc.).
+    SSIM is applied per 2-D spatial slice (lat/lon) and the resulting per-slice
+    scores are averaged over all dimensions that are *not* in ``preserve_dims``.
 
     Args:
         ds_target: Target/reference dataset.
@@ -38,45 +40,38 @@ def calculate_ssim(
         K2: Algorithm constant (contrast).
         gaussian_weights: If ``True``, use Gaussian weighting.
         use_sample_covariance: If ``True``, normalize covariance with N-1.
+        preserve_dims: Dimensions to *keep* in the output instead of averaging
+            over them.  For example ``["level"]`` returns one row per
+            (variable, level), ``["lead_time"]`` one row per (variable,
+            lead_time).  ``None`` (default) collapses all non-spatial dims to
+            a single scalar per variable.
 
     Returns:
-        DataFrame indexed by variable with a single ``SSIM`` column.
+        * When ``preserve_dims`` is ``None``: DataFrame indexed by variable
+          with a single ``SSIM`` column.
+        * Otherwise: long-form DataFrame with ``variable``, one column per
+          preserved dimension, and an ``SSIM`` column.
     """
     variables = list(ds_target.data_vars)
-    metrics_dict: dict[str, dict[str, float]] = {}
 
-    # 1. First pass: Collect lazy min/max computations for all variables
-    range_jobs = []
-    valid_vars = []
+    # ── Pass 1: collect lazy range jobs ──────────────────────────────────────
+    range_jobs: list[dict] = []
 
     for var in variables:
         if var not in ds_prediction:
             continue
 
         da_target = ds_target[var]
-        da_prediction = ds_prediction[var]
-
-        # Identify spatial dimensions
-        dims = list(da_target.dims)
-        spatial_dims = [d for d in dims if d in ["latitude", "longitude", "lat", "lon"]]
-
+        spatial_dims = [d for d in da_target.dims if d in {"latitude", "longitude", "lat", "lon"}]
         if len(spatial_dims) != 2:
             continue
 
-        valid_vars.append(var)
-
-        # Calculate global data range for the variable
-        t_min_lazy = da_target.min(skipna=True)
-        t_max_lazy = da_target.max(skipna=True)
-        p_min_lazy = da_prediction.min(skipna=True)
-        p_max_lazy = da_prediction.max(skipna=True)
-
         range_jobs.append(
             {
-                "t_min": t_min_lazy,
-                "t_max": t_max_lazy,
-                "p_min": p_min_lazy,
-                "p_max": p_max_lazy,
+                "t_min": da_target.min(skipna=True),
+                "t_max": da_target.max(skipna=True),
+                "p_min": ds_prediction[var].min(skipna=True),
+                "p_max": ds_prediction[var].max(skipna=True),
                 "var": var,
             }
         )
@@ -84,7 +79,6 @@ def calculate_ssim(
     if not range_jobs:
         return pd.DataFrame()
 
-    # Compute ranges in batch
     compute_jobs(
         range_jobs,
         key_map={
@@ -93,29 +87,23 @@ def calculate_ssim(
             "p_min": "p_min_res",
             "p_max": "p_max_res",
         },
-        desc="Computing ranges",
+        desc="SSIM: computing data ranges",
     )
 
-    # 2. Second pass: Create SSIM lazy objects using computed ranges
-    ssim_jobs = []
+    # ── Pass 2: build lazy SSIM jobs ──────────────────────────────────────────
+    ssim_jobs: list[dict] = []
 
     for job in range_jobs:
         var = job["var"]
-        t_min = float(job["t_min_res"])
-        t_max = float(job["t_max_res"])
-        p_min = float(job["p_min_res"])
-        p_max = float(job["p_max_res"])
-
-        data_range = max(t_max, p_max) - min(t_min, p_min)
+        data_range = max(float(job["t_max_res"]), float(job["p_max_res"])) - min(
+            float(job["t_min_res"]), float(job["p_min_res"])
+        )
         if data_range == 0:
             data_range = 1.0
 
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
-
-        # Re-identify spatial dims (safe as we filtered already)
-        dims = list(da_target.dims)
-        spatial_dims = [d for d in dims if d in ["latitude", "longitude", "lat", "lon"]]
+        spatial_dims = [d for d in da_target.dims if d in {"latitude", "longitude", "lat", "lon"}]
 
         def _ssim_wrapper(t, p, data_range=data_range):
             return ssim(
@@ -129,7 +117,7 @@ def calculate_ssim(
                 K2=K2,
             )
 
-        # Apply SSIM over spatial dimensions
+        # ssim_da has all non-spatial dims (time, level, lead_time, …)
         ssim_da = xr.apply_ufunc(
             _ssim_wrapper,
             da_target,
@@ -141,25 +129,88 @@ def calculate_ssim(
             output_dtypes=[float],
         )
 
-        # Average SSIM over all non-spatial dimensions
-        mean_ssim_lazy = ssim_da.mean(skipna=True)
+        # Determine which dims to keep vs reduce
+        # Preserve dims are those both requested AND present in ssim_da, in
+        # the order they appear in ssim_da so array shape stays predictable.
+        _preserve = [d for d in ssim_da.dims if d in (preserve_dims or [])]
+        _reduce = [d for d in ssim_da.dims if d not in _preserve]
 
-        ssim_jobs.append({"ssim_mean": mean_ssim_lazy, "var": var})
+        # Eagerly store coordinate values for preserved dims — these are tiny
+        # index arrays; they won't survive dask.compute() on the DataArray.
+        _coords: dict[str, np.ndarray] = {}
+        for d in _preserve:
+            if d in ssim_da.coords:
+                _coords[d] = np.asarray(ssim_da[d].values)
 
-    # Compute SSIM means in batch
+        result_lazy = ssim_da.mean(dim=_reduce, skipna=True) if _reduce else ssim_da
+
+        ssim_jobs.append(
+            {
+                "ssim_mean": result_lazy,
+                "var": var,
+                "_preserve": _preserve,
+                "_coords": _coords,
+            }
+        )
+
     compute_jobs(
         ssim_jobs,
         key_map={"ssim_mean": "ssim_res"},
-        desc="Computing SSIM metrics",
+        desc="SSIM: computing metrics",
     )
 
-    # 3. Populate results
+    # ── Pass 3: build output DataFrame ───────────────────────────────────────
+    rows: list[dict] = []
     for job in ssim_jobs:
         var = job["var"]
-        val = float(job["ssim_res"])
-        metrics_dict[var] = {"SSIM": val}
+        result = job["ssim_res"]
+        _preserve = job["_preserve"]
+        _coords = job["_coords"]
 
-    return pd.DataFrame.from_dict(metrics_dict, orient="index")
+        arr = np.asarray(result)
+
+        if not _preserve or arr.ndim == 0:
+            # Scalar (no preserved dims, or all had size 1)
+            row: dict[str, Any] = {"variable": var, "SSIM": float(arr)}
+            for d in _preserve:
+                vals = _coords.get(d, np.array([]))
+                row[d] = vals[0] if len(vals) else np.nan
+            rows.append(row)
+        elif arr.ndim == 1:
+            d0 = _preserve[0]
+            coord0 = _coords.get(d0, np.arange(arr.shape[0]))
+            for i, val in enumerate(arr):
+                rows.append({"variable": var, d0: coord0[i], "SSIM": float(val)})
+        else:
+            # 2-D (e.g. lead_time × level)
+            d0, d1 = _preserve[0], _preserve[1]
+            c0 = _coords.get(d0, np.arange(arr.shape[0]))
+            c1 = _coords.get(d1, np.arange(arr.shape[1]))
+            for i in range(arr.shape[0]):
+                for j in range(arr.shape[1]):
+                    rows.append({"variable": var, d0: c0[i], d1: c1[j], "SSIM": float(arr[i, j])})
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    if not preserve_dims:
+        df = df.set_index("variable")
+    return df
+
+
+# ── Output helpers ────────────────────────────────────────────────────────────
+
+
+def _lead_time_to_hours(val: Any) -> int:
+    """Convert a lead_time coordinate value to integer hours."""
+    try:
+        return int(val / np.timedelta64(1, "h"))
+    except Exception:
+        try:
+            return int(val)
+        except Exception:
+            return val
 
 
 def run(
@@ -171,54 +222,111 @@ def run(
 ) -> None:
     """Compute and write SSIM metrics CSVs.
 
+    Produces up to three CSV files per ensemble token:
+
+    * ``ssim/ssim_ssim_<ens>.csv`` — overall mean SSIM per variable.
+    * ``ssim/ssim_ssim_per_level_<ens>.csv`` — per-pressure-level SSIM for 3-D
+      variables (written when ``report_per_level: true``, the default).
+    * ``ssim/ssim_ssim_by_lead_<ens>.csv`` — per-lead-time SSIM for datasets
+      with a ``lead_time`` dimension (written when ``report_per_lead: true``,
+      the default).
+
     Args:
         ds_target: Target/reference dataset.
         ds_prediction: Prediction dataset.
         out_root: Root output directory. A ``ssim/`` sub-folder is created.
         metrics_cfg: Full ``metrics`` config dict (reads ``metrics_cfg["ssim"]``
-            for ``sigma``, ``K1``, ``K2``, ``gaussian_weights``,
-            ``use_sample_covariance``).
+            for ``sigma``, ``k1``, ``k2``, ``gaussian_weights``,
+            ``use_sample_covariance``, ``report_per_level``,
+            ``report_per_lead``).
         ensemble_mode: Resolved ensemble handling mode.
     """
-    cfg = (metrics_cfg or {}).get("ssim", {})
+    cfg: dict[str, Any] = (metrics_cfg or {}).get("ssim", {}) or {}
 
-    # Extract SSIM parameters
     sigma = float(cfg.get("sigma", 1.5))
     K1 = float(cfg.get("k1", cfg.get("K1", 0.01)))
     K2 = float(cfg.get("k2", cfg.get("K2", 0.03)))
     gaussian_weights = bool(cfg.get("gaussian_weights", True))
     use_sample_covariance = bool(cfg.get("use_sample_covariance", True))
+    report_per_level = bool(cfg.get("report_per_level", True))
+    report_per_lead = bool(cfg.get("report_per_lead", True))
 
-    # Resolve ensemble mode
+    ssim_kwargs: dict[str, Any] = {
+        "sigma": sigma,
+        "K1": K1,
+        "K2": K2,
+        "gaussian_weights": gaussian_weights,
+        "use_sample_covariance": use_sample_covariance,
+    }
+
     mode = resolve_ensemble_mode("ssim", ensemble_mode, ds_target, ds_prediction)
+    out_dir = out_root / "ssim"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Helper to save output
-    def _save_output(df: pd.DataFrame, ens_token: str | None) -> None:
+    def _has_level(ds: xr.Dataset) -> bool:
+        return any("level" in ds[v].dims for v in ds.data_vars)
+
+    def _has_lead(ds: xr.Dataset) -> bool:
+        return any("lead_time" in ds[v].dims for v in ds.data_vars)
+
+    def _save_overall(df: pd.DataFrame, ens_token: str | None) -> None:
         if df.empty:
             return
-
-        # Calculate average SSIM across variables
-        avg_score = df["SSIM"].mean()
-        summary_row = pd.DataFrame({"SSIM": [avg_score]}, index=["AVERAGE_SSIM"])
-        df_final = pd.concat([df, summary_row])
-
-        filename = build_output_filename(
+        avg = df["SSIM"].mean()
+        df_out = pd.concat([df, pd.DataFrame({"SSIM": [avg]}, index=["AVERAGE_SSIM"])])
+        path = out_dir / build_output_filename(
             metric="ssim", qualifier="ssim", ensemble=ens_token, ext="csv"
         )
-        out_path = out_root / "ssim" / filename
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df_final.to_csv(out_path, index_label="variable")
-        c.info(f"[ssim] saved {out_path}")
+        df_out.to_csv(path, index_label="variable")
+        c.info(f"[ssim] saved {path.name}")
 
-    # Handle ensemble dimension
+    def _save_per_level(df: pd.DataFrame, ens_token: str | None) -> None:
+        if df.empty or "level" not in df.columns:
+            return
+        df = df.copy()
+        df["level"] = df["level"].astype(int)
+        path = out_dir / build_output_filename(
+            metric="ssim", qualifier="ssim_per_level", ensemble=ens_token, ext="csv"
+        )
+        df.to_csv(path, index=False)
+        c.info(f"[ssim] saved {path.name}")
+
+    def _save_by_lead(df: pd.DataFrame, ens_token: str | None) -> None:
+        if df.empty or "lead_time" not in df.columns:
+            return
+        df = df.copy()
+        df["lead_time_hours"] = df["lead_time"].apply(_lead_time_to_hours)
+        df = df.drop(columns=["lead_time"])
+        path = out_dir / build_output_filename(
+            metric="ssim", qualifier="ssim_by_lead", ensemble=ens_token, ext="csv"
+        )
+        df.to_csv(path, index=False)
+        c.info(f"[ssim] saved {path.name}")
+
+    def _run_one(ds_t: xr.Dataset, ds_p: xr.Dataset, ens_token: str | None) -> None:
+        """Compute all three output granularities for a single (ds_t, ds_p) pair."""
+        # Overall
+        df_overall = calculate_ssim(ds_t, ds_p, **ssim_kwargs)
+        _save_overall(df_overall, ens_token)
+
+        # Per-level
+        if report_per_level and _has_level(ds_t):
+            df_lvl = calculate_ssim(ds_t, ds_p, preserve_dims=["level"], **ssim_kwargs)
+            _save_per_level(df_lvl, ens_token)
+
+        # Per-lead
+        if report_per_lead and _has_lead(ds_p):
+            df_lead = calculate_ssim(ds_t, ds_p, preserve_dims=["lead_time"], **ssim_kwargs)
+            _save_by_lead(df_lead, ens_token)
+
+    # ── Ensemble dispatch ─────────────────────────────────────────────────────
     if "ensemble" in ds_prediction.dims and mode == "mean":
         ds_prediction = ds_prediction.mean(dim="ensemble")
         if "ensemble" in ds_target.dims:
             ds_target = ds_target.mean(dim="ensemble")
 
     if mode == "members" and "ensemble" in ds_prediction.dims:
-        # Per-member outputs
-        n_members = ds_prediction.sizes["ensemble"]
+        n_members = int(ds_prediction.sizes["ensemble"])
         for m in range(n_members):
             ds_p_mem = ds_prediction.isel(ensemble=m, drop=True)
             if "ensemble" in ds_target.dims:
@@ -226,21 +334,9 @@ def run(
                 ds_t_mem = ds_target.isel(ensemble=ens_idx, drop=True)
             else:
                 ds_t_mem = ds_target
-
-            df = calculate_ssim(
-                ds_t_mem,
-                ds_p_mem,
-                sigma=sigma,
-                K1=K1,
-                K2=K2,
-                gaussian_weights=gaussian_weights,
-                use_sample_covariance=use_sample_covariance,
-            )
-            ens_token = ensemble_mode_to_token(mode, member_index=m)
-            _save_output(df, ens_token)
+            _run_one(ds_t_mem, ds_p_mem, ensemble_mode_to_token(mode, member_index=m))
 
     elif mode == "pooled" and "ensemble" in ds_prediction.dims:
-        # Stack ensemble into the sample dimension
         non_ens_dims = [d for d in ds_prediction.dims if d != "ensemble"]
         if "init_time" in non_ens_dims:
             sample_dim = "init_time"
@@ -255,33 +351,13 @@ def run(
                 "Pooled ensemble mode requires at least one non-ensemble dimension to stack "
                 f"over, but only found: {tuple(ds_prediction.dims)!r}"
             )
-        ds_prediction_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
-        ds_target_stacked = ds_target
-        if "ensemble" in ds_target.dims:
-            ds_target_stacked = ds_target.stack(pooled_sample=("ensemble", sample_dim))
-
-        df = calculate_ssim(
-            ds_target_stacked,
-            ds_prediction_stacked,
-            sigma=sigma,
-            K1=K1,
-            K2=K2,
-            gaussian_weights=gaussian_weights,
-            use_sample_covariance=use_sample_covariance,
+        ds_p_stacked = ds_prediction.stack(pooled_sample=("ensemble", sample_dim))
+        ds_t_stacked = (
+            ds_target.stack(pooled_sample=("ensemble", sample_dim))
+            if "ensemble" in ds_target.dims
+            else ds_target
         )
-        ens_token = ensemble_mode_to_token(mode)
-        _save_output(df, ens_token)
+        _run_one(ds_t_stacked, ds_p_stacked, ensemble_mode_to_token(mode))
 
     else:
-        # Single output (mean or no ensemble)
-        df = calculate_ssim(
-            ds_target,
-            ds_prediction,
-            sigma=sigma,
-            K1=K1,
-            K2=K2,
-            gaussian_weights=gaussian_weights,
-            use_sample_covariance=use_sample_covariance,
-        )
-        ens_token = ensemble_mode_to_token(mode)
-        _save_output(df, ens_token)
+        _run_one(ds_target, ds_prediction, ensemble_mode_to_token(mode))
