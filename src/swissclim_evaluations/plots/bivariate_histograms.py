@@ -652,13 +652,10 @@ def _plot_bivariate_per_lead_grid(
                 xlabel=_get_label(ds_prediction[var_x], var_x),
                 ylabel=_get_label(ds_prediction[var_y], var_y),
                 show_colorbar=False,
+                show_legend=(i == 0),
             )
-        # Replace the per-subplot title set inside plot_bivariate_histogram with
-        # one that also carries the lead-time label.
-        ax.set_title(
-            f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}\n{lead_label}",
-            fontsize=10,
-        )
+        # Show only lead-time label as subplot title (e.g. "+6h").
+        ax.set_title(lead_label, fontsize=10)
         last_i = i
 
     # ── Hide any surplus subplots beyond n_leads ──────────────────────────────
@@ -675,7 +672,7 @@ def _plot_bivariate_per_lead_grid(
         location="bottom",
         pad=0.04,
         fraction=0.04,
-        shrink=0.8,
+        shrink=1.6,
     )
     cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
     cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
@@ -1055,6 +1052,7 @@ def plot_bivariate_histogram(
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
     show_colorbar: bool = True,
+    show_legend: bool = True,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1272,13 +1270,14 @@ def plot_bivariate_histogram(
         handles.append(artist)
         labels.append(lbl)
 
-    ax.legend(
-        handles=handles,
-        labels=labels,
-        loc="upper right",
-        handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
-        fontsize="small",
-        framealpha=0.85,
-    )
+    if show_legend:
+        ax.legend(
+            handles=handles,
+            labels=labels,
+            loc="upper right",
+            handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+            fontsize="small",
+            framealpha=0.85,
+        )
 
     return ax

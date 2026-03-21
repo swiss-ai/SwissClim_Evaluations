@@ -248,14 +248,14 @@ derived_variables:
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
-  maps: true                 # Global and per-level maps (Cartopy)
-  histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
-  wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: true       # Zonal energy spectra + LSD table
-  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
-  deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
-  ets: true                  # Equitable Threat Score across quantile thresholds
-  probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  maps: false                 # Global and per-level maps (Cartopy)
+  histograms: false           # Distributions by latitude bands (2D + optional per-level 3D variables)
+  wd_kde: false               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
+  energy_spectra: false       # Zonal energy spectra + LSD table
+  vertical_profiles: false    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
+  deterministic: false        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: false                  # Equitable Threat Score across quantile thresholds
+  probabilistic: false        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
   multivariate: true         # Multivariate metrics (e.g. Bivariate Histograms)
 
 metrics:
@@ -343,15 +343,29 @@ metrics:
 
   # Multivariate metrics configuration.
   multivariate:
-    # Bivariate histograms configuration
-    # List of variable pairs to generate 2D histograms and density plots for.
+    # Bivariate histograms: list of [var_x, var_y] pairs to compare as 2-D
+    # joint distributions.  Pairs marked with ★ receive automatic physical-
+    # constraint overlays (Clausius–Clapeyron saturation curve, geostrophic
+    # balance line) drawn on top of the histogram panels.
+    #
+    #  ★ temperature × specific_humidity
+    #       Clausius–Clapeyron saturation curve (Bolton 1980) per pressure level;
+    #       supersaturated and q < 0 regions are shaded.
+    #
+    #  ★ geopotential_height_gradient × wind_speed
+    #       Geostrophic-balance reference line and wind_speed ≥ 0 bound.
+    #       Requires derived_variables: geopotential_height_gradient and wind_speed.
+    #       See the derived_variables block above for how to configure them.
     bivariate_pairs:
       - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
       - ["u_component_of_wind", "v_component_of_wind"]
-      - ["temperature", "specific_humidity"]
+      - ["temperature", "specific_humidity"]        # ★ physical constraints
       - ["geopotential", "temperature"]
       - ["total_precipitation", "total_column_water_vapour"]
       - ["vertical_velocity", "temperature"]
+      # Uncomment the line below to enable geostrophic-balance overlay (★).
+      # Requires geopotential_height_gradient and wind_speed in derived_variables.
+      # - ["geopotential_height_gradient", "wind_speed"]
 
 performance:
   # Dask scheduler choice.
