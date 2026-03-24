@@ -329,6 +329,16 @@ metrics:
     # the spectrograms already summarise the full lead-time evolution in one figure.
     individual_plots: false
 
+    # If true, generate two additional plots in multi-lead runs:
+    #   1. Overlay line plot — all lead times drawn as separate viridis-coloured
+    #      lines on one log-log spectrum figure (dashed = target, solid = prediction),
+    #      with a lead-time colorbar.  Saved as energy_spectra_lines_by_lead_*.png.
+    #   2. Per-lead averaged-spectrum PNGs — one target-vs-prediction spectrum plot
+    #      per lead time (same style as single-lead runs), averaged over init times.
+    # These complement the spectrograms (which show the same information as a 2D
+    # heatmap) and are useful for inspecting individual spectral curves.
+    spectra_per_lead_lines: true
+
     # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
     # instead of the spectrum of the scalar wind-speed field, which would be

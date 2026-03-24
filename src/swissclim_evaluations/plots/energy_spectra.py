@@ -786,6 +786,93 @@ def _plot_averaged_spectra(
         )
 
 
+def _plot_spectra_lines_by_lead(
+    kvals: np.ndarray,
+    Zt: np.ndarray,
+    Zp: np.ndarray,
+    x_hours: np.ndarray,
+    var: str,
+    level: int | None,
+    out_dir: Path,
+    init_range: tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+    ens_token: str | None,
+    dpi: int,
+) -> None:
+    """Plot all lead times as separate colored lines on one spectrum figure.
+
+    ``Zt`` / ``Zp`` have shape ``(n_leads, n_k)``.  Each row corresponds to one
+    lead time and is coloured by a viridis colormap (early lead = dark, late
+    lead = bright).  Target curves are dashed, prediction curves are solid.
+    A colorbar shows the lead time in hours.
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    n_leads = len(x_hours)
+    if n_leads == 0 or kvals.size == 0:
+        return
+
+    cmap = plt.get_cmap("viridis")
+    norm = Normalize(vmin=float(x_hours[0]), vmax=float(x_hours[-1]))
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+
+    for i, h in enumerate(x_hours):
+        color = cmap(norm(float(h)))
+        ax.loglog(kvals, Zt[i], color=COLOR_GROUND_TRUTH, linestyle="--", lw=1.0, alpha=0.5)
+        ax.loglog(kvals, Zp[i], color=color, linestyle="-", lw=1.0, alpha=0.8)
+
+    # Colorbar encoding lead time
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, ax=ax, orientation="vertical")
+    cb.set_label("Lead Time [h]")
+
+    # Legend entries for line style
+    legend_elements = [
+        Line2D([0], [0], color=COLOR_GROUND_TRUTH, linestyle="--", lw=1.5, label="Target"),
+        Line2D([0], [0], color="gray", linestyle="-", lw=1.5, label="Prediction (by lead)"),
+    ]
+    ax.legend(handles=legend_elements, fontsize=10)
+
+    # 4dx cutoff marker
+    k_max_val = float(np.nanmax(kvals))
+    k_min_val = float(np.nanmin(kvals[kvals > 0])) if np.any(kvals > 0) else float(np.nanmin(kvals))
+    if np.isfinite(k_max_val) and k_max_val > 0:
+        ax.axvline(
+            k_max_val / 2.0, color="red", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff"
+        )
+    ax.set_xlim(k_min_val, k_max_val)
+
+    ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+    ax.set_ylabel("Energy Density (weighted)")
+
+    lev_part = format_level_label(level)
+    title_str = f"Energy Spectra by Lead — {format_variable_name(var)}{lev_part}"
+    if init_range:
+        s, e = init_range
+        title_str += f" ({s})" if s == e else f" ({s} — {e})"
+    ax.set_title(title_str, pad=24, fontsize=10)
+
+    add_wavelength_axis(ax, k_min_val, k_max_val)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+
+    out_png = out_dir / build_output_filename(
+        metric="energy_spectra_lines_by_lead",
+        variable=var,
+        level=f"{level}hPa" if level is not None else None,
+        qualifier=None,
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token,
+        ext="png",
+    )
+    save_fig_helper(fig, out_png, module="energy_spectra")
+    plt.close(fig)
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -831,6 +918,10 @@ def run(
     # individual spectrum PNGs and NPZ files are suppressed.  CSVs and
     # spectrograms are always written regardless of this flag.
     individual_plots = bool(es_cfg.get("individual_plots", False))
+    # When True, generate (a) a single overlay plot with all lead times drawn as
+    # separate viridis-coloured lines (dashed = target, solid = prediction) and
+    # (b) one averaged-spectrum PNG per lead time (same style as single-lead runs).
+    per_lead_lines = bool(es_cfg.get("spectra_per_lead_lines", False))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -1650,6 +1741,52 @@ def run(
                     save_fig_helper(fig, out_png_band, module="energy_spectra")
                     plt.close(fig)
 
+            # Spectra-by-lead overlay and per-lead averaged-spectrum PNGs.
+            # All arrays (kvals, Zt, Zp, lsd_vals) are already materialized numpy
+            # arrays — no additional FFT or Dask compute is triggered here.
+            if per_lead_lines and save_plot:
+                _plot_spectra_lines_by_lead(
+                    kvals,
+                    Zt,
+                    Zp,
+                    x_hours,
+                    str(var),
+                    None,
+                    section_output,
+                    init_range,
+                    lead_range,
+                    ens_token,
+                    dpi,
+                )
+                init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
+                for _i, _h in enumerate(x_hours):
+                    _lead_lbl = f"{int(_h):03d}h"
+                    _lsd_i = float(lsd_vals[_i]) if _i < len(lsd_vals) else float("nan")
+                    _fname_i = build_output_filename(
+                        metric="energy_spectrum",
+                        variable=str(var),
+                        level=None,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=(_lead_lbl, _lead_lbl),
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    _plot_single_spectrum(
+                        kvals,
+                        Zt[_i],
+                        Zp[_i],
+                        _lsd_i,
+                        str(var),
+                        None,
+                        init_label_str,
+                        _lead_lbl,
+                        section_output / _fname_i,
+                        dpi,
+                        save_plot_data=False,
+                        save_figure=True,
+                    )
+
             # Save bundle NPZ for programmatic use
             if save_npz:
                 out_npz = section_output / build_output_filename(
@@ -2052,6 +2189,58 @@ def run(
                         c.print(f"[energy_spectra] Saved {out_tripanel_3d}")
                         save_fig_helper(fig3, out_tripanel_3d, module="energy_spectra")
                         plt.close(fig3)
+
+                    # Spectra-by-lead overlay and per-lead PNGs for this 3D level.
+                    # Zt3, Zp3, kvals_3d are already materialized — no FFT recompute.
+                    if per_lead_lines and save_plot:
+                        _plot_spectra_lines_by_lead(
+                            kvals_3d,
+                            Zt3,
+                            Zp3,
+                            x_hours_3d,
+                            str(var),
+                            int(lvl),
+                            section_output,
+                            init_range,
+                            lead_range,
+                            ens_token,
+                            dpi,
+                        )
+                        _init_lbl_3d = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
+                        _eps3 = 1e-10
+                        for _i3, _h3 in enumerate(x_hours_3d):
+                            _lead_lbl_3d = f"{int(_h3):03d}h"
+                            _lsd_3d_i = float(
+                                np.sqrt(
+                                    np.mean(
+                                        (np.log(Zt3[_i3] + _eps3) - np.log(Zp3[_i3] + _eps3)) ** 2
+                                    )
+                                )
+                            )
+                            _fname_3d_i = build_output_filename(
+                                metric="energy_spectrum",
+                                variable=str(var),
+                                level=int(lvl),
+                                qualifier=None,
+                                init_time_range=init_range,
+                                lead_time_range=(_lead_lbl_3d, _lead_lbl_3d),
+                                ensemble=ens_token,
+                                ext="png",
+                            )
+                            _plot_single_spectrum(
+                                kvals_3d,
+                                Zt3[_i3],
+                                Zp3[_i3],
+                                _lsd_3d_i,
+                                str(var),
+                                int(lvl),
+                                _init_lbl_3d,
+                                _lead_lbl_3d,
+                                section_output / _fname_3d_i,
+                                dpi,
+                                save_plot_data=False,
+                                save_figure=True,
+                            )
 
         # Save aggregated LSD by-lead CSVs (long and wide) if any rows were collected
         if lsd_long_rows:
