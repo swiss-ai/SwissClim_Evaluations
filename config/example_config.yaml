@@ -337,7 +337,7 @@ metrics:
     #      per lead time (same style as single-lead runs), averaged over init times.
     # These complement the spectrograms (which show the same information as a 2D
     # heatmap) and are useful for inspecting individual spectral curves.
-    spectra_per_lead_lines: true
+    spectra_per_lead_lines: false
 
     # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)

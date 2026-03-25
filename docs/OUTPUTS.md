@@ -146,6 +146,11 @@ is exported per init_time/lead_time and summarized. Outputs are split into singl
 - LSD Banded per-lead: `energy_spectra/energy_ratios_bands_per_lead_per_lead_time_<range>.csv`
 - LSD Line Plot: `energy_spectra/energy_ratios_line_per_lead_<variable>...`
 
+**Per-Lead Line Plots (opt-in: `metrics.energy_spectra.spectra_per_lead_lines: true`):**
+
+- Overlay: `energy_spectra/energy_spectra_lines_by_lead_<variable>[_<level>hPa]_<range>_<ens>.png` — all lead times as viridis-coloured curves on one log-log figure (dashed black = target, solid = prediction, shared lead-time colorbar).
+- Per-lead PNGs: `energy_spectra/energy_spectrum_<variable>[_<level>]_<range>_lead<Xh>-<Xh>_<ens>.png` — one target-vs-prediction spectrum plot per lead time, averaged over init times.
+
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
 Histogram and KDE outputs encode:
@@ -291,6 +296,8 @@ All intercomparison plots use **consistent model colours**: each label in `inter
 	- `energy_spectra/*_compare.png`
 	- `energy_spectra/*_ratio_compare.png`
 	- `energy_spectra/*_spectrogram_delta_compare.png`
+	- `energy_spectra/energy_spectra_lines_by_lead_*_compare.png` *(opt-in: `spectra_per_lead_lines: true`)*
+	- `energy_spectra/energy_spectrum_*_lead<Xh>h_compare.png` *(opt-in: `individual_plots: true` or `spectra_per_lead_lines: true`)*
 	- `energy_spectra/lsd_metrics_averaged_combined.csv`
 	- `energy_spectra/lsd_metrics_banded_averaged_combined.csv`
 	- `energy_spectra/lsd_metrics_per_level_combined.csv`

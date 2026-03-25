@@ -204,9 +204,14 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
         individual_plots = (
             bool(spec_cfg.get("individual_plots", False)) if isinstance(spec_cfg, dict) else False
         )
+        per_lead_lines = (
+            bool(spec_cfg.get("spectra_per_lead_lines", False))
+            if isinstance(spec_cfg, dict)
+            else False
+        )
         return (
             f"LSD (+ Δ spectrogram compare); report_per_level={report_per_level}; "
-            f"individual_plots={individual_plots}",
+            f"individual_plots={individual_plots}; per_lead_lines={per_lead_lines}",
             "n/a",
         )
     return "n/a", "n/a"
@@ -252,9 +257,10 @@ def run_from_config(cfg: dict) -> None:
     max_map_panels = int(cfg.get("max_map_panels", 4))
     max_crps_map_panels = int(cfg.get("max_crps_map_panels", 4))
 
-    # Energy spectra individual plots flag (default: False — only spectrograms for multi-lead)
+    # Energy spectra flags (default: False — only spectrograms for multi-lead)
     spectra_cfg = (cfg.get("metrics") or {}).get("energy_spectra") or {}
     energy_spectra_individual_plots = bool(spectra_cfg.get("individual_plots", False))
+    energy_spectra_per_lead_lines = bool(spectra_cfg.get("spectra_per_lead_lines", False))
 
     # Light validation: warn on missing model dirs
     for m in models:
@@ -280,7 +286,11 @@ def run_from_config(cfg: dict) -> None:
         intercompare_wd_kde(models, labels, out_root)
     if "spectra" in mods:
         intercompare_energy_spectra(
-            models, labels, out_root, individual_plots=energy_spectra_individual_plots
+            models,
+            labels,
+            out_root,
+            individual_plots=energy_spectra_individual_plots,
+            per_lead_lines=energy_spectra_per_lead_lines,
         )
     if "vprof" in mods:
         intercompare_vertical_profiles(models, labels, out_root)

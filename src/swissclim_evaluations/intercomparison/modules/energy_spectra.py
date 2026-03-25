@@ -193,12 +193,148 @@ def _plot_banded_lsd_by_lead(
         c.success(f"Saved {out_png.relative_to(out_root)}")
 
 
+def _plot_spectra_lines_by_lead_compare(
+    bundles: list[str],
+    models: list[Path],
+    labels: list[str],
+    dst: Path,
+    out_root: Path,
+) -> None:
+    """Side-by-side lines-by-lead overlay from bundle NPZs, one panel per model.
+
+    Each panel shows dashed-black target curves and solid prediction curves,
+    both coloured by a shared viridis lead-time scale.  A horizontal colorbar
+    and a red 4Δx cutoff marker are added for every panel.
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    from matplotlib.lines import Line2D
+
+    for base in bundles:
+        payloads = [load_npz(m / "energy_spectra" / base) for m in models]
+        if not all(
+            "energy_prediction" in p and "lead_hours" in p and "wavenumber" in p for p in payloads
+        ):
+            continue
+
+        lead_hours = np.asarray(payloads[0]["lead_hours"], dtype=float)
+        wavenumber = np.asarray(payloads[0]["wavenumber"])
+        variable = payloads[0].get("variable", "var")
+        variable = str(variable.item()) if hasattr(variable, "item") else str(variable)
+        level_raw = payloads[0].get("level")
+        level_val = (
+            int(level_raw.item())
+            if hasattr(level_raw, "item")
+            else (int(level_raw) if level_raw is not None else None)
+        )
+        level_suffix = format_level_label(level_val) if level_val is not None else ""
+
+        n_leads = len(lead_hours)
+        if n_leads == 0 or wavenumber.size == 0:
+            continue
+
+        cmap = plt.get_cmap("viridis")
+        norm = Normalize(vmin=float(lead_hours[0]), vmax=float(lead_hours[-1]))
+
+        # Apply 4Δx cutoff (trim first 2 large-scale bins, drop k > k_max/2).
+        k_max_val = float(np.nanmax(wavenumber))
+        cut_mask = np.ones(len(wavenumber), dtype=bool)
+        if np.isfinite(k_max_val) and k_max_val > 0 and len(wavenumber) > 4:
+            cut_mask[:2] = False
+            cut_mask &= wavenumber <= k_max_val / 2.0
+        wn_plot = wavenumber[cut_mask] if np.any(cut_mask) else wavenumber
+
+        ncols = len(models)
+        fig, axes = plt.subplots(
+            1,
+            ncols,
+            figsize=(max(5, 6 * ncols), 5.5),
+            dpi=160,
+            squeeze=False,
+            sharey=True,
+        )
+
+        for j, (ax, lab, pay) in enumerate(zip(axes[0], labels, payloads, strict=False)):
+            et = pay.get("energy_target")
+            em = np.asarray(pay["energy_prediction"])
+
+            for i, h in enumerate(lead_hours):
+                color = cmap(norm(float(h)))
+                if et is not None and np.asarray(et).ndim == 2 and np.asarray(et).shape[0] > i:
+                    ax.loglog(
+                        wn_plot,
+                        np.asarray(et)[i][cut_mask],
+                        color=COLOR_GROUND_TRUTH,
+                        linestyle="--",
+                        lw=0.8,
+                        alpha=0.4,
+                    )
+                if em.ndim == 2 and em.shape[0] > i:
+                    ax.loglog(
+                        wn_plot,
+                        em[i][cut_mask],
+                        color=color,
+                        linestyle="-",
+                        lw=0.9,
+                        alpha=0.85,
+                    )
+
+            ax.set_title(lab, fontsize=9)
+            ax.set_xlabel("Zonal Wavenumber (cycles/km)", fontsize=8)
+            if j == 0:
+                ax.set_ylabel("Energy Density (weighted)", fontsize=8)
+            ax.grid(True, which="both", ls="--", alpha=0.4)
+            if np.isfinite(k_max_val) and k_max_val > 0:
+                ax.axvline(k_max_val / 2.0, color="red", linestyle=":", linewidth=1.5, alpha=0.7)
+
+            k_min_plot = (
+                float(np.nanmin(wn_plot[wn_plot > 0]))
+                if np.any(wn_plot > 0)
+                else float(np.nanmin(wn_plot))
+            )
+            add_wavelength_axis(ax, k_min_plot, float(np.nanmax(wn_plot)))
+
+        legend_elements = [
+            Line2D([0], [0], color=COLOR_GROUND_TRUTH, linestyle="--", lw=1.5, label="Target"),
+            Line2D([0], [0], color="gray", linestyle="-", lw=1.5, label="Prediction (by lead)"),
+        ]
+        axes[0, 0].legend(handles=legend_elements, fontsize=7, frameon=False)
+
+        sm = ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.subplots_adjust(bottom=0.22)
+        cbar = fig.colorbar(
+            sm,
+            ax=axes.ravel().tolist(),
+            orientation="horizontal",
+            location="bottom",
+            pad=0.22,
+            shrink=0.5,
+            aspect=40,
+        )
+        cbar.set_label("Lead Time [h]")
+        fig.suptitle(
+            f"Energy Spectra by Lead — {format_variable_name(variable)}{level_suffix}",
+            fontsize=11,
+            y=1.02,
+        )
+
+        safe_var = str(variable).replace("/", "_").replace(" ", "_")
+        level_tag = f"_{level_val}hPa" if level_val is not None else ""
+        out_png = dst / f"energy_spectra_lines_by_lead_{safe_var}{level_tag}_compare.png"
+        plt.tight_layout()
+        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        plt.close(fig)
+        c.success(f"Saved {out_png.relative_to(out_root)}")
+
+
 def intercompare_energy_spectra(
     models: list[Path],
     labels: list[str],
     out_root: Path,
     *,
     individual_plots: bool = False,
+    per_lead_lines: bool = False,
 ) -> None:
     """Overlay energy spectra (and ratios) from multiple models.
 
@@ -207,13 +343,16 @@ def intercompare_energy_spectra(
         labels: Display names for each model.
         out_root: Root directory for intercomparison outputs.
         individual_plots: When *True*, generate per-spectrum overlay plots
-            (``*_compare.png``, ``*_compare_ratio.png``) and per-lead individual
-            spectrum plots (``energy_spectrum_*_lead{h}h_compare.png``) in
-            addition to the delta spectrograms.  When *False* (default) and a
-            multi-lead dataset is detected, only the compact delta spectrograms
-            (``*_spectrogram_delta_compare.png``) are produced.  For single-lead
-            datasets (no bundle NPZ files found) individual plots are always
-            generated regardless of this flag.
+            (``*_compare.png``, ``*_compare_ratio.png``) in addition to the
+            delta spectrograms.  When *False* (default) and a multi-lead dataset
+            is detected, only the compact delta spectrograms are produced.  For
+            single-lead datasets individual plots are always generated.
+        per_lead_lines: When *True* (mirrors ``metrics.energy_spectra.spectra_per_lead_lines``
+            in the per-run config), generate two extra multi-lead plots per bundle:
+            (1) ``energy_spectra_lines_by_lead_*_compare.png`` — side-by-side
+            panels (one per model) showing viridis-coloured spectral curves for
+            every lead time; (2) ``energy_spectrum_*_lead{h:03d}h_compare.png``
+            — per-lead individual spectra overlaid for all models.
     """
     dst = ensure_dir(out_root / "energy_spectra")
 
@@ -728,8 +867,9 @@ def intercompare_energy_spectra(
             wavenumber = payloads[0]["wavenumber"]
             variable = payloads[0].get("variable", "var")
 
-            # Per-lead individual spectrum plots — only when explicitly enabled.
-            if individual_plots:
+            # Per-lead individual spectrum plots — when explicitly enabled via
+            # individual_plots OR per_lead_lines.
+            if individual_plots or per_lead_lines:
                 for i, h in enumerate(lead_hours):
                     fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
 
@@ -898,3 +1038,7 @@ def intercompare_energy_spectra(
                             plt.close(fig)
 
         c.success(f"Saved per-lead energy spectra plots to {dst.relative_to(out_root)}")
+
+    # Lines-by-lead overlay compare — one side-by-side panel figure per bundle.
+    if bundles and per_lead_lines:
+        _plot_spectra_lines_by_lead_compare(bundles, models, labels, dst, out_root)

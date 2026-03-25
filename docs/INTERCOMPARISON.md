@@ -61,6 +61,8 @@ What gets combined:
         *   `energy_spectrum_<var>_lead<hhh>h_compare.png`: Per-lead time energy spectra comparison (when `individual_plots: true`).
         *   `energy_spectra_per_lead_*_bundle*_spectrogram_delta_compare.png`: Multi-model Δlog10(model-target) spectrogram compare
         *   `lsd_banded_lead_time_<var>_compare.png`: LSD vs lead time by spectral band (requires `individual_plots: false` multi-lead run).
+        *   `energy_spectra_lines_by_lead_<var>[_<level>hPa]_compare.png`: Side-by-side panels (one per model) showing viridis-coloured spectral curves for every lead time alongside dashed-black target curves and a shared lead-time colorbar. Requires `metrics.energy_spectra.spectra_per_lead_lines: true`.
+        *   `energy_spectrum_<var>_lead<Xh>h_compare.png`: Per-lead overlay of all-model spectra on one log-log figure. Generated when `individual_plots: true` **or** `spectra_per_lead_lines: true`.
     *   **CSVs**:
         *   `lsd_metrics_averaged_combined.csv`: Global averaged Log Spectral Distance (LSD).
         *   `lsd_metrics_lead_time_combined.csv`: LSD metrics per lead time.
