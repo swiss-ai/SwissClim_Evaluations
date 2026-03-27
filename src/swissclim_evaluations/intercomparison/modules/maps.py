@@ -357,6 +357,7 @@ def intercompare_maps(
                 plt.close(fig)
 
     # ── Spatial metric maps intercomparison (MAE / RMSE / Bias) ────────────
+    det_dst = ensure_dir(out_root / "deterministic")
     det_rel = Path("deterministic")
     for _metric_name, _sspec in SPATIAL_METRIC_SPECS.items():
         metric_key = _sspec["key"]
@@ -468,7 +469,7 @@ def intercompare_maps(
                     title += f" — {format_variable_name(str(var_name))}"
                 fig.suptitle(title, fontsize=11, y=1.02)
 
-            out_png = dst / (key + "_compare.png")
+            out_png = det_dst / (key + "_compare.png")
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
@@ -573,7 +574,7 @@ def intercompare_maps(
                         if var_name:
                             title_pl += f" — {format_variable_name(str(var_name))}"
                         fig_pl.suptitle(title_pl, fontsize=11, y=1.02)
-                    out_pl = dst / (key + "_per_lead_compare.png")
+                    out_pl = det_dst / (key + "_per_lead_compare.png")
                     plt.savefig(out_pl, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_pl.relative_to(out_root)}")
                     plt.close(fig_pl)

@@ -275,12 +275,6 @@ All intercomparison plots use **consistent model colours**: each label in `inter
 
 - **maps**
 	- `maps/map_<var>[_<level>]_compare.png`: Target + per-model panels. Multi-lead 2D variables produce a row per lead time labelled `(+Xh)` on the left; multi-lead 3D variables produce one gridded figure per pressure level.
-	- `maps/det_mae_map_*_compare.png`: MAE spatial map comparison (panels per model).
-	- `maps/det_mae_map_*_per_lead_compare.png`: MAE per-lead gridded comparison with `(+Xh)` row labels.
-	- `maps/det_rmse_map_*_compare.png`: RMSE spatial map comparison.
-	- `maps/det_rmse_map_*_per_lead_compare.png`: RMSE per-lead gridded comparison.
-	- `maps/det_bias_map_*_compare.png`: Bias spatial map comparison.
-	- `maps/det_bias_map_*_per_lead_compare.png`: Bias per-lead gridded comparison.
 - **histograms**
 	- `histograms/*_compare.png`
 - **wd_kde**
@@ -309,6 +303,12 @@ All intercomparison plots use **consistent model colours**: each label in `inter
 	- `deterministic/metrics_standardized_per_level_combined.csv`
 	- `deterministic/temporal_metrics_combined.csv`
 	- `deterministic/temporal_*_compare.png`
+	- `deterministic/det_mae_map_*_compare.png`: MAE spatial map comparison (panels per model).
+	- `deterministic/det_mae_map_*_per_lead_compare.png`: MAE per-lead gridded comparison with `(+Xh)` row labels.
+	- `deterministic/det_rmse_map_*_compare.png`: RMSE spatial map comparison.
+	- `deterministic/det_rmse_map_*_per_lead_compare.png`: RMSE per-lead gridded comparison.
+	- `deterministic/det_bias_map_*_compare.png`: Bias spatial map comparison.
+	- `deterministic/det_bias_map_*_per_lead_compare.png`: Bias per-lead gridded comparison.
 - **ets**
 	- `ets/ets_metrics_combined.csv`
 	- `ets/ets_*_compare.png`
