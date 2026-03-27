@@ -602,6 +602,8 @@ def _plot_bivariate_per_lead_grid(
     # ── Grid layout ───────────────────────────────────────────────────────────
     cols = min(3, n_leads)
     rows = int(np.ceil(n_leads / cols))
+    n_panels = cols * rows
+    font_scale = max(1.0, n_panels**0.4)
     # Extra height for the shared horizontal colorbar below the grid.
     fig, axs = plt.subplots(
         rows,
@@ -657,9 +659,10 @@ def _plot_bivariate_per_lead_grid(
                 show_colorbar=False,
                 show_legend=(i == 0),
                 coriolis_parameter=coriolis_parameter,
+                font_scale=font_scale,
             )
         # Show only lead-time label as subplot title (e.g. "+6h").
-        ax.set_title(lead_label, fontsize=10)
+        ax.set_title(lead_label, fontsize=int(round(10 * font_scale)))
         # Hide y-axis label and tick labels on every column except the leftmost.
         if i % cols != 0:
             ax.set_ylabel("")
@@ -684,13 +687,14 @@ def _plot_bivariate_per_lead_grid(
     )
     cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
     cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
-    cbar.set_label("Density (log scale)")
+    cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
+    cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
 
     lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
         f"Bivariate Histograms by Lead Time — "
         f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}{lev_title}",
-        fontsize=14,
+        fontsize=int(round(14 * font_scale)),
     )
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -1069,6 +1073,7 @@ def plot_bivariate_histogram(
     show_colorbar: bool = True,
     show_legend: bool = True,
     coriolis_parameter: float = 1.0e-4,
+    font_scale: float = 1.0,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1211,14 +1216,21 @@ def plot_bivariate_histogram(
         linewidths=1.5,
     )
 
+    fs_label = int(round(12 * font_scale))
+    fs_tick = int(round(10 * font_scale))
+    fs_title = int(round(12 * font_scale))
+    fs_legend = int(round(9 * font_scale))
+
     fig = ax.get_figure()
     if show_colorbar and fig:
         cbar = fig.colorbar(cs2, ax=ax, format="%.2e")
-        cbar.set_label("Density (log scale)")
+        cbar.set_label("Density (log scale)", fontsize=fs_label)
+        cbar.ax.tick_params(labelsize=fs_tick)
         cbar.add_lines(cs1)
 
-    ax.set_xlabel(xlabel if xlabel else var_x)
-    ax.set_ylabel(ylabel if ylabel else var_y)
+    ax.set_xlabel(xlabel if xlabel else var_x, fontsize=fs_label)
+    ax.set_ylabel(ylabel if ylabel else var_y, fontsize=fs_label)
+    ax.tick_params(axis="both", labelsize=fs_tick)
 
     if _is_geostrophic_gradient_pair(var_x, var_y):
         ax.tick_params(axis="x", labelrotation=45)
@@ -1228,7 +1240,7 @@ def plot_bivariate_histogram(
     title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
     if level_hpa is not None:
         title += f" ({level_hpa:g} hPa)"
-    ax.set_title(title)
+    ax.set_title(title, fontsize=fs_title)
 
     # Zoom out by 25%, unless explicit limits are provided by the caller.
     if xlim is not None and ylim is not None:
@@ -1308,13 +1320,23 @@ def plot_bivariate_histogram(
             legend_loc = "lower right"
         else:
             legend_loc = "best"
-        ax.legend(
-            handles=handles,
-            labels=labels,
-            loc=legend_loc,
-            handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
-            fontsize="small",
-            framealpha=0.85,
-        )
+        legend_kwargs: dict = {
+            "handles": handles,
+            "labels": labels,
+            "loc": legend_loc,
+            "handler_map": {tuple: HandlerTuple(ndivide=None, pad=0)},
+            "fontsize": fs_legend,
+            "framealpha": 0.85,
+        }
+        if is_zgrad_ws:
+            # Anchor the *lower*-right corner of the legend just above
+            # wind_speed = 0 in data coordinates.  Convert y=0 from data
+            # space → display space → axes-fraction space, then add a small
+            # padding so the legend box sits fully above the zero line.
+            _, y0_disp = ax.transData.transform((0, 0))
+            y0_axes = ax.transAxes.inverted().transform((0, y0_disp))[1]
+            legend_kwargs["bbox_to_anchor"] = (1.0, y0_axes + 0.01)
+            legend_kwargs["bbox_transform"] = ax.transAxes
+        ax.legend(**legend_kwargs)
 
     return ax

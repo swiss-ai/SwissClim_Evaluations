@@ -200,6 +200,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         global_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
 
         n_cols = len(model_entries)
+        font_scale = max(1.0, n_cols**0.4)
         fig, axes = plt.subplots(
             1, n_cols, figsize=(6 * n_cols, 7), dpi=150, constrained_layout=True, squeeze=False
         )
@@ -229,8 +230,9 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 show_colorbar=False,
                 show_legend=(idx == 0),
                 coriolis_parameter=coriolis_parameter,
+                font_scale=font_scale,
             )
-            ax.set_title(label)
+            ax.set_title(label, fontsize=int(round(12 * font_scale)))
             if idx != 0:
                 ax.set_ylabel("")
                 ax.tick_params(axis="y", labelleft=False)
@@ -249,15 +251,19 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         )
         cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
         cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
-        cbar.set_label("Density (log scale)")
+        cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
+        cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
 
         if var_x and var_y:
             title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
             if level_hpa is not None:
                 title += f" ({level_hpa:g} hPa)"
-            fig.suptitle(title)
+            fig.suptitle(title, fontsize=int(round(14 * font_scale)))
         else:
-            fig.suptitle(fname.replace("bivariate_", "").replace(".npz", ""))
+            fig.suptitle(
+                fname.replace("bivariate_", "").replace(".npz", ""),
+                fontsize=int(round(14 * font_scale)),
+            )
 
         stem = fname.replace("bivariate_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"

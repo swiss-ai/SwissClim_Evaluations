@@ -225,8 +225,8 @@ def time_range_suffix(ds: xr.Dataset) -> str:
     """Build suffix string encoding init_time and lead_time ranges.
 
     Patterns required by tests:
-      - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
-      - Only one dim present → single segment without separator.
+    - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
+    - Only one dim present → single segment without separator.
     Datetime formatted as YYYY-MM-DDTHH. Lead times in hours (ints).
     """
     segments: list[str] = []
@@ -376,10 +376,10 @@ def resolve_ensemble_mode(
     """Determine effective ensemble handling mode for a module.
 
     Modes:
-      - mean: reduce ensemble → single field (ensmean)
-      - pooled: treat all members' samples jointly (enspooled)
-      - prob: keep ensemble dimension intrinsically (ensprob)
-      - members: iterate per member producing separate per-member artifacts (ens<idx>)
+    - mean: reduce ensemble → single field (ensmean)
+    - pooled: treat all members' samples jointly (enspooled)
+    - prob: keep ensemble dimension intrinsically (ensprob)
+    - members: iterate per member producing separate per-member artifacts (ens<idx>)
     """
     base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "mean")).lower()
     if base not in _VALID_MODES:
@@ -440,9 +440,9 @@ def validate_and_normalize_ensemble_config(
     """Validate and normalize user-specified per-module ensemble modes.
 
     Behaviour:
-      * Accept typo 'member' → normalize to 'members'.
-      * Lower-case values; unknown modes replaced by module default with warning.
-      * If ensemble dim absent, any non-'mean' mode downgraded to 'mean' with warning.
+    * Accept typo 'member' → normalize to 'members'.
+    * Lower-case values; unknown modes replaced by module default with warning.
+    * If ensemble dim absent, any non-'mean' mode downgraded to 'mean' with warning.
 
     Returns (normalized_config, warnings_list).
     """
@@ -770,7 +770,7 @@ def subsample_values(
         k: Number of samples to take (approximate)
         seed: Random seed
         lazy: If True, return a dask array without computing.
-              If False, compute and return numpy array with finite values only.
+            If False, compute and return numpy array with finite values only.
     """
     size = int(getattr(da, "size", 0) or 0)
     if size == 0:
