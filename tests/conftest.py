@@ -263,6 +263,9 @@ class _DummyColorbarAx:
     xaxis = _DummyXAxis()
     yaxis = _DummyXAxis()
 
+    def tick_params(self, *a, **k):
+        return None
+
 
 class _DummyColorbar:
     ax = _DummyColorbarAx()
