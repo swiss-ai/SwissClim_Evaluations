@@ -157,6 +157,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "deterministic",
         "ets",
         "probabilistic",
+        "multivariate",
     ]
     resolved_modes: dict[str, str] = {}
     for _m in module_names:
@@ -806,6 +807,52 @@ def run_selected(cfg: dict[str, Any]) -> None:
                     "error": "no ensemble dimension",
                 }
             )
+
+    # Multivariate (Bivariate Histograms)
+    if chapter_flags.get("multivariate"):
+        from ..metrics.multivariate import run as run_multivariate
+
+        c.module_status("multivariate", "run", "Bivariate Histograms")
+        if "ensemble" in ds_prediction.dims:
+            ens_size = int(ds_prediction.sizes.get("ensemble", 0))
+            c.info(
+                format_ensemble_log(
+                    "multivariate", ensemble_cfg.get("multivariate", "mean"), ens_size
+                )
+            )
+        else:
+            c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
+        try:
+            run_multivariate(
+                ds_target,
+                ds_prediction,
+                out_root,
+                cfg.get("metrics", {}),
+                ensemble_mode=ensemble_cfg.get("multivariate"),
+            )
+            dt = time.time() - _t
+            module_timings.append(("multivariate", dt))
+            module_results.append(
+                {
+                    "name": "multivariate",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:
+            dt = time.time() - _t
+            c.error(f"multivariate failed: {ex}")
+            module_results.append(
+                {
+                    "name": "multivariate",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
     # Final completion message + timings summary + module results summary (pass/fail)
     elapsed = time.time() - t0
     try:

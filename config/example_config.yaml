@@ -132,6 +132,7 @@ selection:
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
+    multivariate: mean       # mean | pooled | members
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
   # If true, enables a scan for NaN values in the data (reported as warnings).
@@ -244,17 +245,28 @@ derived_variables:
     kind: wind_speed
     u: u_component_of_wind
     v: v_component_of_wind
+  # geopotential_height_gradient — |∇Z|, m m⁻¹.  Enables the geostrophic-balance
+  # physical-constraint overlay in bivariate histograms.  Two-step derivation:
+  # first convert raw geopotential (m² s⁻²) → height Z (m), then take |∇Z|.
+  # Uncomment both blocks below (and add 'geopotential' to the variables list).
+  # geopotential_height:
+  #   kind: geopotential_height
+  #   source: geopotential          # raw geopotential variable (m² s⁻²)
+  # geopotential_height_gradient:
+  #   kind: geopotential_height_gradient
+  #   source: geopotential_height   # output of the block above
 
 modules:
   # Toggle individual modules on/off. The CLI runs based on these flags only.
-  maps: true                 # Global and per-level maps (Cartopy)
-  histograms: true           # Distributions by latitude bands (2D + optional per-level 3D variables)
-  wd_kde: true               # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
-  energy_spectra: true       # Zonal energy spectra + LSD table
-  vertical_profiles: true    # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
-  deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
-  ets: true                  # Equitable Threat Score across quantile thresholds
-  probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  maps: true                  # Global and per-level maps (Cartopy)
+  histograms: true            # Distributions by latitude bands (2D + optional per-level 3D variables)
+  wd_kde: true                # KDE by latitude band on standardized fields (2D + optional per-level 3D); reports mean Wasserstein
+  energy_spectra: true        # Zonal energy spectra + LSD table
+  vertical_profiles: true     # Normalized MAE (NMAE) vertical profiles per latitude band (3D; artifact-only)
+  deterministic: true         # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
+  ets: true                   # Equitable Threat Score across quantile thresholds
+  probabilistic: true         # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  multivariate: true         # Multivariate metrics (e.g. Bivariate Histograms)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
@@ -338,6 +350,37 @@ metrics:
     # Per-level reporting for 3D variables is enabled by default.
     # If true, compute and report CRPS/SSR summaries per pressure level (for 3D variables).
     report_per_level: true
+
+  # Multivariate metrics configuration.
+  multivariate:
+    # Bivariate histograms: list of [var_x, var_y] pairs to compare as 2-D
+    # joint distributions.  Pairs marked with ★ receive automatic physical-
+    # constraint overlays (Clausius–Clapeyron saturation curve, geostrophic
+    # balance line) drawn on top of the histogram panels.
+    #
+    #  ★ temperature × specific_humidity
+    #       Clausius–Clapeyron saturation curve (Bolton 1980) per pressure level;
+    #       supersaturated and q < 0 regions are shaded.
+    #
+    #  ★ geopotential_height_gradient × wind_speed
+    #       Geostrophic-balance reference line and wind_speed ≥ 0 bound.
+    #       Requires derived_variables: geopotential_height_gradient and wind_speed.
+    #       See the derived_variables block above for how to configure them.
+    bivariate_pairs:
+      - ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+      - ["u_component_of_wind", "v_component_of_wind"]
+      - ["temperature", "specific_humidity"]        # ★ physical constraints
+      - ["geopotential", "temperature"]
+      - ["total_precipitation", "total_column_water_vapour"]
+      - ["vertical_velocity", "temperature"]
+      # Uncomment the line below to enable geostrophic-balance overlay (★).
+      # Requires geopotential_height_gradient and wind_speed in derived_variables.
+    # Coriolis parameter f [s⁻¹] for the geostrophic reference line overlay.
+    # f = 2 * Ω * sin(φ), where Ω = 7.2921e-5 rad s⁻¹.
+    # Generic mid-latitude default: 1.0e-4 s⁻¹  (≈ 43 °N)
+    # Central Europe (~50 °N):      1.12e-4 s⁻¹
+    # Switzerland / Alps (~47 °N):  1.07e-4 s⁻¹
+    coriolis_parameter: 1.0e-4
 
 performance:
   # Dask scheduler choice.
