@@ -238,6 +238,10 @@ def run(
                 ds_prediction_var = ds_prediction_var.squeeze()
                 ds_var = unwrap_longitude_for_plot(ds_var)
                 ds_prediction_var = unwrap_longitude_for_plot(ds_prediction_var)
+                if "latitude" in ds_var.dims and "longitude" in ds_var.dims:
+                    ds_var = ds_var.transpose("latitude", "longitude")
+                if "latitude" in ds_prediction_var.dims and "longitude" in ds_prediction_var.dims:
+                    ds_prediction_var = ds_prediction_var.transpose("latitude", "longitude")
 
                 lon = ds_var.coords.get("longitude", None)
                 lat = ds_var.coords.get("latitude", None)
@@ -528,6 +532,10 @@ def run(
                         ds_p_lead = ds_p_lead.squeeze()
                         ds_t_lead = unwrap_longitude_for_plot(ds_t_lead)
                         ds_p_lead = unwrap_longitude_for_plot(ds_p_lead)
+                        if "latitude" in ds_t_lead.dims and "longitude" in ds_t_lead.dims:
+                            ds_t_lead = ds_t_lead.transpose("latitude", "longitude")
+                        if "latitude" in ds_p_lead.dims and "longitude" in ds_p_lead.dims:
+                            ds_p_lead = ds_p_lead.transpose("latitude", "longitude")
 
                         lon = ds_t_lead.coords.get("longitude", None)
                         lat = ds_t_lead.coords.get("latitude", None)
