@@ -55,4 +55,4 @@ output_dirs.txt
 config/train_config_ESFMs*
 config/firat/*
 launchscript_train_config_ESFMs*
-test*
+tests/__pycache__/
