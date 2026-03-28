@@ -188,6 +188,9 @@ def intercompare_maps(
                 all_data = [target] + [p for p in predictions if p is not None]
                 vmin = float(np.nanmin([np.nanmin(x) for x in all_data]))
                 vmax = float(np.nanmax([np.nanmax(x) for x in all_data]))
+                if var_name and get_colormap_for_variable(str(var_name)) == "RdBu_r":
+                    abs_max = max(abs(vmin), abs(vmax))
+                    vmin, vmax = -abs_max, abs_max
             except ValueError:
                 c.warn(f"maps: all-NaN data for {key}; skipping")
                 continue
@@ -303,6 +306,9 @@ def intercompare_maps(
                     vmax = float(
                         np.nanmax([np.nanmax(target_slice)] + [np.nanmax(x) for x in pred_slices])
                     )
+                    if var_name and get_colormap_for_variable(str(var_name)) == "RdBu_r":
+                        abs_max = max(abs(vmin), abs(vmax))
+                        vmin, vmax = -abs_max, abs_max
                 except ValueError:
                     c.warn(f"maps: all-NaN data for {key} level {lvl}; skipping")
                     continue
