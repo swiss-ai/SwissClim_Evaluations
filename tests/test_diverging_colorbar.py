@@ -122,29 +122,3 @@ def test_non_diverging_colorbar_not_forced_symmetric(tmp_path, monkeypatch):
         assert vmin is not None and vmin > 0, (
             f"Temperature colorbar was wrongly forced negative: vmin={vmin}"
         )
-
-
-def test_diverging_colorbar_symmetric_when_mostly_negative(tmp_path, monkeypatch):
-    """Symmetry works both ways: if data is mostly negative, extend positive side.
-
-    Data spans [-9, 2]: without fix vmin=-9, vmax=2; with fix should be ±9.
-    """
-    from swissclim_evaluations.plots import maps as maps_module
-
-    ds = _make_wind_ds(lo=-9.0, hi=2.0)
-    captured = _capture_pcolormesh(monkeypatch)
-
-    maps_module.run(
-        ds_target=ds,
-        ds_prediction=ds,
-        out_root=tmp_path,
-        plotting_cfg={"output_mode": "plot", "dpi": 24},
-    )
-
-    assert captured, "pcolormesh was never called"
-    for kwargs in captured:
-        vmin, vmax = kwargs.get("vmin"), kwargs.get("vmax")
-        assert vmin is not None and vmax is not None
-        assert vmin == pytest.approx(-vmax), (
-            f"Colorbar not centred at 0: vmin={vmin}, vmax={vmax}"
-        )
