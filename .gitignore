@@ -1,5 +1,5 @@
 # Python cache files
-__pycache__/
+*__pycache__
 *.pyc
 *.pyo
 *.pyd
@@ -55,4 +55,4 @@ output_dirs.txt
 config/train_config_ESFMs*
 config/firat/*
 launchscript_train_config_ESFMs*
-test*
+tests/__pycache__/
