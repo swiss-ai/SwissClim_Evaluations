@@ -192,6 +192,9 @@ def run(
             )
             vmin = min(float(_vmin_t), float(_vmin_p))
             vmax = max(float(_vmax_t), float(_vmax_p))
+            if get_colormap_for_variable(str(var)) == "RdBu_r":
+                abs_max = max(abs(vmin), abs(vmax))
+                vmin, vmax = -abs_max, abs_max
 
             ens_token = (
                 ensemble_mode_to_token("members", ens)
