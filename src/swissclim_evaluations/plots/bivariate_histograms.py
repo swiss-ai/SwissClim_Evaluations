@@ -153,7 +153,7 @@ def _get_physical_constraints(
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
-                    "fill_label": "Supersaturated (unphysical)",
+                    "fill_label": "Supersaturated",
                 }
             )
             constraints.append(
@@ -189,7 +189,7 @@ def _get_physical_constraints(
                     "fill_alpha": 0.13,
                     "fill_color": "#d62728",
                     "fill_hatch": "///",
-                    "fill_label": "Supersaturated (unphysical)",
+                    "fill_label": "Supersaturated",
                 }
             )
             constraints.append(
@@ -1077,16 +1077,16 @@ def plot_bivariate_histogram(
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
-    Model 1 (prediction) is plotted with greyscale contour lines.
-    Model 2 (reference/ground truth) is plotted with filled color contours.
+    Model 1 (prediction) is plotted with filled plasma color contours.
+    Model 2 (reference/ground truth) is plotted with greyscale contour lines.
 
     Args:
         hist_1: 2D histogram counts for model 1 (prediction). Shape (nx, ny).
         hist_2: 2D histogram counts for model 2 (reference). Shape (nx, ny).
         bins_x: Bin edges for x variable.
         bins_y: Bin edges for y variable.
-        label_1: Label for model 1 (contours).
-        label_2: Label for model 2 (filled).
+        label_1: Label for model 1 (filled).
+        label_2: Label for model 2 (contours).
         var_x: Name of x variable.
         var_y: Name of y variable.
         ax: Axes to plot on. If None, creates new figure.
@@ -1160,21 +1160,21 @@ def plot_bivariate_histogram(
     dens_2 = hist_2 / (sum_2 * bin_area) if sum_2 > 0 else hist_2
 
     # Logarithmic scale
-    # Define levels based on the filled distribution (Model 2 / ground truth)
-    valid_2 = dens_2[dens_2 > 0]
-    if len(valid_2) == 0:
+    # Define levels based on the filled distribution (Model 1 / prediction)
+    valid_1 = dens_1[dens_1 > 0]
+    if len(valid_1) == 0:
         ax.text(
             0.5,
             0.5,
-            "No data in reference distribution",
+            "No data in prediction distribution",
             ha="center",
             va="center",
             transform=ax.transAxes,
         )
         return ax
 
-    vmin = valid_2.min()
-    vmax = valid_2.max()
+    vmin = valid_1.min()
+    vmax = valid_1.max()
 
     # Ensure vmin is positive for log scale
     if vmin <= 0:
@@ -1189,18 +1189,18 @@ def plot_bivariate_histogram(
     full_levels = np.logspace(np.log10(vmin), np.log10(vmax), n_levels + 2)
     levels = full_levels[1:-1]
 
-    # Plot Model 2 (Filled, Color) - Reference / Ground Truth
+    # Plot Model 1 (Filled, Color) - Prediction
     cs2 = ax.contourf(
         X,
         Y,
-        dens_2,
+        dens_1,
         levels=levels,
         norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap="plasma",
         extend="both",
     )
 
-    # Plot Model 1 (Lines, Greyscale) - Prediction
+    # Plot Model 2 (Lines, Greyscale) - Reference / Ground Truth
     # Use a truncated Greys colormap so low density is light grey (not white) and high is black
     cmap_base = plt.get_cmap("Greys")
     colors_sampled = cmap_base(np.linspace(0.3, 1.0, 256))
@@ -1209,7 +1209,7 @@ def plot_bivariate_histogram(
     cs1 = ax.contour(
         X,
         Y,
-        dens_1,
+        dens_2,
         levels=levels,
         norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap=cmap_greys,
@@ -1297,7 +1297,7 @@ def plot_bivariate_histogram(
         (patch1, patch2, patch3),
         Line2D([0], [0], color="grey", lw=1.5),
     ]
-    labels = [label_2, label_1]
+    labels = [label_1, label_2]
 
     # Append physical-constraint artists
     for artist, lbl in constraint_entries:

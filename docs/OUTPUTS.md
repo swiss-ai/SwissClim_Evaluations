@@ -124,7 +124,7 @@ ets_line_2m_temperature_data_ensmean.npz
 
 ### Multivariate Metrics (Bivariate Histograms)
 
-Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (grey contours) against the reference (filled plasma contours). Physical constraint overlays (Clausius–Clapeyron saturation curve, geostrophic balance line) are drawn automatically at **500 hPa** when the pair is recognised; at other levels the overlays are suppressed.
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (filled plasma contours) against the reference (grey contours). Physical constraint overlays (Clausius–Clapeyron saturation curve, geostrophic balance line) are drawn automatically at **500 hPa** when the pair is recognised; at other levels the overlays are suppressed.
 
 **Output files** (per variable pair, per pressure level for 3D variables, per ensemble token):
 
