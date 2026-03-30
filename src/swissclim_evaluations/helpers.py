@@ -661,14 +661,14 @@ SPATIAL_METRIC_SPECS: dict[str, dict] = {
     "MAE": {
         "key": "mae",
         "fn": lambda pred, tgt: np.abs(pred - tgt),
-        "cmap": "RdBu_r",
+        "cmap": "Reds",
         "vmin_zero": True,
         "diverging": False,
     },
     "RMSE": {
         "key": "rmse",
         "fn": lambda pred, tgt: np.sqrt((pred - tgt) ** 2),
-        "cmap": "RdBu_r",
+        "cmap": "Reds",
         "vmin_zero": True,
         "diverging": False,
     },
