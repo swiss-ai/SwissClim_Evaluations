@@ -547,10 +547,12 @@ def run(
                             _lev_t.min(), _lev_p.min(), _lev_t.max(), _lev_p.max()
                         )
                         _lk = int(_lev.values) if hasattr(_lev, "values") else int(_lev)
-                        lev_vmin_vmax[_lk] = (
-                            min(float(_mn_t), float(_mn_p)),
-                            max(float(_mx_t), float(_mx_p)),
-                        )
+                        _lv_min = min(float(_mn_t), float(_mn_p))
+                        _lv_max = max(float(_mx_t), float(_mx_p))
+                        if get_colormap_for_variable(str(var)) == "RdBu_r":
+                            _lv_abs = max(abs(_lv_min), abs(_lv_max))
+                            _lv_min, _lv_max = -_lv_abs, _lv_abs
+                        lev_vmin_vmax[_lk] = (_lv_min, _lv_max)
 
                     for i, lead_idx in enumerate(lead_indices_3d):
                         lead_val_3d = lead_coords_3d[i] if lead_coords_3d[i] is not None else None
@@ -724,6 +726,9 @@ def run(
                         )
                         vmin = min(float(_vmin_t), float(_vmin_p))
                         vmax = max(float(_vmax_t), float(_vmax_p))
+                        if get_colormap_for_variable(str(var)) == "RdBu_r":
+                            abs_max = max(abs(vmin), abs(vmax))
+                            vmin, vmax = -abs_max, abs_max
 
                         im0 = None
                         for i, lead_idx in enumerate(lead_indices_3d):

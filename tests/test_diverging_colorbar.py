@@ -8,6 +8,7 @@ vmin == -vmax.
 The conftest autouse fixture _fast_plots replaces plt.subplots with
 _DummyAxis objects, so we intercept _DummyAxis.pcolormesh to capture calls.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -16,10 +17,10 @@ import xarray as xr
 
 from tests.conftest import _DummyAxis
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_wind_ds(lo: float = -1.0, hi: float = 8.0) -> xr.Dataset:
     """Tiny (1 time × 2 lat × 2 lon) wind dataset with values in [lo, hi]."""
@@ -74,6 +75,7 @@ def _capture_pcolormesh(monkeypatch):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_diverging_colorbar_symmetric_for_wind_field(tmp_path, monkeypatch):
     """pcolormesh vmin/vmax must be symmetric around 0 for wind (RdBu_r) fields.
 
@@ -96,9 +98,7 @@ def test_diverging_colorbar_symmetric_for_wind_field(tmp_path, monkeypatch):
     for kwargs in captured:
         vmin, vmax = kwargs.get("vmin"), kwargs.get("vmax")
         assert vmin is not None and vmax is not None
-        assert vmin == pytest.approx(-vmax), (
-            f"Colorbar not centred at 0: vmin={vmin}, vmax={vmax}"
-        )
+        assert vmin == pytest.approx(-vmax), f"Colorbar not centred at 0: vmin={vmin}, vmax={vmax}"
 
 
 def test_non_diverging_colorbar_not_forced_symmetric(tmp_path, monkeypatch):
@@ -119,6 +119,6 @@ def test_non_diverging_colorbar_not_forced_symmetric(tmp_path, monkeypatch):
     for kwargs in captured:
         vmin = kwargs.get("vmin")
         # Temperature range is [270, 300] — vmin must remain positive
-        assert vmin is not None and vmin > 0, (
-            f"Temperature colorbar was wrongly forced negative: vmin={vmin}"
-        )
+        assert (
+            vmin is not None and vmin > 0
+        ), f"Temperature colorbar was wrongly forced negative: vmin={vmin}"
