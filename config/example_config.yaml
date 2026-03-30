@@ -329,6 +329,13 @@ metrics:
     # the spectrograms already summarise the full lead-time evolution in one figure.
     individual_plots: false
 
+    # Per-lead energy spectrum layout for multi-lead runs.
+    # overlay: one plot with all lead times as colored lines (one figure per variable)
+    # single:  one plot per lead time, all sharing the same y-axis limits (GIF-ready)
+    # both:    generate both outputs (default)
+    # none:    disable per-lead spectrum plots
+    per_lead_spectra_layout: none  # overlay | single | both | none
+
     # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
     # instead of the spectrum of the scalar wind-speed field, which would be
