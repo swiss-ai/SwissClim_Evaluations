@@ -43,6 +43,7 @@ def _generate_spatial_metric_maps(
     ens_token: str | None,
     save_fig: bool,
     save_npz: bool,
+    single_map_mode: bool = False,
 ) -> None:
     """Generate spatial-field metric maps for each variable.
 
@@ -91,6 +92,7 @@ def _generate_spatial_metric_maps(
             # ── Build list of lead-time slices ───────────────────────────
             lead_indices: list[int | None] = []
             lead_labels: list[str] = []
+            lead_vals = None
             if has_lead:
                 lead_src = tgt_sel if "lead_time" in tgt_sel.dims else pred_sel
                 n_leads = int(lead_src.sizes["lead_time"])
@@ -152,24 +154,37 @@ def _generate_spatial_metric_maps(
                 n_rows = len(lead_indices)
 
                 if save_fig:
-                    fig, axes = plt.subplots(
-                        n_rows,
-                        1,
-                        figsize=(10, 4 * n_rows),
-                        dpi=200,
-                        subplot_kw={
-                            "projection": ccrs.PlateCarree(),
-                        },
-                        constrained_layout=True,
-                    )
-                    if n_rows == 1:
-                        axes = np.array([axes])
+                    if not single_map_mode:
+                        fig, axes = plt.subplots(
+                            n_rows,
+                            1,
+                            figsize=(10, 4 * n_rows),
+                            dpi=200,
+                            subplot_kw={
+                                "projection": ccrs.PlateCarree(),
+                            },
+                            constrained_layout=True,
+                        )
+                        if n_rows == 1:
+                            axes = np.array([axes])
+                        im = None
 
-                    im = None
                     for i, (li, lead_str) in enumerate(
                         zip(lead_indices, lead_labels, strict=False)
                     ):
-                        ax = axes[i]
+                        if single_map_mode:
+                            fig, _ax = plt.subplots(
+                                1,
+                                1,
+                                figsize=(10, 4),
+                                dpi=200,
+                                subplot_kw={"projection": ccrs.PlateCarree()},
+                                constrained_layout=True,
+                            )
+                            axes = np.array([_ax])
+                            im = None
+
+                        ax = axes[0 if single_map_mode else i]
                         t = _reduce_to_spatial(tgt_sel, li)
                         p = _reduce_to_spatial(pred_sel, li)
                         t = unwrap_longitude_for_plot(t)
@@ -213,33 +228,74 @@ def _generate_spatial_metric_maps(
                             f"{lvl_label}{lead_part}"
                         )
 
-                    if im is not None:
-                        cb = fig.colorbar(
-                            im,
-                            ax=axes,
-                            orientation="horizontal",
-                            fraction=0.05,
-                            pad=0.02,
-                        )
-                        label = metric_name
-                        if units:
-                            label += f" [{units}]"
-                        with contextlib.suppress(Exception):
-                            cb.set_label(label)
+                        if single_map_mode:
+                            if im is not None:
+                                cb = fig.colorbar(
+                                    im,
+                                    ax=axes,
+                                    orientation="horizontal",
+                                    fraction=0.05,
+                                    pad=0.02,
+                                )
+                                label = metric_name
+                                if units:
+                                    label += f" [{units}]"
+                                with contextlib.suppress(Exception):
+                                    cb.set_label(label)
+                            lev_tok = (
+                                format_level_token(int(level_val))
+                                if level_val is not None
+                                else None
+                            )
+                            lead_qualifier = None
+                            if li is not None and lead_vals is not None:
+                                lt = lead_vals[li]
+                                if np.issubdtype(type(lt), np.timedelta64):
+                                    h = int(lt / np.timedelta64(1, "h"))
+                                    lead_qualifier = f"lead{h:03d}h"
+                            out_png = section_output / build_output_filename(
+                                metric=f"det_{metric_key}_map",
+                                variable=str(var),
+                                level=lev_tok,
+                                qualifier=lead_qualifier,
+                                init_time_range=_init_tup,
+                                lead_time_range=None,
+                                ensemble=ens_token,
+                                ext="png",
+                            )
+                            save_figure(fig, out_png, module="deterministic")
+                            plt.close(fig)
 
-                    lev_tok = format_level_token(int(level_val)) if level_val is not None else None
-                    out_png = section_output / build_output_filename(
-                        metric=f"det_{metric_key}_map",
-                        variable=str(var),
-                        level=lev_tok,
-                        qualifier=None,
-                        init_time_range=_init_tup,
-                        lead_time_range=lead_range,
-                        ensemble=ens_token,
-                        ext="png",
-                    )
-                    save_figure(fig, out_png, module="deterministic")
-                    plt.close(fig)
+                    if not single_map_mode:
+                        if im is not None:
+                            cb = fig.colorbar(
+                                im,
+                                ax=axes,
+                                orientation="horizontal",
+                                fraction=0.05,
+                                pad=0.02,
+                            )
+                            label = metric_name
+                            if units:
+                                label += f" [{units}]"
+                            with contextlib.suppress(Exception):
+                                cb.set_label(label)
+
+                        lev_tok = (
+                            format_level_token(int(level_val)) if level_val is not None else None
+                        )
+                        out_png = section_output / build_output_filename(
+                            metric=f"det_{metric_key}_map",
+                            variable=str(var),
+                            level=lev_tok,
+                            qualifier=None,
+                            init_time_range=_init_tup,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png, module="deterministic")
+                        plt.close(fig)
 
                 if save_npz:
                     mean_field = np.nanmean(fields, axis=0)
@@ -293,6 +349,7 @@ def run(
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
     spatial_maps = bool(cfg.get("spatial_maps", False))
+    spatial_maps_single_mode = str(cfg.get("spatial_maps_layout", "panel")).lower() == "single"
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
@@ -543,6 +600,7 @@ def run(
                     ens_token=ens_token,
                     save_fig=save_fig,
                     save_npz=save_npz,
+                    single_map_mode=spatial_maps_single_mode,
                 )
             except Exception:
                 c.warn("[deterministic] Spatial metric map generation failed")

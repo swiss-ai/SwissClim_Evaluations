@@ -167,6 +167,12 @@ plotting:
   # Base DPI for plots.
   dpi: 48
 
+  # Layout for multi-lead map plots from the maps module.
+  # 'panel' stacks all lead times as rows in a single figure (default).
+  # 'single' saves each lead time as a separate PNG file.
+  # Both modes share the same colour scale across all leads.
+  maps_multi_lead_layout: panel  # panel | single
+
   # Maximum number of samples per latitude band used for KDE/Wasserstein in wd_kde.
   # Larger values improve smoothness but increase compute and memory. Typical: 50_000–200_000.
   # Accepts:
@@ -270,10 +276,15 @@ metrics:
     report_per_level: true
 
     # If true, generate spatial error maps (PNG + NPZ) for MAE, RMSE, and Bias.
-    # For 3D variables one map per pressure level is produced; multi-lead runs
-    # show each lead time as a separate row. Disabled by default because these
-    # maps are memory-intensive (the full spatial field must be materialised).
+    # For 3D variables one map per pressure level is produced. Disabled by default
+    # because these maps are memory-intensive (the full spatial field must be materialised).
     spatial_maps: false
+
+    # Layout for multi-lead spatial metric map plots.
+    # 'panel' stacks all lead times as rows in a single figure (default).
+    # 'single' saves each lead time as a separate PNG file.
+    # Both modes share the same colour scale across all leads.
+    spatial_maps_layout: panel  # panel | single
 
     # In members mode, also emit a mean-of-members summary CSV.
     # aggregate_members_mean: true

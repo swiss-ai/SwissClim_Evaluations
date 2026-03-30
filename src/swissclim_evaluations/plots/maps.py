@@ -41,6 +41,7 @@ def run(
         c.print("[maps] Skipping module: output_mode=none (no PNG/NPZ outputs requested).")
         return
     dpi = int(plotting_cfg.get("dpi", 48))
+    single_map_mode = str(plotting_cfg.get("maps_multi_lead_layout", "panel")).lower() == "single"
 
     section_output = out_root / "maps"
 
@@ -190,26 +191,47 @@ def run(
             )
             vmin = min(float(_vmin_t), float(_vmin_p))
             vmax = max(float(_vmax_t), float(_vmax_p))
+            if get_colormap_for_variable(str(var)) == "RdBu_r":
+                abs_max = max(abs(vmin), abs(vmax))
+                vmin, vmax = -abs_max, abs_max
 
-            fig, axes = plt.subplots(
-                n_leads,
-                2,
-                figsize=(14, 4 * n_leads),
-                dpi=dpi * 2,
-                subplot_kw={"projection": ccrs.PlateCarree()},
-                constrained_layout=True,
+            ens_token = (
+                ensemble_mode_to_token("members", ens)
+                if (resolved_mode == "members" and ens is not None)
+                else ens_token_global
             )
-            # Increase vertical spacing between rows
-            if n_leads > 1:
-                fig.get_layout_engine().set(h_pad=0.15)
 
-            if n_leads == 1:
-                axes = np.array([axes])
+            if not single_map_mode:
+                fig, axes = plt.subplots(
+                    n_leads,
+                    2,
+                    figsize=(14, 4 * n_leads),
+                    dpi=dpi * 2,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
+                )
+                if n_leads > 1:
+                    fig.get_layout_engine().set(h_pad=0.15)
+                if n_leads == 1:
+                    axes = np.array([axes])
+                im0 = None
 
-            im0 = None
             for i, lead_idx in enumerate(lead_indices):
-                ax_tgt = axes[i, 0]
-                ax_pred = axes[i, 1]
+                if single_map_mode:
+                    fig, _ax_pair = plt.subplots(
+                        1,
+                        2,
+                        figsize=(14, 4),
+                        dpi=dpi * 2,
+                        subplot_kw={"projection": ccrs.PlateCarree()},
+                        constrained_layout=True,
+                    )
+                    axes = np.array([_ax_pair])
+                    im0 = None
+
+                row = 0 if single_map_mode else i
+                ax_tgt = axes[row, 0]
+                ax_pred = axes[row, 1]
 
                 ds_var = ds_var_full
                 ds_prediction_var = ds_prediction_var_full
@@ -320,41 +342,66 @@ def run(
                 # date_str includes lead time (with '+') if target has it.
                 ax_pred.set_title(f"Prediction{ens_str}")
 
-            # Colorbar spanning both axes — vertical to save vertical space
-            cb = fig.colorbar(
-                im0,
-                ax=axes,
-                orientation="horizontal",
-                fraction=0.05,
-                pad=0.02,
-            )
-            # In test mode, colorbar may be a dummy (None); guard the label call
-            try:
-                if cb is not None:
-                    cb.set_label(get_variable_units(ds_target, str(var)))
-            except Exception:
-                # Non-fatal: continue without setting label
-                pass
+                if single_map_mode:
+                    cb = fig.colorbar(
+                        im0,
+                        ax=axes,
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.02,
+                    )
+                    try:
+                        if cb is not None:
+                            cb.set_label(get_variable_units(ds_target, str(var)))
+                    except Exception:
+                        pass
+                    lead_val = lead_coords[i] if lead_coords[i] is not None else None
+                    lead_qualifier = None
+                    if lead_val is not None and np.issubdtype(type(lead_val), np.timedelta64):
+                        h = int(lead_val / np.timedelta64(1, "h"))
+                        lead_qualifier = f"lead{h:03d}h"
+                    if save_fig:
+                        out_png = section_output / build_output_filename(
+                            metric="map",
+                            variable=str(var),
+                            level="surface",
+                            qualifier=lead_qualifier,
+                            init_time_range=init_range,
+                            lead_time_range=None,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png, module="maps")
+                    else:
+                        plt.close(fig)
 
-            ens_token = (
-                ensemble_mode_to_token("members", ens)
-                if (resolved_mode == "members" and ens is not None)
-                else ens_token_global
-            )
-            if save_fig:
-                out_png = section_output / build_output_filename(
-                    metric="map",
-                    variable=str(var),
-                    level="surface",
-                    qualifier=None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="png",
+            if not single_map_mode:
+                cb = fig.colorbar(
+                    im0,
+                    ax=axes,
+                    orientation="horizontal",
+                    fraction=0.05,
+                    pad=0.02,
                 )
-                save_figure(fig, out_png, module="maps")
-            else:
-                plt.close(fig)
+                try:
+                    if cb is not None:
+                        cb.set_label(get_variable_units(ds_target, str(var)))
+                except Exception:
+                    pass
+                if save_fig:
+                    out_png = section_output / build_output_filename(
+                        metric="map",
+                        variable=str(var),
+                        level="surface",
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig, out_png, module="maps")
+                else:
+                    plt.close(fig)
             if save_npz:
                 # Prepare data for saving (full lead time stack)
                 ds_save_target = ds_var_full
@@ -490,17 +537,18 @@ def run(
                 for level in levels:
                     level_val = int(level.values) if hasattr(level, "values") else int(level)
                     n_leads_3d = len(lead_indices_3d)
-                    fig, axes = plt.subplots(
-                        n_leads_3d,
-                        2,
-                        figsize=(14, 4 * n_leads_3d),
-                        dpi=dpi * 2,
-                        subplot_kw={"projection": ccrs.PlateCarree()},
-                        squeeze=False,
-                        constrained_layout=True,
-                    )
-                    if n_leads_3d > 1:
-                        fig.get_layout_engine().set(h_pad=0.15)
+                    if not single_map_mode:
+                        fig, axes = plt.subplots(
+                            n_leads_3d,
+                            2,
+                            figsize=(14, 4 * n_leads_3d),
+                            dpi=dpi * 2,
+                            subplot_kw={"projection": ccrs.PlateCarree()},
+                            squeeze=False,
+                            constrained_layout=True,
+                        )
+                        if n_leads_3d > 1:
+                            fig.get_layout_engine().set(h_pad=0.15)
 
                     # Compute global vmin/vmax across all leads for this level
                     ds_lev_t = ds_var_full_3d.sel(level=level)
@@ -513,11 +561,26 @@ def run(
                     )
                     vmin = min(float(_vmin_t), float(_vmin_p))
                     vmax = max(float(_vmax_t), float(_vmax_p))
+                    if get_colormap_for_variable(str(var)) == "RdBu_r":
+                        abs_max = max(abs(vmin), abs(vmax))
+                        vmin, vmax = -abs_max, abs_max
 
                     im0 = None
                     for i, lead_idx in enumerate(lead_indices_3d):
-                        ax_tgt = axes[i, 0]
-                        ax_pred = axes[i, 1]
+                        if single_map_mode:
+                            fig, _ax_pair = plt.subplots(
+                                1,
+                                2,
+                                figsize=(14, 4),
+                                dpi=dpi * 2,
+                                subplot_kw={"projection": ccrs.PlateCarree()},
+                                constrained_layout=True,
+                            )
+                            axes = np.array([_ax_pair])
+                            im0 = None
+                        row = 0 if single_map_mode else i
+                        ax_tgt = axes[row, 0]
+                        ax_pred = axes[row, 1]
                         ds_t_lead = ds_lev_t
                         ds_p_lead = ds_lev_p
                         if "lead_time" in ds_t_lead.dims:
@@ -600,40 +663,84 @@ def run(
                             )
                         ax_pred.set_title(f"Prediction{ens_str}{lead_str}")
 
-                    cb = fig.colorbar(
-                        im0,
-                        ax=axes,
-                        orientation="horizontal",
-                        fraction=0.05,
-                        pad=0.02,
-                    )
-                    try:
-                        if cb is not None:
-                            cb.set_label(get_variable_units(ds_target, str(var)))
-                    except Exception:
-                        pass
+                        if single_map_mode:
+                            cb = fig.colorbar(
+                                im0,
+                                ax=axes,
+                                orientation="horizontal",
+                                fraction=0.05,
+                                pad=0.02,
+                            )
+                            try:
+                                if cb is not None:
+                                    cb.set_label(get_variable_units(ds_target, str(var)))
+                            except Exception:
+                                pass
+                            lead_val_3d = (
+                                lead_coords_3d[i] if lead_coords_3d[i] is not None else None
+                            )
+                            lead_qualifier = None
+                            if lead_val_3d is not None and np.issubdtype(
+                                type(lead_val_3d), np.timedelta64
+                            ):
+                                h = int(lead_val_3d / np.timedelta64(1, "h"))
+                                lead_qualifier = f"lead{h:03d}h"
+                            ens_token = (
+                                ensemble_mode_to_token("members", ens)
+                                if (resolved_mode == "members" and ens is not None)
+                                else ens_token_global
+                            )
+                            lev_token = format_level_token(level_val)
+                            if save_fig:
+                                out_png = section_output / build_output_filename(
+                                    metric="map",
+                                    variable=str(var),
+                                    level=lev_token,
+                                    qualifier=lead_qualifier,
+                                    init_time_range=init_range,
+                                    lead_time_range=None,
+                                    ensemble=ens_token,
+                                    ext="png",
+                                )
+                                save_figure(fig, out_png, module="maps")
+                            else:
+                                plt.close(fig)
 
-                    ens_token = (
-                        ensemble_mode_to_token("members", ens)
-                        if (resolved_mode == "members" and ens is not None)
-                        else ens_token_global
-                    )
-                    lev_token = format_level_token(level_val)
-                    if save_fig:
-                        out_png = section_output / build_output_filename(
-                            metric="map",
-                            variable=str(var),
-                            level=lev_token,
-                            qualifier=None,
-                            init_time_range=init_range,
-                            lead_time_range=lead_range,
-                            ensemble=ens_token,
-                            ext="png",
+                    if not single_map_mode:
+                        cb = fig.colorbar(
+                            im0,
+                            ax=axes,
+                            orientation="horizontal",
+                            fraction=0.05,
+                            pad=0.02,
                         )
-                        save_figure(fig, out_png, module="maps")
-                    else:
+                        try:
+                            if cb is not None:
+                                cb.set_label(get_variable_units(ds_target, str(var)))
+                        except Exception:
+                            pass
+
+                        ens_token = (
+                            ensemble_mode_to_token("members", ens)
+                            if (resolved_mode == "members" and ens is not None)
+                            else ens_token_global
+                        )
+                        lev_token = format_level_token(level_val)
+                        if save_fig:
+                            out_png = section_output / build_output_filename(
+                                metric="map",
+                                variable=str(var),
+                                level=lev_token,
+                                qualifier=None,
+                                init_time_range=init_range,
+                                lead_time_range=lead_range,
+                                ensemble=ens_token,
+                                ext="png",
+                            )
+                            save_figure(fig, out_png, module="maps")
+                        else:
+                            plt.close(fig)
                         plt.close(fig)
-                    plt.close(fig)
             else:
                 # Single-lead: original all-levels-in-one-figure layout
                 num_rows = len(levels)
@@ -666,6 +773,9 @@ def run(
                     arr_p = ds_prediction_var_lev.values
                     vmin = min(float(np.nanmin(arr_t)), float(np.nanmin(arr_p)))
                     vmax = max(float(np.nanmax(arr_t)), float(np.nanmax(arr_p)))
+                    if get_colormap_for_variable(str(var)) == "RdBu_r":
+                        abs_max = max(abs(vmin), abs(vmax))
+                        vmin, vmax = -abs_max, abs_max
 
                     im_ds = ax_ds.pcolormesh(
                         ds_var_lev.coords.get("longitude"),
