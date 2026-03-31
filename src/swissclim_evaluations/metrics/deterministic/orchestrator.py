@@ -43,6 +43,8 @@ def _generate_spatial_metric_maps(
     ens_token: str | None,
     save_fig: bool,
     save_npz: bool,
+    single_map_mode: bool = False,
+    level_grid_mode: bool = False,
 ) -> None:
     """Generate spatial-field metric maps for each variable.
 
@@ -91,6 +93,7 @@ def _generate_spatial_metric_maps(
             # ── Build list of lead-time slices ───────────────────────────
             lead_indices: list[int | None] = []
             lead_labels: list[str] = []
+            lead_vals = None
             if has_lead:
                 lead_src = tgt_sel if "lead_time" in tgt_sel.dims else pred_sel
                 n_leads = int(lead_src.sizes["lead_time"])
@@ -152,24 +155,37 @@ def _generate_spatial_metric_maps(
                 n_rows = len(lead_indices)
 
                 if save_fig:
-                    fig, axes = plt.subplots(
-                        n_rows,
-                        1,
-                        figsize=(10, 4 * n_rows),
-                        dpi=200,
-                        subplot_kw={
-                            "projection": ccrs.PlateCarree(),
-                        },
-                        constrained_layout=True,
-                    )
-                    if n_rows == 1:
-                        axes = np.array([axes])
+                    if not single_map_mode:
+                        fig, axes = plt.subplots(
+                            n_rows,
+                            1,
+                            figsize=(10, 4 * n_rows),
+                            dpi=200,
+                            subplot_kw={
+                                "projection": ccrs.PlateCarree(),
+                            },
+                            constrained_layout=True,
+                        )
+                        if n_rows == 1:
+                            axes = np.array([axes])
+                        im = None
 
-                    im = None
                     for i, (li, lead_str) in enumerate(
                         zip(lead_indices, lead_labels, strict=False)
                     ):
-                        ax = axes[i]
+                        if single_map_mode:
+                            fig, _ax = plt.subplots(
+                                1,
+                                1,
+                                figsize=(10, 4),
+                                dpi=200,
+                                subplot_kw={"projection": ccrs.PlateCarree()},
+                                constrained_layout=True,
+                            )
+                            axes = np.array([_ax])
+                            im = None
+
+                        ax = axes[0 if single_map_mode else i]
                         t = _reduce_to_spatial(tgt_sel, li)
                         p = _reduce_to_spatial(pred_sel, li)
                         t = unwrap_longitude_for_plot(t)
@@ -207,39 +223,85 @@ def _generate_spatial_metric_maps(
                             int(level_val) if level_val is not None else None
                         )
                         lead_part = f" ({lead_str})" if lead_str else ""
+                        if single_map_mode and _init_tup is not None:
+                            s, e = _init_tup
+                            init_str = f" ({s})" if s == e else f" ({s}–{e})"
+                        else:
+                            init_str = ""
                         ax.set_title(
                             f"{metric_name} — "
                             f"{format_variable_name(str(var))}"
-                            f"{lvl_label}{lead_part}"
+                            f"{lvl_label}{lead_part}{init_str}"
                         )
 
-                    if im is not None:
-                        cb = fig.colorbar(
-                            im,
-                            ax=axes,
-                            orientation="horizontal",
-                            fraction=0.05,
-                            pad=0.02,
-                        )
-                        label = metric_name
-                        if units:
-                            label += f" [{units}]"
-                        with contextlib.suppress(Exception):
-                            cb.set_label(label)
+                        if single_map_mode:
+                            if im is not None:
+                                cb = fig.colorbar(
+                                    im,
+                                    ax=axes,
+                                    orientation="horizontal",
+                                    fraction=0.05,
+                                    pad=0.02,
+                                )
+                                label = metric_name
+                                if units:
+                                    label += f" [{units}]"
+                                with contextlib.suppress(Exception):
+                                    cb.set_label(label)
+                            lev_tok = (
+                                format_level_token(int(level_val))
+                                if level_val is not None
+                                else None
+                            )
+                            lead_qualifier = None
+                            if li is not None and lead_vals is not None:
+                                lt = lead_vals[li]
+                                if np.issubdtype(type(lt), np.timedelta64):
+                                    h = int(lt / np.timedelta64(1, "h"))
+                                    lead_qualifier = f"lead{h:03d}h"
+                            out_png = section_output / build_output_filename(
+                                metric=f"det_{metric_key}_map",
+                                variable=str(var),
+                                level=lev_tok,
+                                qualifier=lead_qualifier,
+                                init_time_range=_init_tup,
+                                lead_time_range=None,
+                                ensemble=ens_token,
+                                ext="png",
+                            )
+                            save_figure(fig, out_png, module="deterministic")
+                            plt.close(fig)
 
-                    lev_tok = format_level_token(int(level_val)) if level_val is not None else None
-                    out_png = section_output / build_output_filename(
-                        metric=f"det_{metric_key}_map",
-                        variable=str(var),
-                        level=lev_tok,
-                        qualifier=None,
-                        init_time_range=_init_tup,
-                        lead_time_range=lead_range,
-                        ensemble=ens_token,
-                        ext="png",
-                    )
-                    save_figure(fig, out_png, module="deterministic")
-                    plt.close(fig)
+                    if not single_map_mode:
+                        if im is not None:
+                            cb = fig.colorbar(
+                                im,
+                                ax=axes,
+                                orientation="horizontal",
+                                fraction=0.05,
+                                pad=0.02,
+                            )
+                            label = metric_name
+                            if units:
+                                label += f" [{units}]"
+                            with contextlib.suppress(Exception):
+                                cb.set_label(label)
+
+                        lev_tok = (
+                            format_level_token(int(level_val)) if level_val is not None else None
+                        )
+                        out_png = section_output / build_output_filename(
+                            metric=f"det_{metric_key}_map",
+                            variable=str(var),
+                            level=lev_tok,
+                            qualifier=None,
+                            init_time_range=_init_tup,
+                            lead_time_range=lead_range,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png, module="deterministic")
+                        plt.close(fig)
 
                 if save_npz:
                     mean_field = np.nanmean(fields, axis=0)
@@ -272,6 +334,178 @@ def _generate_spatial_metric_maps(
                     )
                     save_data(out_npz, module="deterministic", **npz_data)
 
+        # ── Grid mode: per-lead figures, all levels as rows ──────────────────
+        # Only active when single_map_mode + level_grid_mode + multi-level 3D data.
+        # Produces one PNG per lead; all pressure levels appear as rows with
+        # per-level colour scales that are consistent across lead frames.
+        if save_fig and has_level and len(levels) > 1 and level_grid_mode and single_map_mode:
+            _lv0 = levels[0]
+            _tgt0 = tgt_da.sel(level=_lv0)
+            _pred0 = pred_da.sel(level=_lv0)
+            _lead_src0 = _tgt0 if "lead_time" in _tgt0.dims else _pred0
+            lead_indices_g: list[int | None] = []
+            lead_labels_g: list[str] = []
+            lead_vals_g: np.ndarray | None = None
+            if has_lead:
+                lead_vals_g = _lead_src0["lead_time"].values
+                for _idx in range(int(_lead_src0.sizes["lead_time"])):
+                    lead_indices_g.append(_idx)
+                    _lt = lead_vals_g[_idx]
+                    if np.issubdtype(type(_lt), np.timedelta64):
+                        _h = int(_lt / np.timedelta64(1, "h"))
+                        lead_labels_g.append(f"+{_h}h")
+                    else:
+                        lead_labels_g.append(f"lead={_lt}")
+            else:
+                lead_indices_g = [None]
+                lead_labels_g = [""]
+            _init_tup_g: tuple[str, str] | None = (
+                (init_range, init_range) if isinstance(init_range, str) else init_range
+            )
+
+            def _reduce_grid(da: xr.DataArray, li: int | None) -> xr.DataArray:
+                d = da
+                if li is not None and "lead_time" in d.dims:
+                    d = d.isel(lead_time=li)
+                for _dim in ("init_time", "time"):
+                    if _dim in d.dims and d.sizes[_dim] > 1:
+                        d = d.mean(dim=_dim, keep_attrs=True)
+                return d.squeeze()
+
+            for metric_name in sorted(metrics_to_generate):
+                spec = SPATIAL_METRIC_SPECS[metric_name]
+                metric_key = spec["key"]
+
+                # Pre-compute fields and per-level colour limits (fixed across leads).
+                lev_data_g: dict[int, tuple[float, float, list[np.ndarray]]] = {}
+                for _lv in levels:
+                    _lv_int = int(_lv.values) if hasattr(_lv, "values") else int(_lv)
+                    _tgt_lv = tgt_da.sel(level=_lv)
+                    _pred_lv = pred_da.sel(level=_lv)
+                    _fields_lv: list[np.ndarray] = []
+                    for _li in lead_indices_g:
+                        _t = unwrap_longitude_for_plot(_reduce_grid(_tgt_lv, _li))
+                        _p = unwrap_longitude_for_plot(_reduce_grid(_pred_lv, _li))
+                        _fields_lv.append(spec["fn"](_p.values, _t.values))
+                    try:
+                        if spec["diverging"]:
+                            _abs_max = float(
+                                np.nanmax([np.nanmax(np.abs(_f)) for _f in _fields_lv])
+                            )
+                            _vmin_lv, _vmax_lv = -_abs_max, _abs_max
+                        elif spec["vmin_zero"]:
+                            _vmin_lv = 0.0
+                            _vmax_lv = float(np.nanmax([np.nanmax(_f) for _f in _fields_lv]))
+                        else:
+                            _vmin_lv = float(np.nanmin([np.nanmin(_f) for _f in _fields_lv]))
+                            _vmax_lv = float(np.nanmax([np.nanmax(_f) for _f in _fields_lv]))
+                    except ValueError:
+                        continue
+                    lev_data_g[_lv_int] = (_vmin_lv, _vmax_lv, _fields_lv)
+
+                lev_toks_g = [
+                    format_level_token(int(_lv.values) if hasattr(_lv, "values") else int(_lv))
+                    for _lv in levels
+                ]
+                lev_tok_range = (
+                    f"{lev_toks_g[0]}_to_{lev_toks_g[-1]}" if len(lev_toks_g) > 1 else lev_toks_g[0]
+                )
+
+                for i_g, (li_g, lead_str_g) in enumerate(
+                    zip(lead_indices_g, lead_labels_g, strict=False)
+                ):
+                    n_levels_g = len(levels)
+                    fig_g, axes_g = plt.subplots(
+                        n_levels_g,
+                        1,
+                        figsize=(10, 4 * n_levels_g),
+                        dpi=200,
+                        subplot_kw={"projection": ccrs.PlateCarree()},
+                        constrained_layout=True,
+                    )
+                    if n_levels_g == 1:
+                        axes_g = np.array([axes_g])
+
+                    for idx_g, _lv in enumerate(levels):
+                        _lv_int = int(_lv.values) if hasattr(_lv, "values") else int(_lv)
+                        _vmin_lv, _vmax_lv, _fields_lv = lev_data_g[_lv_int]
+                        _field = _fields_lv[i_g]
+
+                        _t_coords = unwrap_longitude_for_plot(
+                            _reduce_grid(tgt_da.sel(level=_lv), li_g)
+                        )
+                        _lon = _t_coords.coords.get("longitude", _t_coords.longitude)
+                        _lat = _t_coords.coords.get("latitude", _t_coords.latitude)
+
+                        _ax = axes_g[idx_g]
+                        _im = _ax.pcolormesh(
+                            _lon,
+                            _lat,
+                            _field,
+                            cmap=spec["cmap"],
+                            vmin=_vmin_lv,
+                            vmax=_vmax_lv,
+                            transform=ccrs.PlateCarree(),
+                            shading="auto",
+                        )
+                        _ax.coastlines(linewidth=0.5)
+                        with contextlib.suppress(Exception):
+                            _lon_v = np.asarray(_lon)
+                            _lat_v = np.asarray(_lat)
+                            _ax.set_extent(
+                                [
+                                    float(np.min(_lon_v)),
+                                    float(np.max(_lon_v)),
+                                    float(np.min(_lat_v)),
+                                    float(np.max(_lat_v)),
+                                ],
+                                crs=ccrs.PlateCarree(),
+                            )
+
+                        _lvl_label = format_level_label(_lv_int)
+                        _lead_part = f" ({lead_str_g})" if lead_str_g and idx_g == 0 else ""
+                        _init_str = ""
+                        if _init_tup_g is not None:
+                            _s, _e = _init_tup_g
+                            _init_str = f" ({_s})" if _s == _e else f" ({_s}–{_e})"
+                        _title = f"{metric_name} — {format_variable_name(str(var))}{_lvl_label}"
+                        if idx_g == 0:
+                            _title += f"{_lead_part}{_init_str}"
+                        _ax.set_title(_title)
+
+                        _cb_label = metric_name
+                        if units:
+                            _cb_label += f" [{units}]"
+                        with contextlib.suppress(Exception):
+                            fig_g.colorbar(
+                                _im,
+                                ax=_ax,
+                                orientation="horizontal",
+                                fraction=0.05,
+                                pad=0.07,
+                                label=_cb_label,
+                            )
+
+                    _lead_qual_g: str | None = None
+                    if li_g is not None and lead_vals_g is not None:
+                        _lt_g = lead_vals_g[li_g]
+                        if np.issubdtype(type(_lt_g), np.timedelta64):
+                            _h_g = int(_lt_g / np.timedelta64(1, "h"))
+                            _lead_qual_g = f"lead{_h_g:03d}h"
+
+                    _out_png_g = section_output / build_output_filename(
+                        metric=f"det_{metric_key}_map",
+                        variable=str(var),
+                        level=lev_tok_range,
+                        qualifier=_lead_qual_g,
+                        init_time_range=_init_tup_g,
+                        lead_time_range=None,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig_g, _out_png_g, module="deterministic")
+                    plt.close(fig_g)
+
     c.success("[deterministic] Spatial metric maps generated")
 
 
@@ -292,7 +526,13 @@ def run(
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
-    spatial_maps = bool(cfg.get("spatial_maps", False))
+    spatial_maps = bool(cfg.get("error_maps", cfg.get("spatial_maps", False)))
+    spatial_maps_single_mode = (
+        str(cfg.get("error_maps_lead_layout", "stacked")).lower() == "per_lead"
+    )
+    spatial_maps_level_grid = (
+        str(cfg.get("error_maps_level_layout", "per_level")).lower() == "stacked"
+    )
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
@@ -543,6 +783,8 @@ def run(
                     ens_token=ens_token,
                     save_fig=save_fig,
                     save_npz=save_npz,
+                    single_map_mode=spatial_maps_single_mode,
+                    level_grid_mode=spatial_maps_level_grid,
                 )
             except Exception:
                 c.warn("[deterministic] Spatial metric map generation failed")

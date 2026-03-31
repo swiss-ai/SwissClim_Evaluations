@@ -41,6 +41,8 @@ def run(
         c.print("[maps] Skipping module: output_mode=none (no PNG/NPZ outputs requested).")
         return
     dpi = int(plotting_cfg.get("dpi", 48))
+    single_map_mode = str(plotting_cfg.get("maps_lead_layout", "stacked")).lower() == "per_lead"
+    level_grid_mode = str(plotting_cfg.get("maps_level_layout", "per_level")).lower() == "stacked"
 
     section_output = out_root / "maps"
 
@@ -194,25 +196,43 @@ def run(
                 abs_max = max(abs(vmin), abs(vmax))
                 vmin, vmax = -abs_max, abs_max
 
-            fig, axes = plt.subplots(
-                n_leads,
-                2,
-                figsize=(14, 4 * n_leads),
-                dpi=dpi * 2,
-                subplot_kw={"projection": ccrs.PlateCarree()},
-                constrained_layout=True,
+            ens_token = (
+                ensemble_mode_to_token("members", ens)
+                if (resolved_mode == "members" and ens is not None)
+                else ens_token_global
             )
-            # Increase vertical spacing between rows
-            if n_leads > 1:
-                fig.get_layout_engine().set(h_pad=0.15)
 
-            if n_leads == 1:
-                axes = np.array([axes])
+            if not single_map_mode:
+                fig, axes = plt.subplots(
+                    n_leads,
+                    2,
+                    figsize=(14, 4 * n_leads),
+                    dpi=dpi * 2,
+                    subplot_kw={"projection": ccrs.PlateCarree()},
+                    constrained_layout=True,
+                )
+                if n_leads > 1:
+                    fig.get_layout_engine().set(h_pad=0.15)
+                if n_leads == 1:
+                    axes = np.array([axes])
+                im0 = None
 
-            im0 = None
             for i, lead_idx in enumerate(lead_indices):
-                ax_tgt = axes[i, 0]
-                ax_pred = axes[i, 1]
+                if single_map_mode:
+                    fig, _ax_pair = plt.subplots(
+                        1,
+                        2,
+                        figsize=(14, 4),
+                        dpi=dpi * 2,
+                        subplot_kw={"projection": ccrs.PlateCarree()},
+                        constrained_layout=True,
+                    )
+                    axes = np.array([_ax_pair])
+                    im0 = None
+
+                row = 0 if single_map_mode else i
+                ax_tgt = axes[row, 0]
+                ax_pred = axes[row, 1]
 
                 ds_var = ds_var_full
                 ds_prediction_var = ds_prediction_var_full
@@ -279,8 +299,10 @@ def run(
                     else:
                         lead_str = f" (lead={val})"
 
-                date_str = extract_date_from_dataset(ds_var) if is_single_init else ""
-                if i == 0:
+                date_str = (
+                    extract_date_from_dataset(ds_var) if (is_single_init or single_map_mode) else ""
+                )
+                if i == 0 or single_map_mode:
                     ax_tgt.set_title(f"{format_variable_name(str(var))} — Target{date_str}")
                 else:
                     ax_tgt.set_title(f"Target{lead_str}")
@@ -319,45 +341,68 @@ def run(
                         ],
                         crs=ccrs.PlateCarree(),
                     )
-                # Only show lead time on prediction if not already in target title (via date_str)
-                # date_str includes lead time (with '+') if target has it.
-                ax_pred.set_title(f"Prediction{ens_str}")
+                ax_pred.set_title(f"Prediction{ens_str}{lead_str if single_map_mode else ''}")
 
-            # Colorbar spanning both axes — vertical to save vertical space
-            cb = fig.colorbar(
-                im0,
-                ax=axes,
-                orientation="horizontal",
-                fraction=0.05,
-                pad=0.02,
-            )
-            # In test mode, colorbar may be a dummy (None); guard the label call
-            try:
-                if cb is not None:
-                    cb.set_label(get_variable_units(ds_target, str(var)))
-            except Exception:
-                # Non-fatal: continue without setting label
-                pass
+                if single_map_mode:
+                    cb = fig.colorbar(
+                        im0,
+                        ax=axes,
+                        orientation="horizontal",
+                        fraction=0.05,
+                        pad=0.02,
+                    )
+                    try:
+                        if cb is not None:
+                            cb.set_label(get_variable_units(ds_target, str(var)))
+                    except Exception:
+                        pass
+                    lead_val = lead_coords[i] if lead_coords[i] is not None else None
+                    lead_qualifier = None
+                    if lead_val is not None and np.issubdtype(type(lead_val), np.timedelta64):
+                        h = int(lead_val / np.timedelta64(1, "h"))
+                        lead_qualifier = f"lead{h:03d}h"
+                    if save_fig:
+                        out_png = section_output / build_output_filename(
+                            metric="map",
+                            variable=str(var),
+                            level="surface",
+                            qualifier=lead_qualifier,
+                            init_time_range=init_range,
+                            lead_time_range=None,
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        save_figure(fig, out_png, module="maps")
+                    else:
+                        plt.close(fig)
 
-            ens_token = (
-                ensemble_mode_to_token("members", ens)
-                if (resolved_mode == "members" and ens is not None)
-                else ens_token_global
-            )
-            if save_fig:
-                out_png = section_output / build_output_filename(
-                    metric="map",
-                    variable=str(var),
-                    level="surface",
-                    qualifier=None,
-                    init_time_range=init_range,
-                    lead_time_range=lead_range,
-                    ensemble=ens_token,
-                    ext="png",
+            if not single_map_mode:
+                cb = fig.colorbar(
+                    im0,
+                    ax=axes,
+                    orientation="horizontal",
+                    fraction=0.05,
+                    pad=0.02,
                 )
-                save_figure(fig, out_png, module="maps")
-            else:
-                plt.close(fig)
+                try:
+                    if cb is not None:
+                        cb.set_label(get_variable_units(ds_target, str(var)))
+                except Exception:
+                    pass
+                if save_fig:
+                    out_png = section_output / build_output_filename(
+                        metric="map",
+                        variable=str(var),
+                        level="surface",
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=lead_range,
+                        ensemble=ens_token,
+                        ext="png",
+                    )
+                    save_figure(fig, out_png, module="maps")
+                else:
+                    plt.close(fig)
             if save_npz:
                 # Prepare data for saving (full lead time stack)
                 ds_save_target = ds_var_full
@@ -489,157 +534,386 @@ def run(
             ens_str = f" (member {ens})" if ens is not None else ""
 
             if has_multi_lead_3d:
-                # Multi-lead: one lead-time gridded figure per level
-                for level in levels:
-                    level_val = int(level.values) if hasattr(level, "values") else int(level)
-                    n_leads_3d = len(lead_indices_3d)
-                    fig, axes = plt.subplots(
-                        n_leads_3d,
-                        2,
-                        figsize=(14, 4 * n_leads_3d),
-                        dpi=dpi * 2,
-                        subplot_kw={"projection": ccrs.PlateCarree()},
-                        squeeze=False,
-                        constrained_layout=True,
-                    )
-                    if n_leads_3d > 1:
-                        fig.get_layout_engine().set(h_pad=0.15)
+                if single_map_mode and level_grid_mode:
+                    # ── Grid mode: one figure per lead, all pressure levels as rows ──
+                    # Colour scale is fixed per level across all lead frames so that
+                    # animating (GIF) gives a consistent visual comparison.
+                    n_levels_3d = len(levels)
+                    lev_vmin_vmax: dict[int, tuple[float, float]] = {}
+                    for _lev in levels:
+                        _lev_t = ds_var_full_3d.sel(level=_lev)
+                        _lev_p = ds_prediction_var_full_3d.sel(level=_lev)
+                        _mn_t, _mn_p, _mx_t, _mx_p = dask.compute(
+                            _lev_t.min(), _lev_p.min(), _lev_t.max(), _lev_p.max()
+                        )
+                        _lk = int(_lev.values) if hasattr(_lev, "values") else int(_lev)
+                        _lv_min = min(float(_mn_t), float(_mn_p))
+                        _lv_max = max(float(_mx_t), float(_mx_p))
+                        if get_colormap_for_variable(str(var)) == "RdBu_r":
+                            _lv_abs = max(abs(_lv_min), abs(_lv_max))
+                            _lv_min, _lv_max = -_lv_abs, _lv_abs
+                        lev_vmin_vmax[_lk] = (_lv_min, _lv_max)
 
-                    # Compute global vmin/vmax across all leads for this level
-                    ds_lev_t = ds_var_full_3d.sel(level=level)
-                    ds_lev_p = ds_prediction_var_full_3d.sel(level=level)
-                    _vmin_t, _vmin_p, _vmax_t, _vmax_p = dask.compute(
-                        ds_lev_t.min(),
-                        ds_lev_p.min(),
-                        ds_lev_t.max(),
-                        ds_lev_p.max(),
-                    )
-                    vmin = min(float(_vmin_t), float(_vmin_p))
-                    vmax = max(float(_vmax_t), float(_vmax_p))
-                    if get_colormap_for_variable(str(var)) == "RdBu_r":
-                        abs_max = max(abs(vmin), abs(vmax))
-                        vmin, vmax = -abs_max, abs_max
-
-                    im0 = None
                     for i, lead_idx in enumerate(lead_indices_3d):
-                        ax_tgt = axes[i, 0]
-                        ax_pred = axes[i, 1]
-                        ds_t_lead = ds_lev_t
-                        ds_p_lead = ds_lev_p
-                        if "lead_time" in ds_t_lead.dims:
-                            ds_t_lead = ds_t_lead.isel(lead_time=lead_idx)
-                        if "lead_time" in ds_p_lead.dims:
-                            ds_p_lead = ds_p_lead.isel(lead_time=lead_idx)
-                        ds_t_lead = ds_t_lead.squeeze()
-                        ds_p_lead = ds_p_lead.squeeze()
-                        ds_t_lead = unwrap_longitude_for_plot(ds_t_lead)
-                        ds_p_lead = unwrap_longitude_for_plot(ds_p_lead)
-
-                        lon = ds_t_lead.coords.get("longitude", None)
-                        lat = ds_t_lead.coords.get("latitude", None)
-                        im0 = ax_tgt.pcolormesh(
-                            lon if lon is not None else ds_t_lead.longitude,
-                            lat if lat is not None else ds_t_lead.latitude,
-                            ds_t_lead.values,
-                            cmap=get_colormap_for_variable(str(var)),
-                            vmin=vmin,
-                            vmax=vmax,
-                            transform=ccrs.PlateCarree(),
-                            shading="auto",
-                        )
-                        ax_tgt.coastlines(linewidth=0.5)
-                        _lon = lon.values if lon is not None else ds_t_lead.longitude.values
-                        _lat = lat.values if lat is not None else ds_t_lead.latitude.values
-                        if hasattr(ax_tgt, "set_extent"):
-                            ax_tgt.set_extent(
-                                [
-                                    float(np.min(_lon)),
-                                    float(np.max(_lon)),
-                                    float(np.min(_lat)),
-                                    float(np.max(_lat)),
-                                ],
-                                crs=ccrs.PlateCarree(),
-                            )
-
+                        lead_val_3d = lead_coords_3d[i] if lead_coords_3d[i] is not None else None
                         lead_str = ""
-                        if lead_coords_3d[i] is not None:
-                            val = lead_coords_3d[i]
-                            if np.issubdtype(type(val), np.timedelta64):
-                                h = int(val / np.timedelta64(1, "h"))
-                                lead_str = f" (+{h}h)"
-                            else:
-                                lead_str = f" (lead={val})"
+                        lead_qualifier = None
+                        if lead_val_3d is not None and np.issubdtype(
+                            type(lead_val_3d), np.timedelta64
+                        ):
+                            h_lead = int(lead_val_3d / np.timedelta64(1, "h"))
+                            lead_str = f" (+{h_lead}h)"
+                            lead_qualifier = f"lead{h_lead:03d}h"
 
-                        date_str = extract_date_from_dataset(ds_t_lead) if is_single_init else ""
-                        if i == 0:
-                            ax_tgt.set_title(
-                                f"{format_variable_name(str(var))} — Target"
-                                f"{format_level_label(level_val)}{date_str}"
+                        if save_fig:
+                            fig, axes = plt.subplots(
+                                n_levels_3d,
+                                2,
+                                figsize=(14, 4 * n_levels_3d),
+                                dpi=dpi * 2,
+                                subplot_kw={"projection": ccrs.PlateCarree()},
+                                squeeze=False,
+                                constrained_layout=True,
                             )
+                            if n_levels_3d > 1:
+                                fig.get_layout_engine().set(h_pad=0.15)
+
+                        for idx, level in enumerate(levels):
+                            level_val = (
+                                int(level.values) if hasattr(level, "values") else int(level)
+                            )
+                            lev_vmin, lev_vmax = lev_vmin_vmax[level_val]
+
+                            ds_t_ll = ds_var_full_3d.sel(level=level)
+                            ds_p_ll = ds_prediction_var_full_3d.sel(level=level)
+                            if "lead_time" in ds_t_ll.dims:
+                                ds_t_ll = ds_t_ll.isel(lead_time=lead_idx)
+                            if "lead_time" in ds_p_ll.dims:
+                                ds_p_ll = ds_p_ll.isel(lead_time=lead_idx)
+                            ds_t_ll = ds_t_ll.squeeze()
+                            ds_p_ll = ds_p_ll.squeeze()
+                            ds_t_ll = unwrap_longitude_for_plot(ds_t_ll)
+                            ds_p_ll = unwrap_longitude_for_plot(ds_p_ll)
+
+                            if save_fig:
+                                ax_tgt = axes[idx, 0]
+                                ax_pred = axes[idx, 1]
+                                lon = ds_t_ll.coords.get("longitude", None)
+                                lat = ds_t_ll.coords.get("latitude", None)
+                                im_row = ax_tgt.pcolormesh(
+                                    lon if lon is not None else ds_t_ll.longitude,
+                                    lat if lat is not None else ds_t_ll.latitude,
+                                    ds_t_ll.values,
+                                    cmap=get_colormap_for_variable(str(var)),
+                                    vmin=lev_vmin,
+                                    vmax=lev_vmax,
+                                    transform=ccrs.PlateCarree(),
+                                    shading="auto",
+                                )
+                                ax_tgt.coastlines(linewidth=0.5)
+                                _lon = lon.values if lon is not None else ds_t_ll.longitude.values
+                                _lat = lat.values if lat is not None else ds_t_ll.latitude.values
+                                if hasattr(ax_tgt, "set_extent"):
+                                    ax_tgt.set_extent(
+                                        [
+                                            float(np.min(_lon)),
+                                            float(np.max(_lon)),
+                                            float(np.min(_lat)),
+                                            float(np.max(_lat)),
+                                        ],
+                                        crs=ccrs.PlateCarree(),
+                                    )
+                                # Row 0: variable name + lead + init; other rows: level only
+                                date_str = extract_date_from_dataset(ds_t_ll)
+                                if idx == 0:
+                                    ax_tgt.set_title(
+                                        f"{format_variable_name(str(var))} — Target"
+                                        f"{format_level_label(level_val)}"
+                                        f"{lead_str}{date_str}"
+                                    )
+                                else:
+                                    ax_tgt.set_title(f"Target{format_level_label(level_val)}")
+                                lon_p = ds_p_ll.coords.get("longitude", None)
+                                lat_p = ds_p_ll.coords.get("latitude", None)
+                                ax_pred.pcolormesh(
+                                    lon_p if lon_p is not None else ds_p_ll.longitude,
+                                    lat_p if lat_p is not None else ds_p_ll.latitude,
+                                    ds_p_ll.values,
+                                    cmap=get_colormap_for_variable(str(var)),
+                                    vmin=lev_vmin,
+                                    vmax=lev_vmax,
+                                    transform=ccrs.PlateCarree(),
+                                    shading="auto",
+                                )
+                                ax_pred.coastlines(linewidth=0.5)
+                                _lon_p = (
+                                    lon_p.values if lon_p is not None else ds_p_ll.longitude.values
+                                )
+                                _lat_p = (
+                                    lat_p.values if lat_p is not None else ds_p_ll.latitude.values
+                                )
+                                if hasattr(ax_pred, "set_extent"):
+                                    ax_pred.set_extent(
+                                        [
+                                            float(np.min(_lon_p)),
+                                            float(np.max(_lon_p)),
+                                            float(np.min(_lat_p)),
+                                            float(np.max(_lat_p)),
+                                        ],
+                                        crs=ccrs.PlateCarree(),
+                                    )
+                                pred_lead = lead_str if idx == 0 else ""
+                                ax_pred.set_title(
+                                    f"Prediction{format_level_label(level_val)}"
+                                    f"{ens_str}{pred_lead}"
+                                )
+                                # Per-row colorbar — level scale stays fixed across leads
+                                fig.colorbar(
+                                    im_row,
+                                    ax=[ax_tgt, ax_pred],
+                                    orientation="horizontal",
+                                    fraction=0.05,
+                                    pad=0.07,
+                                    label=get_variable_units(ds_target, str(var)),
+                                )
+
+                        ens_token = (
+                            ensemble_mode_to_token("members", ens)
+                            if (resolved_mode == "members" and ens is not None)
+                            else ens_token_global
+                        )
+                        if save_fig:
+                            out_png = section_output / build_output_filename(
+                                metric="map",
+                                variable=str(var),
+                                level=level_label,
+                                qualifier=lead_qualifier,
+                                init_time_range=init_range,
+                                lead_time_range=None,
+                                ensemble=ens_token,
+                                ext="png",
+                            )
+                            save_figure(fig, out_png, module="maps")
                         else:
-                            ax_tgt.set_title(f"Target{lead_str}")
+                            plt.close(fig)
 
-                        lon_p = ds_p_lead.coords.get("longitude", None)
-                        lat_p = ds_p_lead.coords.get("latitude", None)
-                        ax_pred.pcolormesh(
-                            lon_p if lon_p is not None else ds_p_lead.longitude,
-                            lat_p if lat_p is not None else ds_p_lead.latitude,
-                            ds_p_lead.values,
-                            cmap=get_colormap_for_variable(str(var)),
-                            vmin=vmin,
-                            vmax=vmax,
-                            transform=ccrs.PlateCarree(),
-                            shading="auto",
-                        )
-                        ax_pred.coastlines(linewidth=0.5)
-                        _lon_p = lon_p.values if lon_p is not None else ds_p_lead.longitude.values
-                        _lat_p = lat_p.values if lat_p is not None else ds_p_lead.latitude.values
-                        if hasattr(ax_pred, "set_extent"):
-                            ax_pred.set_extent(
-                                [
-                                    float(np.min(_lon_p)),
-                                    float(np.max(_lon_p)),
-                                    float(np.min(_lat_p)),
-                                    float(np.max(_lat_p)),
-                                ],
-                                crs=ccrs.PlateCarree(),
+                else:
+                    # Existing: outer loop over levels (panel or per-level-single modes)
+                    for level in levels:
+                        level_val = int(level.values) if hasattr(level, "values") else int(level)
+                        n_leads_3d = len(lead_indices_3d)
+                        if not single_map_mode:
+                            fig, axes = plt.subplots(
+                                n_leads_3d,
+                                2,
+                                figsize=(14, 4 * n_leads_3d),
+                                dpi=dpi * 2,
+                                subplot_kw={"projection": ccrs.PlateCarree()},
+                                squeeze=False,
+                                constrained_layout=True,
                             )
-                        ax_pred.set_title(f"Prediction{ens_str}{lead_str}")
+                            if n_leads_3d > 1:
+                                fig.get_layout_engine().set(h_pad=0.15)
 
-                    cb = fig.colorbar(
-                        im0,
-                        ax=axes,
-                        orientation="horizontal",
-                        fraction=0.05,
-                        pad=0.02,
-                    )
-                    try:
-                        if cb is not None:
-                            cb.set_label(get_variable_units(ds_target, str(var)))
-                    except Exception:
-                        pass
-
-                    ens_token = (
-                        ensemble_mode_to_token("members", ens)
-                        if (resolved_mode == "members" and ens is not None)
-                        else ens_token_global
-                    )
-                    lev_token = format_level_token(level_val)
-                    if save_fig:
-                        out_png = section_output / build_output_filename(
-                            metric="map",
-                            variable=str(var),
-                            level=lev_token,
-                            qualifier=None,
-                            init_time_range=init_range,
-                            lead_time_range=lead_range,
-                            ensemble=ens_token,
-                            ext="png",
+                        # Compute global vmin/vmax across all leads for this level
+                        ds_lev_t = ds_var_full_3d.sel(level=level)
+                        ds_lev_p = ds_prediction_var_full_3d.sel(level=level)
+                        _vmin_t, _vmin_p, _vmax_t, _vmax_p = dask.compute(
+                            ds_lev_t.min(),
+                            ds_lev_p.min(),
+                            ds_lev_t.max(),
+                            ds_lev_p.max(),
                         )
-                        save_figure(fig, out_png, module="maps")
-                    else:
-                        plt.close(fig)
-                    plt.close(fig)
+                        vmin = min(float(_vmin_t), float(_vmin_p))
+                        vmax = max(float(_vmax_t), float(_vmax_p))
+                        if get_colormap_for_variable(str(var)) == "RdBu_r":
+                            abs_max = max(abs(vmin), abs(vmax))
+                            vmin, vmax = -abs_max, abs_max
+
+                        im0 = None
+                        for i, lead_idx in enumerate(lead_indices_3d):
+                            if single_map_mode:
+                                fig, _ax_pair = plt.subplots(
+                                    1,
+                                    2,
+                                    figsize=(14, 4),
+                                    dpi=dpi * 2,
+                                    subplot_kw={"projection": ccrs.PlateCarree()},
+                                    constrained_layout=True,
+                                )
+                                axes = np.array([_ax_pair])
+                                im0 = None
+                            row = 0 if single_map_mode else i
+                            ax_tgt = axes[row, 0]
+                            ax_pred = axes[row, 1]
+                            ds_t_lead = ds_lev_t
+                            ds_p_lead = ds_lev_p
+                            if "lead_time" in ds_t_lead.dims:
+                                ds_t_lead = ds_t_lead.isel(lead_time=lead_idx)
+                            if "lead_time" in ds_p_lead.dims:
+                                ds_p_lead = ds_p_lead.isel(lead_time=lead_idx)
+                            ds_t_lead = ds_t_lead.squeeze()
+                            ds_p_lead = ds_p_lead.squeeze()
+                            ds_t_lead = unwrap_longitude_for_plot(ds_t_lead)
+                            ds_p_lead = unwrap_longitude_for_plot(ds_p_lead)
+
+                            lon = ds_t_lead.coords.get("longitude", None)
+                            lat = ds_t_lead.coords.get("latitude", None)
+                            im0 = ax_tgt.pcolormesh(
+                                lon if lon is not None else ds_t_lead.longitude,
+                                lat if lat is not None else ds_t_lead.latitude,
+                                ds_t_lead.values,
+                                cmap=get_colormap_for_variable(str(var)),
+                                vmin=vmin,
+                                vmax=vmax,
+                                transform=ccrs.PlateCarree(),
+                                shading="auto",
+                            )
+                            ax_tgt.coastlines(linewidth=0.5)
+                            _lon = lon.values if lon is not None else ds_t_lead.longitude.values
+                            _lat = lat.values if lat is not None else ds_t_lead.latitude.values
+                            if hasattr(ax_tgt, "set_extent"):
+                                ax_tgt.set_extent(
+                                    [
+                                        float(np.min(_lon)),
+                                        float(np.max(_lon)),
+                                        float(np.min(_lat)),
+                                        float(np.max(_lat)),
+                                    ],
+                                    crs=ccrs.PlateCarree(),
+                                )
+
+                            lead_str = ""
+                            if lead_coords_3d[i] is not None:
+                                val = lead_coords_3d[i]
+                                if np.issubdtype(type(val), np.timedelta64):
+                                    h = int(val / np.timedelta64(1, "h"))
+                                    lead_str = f" (+{h}h)"
+                                else:
+                                    lead_str = f" (lead={val})"
+
+                            date_str = (
+                                extract_date_from_dataset(ds_t_lead)
+                                if (is_single_init or single_map_mode)
+                                else ""
+                            )
+                            if i == 0 or single_map_mode:
+                                ax_tgt.set_title(
+                                    f"{format_variable_name(str(var))} — Target"
+                                    f"{format_level_label(level_val)}{date_str}"
+                                )
+                            else:
+                                ax_tgt.set_title(f"Target{lead_str}")
+
+                            lon_p = ds_p_lead.coords.get("longitude", None)
+                            lat_p = ds_p_lead.coords.get("latitude", None)
+                            ax_pred.pcolormesh(
+                                lon_p if lon_p is not None else ds_p_lead.longitude,
+                                lat_p if lat_p is not None else ds_p_lead.latitude,
+                                ds_p_lead.values,
+                                cmap=get_colormap_for_variable(str(var)),
+                                vmin=vmin,
+                                vmax=vmax,
+                                transform=ccrs.PlateCarree(),
+                                shading="auto",
+                            )
+                            ax_pred.coastlines(linewidth=0.5)
+                            _lon_p = (
+                                lon_p.values if lon_p is not None else ds_p_lead.longitude.values
+                            )
+                            _lat_p = (
+                                lat_p.values if lat_p is not None else ds_p_lead.latitude.values
+                            )
+                            if hasattr(ax_pred, "set_extent"):
+                                ax_pred.set_extent(
+                                    [
+                                        float(np.min(_lon_p)),
+                                        float(np.max(_lon_p)),
+                                        float(np.min(_lat_p)),
+                                        float(np.max(_lat_p)),
+                                    ],
+                                    crs=ccrs.PlateCarree(),
+                                )
+                            ax_pred.set_title(f"Prediction{ens_str}{lead_str}")
+
+                            if single_map_mode:
+                                cb = fig.colorbar(
+                                    im0,
+                                    ax=axes,
+                                    orientation="horizontal",
+                                    fraction=0.05,
+                                    pad=0.02,
+                                )
+                                try:
+                                    if cb is not None:
+                                        cb.set_label(get_variable_units(ds_target, str(var)))
+                                except Exception:
+                                    pass
+                                lead_val_3d = (
+                                    lead_coords_3d[i] if lead_coords_3d[i] is not None else None
+                                )
+                                lead_qualifier = None
+                                if lead_val_3d is not None and np.issubdtype(
+                                    type(lead_val_3d), np.timedelta64
+                                ):
+                                    h = int(lead_val_3d / np.timedelta64(1, "h"))
+                                    lead_qualifier = f"lead{h:03d}h"
+                                ens_token = (
+                                    ensemble_mode_to_token("members", ens)
+                                    if (resolved_mode == "members" and ens is not None)
+                                    else ens_token_global
+                                )
+                                lev_token = format_level_token(level_val)
+                                if save_fig:
+                                    out_png = section_output / build_output_filename(
+                                        metric="map",
+                                        variable=str(var),
+                                        level=lev_token,
+                                        qualifier=lead_qualifier,
+                                        init_time_range=init_range,
+                                        lead_time_range=None,
+                                        ensemble=ens_token,
+                                        ext="png",
+                                    )
+                                    save_figure(fig, out_png, module="maps")
+                                else:
+                                    plt.close(fig)
+
+                        if not single_map_mode:
+                            cb = fig.colorbar(
+                                im0,
+                                ax=axes,
+                                orientation="horizontal",
+                                fraction=0.05,
+                                pad=0.02,
+                            )
+                            try:
+                                if cb is not None:
+                                    cb.set_label(get_variable_units(ds_target, str(var)))
+                            except Exception:
+                                pass
+
+                            ens_token = (
+                                ensemble_mode_to_token("members", ens)
+                                if (resolved_mode == "members" and ens is not None)
+                                else ens_token_global
+                            )
+                            lev_token = format_level_token(level_val)
+                            if save_fig:
+                                out_png = section_output / build_output_filename(
+                                    metric="map",
+                                    variable=str(var),
+                                    level=lev_token,
+                                    qualifier=None,
+                                    init_time_range=init_range,
+                                    lead_time_range=lead_range,
+                                    ensemble=ens_token,
+                                    ext="png",
+                                )
+                                save_figure(fig, out_png, module="maps")
+                            else:
+                                plt.close(fig)
+                            plt.close(fig)
             else:
                 # Single-lead: original all-levels-in-one-figure layout
                 num_rows = len(levels)

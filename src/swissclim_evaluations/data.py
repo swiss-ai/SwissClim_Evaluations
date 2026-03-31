@@ -345,7 +345,11 @@ def standardize_dims(
     # Enforce canonical dimension order so that .values always yields a predictable
     # axis layout regardless of how the source zarr stored the data.
     # Canonical order: init_time, lead_time, ensemble, level, latitude, longitude
-    canonical_order = [d for d in ("init_time", "lead_time", "ensemble", "level", "latitude", "longitude") if d in ds.dims]
+    canonical_order = [
+        d
+        for d in ("init_time", "lead_time", "ensemble", "level", "latitude", "longitude")
+        if d in ds.dims
+    ]
     ds = ds.transpose(*canonical_order)
 
     # (debug logging removed)
