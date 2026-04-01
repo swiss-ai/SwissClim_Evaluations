@@ -340,6 +340,15 @@ metrics:
     # show_4dx_cutoff: true   # gold dotted vertical line at the 4Δx effective resolution limit
     # show_lsd: true          # "LSD = X.XXXX" text box in the lower centre of each spectrum plot
 
+    # Spectral decomposition method.
+    #   zonal_fft           — default; 1-D FFT along longitude + cosine-latitude
+    #                         weighted average. Fast; wavenumber in cycles/km.
+    #   spherical_harmonics — full 2-D spherical harmonic (SH) expansion via pyshtools.
+    #                         Captures both zonal and meridional spatial scales.
+    #                         Note: only physically meaningful for near-global domains.
+    #                         Computational cost is higher than zonal_fft.
+    # spectral_method: zonal_fft   # zonal_fft | spherical_harmonics
+
     # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
     # instead of the spectrum of the scalar wind-speed field, which would be
