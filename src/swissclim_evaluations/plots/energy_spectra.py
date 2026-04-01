@@ -316,22 +316,29 @@ def _plot_single_spectrum(
     save_plot_data: bool,
     save_figure: bool,
     date_str: str = "",
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
     ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
     ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
 
-    props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
-    ax.text(
-        0.5,
-        0.05,
-        f"LSD = {lsd_val:.4f}",
-        transform=ax.transAxes,
-        ha="center",
-        va="bottom",
-        bbox=props,
-    )
+    if show_lsd:
+        props = {
+            "boxstyle": "round",
+            "facecolor": "wheat",
+            "alpha": 0.5,
+        }  # dict literal (ruff C408)
+        ax.text(
+            0.5,
+            0.05,
+            f"LSD = {lsd_val:.4f}",
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            bbox=props,
+        )
     ax.set_xlabel("Zonal Wavenumber (cycles/km)")
     ax.set_ylabel("Energy Density (weighted)")
     # --- Top axis wavelength (km) -------------------------------------------------
@@ -347,8 +354,11 @@ def _plot_single_spectrum(
     ax.set_xlim(k_min, k_max)
 
     # Add golden dotted line at 4*dx cutoff (k_max / 2)
-    k_cutoff = k_max / 2.0
-    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
+    if show_4dx_cutoff:
+        k_cutoff = k_max / 2.0
+        ax.axvline(
+            k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff"
+        )
 
     add_wavelength_axis(ax, k_min, k_max)
 
@@ -442,6 +452,8 @@ def _plot_energy_spectra(
     override_ensemble_token: str | None = None,
     performance_cfg: dict[str, Any] | None = None,
     weights: xr.DataArray | None = None,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
 
@@ -516,6 +528,8 @@ def _plot_energy_spectra(
             save_plot_data,
             save_figure,
             date_str=date_str,
+            show_4dx_cutoff=show_4dx_cutoff,
+            show_lsd=show_lsd,
         )
         return lsd_da
 
@@ -642,6 +656,8 @@ def _plot_energy_spectra(
                 save_plot_data,
                 save_figure,
                 date_str=job.get("date_str", ""),
+                show_4dx_cutoff=show_4dx_cutoff,
+                show_lsd=show_lsd,
             )
             # Clear large arrays from memory
             job["arr_t"] = None
@@ -688,6 +704,8 @@ def _plot_averaged_spectra(
     dpi: int,
     save_plot_data: bool,
     save_figure: bool,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ) -> None:
     """Plot spectra averaged over init_time.
 
@@ -753,6 +771,8 @@ def _plot_averaged_spectra(
                 dpi=dpi,
                 save_plot_data=save_plot_data,
                 save_figure=save_figure,
+                show_4dx_cutoff=show_4dx_cutoff,
+                show_lsd=show_lsd,
             )
     else:
         # No lead time dim (scalar or missing)
@@ -783,6 +803,8 @@ def _plot_averaged_spectra(
             dpi=dpi,
             save_plot_data=save_plot_data,
             save_figure=save_figure,
+            show_4dx_cutoff=show_4dx_cutoff,
+            show_lsd=show_lsd,
         )
 
 
@@ -797,6 +819,7 @@ def _plot_per_lead_spectra_overlay(
     lead_range: tuple[str, str] | None,
     ens_token: str | None,
     dpi: int,
+    show_4dx_cutoff: bool = True,
 ) -> None:
     """One PNG with one colored line per lead_time for both target and prediction.
 
@@ -857,8 +880,9 @@ def _plot_per_lead_spectra_overlay(
     cb.set_ticklabels([f"+{int(x_hours[i])}h" for i in tick_indices])
 
     ax.set_xlim(k_min_pos, k_max)
-    k_cutoff = k_max / 2.0
-    ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
+    if show_4dx_cutoff:
+        k_cutoff = k_max / 2.0
+        ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
     add_wavelength_axis(ax, k_min_pos, k_max)
     ax.set_xlabel("Zonal Wavenumber (cycles/km)")
     ax.set_ylabel("Energy Density (weighted)")
@@ -902,6 +926,8 @@ def _plot_per_lead_spectra_single(
     init_range: tuple[str, str] | None,
     ens_token: str | None,
     dpi: int,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ) -> None:
     """One PNG per lead_time, all sharing global y-axis limits (GIF-ready).
 
@@ -954,19 +980,21 @@ def _plot_per_lead_spectra_single(
         ax.loglog(kvals, arr_p, color=COLOR_MODEL_PREDICTION, label="Prediction")
         ax.set_xlim(k_min_pos, k_max)
         ax.set_ylim(ymin_global, ymax_global)
-        ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
+        if show_4dx_cutoff:
+            ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
         add_wavelength_axis(ax, k_min_pos, k_max)
 
-        props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}
-        ax.text(
-            0.5,
-            0.05,
-            f"LSD = {lsd_val:.4f}",
-            transform=ax.transAxes,
-            ha="center",
-            va="bottom",
-            bbox=props,
-        )
+        if show_lsd:
+            props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}
+            ax.text(
+                0.5,
+                0.05,
+                f"LSD = {lsd_val:.4f}",
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                bbox=props,
+            )
         ax.set_xlabel("Zonal Wavenumber (cycles/km)")
         ax.set_ylabel("Energy Density (weighted)")
         ax.set_title(
@@ -1038,6 +1066,8 @@ def run(
     # spectrograms are always written regardless of this flag.
     individual_plots = bool(es_cfg.get("individual_plots", False))
     per_lead_layout = str(es_cfg.get("per_lead_spectra_layout", "none")).lower()
+    show_4dx_cutoff = bool(es_cfg.get("show_4dx_cutoff", True))
+    show_lsd = bool(es_cfg.get("show_lsd", True))
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -1247,6 +1277,8 @@ def run(
                     dpi,
                     save_plot_data=save_npz,
                     save_figure=save_plot,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
                 )
 
             # Compute banded LSD metrics (2D)
@@ -1342,6 +1374,8 @@ def run(
                     override_ensemble_token=curr_ens_token,
                     performance_cfg=perf_cfg,
                     weights=weights,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
                 )
 
     # 3D variables (per-level)
@@ -1482,6 +1516,8 @@ def run(
                         dpi,
                         save_plot_data=save_npz,
                         save_figure=save_plot,
+                        show_4dx_cutoff=show_4dx_cutoff,
+                        show_lsd=show_lsd,
                     )
 
         if report_per_level and lsd_3d_rows:
@@ -1581,6 +1617,8 @@ def run(
                             save_figure=save_plot,
                             override_ensemble_token=curr_ens_token,
                             weights=weights,
+                            show_4dx_cutoff=show_4dx_cutoff,
+                            show_lsd=show_lsd,
                         )
 
     # Optional: per-member NPZ spectrum exports when requested
@@ -1611,6 +1649,8 @@ def run(
                     save_figure=False,
                     override_ensemble_token=token,
                     performance_cfg=perf_cfg,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
                 )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
@@ -2032,6 +2072,7 @@ def run(
                     lead_range,
                     ens_token,
                     dpi,
+                    show_4dx_cutoff=show_4dx_cutoff,
                 )
             if save_plot and per_lead_layout in ("single", "both"):
                 _plot_per_lead_spectra_single(
@@ -2044,6 +2085,8 @@ def run(
                     init_range,
                     ens_token,
                     dpi,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
                 )
 
         # 3D per-level spectrograms and bundle NPZs
@@ -2170,6 +2213,7 @@ def run(
                             lead_range,
                             ens_token,
                             dpi,
+                            show_4dx_cutoff=show_4dx_cutoff,
                         )
                     if save_plot and per_lead_layout in ("single", "both"):
                         _plot_per_lead_spectra_single(
@@ -2182,6 +2226,8 @@ def run(
                             init_range,
                             ens_token,
                             dpi,
+                            show_4dx_cutoff=show_4dx_cutoff,
+                            show_lsd=show_lsd,
                         )
 
                     # Apply 4Δx wavenumber cutoff for plotting (same as 2D)

@@ -255,6 +255,7 @@ def run_from_config(cfg: dict) -> None:
     # Energy spectra individual plots flag (default: False — only spectrograms for multi-lead)
     spectra_cfg = (cfg.get("metrics") or {}).get("energy_spectra") or {}
     energy_spectra_individual_plots = bool(spectra_cfg.get("individual_plots", False))
+    energy_spectra_show_4dx_cutoff = bool(spectra_cfg.get("show_4dx_cutoff", True))
 
     # Light validation: warn on missing model dirs
     for m in models:
@@ -280,7 +281,11 @@ def run_from_config(cfg: dict) -> None:
         intercompare_wd_kde(models, labels, out_root)
     if "spectra" in mods:
         intercompare_energy_spectra(
-            models, labels, out_root, individual_plots=energy_spectra_individual_plots
+            models,
+            labels,
+            out_root,
+            individual_plots=energy_spectra_individual_plots,
+            show_4dx_cutoff=energy_spectra_show_4dx_cutoff,
         )
     if "vprof" in mods:
         intercompare_vertical_profiles(models, labels, out_root)

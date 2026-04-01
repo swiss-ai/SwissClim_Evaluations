@@ -199,6 +199,7 @@ def intercompare_energy_spectra(
     out_root: Path,
     *,
     individual_plots: bool = False,
+    show_4dx_cutoff: bool = True,
 ) -> None:
     """Overlay energy spectra (and ratios) from multiple models.
 
@@ -576,7 +577,7 @@ def intercompare_energy_spectra(
 
             # Add golden dotted line at 4*dx cutoff (k_max / 2)
             # We assume all models have roughly the same resolution/grid
-            if wn is not None:
+            if show_4dx_cutoff and wn is not None:
                 k_max_inter = float(np.nanmax(wn))
                 # Validation: only plot cutoff if k_max_inter is finite and > 0
                 if np.isfinite(k_max_inter) and k_max_inter > 0:

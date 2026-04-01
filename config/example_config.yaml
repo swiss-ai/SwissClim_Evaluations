@@ -336,6 +336,10 @@ metrics:
     # none:    disable per-lead spectrum plots
     per_lead_spectra_layout: none  # overlay | single | both | none
 
+    # Annotation toggles — set to false to produce cleaner plots for presentations.
+    # show_4dx_cutoff: true   # gold dotted vertical line at the 4Δx effective resolution limit
+    # show_lsd: true          # "LSD = X.XXXX" text box in the lower centre of each spectrum plot
+
     # Note: wind-speed variables (wind_speed, 10m_wind_speed) receive automatic
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
     # instead of the spectrum of the scalar wind-speed field, which would be

@@ -157,6 +157,15 @@ is exported per init_time/lead_time and summarized. Outputs are split into singl
 - `both` — produce both outputs above.
 - `none` (default) — disable per-lead spectrum plots.
 
+**Annotation toggles** (`metrics.energy_spectra`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `show_4dx_cutoff` | `true` | Gold dotted vertical line marking the 4Δx effective-resolution cutoff. Set to `false` for cleaner presentation plots. |
+| `show_lsd` | `true` | "LSD = X.XXXX" text annotation in the lower centre of each spectrum plot. Set to `false` to omit the metric from the figure. |
+
+Both flags apply to all spectrum plot types (averaged, per-lead overlay, per-lead single) as well as the intercomparison overlay plots if applicable. LSD values are always written to CSV regardless of `show_lsd`.
+
 Both 2D surface variables and 3D pressure-level variables are supported; 3D filenames
 include the level (e.g. `_500hPa_`).
 
