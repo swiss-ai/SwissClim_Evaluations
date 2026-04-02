@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +8,7 @@ import dask
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pyshtools
 import xarray as xr
 from matplotlib.lines import Line2D
 from scores.functions import create_latitude_weights
@@ -145,6 +146,155 @@ def calculate_energy_spectra(
     return da_power
 
 
+def calculate_sph_harm_spectra(
+    da_var: xr.DataArray,
+    average_dims: Sequence[str] | None = None,
+) -> xr.DataArray:
+    """Compute spherical harmonic power spectrum (power per total degree l).
+
+    Unlike the zonal FFT spectrum, which captures only wave structure along longitude
+    and averages away meridional variability, the SH decomposition accounts for both
+    zonal and meridional spatial scales simultaneously.
+
+    Grid preparation
+    ----------------
+    ``SHExpandDH`` requires a Driscoll-Healy (DH) grid with sampling=2:
+
+        n_lat_dh = 2*(lmax+1),   n_lon_dh = 4*(lmax+1)
+
+    We choose the largest ``lmax`` that fits the data without extrapolation::
+
+        lmax = min(n_lat // 2 - 1, n_lon // 4 - 1)
+
+    The input grid is trimmed to ``(n_lat_dh, n_lon_dh)``.  A warning is emitted
+    if the grid is trimmed by more than 20 % (SH expansions are physically
+    meaningful only on near-global domains).  North-to-south latitude ordering
+    (as enforced by ``_ensure_monotonic()`` at load time) is assumed.
+
+    Coordinate semantics
+    --------------------
+    The output uses the same ``"wavenumber"`` and ``"wavelength"`` dimension /
+    coordinate names as :func:`calculate_energy_spectra` so that the downstream
+    LSD functions work unchanged.  To make the band-pass filter in
+    ``_compute_banded_lsd_da`` work correctly the ``"wavenumber"`` coordinate
+    stores *effective cycles per km*:
+
+        k_eff = l / EARTH_CIRCUMFERENCE_KM
+
+    This is directly comparable to the FFT wavenumber scale.  The integer
+    spherical-harmonic degree *l* (1 … lmax) is kept as the diagnostic
+    ``"sh_degree"`` coordinate.
+
+    Normalization
+    -------------
+    ``SHExpandDH`` is called with ``norm=1`` (4π-normalised, standard geodesy
+    convention).  The power per degree is then::
+
+        S(l) = sum_{m=0}^{l} (C_lm^2 + S_lm^2) / (2l+1)
+
+    where the m=0 sine coefficient is zero by convention.
+    """
+    if "latitude" not in da_var.dims or "longitude" not in da_var.dims:
+        raise ValueError("Both 'latitude' and 'longitude' dimensions are required for SH spectra.")
+
+    n_lat = da_var.sizes["latitude"]
+    n_lon = da_var.sizes["longitude"]
+
+    if n_lat < 4 or n_lon < 8:
+        raise ValueError(
+            f"Grid too coarse for SH expansion (n_lat={n_lat}, n_lon={n_lon}). "
+            "Need at least n_lat=4, n_lon=8."
+        )
+
+    # Largest lmax fitting the DH grid without extrapolation.
+    # DH sampling=2: n_lat_dh = 2*(lmax+1), n_lon_dh = 2*n_lat_dh = 4*(lmax+1)
+    lmax = min(n_lat // 2 - 1, n_lon // 4 - 1)
+
+    n_lat_dh = 2 * (lmax + 1)
+    n_lon_dh = 4 * (lmax + 1)
+
+    # Warn if significant trimming is needed (regional grids, SH not well-defined)
+    if n_lat_dh / n_lat < 0.8 or n_lon_dh / n_lon < 0.8:
+        c.warn(
+            f"[energy_spectra] SH expansion: grid trimmed to {n_lat_dh}×{n_lon_dh} "
+            f"from {n_lat}×{n_lon}. Spherical harmonic spectra are only physically "
+            "meaningful for near-global grids."
+        )
+
+    # Vectorized power-per-degree computation for one (lat, lon) slice.
+    # lmax is captured from the outer scope and is fixed for this dataset.
+    def _sh_expand_1d(grid_2d: np.ndarray) -> np.ndarray:
+        trimmed = np.ascontiguousarray(grid_2d[:n_lat_dh, :n_lon_dh], dtype=np.float64)
+        clm = pyshtools.expand.SHExpandDH(trimmed, sampling=2, norm=1)  # norm=1 → 4π normalisation
+        # clm shape: (2, lmax+1, lmax+1)  [0]=cosine, [1]=sine
+        # Power per degree (vectorised, no Python loop over m):
+        deg = np.arange(lmax + 1)
+        # mask[l, m] = True iff m <= l  (upper-triangle entries are zero anyway)
+        mask = np.arange(lmax + 1)[None, :] <= deg[:, None]
+        # m=0 sine coefficient is zero by SH convention, so no double-counting
+        power = ((clm[0] ** 2 + clm[1] ** 2) * mask).sum(axis=1) / (2 * deg + 1)
+        return power  # shape: (lmax+1,)
+
+    da_power = xr.apply_ufunc(
+        _sh_expand_1d,
+        da_var,
+        input_core_dims=[["latitude", "longitude"]],
+        output_core_dims=[["sh_degree_raw"]],
+        dask="parallelized",
+        vectorize=True,
+        output_dtypes=[np.float64],
+        dask_gufunc_kwargs={"output_sizes": {"sh_degree_raw": lmax + 1}},
+    )
+
+    # Drop l=0 (global mean / DC component) — mirrors the FFT zero-wavenumber drop
+    da_power = da_power.isel(sh_degree_raw=slice(1, None))
+
+    # Rename internal dim to "wavenumber" for downstream LSD reuse
+    da_power = da_power.rename({"sh_degree_raw": "wavenumber"})
+
+    degrees = np.arange(1, lmax + 1)  # integer degrees 1 … lmax
+
+    # "wavenumber" stores effective cycles/km so the existing band-pass filter works
+    eff_k = degrees / EARTH_CIRCUMFERENCE_KM
+    da_power["wavenumber"] = ("wavenumber", eff_k)
+    da_power["wavenumber"].attrs.update(
+        {
+            "units": "cycles km^-1",
+            "long_name": "SH effective wavenumber (l / Earth circumference)",
+            "note": "k_eff = l / C_earth; comparable to FFT wavenumber scale",
+        }
+    )
+
+    wavelengths = EARTH_CIRCUMFERENCE_KM / degrees
+    da_power["wavelength"] = ("wavenumber", wavelengths)
+    da_power["wavelength"].attrs.update(
+        {
+            "units": "km",
+            "long_name": "SH equivalent wavelength (Earth circumference / l)",
+        }
+    )
+
+    da_power["sh_degree"] = ("wavenumber", degrees)
+    da_power["sh_degree"].attrs.update(
+        {
+            "units": "",
+            "long_name": "Spherical harmonic total degree l",
+        }
+    )
+
+    in_units = get_variable_units(da_var, str(da_var.name))
+    if in_units:
+        da_power.attrs["units"] = f"{in_units}^2"
+    da_power.attrs["long_name"] = "Spherical harmonic power spectrum (power per degree l)"
+
+    if average_dims:
+        post_avg_dims = [d for d in average_dims if d in da_power.dims]
+        if post_avg_dims:
+            da_power = da_power.mean(dim=post_avg_dims)
+
+    return da_power
+
+
 def calculate_log_spectral_distance(spectrum1: np.ndarray, spectrum2: np.ndarray) -> float:
     eps = 1e-10
     log_spec1 = np.log10(spectrum1 + eps)
@@ -235,6 +385,7 @@ def _compute_spectra_pair(
     *,
     reduce_ensemble: bool = True,
     weights: xr.DataArray | None = None,
+    spectral_method: str = "zonal_fft",
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Compute and align spectra for target and prediction once.
 
@@ -246,6 +397,12 @@ def _compute_spectra_pair(
     instead of the spectrum of the derived scalar wind-speed field.  If the
     required U/V source variables are not present in the dataset the function
     falls back to the direct spectrum of the wind-speed variable with a warning.
+
+    Parameters
+    ----------
+    spectral_method:
+        ``"zonal_fft"`` (default) or ``"spherical_harmonics"``.
+        See :func:`calculate_sph_harm_spectra` for requirements.
     """
     # ── Kinetic-energy proxy for wind-speed variables ─────────────────────────
     if var in _KE_PAIRS:
@@ -260,6 +417,7 @@ def _compute_spectra_pair(
                 level,
                 reduce_ensemble=reduce_ensemble,
                 weights=weights,
+                spectral_method=spectral_method,
             )
             spec_t_v, spec_p_v = _compute_spectra_pair(
                 ds_target,
@@ -268,6 +426,7 @@ def _compute_spectra_pair(
                 level,
                 reduce_ensemble=reduce_ensemble,
                 weights=weights,
+                spectral_method=spectral_method,
             )
             return 0.5 * (spec_t_u + spec_t_v), 0.5 * (spec_p_u + spec_p_v)
         else:
@@ -284,19 +443,29 @@ def _compute_spectra_pair(
         da_target = ds_target[var]
         da_prediction = ds_prediction[var]
 
-    spec_t = calculate_energy_spectra(
+    # ── Spectral computation dispatch ─────────────────────────────────────────
+    _compute_fn: Callable
+    _extra: dict
+    if spectral_method == "spherical_harmonics":
+        _compute_fn = calculate_sph_harm_spectra
+        _extra = {}  # SH does not use latitude weights (inherent in the DH quadrature)
+    else:
+        _compute_fn = calculate_energy_spectra
+        _extra = {"weights": weights}
+
+    spec_t = _compute_fn(
         da_target,
         average_dims=(
             ["ensemble"] if (reduce_ensemble and ("ensemble" in da_target.dims)) else None
         ),
-        weights=weights,
+        **_extra,
     )
-    spec_p = calculate_energy_spectra(
+    spec_p = _compute_fn(
         da_prediction,
         average_dims=(
             ["ensemble"] if (reduce_ensemble and ("ensemble" in da_prediction.dims)) else None
         ),
-        weights=weights,
+        **_extra,
     )
     spec_t, spec_p = xr.align(spec_t, spec_p, join="inner")
     return spec_t, spec_p
@@ -316,23 +485,30 @@ def _plot_single_spectrum(
     save_plot_data: bool,
     save_figure: bool,
     date_str: str = "",
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ):
     """Create one spectrum comparison figure & optional NPZ."""
     fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
     ax.loglog(wavenumber, arr_target, color=COLOR_GROUND_TRUTH, label="Target")
     ax.loglog(wavenumber, arr_pred, color=COLOR_MODEL_PREDICTION, label="Prediction")
 
-    props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}  # dict literal (ruff C408)
-    ax.text(
-        0.5,
-        0.05,
-        f"LSD = {lsd_val:.4f}",
-        transform=ax.transAxes,
-        ha="center",
-        va="bottom",
-        bbox=props,
-    )
-    ax.set_xlabel("Zonal Wavenumber (cycles/km)")
+    if show_lsd:
+        props = {
+            "boxstyle": "round",
+            "facecolor": "wheat",
+            "alpha": 0.5,
+        }  # dict literal (ruff C408)
+        ax.text(
+            0.5,
+            0.05,
+            f"LSD = {lsd_val:.4f}",
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            bbox=props,
+        )
+    ax.set_xlabel("Wavenumber (cycles/km)")
     ax.set_ylabel("Energy Density (weighted)")
     # --- Top axis wavelength (km) -------------------------------------------------
     # Select a physically-informed set of wavelength candidates (km) → convert
@@ -347,8 +523,11 @@ def _plot_single_spectrum(
     ax.set_xlim(k_min, k_max)
 
     # Add golden dotted line at 4*dx cutoff (k_max / 2)
-    k_cutoff = k_max / 2.0
-    ax.axvline(k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff")
+    if show_4dx_cutoff:
+        k_cutoff = k_max / 2.0
+        ax.axvline(
+            k_cutoff, color="gold", linestyle=":", linewidth=2, alpha=0.8, label="4dx Cutoff"
+        )
 
     add_wavelength_axis(ax, k_min, k_max)
 
@@ -396,7 +575,7 @@ def _plot_single_spectrum(
 
             ax_r.axhline(1.0, color="gray", linestyle="--", alpha=0.7)
 
-            ax_r.set_xlabel("Zonal Wavenumber (cycles/km)")
+            ax_r.set_xlabel("Wavenumber (cycles/km)")
             ax_r.set_ylabel("Ratio (Prediction / Target)")
             ax_r.set_xlim(k_min, k_max)
             ax_r.set_ylim(0, 2.0)  # Fixed 0–200 % range
@@ -442,6 +621,9 @@ def _plot_energy_spectra(
     override_ensemble_token: str | None = None,
     performance_cfg: dict[str, Any] | None = None,
     weights: xr.DataArray | None = None,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
+    spectral_method: str = "zonal_fft",
 ) -> xr.DataArray:
     """Generate ONE spectrum & LSD per (init_time, lead_time) combination (no temporal averaging).
 
@@ -451,7 +633,13 @@ def _plot_energy_spectra(
         LSD values with remaining time-like dims (init_time, lead_time, ...).
     """
     spectrum_target, spectrum_pred = _compute_spectra_pair(
-        ds_target, ds_prediction, var, level, reduce_ensemble=True, weights=weights
+        ds_target,
+        ds_prediction,
+        var,
+        level,
+        reduce_ensemble=True,
+        weights=weights,
+        spectral_method=spectral_method,
     )
 
     # Compute LSD per time slice (vectorized)
@@ -516,6 +704,8 @@ def _plot_energy_spectra(
             save_plot_data,
             save_figure,
             date_str=date_str,
+            show_4dx_cutoff=show_4dx_cutoff,
+            show_lsd=show_lsd,
         )
         return lsd_da
 
@@ -642,6 +832,8 @@ def _plot_energy_spectra(
                 save_plot_data,
                 save_figure,
                 date_str=job.get("date_str", ""),
+                show_4dx_cutoff=show_4dx_cutoff,
+                show_lsd=show_lsd,
             )
             # Clear large arrays from memory
             job["arr_t"] = None
@@ -688,6 +880,8 @@ def _plot_averaged_spectra(
     dpi: int,
     save_plot_data: bool,
     save_figure: bool,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
 ) -> None:
     """Plot spectra averaged over init_time.
 
@@ -753,6 +947,8 @@ def _plot_averaged_spectra(
                 dpi=dpi,
                 save_plot_data=save_plot_data,
                 save_figure=save_figure,
+                show_4dx_cutoff=show_4dx_cutoff,
+                show_lsd=show_lsd,
             )
     else:
         # No lead time dim (scalar or missing)
@@ -783,7 +979,221 @@ def _plot_averaged_spectra(
             dpi=dpi,
             save_plot_data=save_plot_data,
             save_figure=save_figure,
+            show_4dx_cutoff=show_4dx_cutoff,
+            show_lsd=show_lsd,
         )
+
+
+def _plot_per_lead_spectra_overlay(
+    spec_t: xr.DataArray,
+    spec_p: xr.DataArray,
+    var: str,
+    level: int | None,
+    x_hours: np.ndarray,
+    out_dir: Path,
+    init_range: tuple[str, str] | None,
+    lead_range: tuple[str, str] | None,
+    ens_token: str | None,
+    dpi: int,
+    show_4dx_cutoff: bool = True,
+) -> None:
+    """One PNG with one colored line per lead_time for both target and prediction.
+
+    Colors run from violet (short lead) to yellow (long lead) via ``viridis``.
+    Solid lines = target, dashed lines = prediction.  A colorbar on the right
+    shows ticks at the actual lead times present in the data.
+    """
+    if "lead_time" not in spec_t.dims or len(x_hours) == 0:
+        return
+
+    kvals = spec_t["wavenumber"].values
+    k_max = float(np.nanmax(kvals))
+    pos = kvals[kvals > 0]
+    if len(pos) == 0 or not np.isfinite(k_max) or k_max <= 0:
+        return
+    k_min_pos = float(np.nanmin(pos))
+
+    import matplotlib.cm as _mcm
+    import matplotlib.colors as _mcolors
+
+    n_leads = len(x_hours)
+    _cmap_name = "viridis"
+    cmap = plt.get_cmap(_cmap_name, n_leads)
+    colors = [cmap(i / max(n_leads - 1, 1)) for i in range(n_leads)]
+    # Representative color for the legend: middle of the colormap
+    _mid_color = cmap(0.5)
+
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+    for i, lt in enumerate(spec_t["lead_time"].values):
+        arr_t = spec_t.sel(lead_time=lt).values
+        arr_p = spec_p.sel(lead_time=lt).values
+        ax.loglog(kvals, arr_t, color=colors[i], lw=1.5, alpha=0.85)
+        ax.loglog(kvals, arr_p, color=colors[i], lw=1.5, linestyle="--", alpha=0.85)
+
+    # Legend: target in ground-truth color (solid), prediction in mid colormap hue (dashed)
+    legend_handles = [
+        Line2D([0], [0], color=COLOR_GROUND_TRUTH, lw=1.5, label="Target"),
+        Line2D([0], [0], color=_mid_color, lw=1.5, linestyle="--", label="Prediction"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=9, loc="upper right")
+
+    # Colorbar: each lead gets an equal-width band so ticks are evenly spaced visually.
+    # Use integer indices 0..n_leads-1 as the norm, map to actual hour labels.
+    boundaries = np.arange(-0.5, n_leads, 1.0)
+    norm = _mcolors.BoundaryNorm(boundaries, ncolors=cmap.N)
+    sm = _mcm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, ax=ax, orientation="vertical", fraction=0.046, pad=0.04)
+    cb.set_label("Lead Time [h]")
+    if n_leads <= 12:
+        tick_indices = list(range(n_leads))
+    else:
+        step = 6 if x_hours[-1] <= 120 else (12 if x_hours[-1] <= 240 else 24)
+        tick_indices = [i for i, h in enumerate(x_hours) if h % step == 0]
+        if not tick_indices:
+            tick_indices = list(range(n_leads))
+    cb.set_ticks(tick_indices)
+    cb.set_ticklabels([f"+{int(x_hours[i])}h" for i in tick_indices])
+
+    ax.set_xlim(k_min_pos, k_max)
+    if show_4dx_cutoff:
+        k_cutoff = k_max / 2.0
+        ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
+    add_wavelength_axis(ax, k_min_pos, k_max)
+    ax.set_xlabel("Wavenumber (cycles/km)")
+    ax.set_ylabel("Energy Density (weighted)")
+
+    lev_part = format_level_label(level)
+    if init_range and init_range[0] == init_range[1]:
+        init_str = f" ({init_range[0]})"
+    elif init_range:
+        init_str = f" ({init_range[0]}—{init_range[1]})"
+    else:
+        init_str = ""
+    ax.set_title(
+        f"Energy Spectra — {format_variable_name(var)}{lev_part}{init_str}",
+        pad=24,
+        fontsize=10,
+    )
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+
+    fname = build_output_filename(
+        metric="energy_spectra_per_lead",
+        variable=var,
+        level=f"{level}hPa" if level is not None else None,
+        qualifier="overlay",
+        init_time_range=init_range,
+        lead_time_range=lead_range,
+        ensemble=ens_token,
+        ext="png",
+    )
+    save_fig_helper(fig, out_dir / fname, module="energy_spectra")
+    plt.close(fig)
+
+
+def _plot_per_lead_spectra_single(
+    spec_t: xr.DataArray,
+    spec_p: xr.DataArray,
+    var: str,
+    level: int | None,
+    x_hours: np.ndarray,
+    out_dir: Path,
+    init_range: tuple[str, str] | None,
+    ens_token: str | None,
+    dpi: int,
+    show_4dx_cutoff: bool = True,
+    show_lsd: bool = True,
+) -> None:
+    """One PNG per lead_time, all sharing global y-axis limits (GIF-ready).
+
+    The y-axis range is derived from the 4dx-cutoff-trimmed data across *all*
+    lead times so that every frame of a future GIF uses an identical scale.
+    """
+    if "lead_time" not in spec_t.dims or len(x_hours) == 0:
+        return
+
+    kvals = spec_t["wavenumber"].values
+    k_max = float(np.nanmax(kvals))
+    pos = kvals[kvals > 0]
+    if len(pos) == 0 or not np.isfinite(k_max) or k_max <= 0:
+        return
+    k_min_pos = float(np.nanmin(pos))
+    k_cutoff = k_max / 2.0
+    cut_mask = (kvals > 0) & (kvals <= k_cutoff)
+
+    # Global y limits computed across all leads (on the visible wavenumber range)
+    all_vals: list[np.ndarray] = []
+    for lt in spec_t["lead_time"].values:
+        arr_t = spec_t.sel(lead_time=lt).values
+        arr_p = spec_p.sel(lead_time=lt).values
+        mask = cut_mask if np.any(cut_mask) else np.ones(len(kvals), dtype=bool)
+        all_vals.extend([arr_t[mask], arr_p[mask]])
+    all_arr = np.concatenate(all_vals)
+    pos_vals = all_arr[np.isfinite(all_arr) & (all_arr > 0)]
+    if len(pos_vals) == 0:
+        return
+    ymin_global = float(np.nanmin(pos_vals)) * 0.5
+    ymax_global = float(np.nanmax(pos_vals)) * 2.0
+
+    lev_part = format_level_label(level)
+    if init_range and init_range[0] == init_range[1]:
+        init_str = f" ({init_range[0]})"
+    elif init_range:
+        init_str = f" ({init_range[0]}—{init_range[1]})"
+    else:
+        init_str = ""
+
+    for i, lt in enumerate(spec_t["lead_time"].values):
+        h = int(x_hours[i])
+        arr_t = spec_t.sel(lead_time=lt).values
+        arr_p = spec_p.sel(lead_time=lt).values
+
+        lsd_val = float(_compute_lsd_da(spec_t.sel(lead_time=lt), spec_p.sel(lead_time=lt)).values)
+
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=dpi * 2)
+        ax.loglog(kvals, arr_t, color=COLOR_GROUND_TRUTH, label="Target")
+        ax.loglog(kvals, arr_p, color=COLOR_MODEL_PREDICTION, label="Prediction")
+        ax.set_xlim(k_min_pos, k_max)
+        ax.set_ylim(ymin_global, ymax_global)
+        if show_4dx_cutoff:
+            ax.axvline(k_cutoff, color="gold", linestyle=":", lw=2, alpha=0.8, label="4dx Cutoff")
+        add_wavelength_axis(ax, k_min_pos, k_max)
+
+        if show_lsd:
+            props = {"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5}
+            ax.text(
+                0.5,
+                0.05,
+                f"LSD = {lsd_val:.4f}",
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                bbox=props,
+            )
+        ax.set_xlabel("Wavenumber (cycles/km)")
+        ax.set_ylabel("Energy Density (weighted)")
+        ax.set_title(
+            f"Energy Spectra — {format_variable_name(var)}{lev_part}{init_str} (+{h:03d}h)",
+            pad=24,
+            fontsize=10,
+        )
+        ax.legend(fontsize=10)
+        ax.grid(True, which="both", ls="--", alpha=0.5)
+        plt.tight_layout()
+
+        fname = build_output_filename(
+            metric="energy_spectrum",
+            variable=var,
+            level=f"{level}hPa" if level is not None else None,
+            qualifier=f"lead{h:03d}h",
+            init_time_range=init_range,
+            lead_time_range=None,
+            ensemble=ens_token,
+            ext="png",
+        )
+        save_fig_helper(fig, out_dir / fname, module="energy_spectra")
+        plt.close(fig)
 
 
 def run(
@@ -831,6 +1241,16 @@ def run(
     # individual spectrum PNGs and NPZ files are suppressed.  CSVs and
     # spectrograms are always written regardless of this flag.
     individual_plots = bool(es_cfg.get("individual_plots", False))
+    per_lead_layout = str(es_cfg.get("per_lead_spectra_layout", "none")).lower()
+    show_4dx_cutoff = bool(es_cfg.get("show_4dx_cutoff", True))
+    show_lsd = bool(es_cfg.get("show_lsd", True))
+    spectral_method = str(es_cfg.get("spectral_method", "zonal_fft")).lower()
+    if spectral_method not in ("zonal_fft", "spherical_harmonics"):
+        c.warn(
+            f"[energy_spectra] Unknown spectral_method '{spectral_method}', "
+            "falling back to 'zonal_fft'."
+        )
+        spectral_method = "zonal_fft"
 
     # Preserve full datasets for metrics
     ds_target_full = ds_target
@@ -971,7 +1391,13 @@ def run(
             # Preserve ensemble for pooled/members modes
             # Only reduce when resolved == 'mean'
             spec_t, spec_p = _compute_spectra_pair(
-                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights
+                tgt,
+                pred,
+                str(var),
+                None,
+                reduce_ensemble=(resolved == "mean"),
+                weights=weights,
+                spectral_method=spectral_method,
             )
             lsd_da = _compute_lsd_da(spec_t, spec_p)
             lsd_mean = float(lsd_da.mean().values)
@@ -1040,6 +1466,8 @@ def run(
                     dpi,
                     save_plot_data=save_npz,
                     save_figure=save_plot,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
                 )
 
             # Compute banded LSD metrics (2D)
@@ -1135,6 +1563,9 @@ def run(
                     override_ensemble_token=curr_ens_token,
                     performance_cfg=perf_cfg,
                     weights=weights,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
+                    spectral_method=spectral_method,
                 )
 
     # 3D variables (per-level)
@@ -1159,6 +1590,7 @@ def run(
                 level=None,
                 reduce_ensemble=(resolved == "mean"),
                 weights=weights,
+                spectral_method=spectral_method,
             )
 
             # 1. Global LSD per level
@@ -1275,6 +1707,8 @@ def run(
                         dpi,
                         save_plot_data=save_npz,
                         save_figure=save_plot,
+                        show_4dx_cutoff=show_4dx_cutoff,
+                        show_lsd=show_lsd,
                     )
 
         if report_per_level and lsd_3d_rows:
@@ -1374,6 +1808,9 @@ def run(
                             save_figure=save_plot,
                             override_ensemble_token=curr_ens_token,
                             weights=weights,
+                            show_4dx_cutoff=show_4dx_cutoff,
+                            show_lsd=show_lsd,
+                            spectral_method=spectral_method,
                         )
 
     # Optional: per-member NPZ spectrum exports when requested
@@ -1404,6 +1841,9 @@ def run(
                     save_figure=False,
                     override_ensemble_token=token,
                     performance_cfg=perf_cfg,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
+                    spectral_method=spectral_method,
                 )
 
     # Optional: spectrogram over lead_time (x) and wavenumber (y) with energy color
@@ -1427,7 +1867,13 @@ def run(
             c.print(f"[energy_spectra] spectrogram variable: {var}")
             # Compute spectra (already averaged over ensemble inside calculate_energy_spectra call)
             spec_t, spec_p = _compute_spectra_pair(
-                tgt, pred, str(var), None, reduce_ensemble=(resolved == "mean"), weights=weights
+                tgt,
+                pred,
+                str(var),
+                None,
+                reduce_ensemble=(resolved == "mean"),
+                weights=weights,
+                spectral_method=spectral_method,
             )
             # Reduce over init_time/time, retaining lead_time and wavenumber
             spec_t2 = _reduce_time_like(spec_t)
@@ -1812,6 +2258,36 @@ def run(
                 save_fig_helper(fig, out_tripanel, module="energy_spectra")
                 plt.close(fig)
 
+            # ── Per-lead energy spectrum plots (overlay and/or single) ──
+            if save_plot and per_lead_layout in ("overlay", "both"):
+                _plot_per_lead_spectra_overlay(
+                    spec_t2,
+                    spec_p2,
+                    str(var),
+                    None,
+                    x_hours,
+                    section_output,
+                    init_range,
+                    lead_range,
+                    ens_token,
+                    dpi,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                )
+            if save_plot and per_lead_layout in ("single", "both"):
+                _plot_per_lead_spectra_single(
+                    spec_t2,
+                    spec_p2,
+                    str(var),
+                    None,
+                    x_hours,
+                    section_output,
+                    init_range,
+                    ens_token,
+                    dpi,
+                    show_4dx_cutoff=show_4dx_cutoff,
+                    show_lsd=show_lsd,
+                )
+
         # 3D per-level spectrograms and bundle NPZs
         # Always compute spectra and save NPZ bundles so the intercomparison
         # pipeline can produce 3D spectrograms / band plots.  Only gate the
@@ -1832,6 +2308,7 @@ def run(
                         level=int(lvl),
                         reduce_ensemble=(resolved == "mean"),
                         weights=weights,
+                        spectral_method=spectral_method,
                     )
                     spec_t3 = _reduce_time_like(spec_t3)
                     spec_p3 = _reduce_time_like(spec_p3)
@@ -1922,6 +2399,36 @@ def run(
                                 )
                     except Exception:
                         pass
+
+                    # ── Per-lead energy spectrum plots for this 3D level ──
+                    if save_plot and per_lead_layout in ("overlay", "both"):
+                        _plot_per_lead_spectra_overlay(
+                            spec_t3,
+                            spec_p3,
+                            str(var),
+                            int(lvl),
+                            x_hours_3d,
+                            section_output,
+                            init_range,
+                            lead_range,
+                            ens_token,
+                            dpi,
+                            show_4dx_cutoff=show_4dx_cutoff,
+                        )
+                    if save_plot and per_lead_layout in ("single", "both"):
+                        _plot_per_lead_spectra_single(
+                            spec_t3,
+                            spec_p3,
+                            str(var),
+                            int(lvl),
+                            x_hours_3d,
+                            section_output,
+                            init_range,
+                            ens_token,
+                            dpi,
+                            show_4dx_cutoff=show_4dx_cutoff,
+                            show_lsd=show_lsd,
+                        )
 
                     # Apply 4Δx wavenumber cutoff for plotting (same as 2D)
                     _k_max_3d = float(np.nanmax(kvals_3d))

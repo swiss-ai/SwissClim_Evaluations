@@ -165,10 +165,33 @@ is exported per init_time/lead_time and summarized. Outputs are split into singl
 
 **Per Lead (Multi Lead):**
 
-- Spectrograms: `energy_spectra/energy_spectra_per_lead_<variable>...`
+- Spectrograms (tripanel): `energy_spectra/energy_spectra_per_lead_<variable>_tripanel_...png`
 - LSD per-lead (2D): `energy_spectra/energy_ratios_per_lead_by_lead_long_<range>.csv` (and wide format)
 - LSD Banded per-lead: `energy_spectra/energy_ratios_bands_per_lead_per_lead_time_<range>.csv`
 - LSD Line Plot: `energy_spectra/energy_ratios_line_per_lead_<variable>...`
+
+**Per-lead energy spectrum plots** (controlled by `metrics.energy_spectra.per_lead_spectra_layout`):
+
+- `overlay` — one PNG per variable with all lead times as colored lines (plasma colormap,
+  solid = target, dashed = prediction); colorbar shows lead time in hours.
+  Filename: `energy_spectra/energy_spectra_per_lead_<variable>_overlay_...png`
+- `single` — one PNG per lead time, all sharing global y-axis limits so frames can be
+  assembled into a GIF.
+  Filename: `energy_spectra/energy_spectrum_<variable>_lead<NNN>h_...png`
+- `both` — produce both outputs above.
+- `none` (default) — disable per-lead spectrum plots.
+
+**Annotation toggles** (`metrics.energy_spectra`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `show_4dx_cutoff` | `true` | Gold dotted vertical line marking the 4Δx effective-resolution cutoff. Set to `false` for cleaner presentation plots. |
+| `show_lsd` | `true` | "LSD = X.XXXX" text annotation in the lower centre of each spectrum plot. Set to `false` to omit the metric from the figure. |
+
+Both flags apply to all spectrum plot types (averaged, per-lead overlay, per-lead single) as well as the intercomparison overlay plots if applicable. LSD values are always written to CSV regardless of `show_lsd`.
+
+Both 2D surface variables and 3D pressure-level variables are supported; 3D filenames
+include the level (e.g. `_500hPa_`).
 
 ### Distribution Analysis (Histograms & KDE / Wasserstein)
 
