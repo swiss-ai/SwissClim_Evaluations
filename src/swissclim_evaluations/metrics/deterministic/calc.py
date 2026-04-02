@@ -74,6 +74,8 @@ def _finalize_metrics(
     """Populate metrics_dict with computed results and convert to DataFrame."""
     for (var, metric, _), res in zip(lazy_list, computed_results, strict=False):
         if preserve_dims and isinstance(res, (xr.DataArray | xr.Dataset)):
+            if isinstance(res, xr.DataArray) and res.ndim == 0:
+                res = res.expand_dims([d for d in preserve_dims if d not in res.dims])
             metrics_dict[var][metric] = res
         else:
             try:
