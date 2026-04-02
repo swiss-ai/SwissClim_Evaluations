@@ -25,6 +25,7 @@ from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
+from swissclim_evaluations.intercomparison.modules.ssim import intercompare_ssim
 from swissclim_evaluations.intercomparison.modules.vertical_profiles import (
     intercompare_vertical_profiles,
 )
@@ -61,6 +62,7 @@ MODULE_ALIASES: dict[str, str] = {
     "metrics": "metrics",
     "ets": "ets",
     "prob": "prob",
+    "ssim": "ssim",
     # long-form aliases
     "histograms": "hist",
     "wd_kde": "kde",
@@ -104,6 +106,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/pit_hist*.npz",
         "probabilistic/crps_map_*.npz",
     ),
+    "ssim": ("ssim/ssim_ssim_*.csv",),
 }
 
 
@@ -292,6 +295,8 @@ def run_from_config(cfg: dict) -> None:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels
         )
+    if "ssim" in mods:
+        intercompare_ssim(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 

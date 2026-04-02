@@ -132,6 +132,7 @@ selection:
     deterministic: mean      # mean | pooled | members
     ets: mean                # mean | pooled | members
     probabilistic: prob      # prob (only valid choice)
+    ssim: mean               # mean | pooled | members
     # Validation will raise an error if an unsupported mode is specified (e.g. maps: pooled).
 
   # If true, enables a scan for NaN values in the data (reported as warnings).
@@ -267,6 +268,7 @@ modules:
   deterministic: true        # Deterministic metrics (MAE, RMSE, etc.) incl. standardized variants
   ets: true                  # Equitable Threat Score across quantile thresholds
   probabilistic: true        # Combined probabilistic (xarray CRPS/PIT + WBX SSR/CRPS)
+  ssim: true                 # Structural Similarity Index (SSIM)
 
 metrics:
   # Deterministic metrics configuration. If lists are omitted, a default set is computed.
@@ -357,6 +359,16 @@ metrics:
     # kinetic-energy proxy treatment:  KE = 0.5 * (|FFT(U)|² + |FFT(V)|²)
     # instead of the spectrum of the scalar wind-speed field, which would be
     # physically incorrect.
+
+  # SSIM configuration
+  ssim:
+    sigma: 1.5               # Standard deviation for Gaussian kernel
+    k1: 0.01                 # Algorithm constant (luminance stability)
+    k2: 0.03                 # Algorithm constant (contrast stability)
+    gaussian_weights: true   # Use Gaussian weighting
+    use_sample_covariance: true  # Normalise covariance with N-1
+    report_per_level: true   # Write per-pressure-level CSV for 3D variables
+    report_per_lead: true    # Write per-lead-time CSV when lead_time dim is present
 
   probabilistic:
     # Per-level reporting for 3D variables is enabled by default.
