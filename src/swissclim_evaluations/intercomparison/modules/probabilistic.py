@@ -46,6 +46,265 @@ def _normalize_summary_lead_time(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _intercompare_spaghetti(
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    dst_prob: Path,
+    cmap: dict[str, tuple],
+    common_spaghetti: list[str],
+) -> None:
+    """Generate gridded spaghetti comparison plots.
+
+    For each common spaghetti NPZ file (one per variable/level), produces two
+    figures:
+
+    1. **Side-by-side spaghetti** (1 row × n_models columns): each panel shows
+       all ensemble members as thin lines in the model's assigned colour and the
+       shared ground-truth target as a thick black line.  A single consolidated
+       legend is placed below the figure.
+
+    2. **Ensemble spread by lead time** (1 panel, all models): the per-lead
+       standard deviation of ensemble members is plotted for each model, giving
+       a compact view of how spread evolves with lead time across models.
+
+    Args:
+        models: List of paths to per-model output directories.
+        labels: Display names corresponding to *models*.
+        out_root: Root output directory (used for relative-path log messages).
+        dst_prob: Destination directory for saved figures.
+        cmap: Mapping from model label to matplotlib colour.
+        common_spaghetti: Basenames of NPZ files present in every model's
+            ``probabilistic/`` subdirectory.
+    """
+    if not common_spaghetti:
+        c.warn("Spaghetti intercomparison: no common NPZ files found — skipping.")
+        return
+
+    from swissclim_evaluations.helpers import (
+        COLOR_GROUND_TRUTH,
+        format_level_token,
+    )
+
+    print_file_list(
+        f"Found {len(common_spaghetti)} common spaghetti NPZ files",
+        common_spaghetti,
+    )
+
+    for base in common_spaghetti:
+        # ── Load payloads ─────────────────────────────────────────────────────
+        payloads: list[dict] = []
+        for m, _lab in zip(models, labels, strict=False):
+            try:
+                p = load_npz(m / "probabilistic" / base)
+                payloads.append(p)
+            except Exception as exc:
+                c.warn(f"Spaghetti: failed to load {m / 'probabilistic' / base}: {exc}")
+                payloads.append({})
+
+        # ── Required-key validation ───────────────────────────────────────────
+        required_keys = {"lead_hours", "member_values", "target_values"}
+        bad_models = [
+            labels[i] for i, p in enumerate(payloads) if not required_keys.issubset(p.keys())
+        ]
+        if bad_models:
+            c.warn(
+                f"Spaghetti: skipping {base} — required NPZ keys missing "
+                f"for: {', '.join(bad_models)}"
+            )
+            continue
+
+        # ── Extract metadata from first payload ───────────────────────────────
+        variable = payloads[0].get("variable", "")
+        units = payloads[0].get("units", "")
+        level = payloads[0].get("level")
+
+        # NPZ stores scalars wrapped in 0-d arrays; unwrap robustly
+        if hasattr(variable, "item"):
+            variable = variable.item()
+        if hasattr(units, "item"):
+            units = units.item()
+        if level is not None:
+            if hasattr(level, "item"):
+                level = level.item()
+            elif hasattr(level, "shape") and level.shape == (1,):
+                level = level[0]
+        variable = str(variable)
+        units = str(units)
+
+        # ── Sanity-check: all models should share the same ground truth ───────
+        ref_target = np.asarray(payloads[0]["target_values"])
+        for i, pay in enumerate(payloads[1:], start=1):
+            other = np.asarray(pay["target_values"])
+            if ref_target.shape != other.shape:
+                c.warn(
+                    f"Spaghetti: {base}: target_values shape differs for "
+                    f"{labels[i]} ({other.shape} vs {ref_target.shape})."
+                )
+            elif not np.allclose(ref_target, other, equal_nan=True, atol=1e-6):
+                c.warn(
+                    f"Spaghetti: {base}: target_values differ between "
+                    f"{labels[0]} and {labels[i]} — using {labels[0]} as reference."
+                )
+
+        n_models = len(models)
+        lvl_str = f" @ {format_level_token(level)}" if level is not None else ""
+        stem = base.replace(".npz", "")
+
+        # ── Figure 1: side-by-side spaghetti (1 row × n_models columns) ───────
+        fig_width = min(5.5 * n_models, 22.0)
+        fig, axes = plt.subplots(
+            1,
+            n_models,
+            figsize=(fig_width, 4),
+            dpi=160,
+            sharey=True,
+            constrained_layout=True,
+        )
+        if n_models == 1:
+            axes = [axes]
+
+        # Handles for the consolidated figure-level legend (collected once)
+        _legend_handles: list = []
+        _legend_labels: list[str] = []
+
+        for mi, (ax, lab, pay) in enumerate(zip(axes, labels, payloads, strict=False)):
+            lead_h = np.asarray(pay["lead_hours"])
+            members = np.asarray(pay["member_values"])
+            target = np.asarray(pay["target_values"])
+
+            if members.ndim == 1:
+                members = members.reshape(1, -1)
+            n_mem = members.shape[0]
+
+            if n_mem == 0:
+                c.warn(f"Spaghetti: {lab}: zero ensemble members — panel hidden.")
+                ax.set_visible(False)
+                continue
+            if members.shape[1] != len(lead_h):
+                c.warn(
+                    f"Spaghetti: {lab}: shape mismatch — "
+                    f"members {members.shape} vs lead_hours {len(lead_h)} — panel hidden."
+                )
+                ax.set_visible(False)
+                continue
+            if not np.isfinite(members).any():
+                c.warn(f"Spaghetti: {lab}: all member_values are non-finite — panel hidden.")
+                ax.set_visible(False)
+                continue
+            if not np.isfinite(target).any():
+                c.warn(f"Spaghetti: {lab}: all target_values are non-finite — panel hidden.")
+                ax.set_visible(False)
+                continue
+
+            model_color = cmap.get(lab, "#D55E00")
+            alpha = max(0.15, min(0.6, 3.0 / n_mem))
+
+            mem_line = None
+            for em in range(n_mem):
+                line = ax.plot(
+                    lead_h,
+                    members[em],
+                    color=model_color,
+                    alpha=alpha,
+                    linewidth=0.8,
+                )[0]
+                if em == 0:
+                    mem_line = line
+
+            tgt_line = ax.plot(
+                lead_h,
+                target,
+                color=COLOR_GROUND_TRUTH,
+                linewidth=2.0,
+                zorder=10,
+            )[0]
+
+            ax.set_title(lab, fontsize=10)
+            ax.set_xlabel("Lead Time [h]")
+            if mi == 0:
+                y_label = f"Spatial Mean [{units}]" if units else "Spatial Mean"
+                ax.set_ylabel(y_label)
+            ax.grid(True, linestyle="--", alpha=0.4)
+
+            # Collect handles from the first valid panel for the figure legend
+            if not _legend_handles and mem_line is not None:
+                _legend_handles = [mem_line, tgt_line]
+                _legend_labels = [f"Members ({n_mem})", "Target"]
+
+        # Consolidated figure-level legend (replaces per-panel redundant legends)
+        if _legend_handles:
+            fig.legend(
+                _legend_handles,
+                _legend_labels,
+                loc="lower center",
+                ncol=2,
+                fontsize=8,
+                frameon=False,
+                bbox_to_anchor=(0.5, -0.08),
+            )
+
+        fig.suptitle(
+            f"Ensemble Spaghetti — {format_variable_name(variable)}{lvl_str}",
+            fontsize=12,
+            y=1.04,
+        )
+
+        out_png = dst_prob / f"{stem}_compare.png"
+        try:
+            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            c.success(f"Saved {out_png.relative_to(out_root)}")
+        except Exception as exc:
+            c.warn(f"Spaghetti: failed to save {out_png}: {exc}")
+        finally:
+            plt.close(fig)
+
+        # ── Figure 2: ensemble spread by lead time (per-lead slicing) ─────────
+        spread_data: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for lab, pay in zip(labels, payloads, strict=False):
+            lead_h = np.asarray(pay["lead_hours"])
+            members = np.asarray(pay["member_values"])
+            if members.ndim == 1:
+                members = members.reshape(1, -1)
+            if (
+                members.shape[0] == 0
+                or members.shape[1] != len(lead_h)
+                or not np.isfinite(members).any()
+            ):
+                continue
+            spread_data.append((lab, lead_h, np.nanstd(members, axis=0)))
+
+        if spread_data:
+            fig_s, ax_s = plt.subplots(figsize=(9, 4), dpi=160, constrained_layout=True)
+            for lab, lead_h, spread in spread_data:
+                ax_s.plot(
+                    lead_h,
+                    spread,
+                    color=cmap.get(lab, "#D55E00"),
+                    linewidth=1.5,
+                    marker="o",
+                    markersize=3,
+                    label=lab,
+                )
+            ax_s.set_title(
+                f"Ensemble Spread (Std Dev) — {format_variable_name(variable)}{lvl_str}",
+                fontsize=11,
+            )
+            ax_s.set_xlabel("Lead Time [h]")
+            ax_s.set_ylabel(f"Std Dev [{units}]" if units else "Std Dev")
+            ax_s.legend(loc="best", fontsize=8, frameon=False)
+            ax_s.grid(True, linestyle="--", alpha=0.4)
+
+            out_spread = dst_prob / f"{stem}_spread_compare.png"
+            try:
+                plt.savefig(out_spread, bbox_inches="tight", dpi=200)
+                c.success(f"Saved {out_spread.relative_to(out_root)}")
+            except Exception as exc:
+                c.warn(f"Spaghetti: failed to save {out_spread}: {exc}")
+            finally:
+                plt.close(fig_s)
+
+
 def intercompare_probabilistic(
     models: list[Path],
     labels: list[str],
@@ -92,6 +351,10 @@ def intercompare_probabilistic(
     # PIT
     pit = common_files(models, "probabilistic/pit_hist*.npz")
     results["PIT Histograms"] = len(pit)
+
+    # Spaghetti
+    spaghetti = common_files(models, "probabilistic/spaghetti_*.npz")
+    results["Spaghetti Timeseries"] = len(spaghetti)
 
     report_checklist("probabilistic", results)
 
@@ -738,3 +1001,6 @@ def intercompare_probabilistic(
             plt.savefig(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
+
+    # --- 8. Spaghetti Timeseries Comparison ---
+    _intercompare_spaghetti(models, labels, out_root, dst_prob, _cmap, spaghetti)
