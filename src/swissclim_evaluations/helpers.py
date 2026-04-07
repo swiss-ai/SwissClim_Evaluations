@@ -628,8 +628,44 @@ def extract_date_from_dataset(ds: Any) -> str:
     return ""
 
 
+# Short display names for known variables.
+# Follows ECMWF paramDB short names (uppercased) where applicable:
+#   geopotential       param 129 → "z"  → Z   (m²/s²)
+#   geopotential_height param 156 → "gh" → GH  (gpm)  — distinct from Z in the paper
+#   wind speed         derived   → "ws" → WS
+VARIABLE_SHORT_NAMES: dict[str, str] = {
+    # Surface
+    "2m_temperature": "T2m",
+    "10m_u_component_of_wind": "U10m",
+    "10m_v_component_of_wind": "V10m",
+    "10m_wind_speed": "WS10m",
+    # Pressure-level
+    "temperature": "T",
+    "u_component_of_wind": "U",
+    "v_component_of_wind": "V",
+    "specific_humidity": "Q",
+    "vertical_velocity": "W",
+    # Geopotential / height (ECMWF paramDB: z / gh)
+    "geopotential": "Z",
+    "geopotential_height": "GH",
+    "geopotential_height_gradient": r"$|\nabla\mathrm{GH}|$",
+    # Wind speed (ECMWF paramDB: ws)
+    "wind_speed": "WS",
+    # Precipitation / moisture
+    "total_precipitation": "TP",
+    "total_column_water_vapour": "TCWV",
+    "mean_sea_level_pressure": "MSLP",
+}
+
+
 def format_variable_name(var_name: str) -> str:
-    """Format variable name for plot titles (e.g. '2m_temperature' -> '2m Temperature')."""
+    """Return a short display name for a variable.
+
+    Looks up ``VARIABLE_SHORT_NAMES`` first; falls back to capitalising the
+    underscore-separated tokens (legacy behaviour).
+    """
+    if var_name in VARIABLE_SHORT_NAMES:
+        return VARIABLE_SHORT_NAMES[var_name]
     formatted = " ".join(word.capitalize() for word in var_name.replace("_", " ").split())
     # Remove trailing 2d/3d indicators
     lower = formatted.lower()
