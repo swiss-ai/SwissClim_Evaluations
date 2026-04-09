@@ -209,7 +209,7 @@ def _get_physical_constraints(
             )
 
     # ── Geopotential Height Gradient vs Wind Speed ──────────────────────────
-    # Geostrophic balance: U_g = (g / f) * |∇Z|
+    # Geostrophic balance: U_g = (g / f) * |∇GH|
     # Plotted as a diagonal reference line through the origin.
     # Using representative mid-latitude |f| = 1e-4 s⁻¹ and g = 9.81 m s⁻².
     if (is_zgrad_x or is_zgrad_y) and (is_ws_x or is_ws_y):
@@ -218,7 +218,7 @@ def _get_physical_constraints(
         slope = g / f_abs  # (m s⁻¹) / (m m⁻¹)
 
         if is_zgrad_x and is_ws_y:
-            # x = |∇Z|  [m m⁻¹],  y = wind speed  [m s⁻¹]
+            # x = |∇GH|  [m m⁻¹],  y = wind speed  [m s⁻¹]
             x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
             y_arr = slope * x_arr
             constraints.append(
@@ -229,11 +229,11 @@ def _get_physical_constraints(
                     "color": "#ff7f0e",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla \mathrm{GH}|$",
                 }
             )
         elif is_zgrad_y and is_ws_x:
-            # x = wind speed  [m s⁻¹],  y = |∇Z|  [m m⁻¹]
+            # x = wind speed  [m s⁻¹],  y = |∇GH|  [m m⁻¹]
             x_arr = np.linspace(max(float(bins_x[0]), 0.0), float(bins_x[-1]), 400)
             y_arr = x_arr / slope
             constraints.append(
@@ -244,7 +244,7 @@ def _get_physical_constraints(
                     "color": "#ff7f0e",
                     "lw": 2.0,
                     "ls": "--",
-                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla Z|$",
+                    "label": r"Geostrophic: $U_g = (g/f)\,|\nabla \mathrm{GH}|$",
                 }
             )
 

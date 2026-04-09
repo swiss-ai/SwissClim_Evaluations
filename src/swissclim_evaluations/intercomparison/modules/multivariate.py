@@ -10,7 +10,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LogNorm
 
 from swissclim_evaluations import console as c
-from swissclim_evaluations.helpers import format_variable_name
+from swissclim_evaluations.helpers import format_variable_name, get_variable_units
 from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
@@ -49,6 +49,29 @@ def _scalar_float(value: np.ndarray | float | None) -> float | None:
     if np.isnan(val):
         return None
     return val
+
+
+def _extract_units(payload: dict[str, np.ndarray], axis: str) -> str | None:
+    if axis not in {"x", "y"}:
+        return None
+    for key in (
+        f"units_{axis}",
+        f"unit_{axis}",
+        f"{axis}_units",
+        f"{axis}_unit",
+        f"var_{axis}_units",
+        f"var_{axis}_unit",
+    ):
+        units = _scalar_str(payload.get(key))
+        if units:
+            return units
+    return None
+
+
+def _format_axis_label(var_name: str, units: str | None = None) -> str:
+    label = format_variable_name(var_name)
+    resolved_units = units or get_variable_units(None, var_name, latex=True)
+    return f"{label} [{resolved_units}]" if resolved_units else label
 
 
 def _infer_var_pair(fname: str, payload: dict[str, np.ndarray]) -> tuple[str, str]:
@@ -108,6 +131,10 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             )
         level_hpa = _scalar_float(first_payload.get("level_hpa"))
         coriolis_parameter = _scalar_float(first_payload.get("coriolis_parameter")) or 1.0e-4
+        unit_x = _extract_units(first_payload, "x")
+        unit_y = _extract_units(first_payload, "y")
+        xlabel = _format_axis_label(var_x, unit_x) if var_x else ""
+        ylabel = _format_axis_label(var_y, unit_y) if var_y else ""
 
         ref_hist_target = np.asarray(first_payload["hist_target"])
         ref_bins_x = np.asarray(first_payload["bins_x"])
@@ -238,8 +265,8 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 var_y=var_y,
                 level_hpa=level_hpa,
                 ax=ax,
-                xlabel=format_variable_name(var_x) if (var_x and is_bottom) else None,
-                ylabel=format_variable_name(var_y) if var_y else None,
+                xlabel=xlabel if (xlabel and is_bottom) else None,
+                ylabel=ylabel if ylabel else None,
                 xlim=shared_xlim,
                 ylim=shared_ylim,
                 show_colorbar=False,
@@ -290,7 +317,9 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
 
         stem = fname.replace("bivariate_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"
+        out_pdf = dst / f"bivariate_{stem}_compare.pdf"
         fig.savefig(out_png, dpi=150)
+        fig.savefig(out_pdf)
         plt.close(fig)
 
         out_npz = dst / f"bivariate_{stem}_compare.npz"
@@ -344,4 +373,5 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             )
 
         c.success(f"[multivariate] Saved compare plot: {out_png}")
+        c.success(f"[multivariate] Saved compare plot: {out_pdf}")
         c.success(f"[multivariate] Saved combined artifact: {out_npz}")
