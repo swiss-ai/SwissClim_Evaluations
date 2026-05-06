@@ -169,6 +169,43 @@ ssim/ssim_ssim_ens0.csv                           # members mode per-member file
 
 The per-level and per-lead outputs can be disabled individually via `metrics.ssim.report_per_level: false` and `metrics.ssim.report_per_lead: false` in the config. Disabling either flag also suppresses the per-level-by-lead output.
 
+### Multivariate Metrics (Bivariate Histograms)
+
+Bivariate density plots (histograms) are generated for specified variable pairs (e.g., u10m vs v10m). These plots visualize the joint distribution of two variables, comparing the prediction (filled plasma contours) against the reference (grey contours). Physical constraint overlays (Clausius–Clapeyron saturation curve, geostrophic balance line) are drawn automatically at **500 hPa** when the pair is recognised; at other levels the overlays are suppressed.
+
+**Output files** (per variable pair, per pressure level for 3D variables, per ensemble token):
+
+```text
+multivariate/bivariate_<var1>_<var2>[_level<N>]_<ens>.png         # density plot
+multivariate/bivariate_<var1>_<var2>[_level<N>]_<ens>.npz         # histogram data
+multivariate/bivariate_by_lead_<var1>_<var2>[_level<N>]_<ens>.png # per-lead grid (multi-lead only)
+```
+
+NPZ keys: `hist` (prediction), `hist_target` (reference), `bins_x`, `bins_y`, `var_x`, `var_y`, `level_hpa`.
+
+**Recommended Bivariate Pairs:**
+
+To evaluate physical consistency, we recommend plotting pairs that capture fundamental relationships:
+
+1.  **Surface Dynamics (Wind Vector):** `10m_u_component_of_wind` vs `10m_v_component_of_wind`.
+    *   *Suggested Level:* Surface (10m).
+    *   *Why:* Visualizes the surface circulation and wind variability. Biases in the spread indicate errors in surface friction or storm intensity.
+2.  **Upper-level Dynamics (Wind Vector):** `u_component_of_wind` vs `v_component_of_wind`.
+    *   *Suggested Level:* 250 hPa (Jet Stream).
+    *   *Why:* Captures the jet stream structure and synoptic variability. Biases in the spread indicate errors in the storm track or mean flow.
+3.  **Thermodynamics (Clausius-Clapeyron):** `temperature` vs `specific_humidity`.
+    *   *Suggested Level:* 850 hPa (Lower Troposphere).
+    *   *Why:* Warmer air holds more moisture. The distribution should show a sharp cutoff at the saturation curve (drawn automatically at the actual pressure level). Points beyond this curve indicate unphysical supersaturation.
+4.  **Hydrostatics:** `geopotential` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Relates to hydrostatic balance. Low geopotential heights (troughs) are typically associated with cold air (cold-core cyclones).
+5.  **Precipitation Physics:** `total_precipitation` vs `total_column_water_vapour`.
+    *   *Suggested Level:* Surface / Column-integrated.
+    *   *Why:* Checks precipitation efficiency. Deep convection requires a moist column. Look for a "hockey stick" relationship where precipitation increases rapidly above a critical $TCWV$ threshold (Bretherton et al. 2004).
+6.  **Vertical Motion:** `vertical_velocity` vs `temperature`.
+    *   *Suggested Level:* 500 hPa (Mid-troposphere).
+    *   *Why:* Evaluates convective processes. Upward motion (negative $\omega$) is often driven by buoyancy (warm anomalies) in convective systems. Look for asymmetries between strong narrow updrafts and broad downdrafts.
+
 ### Energy Spectra Analysis
 
 Per-variable (and per-level) energy spectra are computed retaining time structure; the Log Spectral Distance (LSD)

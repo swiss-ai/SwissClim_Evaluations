@@ -22,6 +22,7 @@ from swissclim_evaluations.intercomparison.modules.histograms import (
     intercompare_histograms,
 )
 from swissclim_evaluations.intercomparison.modules.maps import intercompare_maps
+from swissclim_evaluations.intercomparison.modules.multivariate import intercompare_multivariate
 from swissclim_evaluations.intercomparison.modules.probabilistic import (
     intercompare_probabilistic,
 )
@@ -74,6 +75,7 @@ MODULE_ALIASES: dict[str, str] = {
     "deterministic_metrics": "metrics",
     "energy": "spectra",
     "vertical": "vprof",
+    "multivariate": "multivariate",
 }
 
 
@@ -107,6 +109,7 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
         "probabilistic/crps_map_*.npz",
     ),
     "ssim": ("ssim/ssim_ssim_*.csv",),
+    "multivariate": ("multivariate/bivariate_*.npz",),
 }
 
 
@@ -249,6 +252,7 @@ def run_from_config(cfg: dict) -> None:
         "ets",
         "prob",
         "vprof",
+        "multivariate",
     ]
     modules = [str(m).lower() for m in modules]
     # Other options
@@ -302,6 +306,8 @@ def run_from_config(cfg: dict) -> None:
         )
     if "ssim" in mods:
         intercompare_ssim(models, labels, out_root)
+    if "multivariate" in mods:
+        intercompare_multivariate(models, labels, out_root)
 
     c.success("Intercomparison finished.")
 
