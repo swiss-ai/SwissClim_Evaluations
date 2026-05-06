@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import cartopy.crs as ccrs
+import matplotlib.gridspec as mgridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.stats import gaussian_kde
 
 from swissclim_evaluations.helpers import (
     extract_date_from_filename,
@@ -151,24 +153,34 @@ def _intercompare_spaghetti(
         lvl_str = f" @ {format_level_token(level)}" if level is not None else ""
         stem = base.replace(".npz", "")
 
-        # ── Figure 1: side-by-side spaghetti (1 row × n_models columns) ───────
-        fig_width = min(5.5 * n_models, 22.0)
-        fig, axes = plt.subplots(
-            1,
-            n_models,
-            figsize=(fig_width, 4),
-            dpi=160,
-            sharey=True,
-            constrained_layout=True,
-        )
-        if n_models == 1:
-            axes = [axes]
+        # ── Figure 1: side-by-side spaghetti + KDE panel per model ───────────
+        # Layout: outer GridSpec 1×n_models; each cell split into spaghetti (3)
+        # and KDE (1) via a nested GridSpecFromSubplotSpec.
+        panel_width = 5.5 + 1.5  # spaghetti + kde column
+        fig_width = min(panel_width * n_models, 28.0)
+        fig = plt.figure(figsize=(fig_width, 4), dpi=160)
+        outer_gs = mgridspec.GridSpec(1, n_models, figure=fig, wspace=0.25)
+
+        spag_axes: list = []
+        kde_axes: list = []
+        for mi in range(n_models):
+            inner_gs = mgridspec.GridSpecFromSubplotSpec(
+                1,
+                2,
+                subplot_spec=outer_gs[mi],
+                width_ratios=[3, 1],
+                wspace=0.05,
+            )
+            spag_axes.append(fig.add_subplot(inner_gs[0]))
+            kde_axes.append(fig.add_subplot(inner_gs[1]))
 
         # Handles for the consolidated figure-level legend (collected once)
         _legend_handles: list = []
         _legend_labels: list[str] = []
 
-        for mi, (ax, lab, pay) in enumerate(zip(axes, labels, payloads, strict=False)):
+        for mi, (ax, ax_kde, lab, pay) in enumerate(
+            zip(spag_axes, kde_axes, labels, payloads, strict=False)
+        ):
             lead_h = np.asarray(pay["lead_hours"])
             members = np.asarray(pay["member_values"])
             target = np.asarray(pay["target_values"])
@@ -176,6 +188,8 @@ def _intercompare_spaghetti(
             if members.ndim == 1:
                 members = members.reshape(1, -1)
             n_mem = members.shape[0]
+
+            ax_kde.set_visible(False)
 
             if n_mem == 0:
                 c.warn(f"Spaghetti: {lab}: zero ensemble members — panel hidden.")
@@ -212,6 +226,16 @@ def _intercompare_spaghetti(
                 if em == 0:
                     mem_line = line
 
+            # Ensemble mean
+            mean_line = ax.plot(
+                lead_h,
+                members.mean(axis=0),
+                color=model_color,
+                linewidth=2.0,
+                linestyle="--",
+                zorder=9,
+            )[0]
+
             tgt_line = ax.plot(
                 lead_h,
                 target,
@@ -229,19 +253,46 @@ def _intercompare_spaghetti(
 
             # Collect handles from the first valid panel for the figure legend
             if not _legend_handles and mem_line is not None:
-                _legend_handles = [mem_line, tgt_line]
-                _legend_labels = [f"Members ({n_mem})", "Target"]
+                _legend_handles = [mem_line, mean_line, tgt_line]
+                _legend_labels = [f"Members ({n_mem})", "Ensemble mean", "Target"]
 
-        # Consolidated figure-level legend (replaces per-panel redundant legends)
+            # KDE panel (final lead time)
+            final_vals = members[:, -1]
+            finite_vals = final_vals[np.isfinite(final_vals)]
+            if len(finite_vals) >= 2 and np.std(finite_vals) > 0:
+                kde = gaussian_kde(finite_vals)
+                y_lim = ax.get_ylim()
+                y_eval = np.linspace(y_lim[0], y_lim[1], 300)
+                density = kde(y_eval)
+                ax_kde.set_visible(True)
+                ax_kde.plot(density, y_eval, color=model_color, linewidth=1.2)
+                ax_kde.fill_betweenx(y_eval, 0, density, alpha=0.2, color=model_color)
+                ax_kde.set_ylim(y_lim)
+                ax_kde.yaxis.set_visible(False)
+                ax_kde.set_xlabel("Density", fontsize=7)
+                ax_kde.tick_params(axis="x", labelsize=6)
+                ax_kde.grid(True, linestyle="--", alpha=0.4)
+
+        # Sync y-limits across all visible spaghetti panels
+        visible_ylims = [ax.get_ylim() for ax in spag_axes if ax.get_visible()]
+        if visible_ylims:
+            ymin = min(y[0] for y in visible_ylims)
+            ymax = max(y[1] for y in visible_ylims)
+            for ax, ax_kde in zip(spag_axes, kde_axes, strict=False):
+                ax.set_ylim(ymin, ymax)
+                if ax_kde.get_visible():
+                    ax_kde.set_ylim(ymin, ymax)
+
+        # Consolidated figure-level legend
         if _legend_handles:
             fig.legend(
                 _legend_handles,
                 _legend_labels,
                 loc="lower center",
-                ncol=2,
+                ncol=3,
                 fontsize=8,
                 frameon=False,
-                bbox_to_anchor=(0.5, -0.08),
+                bbox_to_anchor=(0.5, -0.10),
             )
 
         fig.suptitle(

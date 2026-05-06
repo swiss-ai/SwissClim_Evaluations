@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.stats import gaussian_kde
 
 from ...helpers import (
     COLOR_GROUND_TRUTH,
@@ -133,12 +135,16 @@ def plot_spaghetti_timeseries(
     units: str = "",
     time_label: str = "",
     dpi: int = 96,
+    show_kde: bool = True,
 ):
     """Plot spatially-averaged timeseries with one line per ensemble member + target.
 
     Produces a "spaghetti plot" showing ensemble spread alongside the ground truth.
-    Each ensemble member is drawn as a thin coloured line and the target/observation
-    is overlaid as a thicker black line.
+    Each ensemble member is drawn as a thin coloured line, the ensemble mean as a
+    dashed line, and the target/observation as a thicker black line.  When
+    ``show_kde=True`` and at least two members are available, a kernel density
+    panel is appended to the right showing the ensemble distribution at the final
+    lead time.
 
     Args:
         lead_hours: 1-D array of lead-time hours (x-axis values).
@@ -153,9 +159,13 @@ def plot_spaghetti_timeseries(
         time_label: Extra label shown in the upper-right corner of the plot
             (typically the init-time stamp).
         dpi: Base dots-per-inch for the figure.
+        show_kde: Append a KDE density panel (ensemble at final lead time) to the
+            right of the spaghetti axes.  Requires ``n_members >= 2``.
     """
     n_members = member_values.shape[0]
     fig, ax = plt.subplots(figsize=(9, 4), dpi=dpi * 2)
+
+    member_alpha = max(0.15, min(0.6, 3.0 / n_members))
 
     # --- Ensemble members: thin coloured lines ---
     for m in range(n_members):
@@ -163,10 +173,22 @@ def plot_spaghetti_timeseries(
             lead_hours,
             member_values[m],
             color=COLOR_MODEL_PREDICTION,
-            alpha=max(0.15, min(0.6, 3.0 / n_members)),
+            alpha=member_alpha,
             linewidth=0.8,
             label="Ensemble members" if m == 0 else None,
         )
+
+    # --- Ensemble mean: dashed line ---
+    ens_mean = member_values.mean(axis=0)
+    ax.plot(
+        lead_hours,
+        ens_mean,
+        color=COLOR_MODEL_PREDICTION,
+        linewidth=2.0,
+        linestyle="--",
+        label="Ensemble mean",
+        zorder=9,
+    )
 
     # --- Target / ground truth: thick black line ---
     ax.plot(
@@ -174,7 +196,7 @@ def plot_spaghetti_timeseries(
         target_values,
         color=COLOR_GROUND_TRUTH,
         linewidth=2.0,
-        label="Target (ground truth)",
+        label="Target",
         zorder=10,
     )
 
@@ -190,6 +212,25 @@ def plot_spaghetti_timeseries(
     ax.set_ylabel(y_label)
     ax.legend(loc="best", fontsize=8)
     ax.grid(True, linestyle="--", alpha=0.6)
+
+    # --- KDE panel at final lead time ---
+    if show_kde and n_members >= 2:
+        final_vals = member_values[:, -1]
+        if np.isfinite(final_vals).sum() >= 2 and np.std(final_vals) > 0:
+            kde = gaussian_kde(final_vals[np.isfinite(final_vals)])
+            y_lim = ax.get_ylim()
+            y_eval = np.linspace(y_lim[0], y_lim[1], 300)
+            density = kde(y_eval)
+
+            divider = make_axes_locatable(ax)
+            ax_kde = divider.append_axes("right", size="20%", pad=0.06)
+            ax_kde.plot(density, y_eval, color=COLOR_MODEL_PREDICTION, linewidth=1.2)
+            ax_kde.fill_betweenx(y_eval, 0, density, alpha=0.2, color=COLOR_MODEL_PREDICTION)
+            ax_kde.set_ylim(y_lim)
+            ax_kde.yaxis.set_visible(False)
+            ax_kde.set_xlabel("Density", fontsize=8)
+            ax_kde.tick_params(axis="x", labelsize=7)
+            ax_kde.grid(True, linestyle="--", alpha=0.4)
 
     save_figure(fig, out_path, module="probabilistic")
     plt.close(fig)
