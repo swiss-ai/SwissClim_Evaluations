@@ -264,6 +264,9 @@ def run_from_config(cfg: dict) -> None:
     energy_spectra_individual_plots = bool(spectra_cfg.get("individual_plots", False))
     energy_spectra_show_4dx_cutoff = bool(spectra_cfg.get("show_4dx_cutoff", True))
 
+    det_cfg = (cfg.get("metrics") or {}).get("deterministic") or {}
+    heatmap_normalization = str(det_cfg.get("heatmap_normalization", "global_std")).lower()
+
     # Light validation: warn on missing model dirs
     for m in models:
         if not m.exists():
@@ -297,7 +300,9 @@ def run_from_config(cfg: dict) -> None:
     if "vprof" in mods:
         intercompare_vertical_profiles(models, labels, out_root)
     if "metrics" in mods:
-        intercompare_deterministic_metrics(models, labels, out_root)
+        intercompare_deterministic_metrics(
+            models, labels, out_root, heatmap_normalization=heatmap_normalization
+        )
     if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
     if "prob" in mods:

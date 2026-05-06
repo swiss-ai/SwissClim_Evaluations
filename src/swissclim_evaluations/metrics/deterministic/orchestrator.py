@@ -509,6 +509,42 @@ def _generate_spatial_metric_maps(
     c.success("[deterministic] Spatial metric maps generated")
 
 
+def _compute_var_stats(ds_target: xr.Dataset) -> dict[str, dict[str, float]]:
+    """Return per-variable global std and one-step-diff std from the target dataset.
+
+    Stats are computed over all dimensions (including lead_time, init_time, lat, lon,
+    level, and ensemble if present).  The ensemble dimension is averaged first so that
+    the statistics reflect the ground-truth distribution only.
+
+    Returns a dict ``{variable_name: {"global_std": float, "one_step_std": float}}``.
+    """
+    tgt = ds_target
+    if "ensemble" in tgt.dims:
+        tgt = tgt.mean(dim="ensemble")
+
+    lead_dim = next((d for d in ("lead_time", "time") if d in tgt.dims), None)
+
+    stats: dict[str, dict[str, float]] = {}
+    for var in tgt.data_vars:
+        da = tgt[var]
+        try:
+            gstd = float(da.std(skipna=True).values)
+        except Exception:
+            gstd = float("nan")
+
+        if lead_dim is not None:
+            try:
+                ostd = float(da.diff(lead_dim).std(skipna=True).values)
+            except Exception:
+                ostd = float("nan")
+        else:
+            ostd = float("nan")
+
+        stats[str(var)] = {"global_std": gstd, "one_step_std": ostd}
+
+    return stats
+
+
 def run(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
@@ -533,6 +569,7 @@ def run(
     spatial_maps_level_grid = (
         str(cfg.get("error_maps_level_layout", "per_level")).lower() == "stacked"
     )
+    heatmap_normalization = str(cfg.get("heatmap_normalization", "global_std")).lower()
     include = cfg.get("include")
     std_include = cfg.get("standardized_include")
     fss_cfg = cfg.get("fss", {})
@@ -1139,5 +1176,69 @@ def run(
                             if level_val is not None:
                                 df_out.insert(1, "level", int(level_val))
                             save_dataframe(df_out, out_csv, index=False, module="deterministic")
+
+                # Error heatmap: all variables x lead times per metric
+                if save_fig:
+                    from ...plots.deterministic import plot_error_heatmap
+
+                    # Compute and save per-variable statistics for heatmap normalization
+                    _vstats_all = _compute_var_stats(ds_target)
+                    _vstats_rows = [
+                        {
+                            "variable": v,
+                            "global_std": d["global_std"],
+                            "one_step_std": d["one_step_std"],
+                        }
+                        for v, d in _vstats_all.items()
+                    ]
+                    _vstats_csv = section_output / build_output_filename(
+                        metric="var_stats",
+                        variable=None,
+                        level=None,
+                        qualifier=None,
+                        init_time_range=init_range,
+                        lead_time_range=_extract_lead_range(ds_prediction),
+                        ensemble=ens_token,
+                        ext="csv",
+                    )
+                    save_dataframe(
+                        pd.DataFrame(_vstats_rows),
+                        _vstats_csv,
+                        index=False,
+                        module="deterministic",
+                    )
+
+                    # Build {variable: scalar} for the chosen normalization mode
+                    _stat_key = (
+                        "one_step_std" if heatmap_normalization == "one_step_std" else "global_std"
+                    )
+                    _var_stats: dict[str, float] | None = (
+                        {v: d[_stat_key] for v, d in _vstats_all.items()}
+                        if heatmap_normalization != "per_variable_max"
+                        else None
+                    )
+
+                    _hm_id = {"lead_time_hours", "variable"}
+                    if "level" in long_df.columns:
+                        _hm_id.add("level")
+                    for _m in [c for c in long_df.columns if c not in _hm_id]:
+                        _out_hm = section_output / build_output_filename(
+                            metric="det_heatmap",
+                            variable=None,
+                            level=None,
+                            qualifier=str(_m).replace(" ", "_"),
+                            init_time_range=init_range,
+                            lead_time_range=_extract_lead_range(ds_prediction),
+                            ensemble=ens_token,
+                            ext="png",
+                        )
+                        plot_error_heatmap(
+                            long_df=long_df,
+                            metric=str(_m),
+                            out_path=_out_hm,
+                            title=f"{_m} \u2014 Variables \u00d7 Lead Time",
+                            normalization=heatmap_normalization,
+                            var_stats=_var_stats,
+                        )
         except Exception:
             pass

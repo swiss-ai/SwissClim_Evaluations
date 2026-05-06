@@ -17,10 +17,38 @@ from swissclim_evaluations.intercomparison.core import (
     report_missing,
     scan_model_sets,
 )
+from swissclim_evaluations.plots.deterministic import plot_error_heatmap
+
+
+def _load_var_stats(model_dir: Path, stat_key: str) -> dict[str, float]:
+    """Load per-variable statistics from a var_stats*.csv in the model's deterministic dir.
+
+    Returns ``{variable: stat_value}`` or an empty dict when no file is found.
+    ``stat_key`` is the column to read (``"global_std"`` or ``"one_step_std"``).
+    """
+    candidates = sorted((model_dir / "deterministic").glob("var_stats*.csv"))
+    if not candidates:
+        return {}
+    try:
+        df = pd.read_csv(candidates[0])
+        if "variable" not in df.columns or stat_key not in df.columns:
+            return {}
+        return dict(
+            zip(
+                df["variable"].astype(str),
+                pd.to_numeric(df[stat_key], errors="coerce"),
+                strict=False,
+            )
+        )
+    except Exception:
+        return {}
 
 
 def intercompare_deterministic_metrics(
-    models: list[Path], labels: list[str], out_root: Path
+    models: list[Path],
+    labels: list[str],
+    out_root: Path,
+    heatmap_normalization: str = "global_std",
 ) -> None:
     _cmap = model_color_map(labels)
     # Availability report
@@ -443,3 +471,34 @@ def intercompare_deterministic_metrics(
                     plt.savefig(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
+
+            # Error heatmap per model: variables x lead times
+            _stat_key = "one_step_std" if heatmap_normalization == "one_step_std" else "global_std"
+            for lab, model_dir in zip(labels, models, strict=False):
+                model_df = temporal_df[temporal_df["model"] == lab].copy()
+                if model_df.empty:
+                    continue
+                _var_stats: dict[str, float] | None = (
+                    _load_var_stats(model_dir, _stat_key) or None
+                    if heatmap_normalization != "per_variable_max"
+                    else None
+                )
+                for _metric in model_df["metric"].unique():
+                    _mdf = (
+                        model_df[model_df["metric"] == _metric]
+                        .rename(columns={"lead_time": "lead_time_hours", "value": _metric})
+                        .copy()
+                    )
+                    keep = ["variable", "lead_time_hours", _metric]
+                    if "level" in _mdf.columns:
+                        keep.append("level")
+                    _mdf = _mdf[[c for c in keep if c in _mdf.columns]]
+                    out_hm = dst_det / f"heatmap_{_metric}_{lab}.png"
+                    plot_error_heatmap(
+                        long_df=_mdf,
+                        metric=_metric,
+                        out_path=out_hm,
+                        title=f"{_metric} \u2014 {lab}",
+                        normalization=heatmap_normalization,
+                        var_stats=_var_stats,
+                    )

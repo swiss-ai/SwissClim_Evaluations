@@ -319,6 +319,14 @@ metrics:
     # Subset to compute on standardized pairs (combined mean/std across targets+predictions).
     standardized_include: ["MAE", "RMSE", "MSE", "Relative MAE"]
 
+    # Normalization used in the variables x lead-time error heatmap.
+    # global_std    (default): divide by the target variable's global std (climatological σ).
+    #   Produces dimensionless RMSE / σ, comparable across variables and models.
+    # one_step_std: divide by the std of consecutive lead-time differences of the target.
+    #   Normalizes by natural one-step variability; useful for assessing predictability.
+    # per_variable_max: normalize each variable row by its own maximum error (0--1 scale).
+    heatmap_normalization: global_std  # global_std | one_step_std | per_variable_max
+
     # Path to the climatology file for SEEPS calculation.
     seeps_climatology_path: "/capstor/store/cscs/swissai/weatherbench/ERA5-climatology-1990-2019-surface-6h.zarr"
 
