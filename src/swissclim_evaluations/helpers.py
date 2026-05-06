@@ -225,8 +225,8 @@ def time_range_suffix(ds: xr.Dataset) -> str:
     """Build suffix string encoding init_time and lead_time ranges.
 
     Patterns required by tests:
-      - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
-      - Only one dim present → single segment without separator.
+    - Both dims: 'init_time_<start>_to_<end>__lead_time_<h0>_to_<h1>'
+    - Only one dim present → single segment without separator.
     Datetime formatted as YYYY-MM-DDTHH. Lead times in hours (ints).
     """
     segments: list[str] = []
@@ -342,6 +342,7 @@ _DEFAULT_ENSEMBLE_MODES: dict[str, str] = {
     "deterministic": "mean",
     "ets": "mean",
     "probabilistic": "prob",
+    "multivariate": "mean",
     # plots / diagnostics
     "energy_spectra": "mean",
     "vertical_profiles": "mean",
@@ -362,6 +363,7 @@ _ALLOWED_PER_MODULE: dict[str, set[str]] = {
     "energy_spectra": {"mean", "pooled", "members"},
     "deterministic": {"mean", "pooled", "members"},
     "ets": {"mean", "pooled", "members"},
+    "multivariate": {"mean", "pooled", "members"},
 }
 
 
@@ -374,10 +376,10 @@ def resolve_ensemble_mode(
     """Determine effective ensemble handling mode for a module.
 
     Modes:
-      - mean: reduce ensemble → single field (ensmean)
-      - pooled: treat all members' samples jointly (enspooled)
-      - prob: keep ensemble dimension intrinsically (ensprob)
-      - members: iterate per member producing separate per-member artifacts (ens<idx>)
+    - mean: reduce ensemble → single field (ensmean)
+    - pooled: treat all members' samples jointly (enspooled)
+    - prob: keep ensemble dimension intrinsically (ensprob)
+    - members: iterate per member producing separate per-member artifacts (ens<idx>)
     """
     base = (requested or _DEFAULT_ENSEMBLE_MODES.get(module, "mean")).lower()
     if base not in _VALID_MODES:
@@ -438,9 +440,9 @@ def validate_and_normalize_ensemble_config(
     """Validate and normalize user-specified per-module ensemble modes.
 
     Behaviour:
-      * Accept typo 'member' → normalize to 'members'.
-      * Lower-case values; unknown modes replaced by module default with warning.
-      * If ensemble dim absent, any non-'mean' mode downgraded to 'mean' with warning.
+    * Accept typo 'member' → normalize to 'members'.
+    * Lower-case values; unknown modes replaced by module default with warning.
+    * If ensemble dim absent, any non-'mean' mode downgraded to 'mean' with warning.
 
     Returns (normalized_config, warnings_list).
     """
@@ -626,8 +628,44 @@ def extract_date_from_dataset(ds: Any) -> str:
     return ""
 
 
+# Short display names for known variables.
+# Follows ECMWF paramDB short names (uppercased) where applicable:
+#   geopotential       param 129 → "z"  → Z   (m²/s²)
+#   geopotential_height param 156 → "gh" → GH  (gpm)  — distinct from Z in the paper
+#   wind speed         derived   → "ws" → WS
+VARIABLE_SHORT_NAMES: dict[str, str] = {
+    # Surface
+    "2m_temperature": "T2m",
+    "10m_u_component_of_wind": "U10m",
+    "10m_v_component_of_wind": "V10m",
+    "10m_wind_speed": "WS10m",
+    # Pressure-level
+    "temperature": "T",
+    "u_component_of_wind": "U",
+    "v_component_of_wind": "V",
+    "specific_humidity": "Q",
+    "vertical_velocity": "W",
+    # Geopotential / height (ECMWF paramDB: z / gh)
+    "geopotential": "Z",
+    "geopotential_height": "GH",
+    "geopotential_height_gradient": r"$|\nabla\mathrm{GH}|$",
+    # Wind speed (ECMWF paramDB: ws)
+    "wind_speed": "WS",
+    # Precipitation / moisture
+    "total_precipitation": "TP",
+    "total_column_water_vapour": "TCWV",
+    "mean_sea_level_pressure": "MSLP",
+}
+
+
 def format_variable_name(var_name: str) -> str:
-    """Format variable name for plot titles (e.g. '2m_temperature' -> '2m Temperature')."""
+    """Return a short display name for a variable.
+
+    Looks up ``VARIABLE_SHORT_NAMES`` first; falls back to capitalising the
+    underscore-separated tokens (legacy behaviour).
+    """
+    if var_name in VARIABLE_SHORT_NAMES:
+        return VARIABLE_SHORT_NAMES[var_name]
     formatted = " ".join(word.capitalize() for word in var_name.replace("_", " ").split())
     # Remove trailing 2d/3d indicators
     lower = formatted.lower()
@@ -693,6 +731,9 @@ VARIABLE_UNITS = {
     # Derived wind variables
     "wind_speed": "m s**-1",
     "10m_wind_speed": "m s**-1",
+    # Derived geopotential height and its gradient
+    "geopotential_height": "m",
+    "geopotential_height_gradient": "m m**-1",
     "geopotential": "m**2 s**-2",
     "specific_humidity": "kg kg**-1",
     "mean_sea_level_pressure": "Pa",
@@ -700,15 +741,56 @@ VARIABLE_UNITS = {
 }
 
 
-def get_variable_units(ds: xr.Dataset | xr.DataArray | None, var_name: str) -> str:
-    """Get units for a variable, falling back to a default mapping if missing."""
+def _to_latex_units(unit_str: str) -> str:
+    """Convert CF-style unit strings to LaTeX ratio notation.
+
+    Examples: 'm s**-1' -> '$\\mathrm{m/s}$', 'kg kg**-1' -> '$\\mathrm{kg/kg}$',
+    's**-1' -> '$\\mathrm{1/s}$', 'm**2 s**-2' -> '$\\mathrm{m^{2}/s^{2}}$'.
+    """
+    if not unit_str:
+        return unit_str
+    if "$" in unit_str or "\\" in unit_str:
+        return unit_str  # already LaTeX
+    # Convert ** exponent notation to ^{N}
+    s = re.sub(r"\*\*(-?\d+)", lambda m: f"^{{{m.group(1)}}}", unit_str)
+    # Split tokens and separate into numerator / denominator by exponent sign
+    _neg = re.compile(r"^(.+?)\^\{(-\d+)\}$")
+    numer: list[str] = []
+    denom: list[str] = []
+    for tok in s.split():
+        m = _neg.match(tok)
+        if m:
+            base, abs_exp = m.group(1), -int(m.group(2))
+            denom.append(base if abs_exp == 1 else f"{base}^{{{abs_exp}}}")
+        else:
+            numer.append(tok)
+    numer_str = r"\,".join(numer) if numer else "1"
+    combined = numer_str + "/" + r"\,".join(denom) if denom else numer_str
+    return rf"$\mathrm{{{combined}}}$"
+
+
+def get_variable_units(
+    ds: xr.Dataset | xr.DataArray | None, var_name: str, latex: bool = False
+) -> str:
+    """Get units for a variable, falling back to a default mapping if missing.
+
+    Args:
+        ds: Dataset or DataArray to read units from, or ``None``.
+        var_name: Variable name used for the fallback lookup.
+        latex: If ``True``, return LaTeX-formatted units suitable for plot
+            labels.  If ``False`` (default), return plain CF-style strings
+            suitable for metadata, CSV headers, and downstream unit parsing.
+    """
     if ds is not None:
         if isinstance(ds, xr.DataArray):
             if "units" in ds.attrs:
-                return str(ds.attrs["units"])
+                raw = str(ds.attrs["units"])
+                return _to_latex_units(raw) if latex else raw
         elif var_name in ds and "units" in ds[var_name].attrs:
-            return str(ds[var_name].attrs["units"])
-    return VARIABLE_UNITS.get(var_name, "")
+            raw = str(ds[var_name].attrs["units"])
+            return _to_latex_units(raw) if latex else raw
+    raw = VARIABLE_UNITS.get(var_name, "")
+    return _to_latex_units(raw) if latex else raw
 
 
 def subsample_values(
@@ -724,7 +806,7 @@ def subsample_values(
         k: Number of samples to take (approximate)
         seed: Random seed
         lazy: If True, return a dask array without computing.
-              If False, compute and return numpy array with finite values only.
+            If False, compute and return numpy array with finite values only.
     """
     size = int(getattr(da, "size", 0) or 0)
     if size == 0:
