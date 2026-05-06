@@ -7,7 +7,7 @@ paths:
   # Accepts a single string or a list of strings. When a list is provided, the
   # archives are combined lazily by coordinates (no data is materialized; Dask
   # graphs remain intact). All stores must follow the same variable/dimension schema.
-  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/aurora_small_6h/rollout_pred_2023-01-02x112_2steps.zarr" # has 3D vars
+  prediction: "/capstor/store/cscs/swissai/a122/ESFM_Results/esfm_small_nm_1aa8et_meanmaeafcrps_esfmi_sgd_atm_adalndecsb0_scposemb/predictions_rollout_subset_step10000.zarr"
 
   # Path(s) to the reference dataset (e.g. ERA5 in WeatherBench2 layout).
   # Accepts a single string or a list of strings. When multiple stores are provided,
@@ -26,7 +26,7 @@ paths:
 selection:
   # Pressure levels (hPa) for 3D variables. Only levels present in the data are kept.
   # Common choices: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
-  levels: [100, 500, 1000]
+  levels: [500, 850]
 
   # Optional time downsampling in hours. Applied as a stride along lead_time if present,
   # otherwise along init_time. Set to null to disable.
@@ -49,9 +49,9 @@ selection:
   # valid_time = init_time + lead_time remains covered.
   datetimes: [
     "2023-01-02T00:2023-01-08T23",
-    "2023-04-02T00:2023-04-08T23",
-    "2023-07-02T00:2023-07-08T23",
-    "2023-10-02T00:2023-10-08T23",
+    # "2023-04-02T00:2023-04-08T23",
+    # "2023-07-02T00:2023-07-08T23",
+    # "2023-10-02T00:2023-10-08T23",
     # "2024-01-02T00:2024-01-08T23",
     # "2024-04-02T00:2024-04-08T23",
     # "2024-07-02T00:2024-07-08T23",
@@ -73,9 +73,9 @@ selection:
   # must be included here for the derived variable to be computed. Missing
   # components are skipped with a warning (inner-join guard).
   variables_2d: [
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    # "2m_temperature",
+    # "10m_u_component_of_wind",
+    # "10m_v_component_of_wind",
+    "2m_temperature",
     # "mean_sea_level_pressure",
   ]
 
@@ -86,15 +86,14 @@ selection:
     # "specific_humidity",
     # "temperature",
     "u_component_of_wind",
-    "v_component_of_wind",
+    # "v_component_of_wind",
   ]
 
   # Optional pre-selection of ensemble members BEFORE any module logic runs.
   #   Accepts:
   #     - null  : keep all members (recommended) and let per‑module ensemble modes decide.
-  #     - int   : select exactly one member; 'ensemble' dimension is dropped and ALL per-module
-  #               ensemble modes (mean/members/pooled/prob) become invalid except probabilistic
-  #               which will still use the single deterministic path.
+  #     - int   : select exactly one member; 'ensemble' dimension is kept (size 1).
+  #               Per-module ensemble modes still function over the single retained member.
   #     - list[int]: select multiple members; the dataset is subset to those members but the
   #               'ensemble' dimension is preserved (length = len(list)). Per‑module ensemble
   #               modes still function but operate only over the retained subset.
@@ -103,7 +102,7 @@ selection:
   #     - Indices are zero-based.
   #     - Use plotting.plot_ensemble_members for restricting WHICH members are plotted in
   #       members-capable modules without discarding others for metrics.
-  ensemble_members: null
+  ensemble_members: 0
 
   # Per-module ensemble member selection — pure overrides.
   # Accepts the same entries as the global 'ensemble_members' above.
@@ -146,7 +145,7 @@ selection:
   #   - stride: Keep every Nth hour defined in 'stride_hours'.
   lead_time:
     mode: "full"           # first | full | subset | stride
-    max_hour: 72           # Optional: Cap maximum lead time (inclusive)
+    max_hour: 6           # Optional: Cap maximum lead time (inclusive)
     # subset_hours: [0, 12, 24, 48]  # Required if mode is 'subset'
     # stride_hours: 6                # Required if mode is 'stride'
 
@@ -334,7 +333,7 @@ metrics:
     # In members mode, also emit a mean-of-members summary CSV.
     # aggregate_members_mean: true
 
-    thresholds: [50, 70, 90]
+    thresholds: [70, 90]
 
   # Energy Spectra configuration.
   energy_spectra:

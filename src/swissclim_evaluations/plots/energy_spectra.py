@@ -732,6 +732,10 @@ def _plot_averaged_spectra(
         for lt in leads:
             st = spec_t_avg.sel(lead_time=lt)
             sp = spec_p_avg.sel(lead_time=lt)
+            if "ensemble" in st.dims:
+                st = st.mean(dim="ensemble")
+            if "ensemble" in sp.dims:
+                sp = sp.mean(dim="ensemble")
             lsd = float(lsd_avg_da.sel(lead_time=lt).values)
 
             # Format lead label
@@ -790,10 +794,12 @@ def _plot_averaged_spectra(
         out_path = out_dir / fname
         init_label_str = f"{init_range[0]}-{init_range[1]}" if init_range else "mean"
 
+        _st = spec_t_avg.mean(dim="ensemble") if "ensemble" in spec_t_avg.dims else spec_t_avg
+        _sp = spec_p_avg.mean(dim="ensemble") if "ensemble" in spec_p_avg.dims else spec_p_avg
         _plot_single_spectrum(
             wn,
-            spec_t_avg.values,
-            spec_p_avg.values,
+            _st.values,
+            _sp.values,
             float(lsd_avg_da.values),
             var,
             level,

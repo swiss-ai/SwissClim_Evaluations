@@ -67,24 +67,25 @@ Currently the dataloader expects a zarr archive of the following type:
 - the size of these dimensions and coordinates may vary
 
 ```bash
-<xarray.Dataset> Size: 297GB
-Dimensions:                  (init_time: 28, ensemble: 8, lead_time: 40,
-                              latitude: 720, longitude: 1440, level: 37)
+<xarray.Dataset> Size: 4TB
+Dimensions:                  (init_time: 216, lead_time: 28, ensemble: 8,
+                              latitude: 720, longitude: 1440, level: 3)
 Coordinates:
   * ensemble                 (ensemble) int64 64B 0 1 2 3 4 5 6 7
-  * init_time                (init_time) datetime64[ns] 224B 2023-01-02 ... 2...
+  * init_time                (init_time) datetime64[ns] 2kB 2023-01-02 ... 2024-...
   * latitude                 (latitude) float32 3kB 90.0 89.75 ... -89.5 -89.75
-  * lead_time                (lead_time) timedelta64[ns] 320B 0 days 06:00:00...
-  * level                    (level) int64 296B 1 2 3 5 ... 950 975 1000
-  * longitude                (longitude) float32 6kB 0.0 0.25 ... 359.5 359.8
+  * lead_time                (lead_time) timedelta64[ns] 224B 0 days 06:00:00...
+  * level                    (level) int64 24B 100 500 850
+  * longitude                (longitude) float32 6kB 0.0 0.25 ... 359.5 359.75
 Data variables:
-    10m_u_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
-    10m_v_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
-    2m_temperature           (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
-    global_CO2               (init_time, lead_time, ensemble, latitude, longitude) float32 37GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
-    u_component_of_wind      (init_time, lead_time, level, ensemble, latitude, longitude) float32 1TB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
-Attributes:
-    model:    model_ckpt-step=7300-loss_train=0.07.ckpt
+    10m_u_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 201GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    10m_v_component_of_wind  (init_time, lead_time, ensemble, latitude, longitude) float32 201GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    2m_temperature           (init_time, lead_time, ensemble, latitude, longitude) float32 201GB dask.array<chunksize=(1, 1, 8, 720, 1440), meta=np.ndarray>
+    geopotential             (init_time, lead_time, level, ensemble, latitude, longitude) float32 602GB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
+    specific_humidity        (init_time, lead_time, level, ensemble, latitude, longitude) float32 602GB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
+    temperature              (init_time, lead_time, level, ensemble, latitude, longitude) float32 602GB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
+    u_component_of_wind      (init_time, lead_time, level, ensemble, latitude, longitude) float32 602GB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
+    v_component_of_wind      (init_time, lead_time, level, ensemble, latitude, longitude) float32 602GB dask.array<chunksize=(1, 1, 1, 8, 720, 1440), meta=np.ndarray>
 ```
 
 There are two special cases:

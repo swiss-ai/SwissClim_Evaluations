@@ -12,7 +12,7 @@
 # USER INPUT (edit this section only)
 # =============================================================
 # Evaluation config to run (absolute path or relative to submit/project directory)
-CONFIG_FILE="config/example_config.yaml"
+CONFIG_FILE="config/my_run.yaml"
 
 # Enroot/EDF TOML (or EDF name if your site supports it)
 EDF_CONFIG="/users/$USER/.edf/swissclim-eval.toml"
