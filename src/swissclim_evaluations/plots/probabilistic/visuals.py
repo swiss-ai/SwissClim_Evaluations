@@ -273,8 +273,6 @@ def generate_spaghetti_plots(
     """
     import dask as _dask_mod
 
-    from ...core.data_selection import select_plot_datetime
-
     mode = str((plotting_cfg or {}).get("output_mode", "plot")).lower()
     save_fig = mode in ("plot", "both")
     save_npz = mode in ("npz", "both")
@@ -296,12 +294,11 @@ def generate_spaghetti_plots(
     section = out_root / "probabilistic"
     section.mkdir(parents=True, exist_ok=True)
 
-    # --- Select single init_time via standard mechanism ---
-    effective_cfg = dict(cfg or {})
-    effective_cfg.setdefault("plotting", {}).update(plotting_cfg or {})
-    ds_tgt_plot, ds_pred_plot = select_plot_datetime(ds_target, ds_prediction, effective_cfg)
+    # --- Use all init_times (averaged after spatial reduction) ---
+    ds_tgt_plot = ds_target
+    ds_pred_plot = ds_prediction
 
-    date_str = extract_date_from_dataset(ds_tgt_plot)
+    date_str = "all init times"
     ens_token = ensemble_mode_to_token("prob")
 
     # --- Time-range tokens for filename ---
@@ -364,11 +361,11 @@ def generate_spaghetti_plots(
                 da_tgt_lvl = da_tgt
                 da_pred_lvl = da_pred
 
-            # Squeeze init_time if singleton
-            if "init_time" in da_tgt_lvl.dims and da_tgt_lvl.sizes["init_time"] == 1:
-                da_tgt_lvl = da_tgt_lvl.isel(init_time=0, drop=True)
-            if "init_time" in da_pred_lvl.dims and da_pred_lvl.sizes["init_time"] == 1:
-                da_pred_lvl = da_pred_lvl.isel(init_time=0, drop=True)
+            # Average over init_time (skipna handles missing lead times)
+            if "init_time" in da_tgt_lvl.dims:
+                da_tgt_lvl = da_tgt_lvl.mean(dim="init_time", skipna=True)
+            if "init_time" in da_pred_lvl.dims:
+                da_pred_lvl = da_pred_lvl.mean(dim="init_time", skipna=True)
 
             # Identify spatial dims present in this DataArray
             spatial_reduce = [d for d in da_tgt_lvl.dims if str(d) in spatial_dims_names]
