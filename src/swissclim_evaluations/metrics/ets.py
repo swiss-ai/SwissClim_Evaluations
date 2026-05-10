@@ -728,7 +728,12 @@ def run(
                     )
                     save_dataframe(per_level_df, out_csv_lvl, index=False, module="ets")
         else:
+            _has_multi_lead = (
+                "lead_time" in ds_prediction.dims
+                and int(ds_prediction.sizes.get("lead_time", 0)) > 1
+            )
             per_member_dfs = []
+            all_member_lead_rows: list[dict[str, Any]] = []
             for mi in members_indices:
                 ds_pred_m = ds_prediction.isel(ensemble=mi)
                 if "ensemble" in ds_target.dims:
@@ -739,12 +744,11 @@ def run(
                 else:
                     ds_tgt_m = ds_target
 
-                # Fuse overall + per-level into a single dask.compute for this member.
-                df_m, _, per_level_m = _compute_all_ets(
+                df_m, per_lead_rows_m, per_level_m = _compute_all_ets(
                     ds_tgt_m,
                     ds_pred_m,
                     thresholds,
-                    do_per_lead=False,
+                    do_per_lead=_has_multi_lead,
                     do_per_level=report_per_level,
                 )
                 token_m = ensemble_mode_to_token("members", mi)
@@ -761,6 +765,11 @@ def run(
                 save_dataframe(df_m, out_csv_m, index_label="variable", module="ets")
                 per_member_dfs.append(df_m)
 
+                if per_lead_rows_m:
+                    for row in per_lead_rows_m:
+                        row["member"] = mi
+                    all_member_lead_rows.extend(per_lead_rows_m)
+
                 if report_per_level and per_level_m is not None:
                     out_csv_m_lvl = section_output / build_output_filename(
                         metric="ets_metrics",
@@ -773,6 +782,20 @@ def run(
                         ext="csv",
                     )
                     save_dataframe(per_level_m, out_csv_m_lvl, index=False, module="ets")
+
+            if all_member_lead_rows:
+                lead_df = pd.DataFrame(all_member_lead_rows)
+                out_lead = section_output / build_output_filename(
+                    metric="ets_metrics",
+                    variable=None,
+                    level=None,
+                    qualifier="per_member_per_lead",
+                    init_time_range=init_range,
+                    lead_time_range=lead_range,
+                    ensemble="ensmembers",
+                    ext="csv",
+                )
+                save_dataframe(lead_df, out_lead, index=False, module="ets")
 
             if per_member_dfs and aggregate_members_mean:
                 from ..helpers import aggregate_member_dfs

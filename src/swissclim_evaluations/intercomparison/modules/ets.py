@@ -232,3 +232,68 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                 plt.savefig(out_png, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close(fig)
+
+    # Per-member per-lead plots (member spread envelopes)
+    frames_member_lead: list[pd.DataFrame] = []
+    for lab, m in zip(labels, models, strict=False):
+        candidates = list((m / "ets").glob("ets_metrics_per_member_per_lead*.csv"))
+        for cand in candidates:
+            try:
+                df = pd.read_csv(cand)
+                df.insert(0, "model", lab)
+                frames_member_lead.append(df)
+            except Exception:
+                continue
+
+    if frames_member_lead:
+        combined_ml = pd.concat(frames_member_lead, ignore_index=True)
+        out_csv_ml = dst_ets / "ets_per_member_per_lead_combined.csv"
+        combined_ml.to_csv(out_csv_ml, index=False)
+        c.success(f"Saved {out_csv_ml.relative_to(out_root)}")
+
+        ets_cols = [col for col in combined_ml.columns if col.startswith("ETS ")]
+        if "variable" in combined_ml.columns and "lead_time_hours" in combined_ml.columns:
+            for ets_col in ets_cols:
+                for var, grp in combined_ml.groupby("variable"):
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    has_data = False
+
+                    for lab in labels:
+                        model_data = grp[grp["model"] == lab]
+                        if model_data.empty:
+                            continue
+                        stats = model_data.groupby("lead_time_hours")[ets_col].agg(
+                            ["mean", "min", "max"]
+                        )
+                        if stats.empty:
+                            continue
+                        has_data = True
+                        color = _cmap.get(lab)
+                        ax.plot(
+                            stats.index, stats["mean"], marker="o", markersize=3,
+                            label=lab, color=color,
+                        )
+                        ax.fill_between(
+                            stats.index, stats["min"], stats["max"],
+                            alpha=0.15, color=color,
+                        )
+
+                    if not has_data:
+                        plt.close(fig)
+                        continue
+
+                    thresh_label = ets_col.replace("ETS ", "")
+                    ax.set_title(
+                        f"ETS Member Spread — {format_variable_name(str(var))} ({thresh_label})"
+                    )
+                    ax.set_ylabel("ETS")
+                    ax.set_xlabel("Lead Time (h)")
+                    ax.legend()
+                    ax.grid(True, linestyle="--", alpha=0.6)
+                    plt.tight_layout()
+
+                    safe_name = f"ets_{var}_{thresh_label.replace('%', 'pct')}_spread.png"
+                    out_png = dst_ets / safe_name
+                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    c.success(f"Saved {out_png.relative_to(out_root)}")
+                    plt.close(fig)

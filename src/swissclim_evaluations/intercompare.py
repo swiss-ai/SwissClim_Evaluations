@@ -18,6 +18,7 @@ from swissclim_evaluations.intercomparison.modules.energy_spectra import (
     intercompare_energy_spectra,
 )
 from swissclim_evaluations.intercomparison.modules.ets import intercompare_ets_metrics
+from swissclim_evaluations.intercomparison.modules.fss import intercompare_fss_metrics
 from swissclim_evaluations.intercomparison.modules.histograms import (
     intercompare_histograms,
 )
@@ -62,6 +63,7 @@ MODULE_ALIASES: dict[str, str] = {
     "vprof": "vprof",
     "metrics": "metrics",
     "ets": "ets",
+    "fss": "fss",
     "prob": "prob",
     "ssim": "ssim",
     # long-form aliases
@@ -99,6 +101,9 @@ MODULE_INPUT_PATTERNS: dict[str, tuple[str, ...]] = {
     "ets": (
         "ets/ets_metrics*.csv",
         "ets/ets_line*by_lead*.csv",
+    ),
+    "fss": (
+        "fss/fss_metrics*.csv",
     ),
     "prob": (
         "probabilistic/crps_summary*.csv",
@@ -305,6 +310,8 @@ def run_from_config(cfg: dict) -> None:
         )
     if "ets" in mods:
         intercompare_ets_metrics(models, labels, out_root)
+    if "fss" in mods:
+        intercompare_fss_metrics(models, labels, out_root)
     if "prob" in mods:
         intercompare_probabilistic(
             models, labels, out_root, max_crps_map_panels=max_crps_map_panels

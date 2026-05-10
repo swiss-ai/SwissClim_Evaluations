@@ -106,6 +106,14 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
             thresholds_sel = "default"
         return metrics_sel, thresholds_sel
 
+    if module == "fss":
+        metrics_sel = "FSS"
+        if isinstance(module_cfg, dict) and "thresholds" in module_cfg:
+            thresholds_sel = _compact_cfg_value(module_cfg.get("thresholds"))
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
     if module == "probabilistic":
         return "CRPS, PIT, SSR", "n/a"
 
@@ -138,6 +146,7 @@ def print_module_config_summary(cfg: dict[str, Any], chapter_flags: dict[str, An
         "vertical_profiles",
         "deterministic",
         "ets",
+        "fss",
         "probabilistic",
         "ssim",
         "multivariate",

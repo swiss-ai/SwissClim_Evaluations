@@ -156,6 +156,7 @@ def run_selected(cfg: dict[str, Any]) -> None:
         "vertical_profiles",
         "deterministic",
         "ets",
+        "fss",
         "probabilistic",
         "ssim",
         "multivariate",
@@ -702,6 +703,53 @@ def run_selected(cfg: dict[str, Any]) -> None:
             module_results.append(
                 {
                     "name": "ets",
+                    "status": "failed",
+                    "seconds": dt,
+                    "error": str(ex),
+                }
+            )
+
+    if chapter_flags.get("fss"):
+        from ..metrics import fss as fss_mod
+
+        c.module_status("fss", "run", f"variables={len(all_vars)}")
+        if "ensemble" in ds_prediction.dims:
+            ens_size_fss = int(ds_prediction.sizes.get("ensemble", 0))
+            use_mode = resolved_modes.get("fss", "mean")
+            c.info(format_ensemble_log("fss", use_mode, ens_size_fss))
+        else:
+            c.info("No ensemble dimension → deterministic inputs.")
+        _t = time.time()
+        try:
+            _ds_pred_fss, _ = data_selection.resolve_module_prediction(
+                "fss", ds_prediction, ds_prediction_std, ds_target, cfg
+            )
+            fss_mod.run(
+                ds_target,
+                _ds_pred_fss,
+                out_root,
+                cfg.get("metrics", {}),
+                plotting_cfg=plotting,
+                ensemble_mode=ensemble_cfg.get("fss"),
+                lead_policy=lead_policy,
+                performance_cfg=performance_cfg,
+            )
+            dt = time.time() - _t
+            module_timings.append(("fss", dt))
+            module_results.append(
+                {
+                    "name": "fss",
+                    "status": "success",
+                    "seconds": dt,
+                    "error": None,
+                }
+            )
+        except Exception as ex:
+            dt = time.time() - _t
+            c.error(f"fss failed: {ex}")
+            module_results.append(
+                {
+                    "name": "fss",
                     "status": "failed",
                     "seconds": dt,
                     "error": str(ex),
