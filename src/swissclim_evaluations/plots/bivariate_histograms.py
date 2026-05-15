@@ -1158,10 +1158,21 @@ def plot_bivariate_histogram(
     dens_1 = hist_1 / (sum_1 * bin_area) if sum_1 > 0 else hist_1
     dens_2 = hist_2 / (sum_2 * bin_area) if sum_2 > 0 else hist_2
 
-    # Logarithmic scale
-    # Define levels based on the filled distribution (Model 1 / prediction)
+    # Logarithmic scale.
+    # Define contour levels from the *target* density so that the truth
+    # contour lines stay invariant across model variants (the truth histogram
+    # is identical for all model panels in an intercomparison; the prediction
+    # density isn't). Fall back to the prediction density if the target is
+    # all-zero / empty.
+    valid_2 = dens_2[dens_2 > 0]
     valid_1 = dens_1[dens_1 > 0]
-    if len(valid_1) == 0:
+    if len(valid_2) > 0:
+        vmin = float(valid_2.min())
+        vmax = float(valid_2.max())
+    elif len(valid_1) > 0:
+        vmin = float(valid_1.min())
+        vmax = float(valid_1.max())
+    else:
         ax.text(
             0.5,
             0.5,
@@ -1171,9 +1182,6 @@ def plot_bivariate_histogram(
             transform=ax.transAxes,
         )
         return ax
-
-    vmin = valid_1.min()
-    vmax = valid_1.max()
 
     # Ensure vmin is positive for log scale
     if vmin <= 0:
