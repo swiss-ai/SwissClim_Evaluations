@@ -82,6 +82,7 @@ def run(
         max_levels = None
 
     per_lat_band = bool(plotting_cfg.get("wd_kde_per_lat_band", False))
+    include_evolve = bool(plotting_cfg.get("wd_kde_include_evolve", True))
 
     # Select only genuine 2D variables (no 'level' dimension) and 3D ones
     variables_2d = [v for v in ds_target_std.data_vars if "level" not in ds_target_std[v].dims]
@@ -512,8 +513,9 @@ def run(
                         level_val=lvl,
                     )
 
-    # Optional: Global KDE evolution over lead_time (3D perspective)
-    if has_multi_lead and (save_fig or save_npz):
+    # Optional: Global KDE evolution over lead_time (3D perspective / ridgeline plots).
+    # Gated by plotting.wd_kde_include_evolve (default True).
+    if has_multi_lead and include_evolve and (save_fig or save_npz):
         # Choose all eligible variables (2D and 3D)
         cand_vars = [
             v
