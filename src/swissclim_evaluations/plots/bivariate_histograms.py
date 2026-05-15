@@ -809,15 +809,14 @@ def calculate_and_plot_bivariate_histograms(
             da_x_targ = targ_x_sel.data.flatten()
             da_y_targ = targ_y_sel.data.flatten()
 
-            # Combine prediction and target for range computation
-            da_x_combined = da.concatenate([da_x_pred, da_x_targ])
-            da_y_combined = da.concatenate([da_y_pred, da_y_targ])
-
-            # Compute min/max lazily over both prediction and target, handling NaNs
-            min_x_lazy = da.nanmin(da_x_combined)
-            max_x_lazy = da.nanmax(da_x_combined)
-            min_y_lazy = da.nanmin(da_y_combined)
-            max_y_lazy = da.nanmax(da_y_combined)
+            # Bin edges are anchored to the target (truth) range only, so axes
+            # and reference contours stay invariant across model variants
+            # (e.g. different perturbation magnitudes). Prediction values
+            # outside the truth range get binned into the edge bins.
+            min_x_lazy = da.nanmin(da_x_targ)
+            max_x_lazy = da.nanmax(da_x_targ)
+            min_y_lazy = da.nanmin(da_y_targ)
+            max_y_lazy = da.nanmax(da_y_targ)
             range_jobs.append(
                 {
                     "min_x": min_x_lazy,
