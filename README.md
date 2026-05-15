@@ -110,8 +110,9 @@ Modules include:
 *   **Wasserstein Distance & KDE**: KDE by latitude band on standardized fields.
 *   **Energy Spectra**: Zonal energy spectra + LSD table.
 *   **Vertical Profiles**: NMAE vertical profiles.
-*   **Deterministic Metrics**: MAE, RMSE, FSS, etc.
-*   **ETS**: Equitable Threat Score.
+*   **Deterministic Metrics**: MAE, RMSE, etc.
+*   **ETS**: Equitable Threat Score at configurable percentile thresholds.
+*   **FSS**: Fractions Skill Score at configurable percentile thresholds.
 *   **Probabilistic**: CRPS, PIT, Spread-Skill Ratio.
 
 For a detailed overview of outputs, file naming conventions, and ensemble handling, see [docs/OUTPUTS.md](docs/OUTPUTS.md).

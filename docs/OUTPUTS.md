@@ -43,6 +43,7 @@ If the dataset contains multiple ensembles, metrics can be computed on the mean 
 - **vertical_profiles**: mean, pooled, members
 - **deterministic**: mean, pooled, members
 - **ets**: mean, pooled, members
+- **fss**: mean, pooled, members
 - **probabilistic**: prob only
 - **ssim**: mean, pooled, members
 
@@ -135,16 +136,30 @@ ssr_line_temperature_500_by_lead_ensprob.csv   # 3D variable with level token
 
 ### Extreme Threshold Statistics (ETS)
 
-ETS filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode:
+ETS is a standalone module that writes output into its own `ets/` directory. Filenames follow the same minimal pattern as deterministic metrics and include `ensmean` or `ens<i>` tokens depending on ensemble mode. Supports multiple percentile thresholds (e.g. `[75, 95]`) and per-member mode with per-member-per-lead combined output.
 
 ```text
-ets_metrics_ensmean.csv
-ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
-ets_metrics_per_level_ensmean.csv
-ets_metrics_init_time_ens0.csv   # members mode per-member file
-ets_line_2m_temperature_by_lead_ensmean.csv
-ets_line_2m_temperature_ensmean.png
-ets_line_2m_temperature_data_ensmean.npz
+ets/ets_metrics_ensmean.csv
+ets/ets_metrics_averaged_init2023010200-2023010412_ensmean.csv
+ets/ets_metrics_per_level_ensmean.csv
+ets/ets_metrics_init_time_ens0.csv                        # members mode per-member file
+ets/ets_metrics_per_member_per_lead_ensmembers.csv        # combined per-member per-lead
+ets/ets_metrics_members_mean_enspooled.csv                # aggregated members mean
+ets/ets_line_2m_temperature_by_lead_ensmean.csv
+ets/ets_line_2m_temperature_ensmean.png
+ets/ets_line_2m_temperature_data_ensmean.npz
+```
+
+### Fractions Skill Score (FSS)
+
+FSS is a standalone module that writes output into its own `fss/` directory. Supports multiple percentile thresholds (e.g. `[75, 95]`), configurable window size, and per-member mode with per-member-per-lead combined output.
+
+```text
+fss/fss_metrics_ensmean.csv
+fss/fss_metrics_averaged_init2023010200-2023010412_ensmean.csv
+fss/fss_metrics_ens0.csv                                  # members mode per-member file
+fss/fss_metrics_per_member_per_lead_ensmembers.csv        # combined per-member per-lead
+fss/fss_metrics_members_mean_enspooled.csv                # aggregated members mean
 ```
 
 ### SSIM
@@ -395,6 +410,8 @@ crps_summary_averaged_init2023010200-2023010412_lead000h-024h_ensprob.csv
 All modules print concise progress like:
 
 - [swissclim] Module: deterministic — variables=5
+- [swissclim] Module: ets — variables=5
+- [swissclim] Module: fss — variables=5
 - [histograms] variable: 10m_u_component_of_wind
 - [energy_spectra] saved output/verification_esfm/energy_spectra/u_component_of_wind_500hPa_spectrum.png
 
@@ -443,6 +460,13 @@ All intercomparison plots use **consistent model colours**: each label in `inter
 - **ets**
 	- `ets/ets_metrics_combined.csv`
 	- `ets/ets_*_compare.png`
+	- `ets/ets_metrics_per_member_per_lead_combined.csv` (per-member per-lead, if available)
+	- `ets/ets_member_spread_*_compare.png` (member spread envelope plots, if available)
+- **fss**
+	- `fss/fss_metrics_combined.csv`
+	- `fss/fss_*_compare.png` (mean over members, one line per model)
+	- `fss/fss_metrics_per_member_per_lead_combined.csv` (per-member per-lead, if available)
+	- `fss/fss_member_spread_*_compare.png` (member spread envelope plots, if available)
 - **probabilistic**
 	- `probabilistic/crps_summary_combined.csv`
 	- `probabilistic/crps_summary_per_level_combined.csv`

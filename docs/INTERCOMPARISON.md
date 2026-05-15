@@ -26,6 +26,7 @@ Module selection notes:
     - `vprof` / `vertical_profiles` / `vertical`
     - `metrics` / `deterministic` / `deterministic_metrics`
     - `ets`
+    - `fss`
     - `prob` / `probabilistic`
 - Unknown module names are ignored with a warning.
 - If a requested module has no matching source artifacts across all model folders, it is skipped automatically with a warning.
@@ -94,9 +95,18 @@ What gets combined:
 *   **ETS**
     *   **CSVs**:
         *   `ets_metrics_combined.csv`: Combined ETS metrics.
+        *   `ets_metrics_per_member_per_lead_combined.csv`: Combined per-member per-lead data (if available).
     *   **Plots**:
         *   `ets_<var>_ETS_<thresh>pct_compare.png`: ETS vs Lead Time plots.
+        *   `ets_member_spread_<var>_ETS_<thresh>pct_compare.png`: Member spread envelope plots (if per-member data available).
 
+*   **FSS**
+    *   **CSVs**:
+        *   `fss_metrics_combined.csv`: Combined FSS metrics across models.
+        *   `fss_metrics_per_member_per_lead_combined.csv`: Combined per-member per-lead data (if available).
+    *   **Plots**:
+        *   `fss_<var>_FSS_<thresh>pct_compare.png`: FSS vs Lead Time plots (mean over members, one line per model).
+        *   `fss_member_spread_<var>_FSS_<thresh>pct_compare.png`: Member spread envelope plots (if per-member data available).
 
 *   **Probabilistic**
     *   **CSVs**:
