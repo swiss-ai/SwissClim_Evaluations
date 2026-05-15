@@ -199,6 +199,15 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
             thresholds_sel = "default"
         return metrics_sel, thresholds_sel
 
+    if module == "fss":
+        fss_cfg = metrics_cfg.get("fss", {}) if isinstance(metrics_cfg, dict) else {}
+        metrics_sel = "FSS"
+        if isinstance(fss_cfg, dict) and "thresholds" in fss_cfg:
+            thresholds_sel = _compact_cfg_value(fss_cfg.get("thresholds"))
+        else:
+            thresholds_sel = "default"
+        return metrics_sel, thresholds_sel
+
     if module == "prob":
         prob_cfg = metrics_cfg.get("probabilistic", {}) if isinstance(metrics_cfg, dict) else {}
         report_per_level = (
@@ -224,7 +233,7 @@ def _module_metric_threshold_summary(module: str, cfg: dict[str, Any]) -> tuple[
 
 
 def _print_module_config_summary(mods: set[str], cfg: dict[str, Any]) -> None:
-    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "prob"]
+    module_order = ["maps", "hist", "kde", "spectra", "vprof", "metrics", "ets", "fss", "prob"]
     c.section("Configured Metrics/Thresholds")
     for module in module_order:
         enabled = module in mods
