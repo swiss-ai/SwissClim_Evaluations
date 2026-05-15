@@ -286,12 +286,61 @@ def _calculate_ets_per_level(
     return df
 
 
+def _precompute_ets_quantiles(
+    ds_target: xr.Dataset,
+    thresholds: list[int],
+    do_per_lead: bool = False,
+    do_per_level: bool = False,
+    variables: list[str] | None = None,
+) -> dict[tuple[str, str], xr.DataArray]:
+    """Materialise target quantiles for the three ETS passes in one dask.compute.
+
+    Returned dict keys are ``(pass_name, variable)``. ``pass_name`` is one of
+    ``"overall"``, ``"per_lead"``, ``"per_level"``. Values are concrete
+    (computed) xr.DataArrays, ready to be broadcast against the prediction
+    arrays without re-traversing the target data.
+
+    Saves N-1 full target scans when the per-member loop calls
+    ``_compute_all_ets`` N times against the same target.
+    """
+    q_values = [t / 100.0 for t in thresholds]
+    if variables is None:
+        variables = [str(v) for v in ds_target.data_vars]
+    if not variables:
+        return {}
+
+    variables_3d = [v for v in variables if "level" in ds_target[v].dims]
+    has_level = "level" in ds_target.dims and bool(variables_3d)
+
+    lazy: list[tuple[tuple[str, str], xr.DataArray]] = []
+    for var in variables:
+        da_t = ds_target[var]
+        lazy.append((("overall", var), compute_quantile_preserving(da_t, q_values, None)))
+        if do_per_lead and "lead_time" in da_t.dims:
+            lazy.append(
+                (("per_lead", var), compute_quantile_preserving(da_t, q_values, ["lead_time"]))
+            )
+    if do_per_level and has_level:
+        for var in variables_3d:
+            da_t = ds_target[var]
+            lazy.append(
+                (("per_level", var), compute_quantile_preserving(da_t, q_values, ["level"]))
+            )
+
+    if not lazy:
+        return {}
+    c.print(f"[ets] Pre-computing {len(lazy)} target-quantile tasks in one dask graph...")
+    computed = dask.compute(*[q for _, q in lazy])
+    return {tag: val for (tag, _), val in zip(lazy, computed, strict=False)}
+
+
 def _compute_all_ets(
     ds_target: xr.Dataset,
     ds_prediction: xr.Dataset,
     thresholds: list[int],
     do_per_lead: bool = False,
     do_per_level: bool = False,
+    precomputed_quantiles: dict[tuple[str, str], xr.DataArray] | None = None,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame | None]:
     """Compute overall ETS, per-lead ETS, and per-level ETS in a single dask.compute call.
 
@@ -331,7 +380,10 @@ def _compute_all_ets(
     for var in all_variables:
         da_t = ds_target[var]
         da_p = ds_prediction[var]
-        quantiles = compute_quantile_preserving(da_t, q_values, None)
+        if precomputed_quantiles is not None and ("overall", var) in precomputed_quantiles:
+            quantiles = precomputed_quantiles[("overall", var)]
+        else:
+            quantiles = compute_quantile_preserving(da_t, q_values, None)
         reduce_dims = list(da_t.dims)
         obs_events = da_t >= quantiles
         fcst_events = da_p >= quantiles
@@ -345,8 +397,11 @@ def _compute_all_ets(
         for var in all_variables:
             da_t = ds_target[var]
             da_p = ds_prediction[var]
-            # Quantiles have shape (quantile, lead_time); reduce over everything else.
-            quantiles = compute_quantile_preserving(da_t, q_values, ["lead_time"])
+            if precomputed_quantiles is not None and ("per_lead", var) in precomputed_quantiles:
+                quantiles = precomputed_quantiles[("per_lead", var)]
+            else:
+                # Quantiles have shape (quantile, lead_time); reduce over everything else.
+                quantiles = compute_quantile_preserving(da_t, q_values, ["lead_time"])
             reduce_dims = [d for d in da_t.dims if d != "lead_time"]
             obs_events = da_t >= quantiles
             fcst_events = da_p >= quantiles
@@ -360,9 +415,12 @@ def _compute_all_ets(
         for var in variables_3d:
             da_t = ds_target[var]
             da_p = ds_prediction[var]
-            # Single quantile computation across all levels simultaneously.
-            # Result shape: (quantile, level) — eliminates one full-data scan per level.
-            quantiles_by_level = compute_quantile_preserving(da_t, q_values, ["level"])
+            if precomputed_quantiles is not None and ("per_level", var) in precomputed_quantiles:
+                quantiles_by_level = precomputed_quantiles[("per_level", var)]
+            else:
+                # Single quantile computation across all levels simultaneously.
+                # Result shape: (quantile, level) — eliminates one full-data scan per level.
+                quantiles_by_level = compute_quantile_preserving(da_t, q_values, ["level"])
             for lvl_raw in da_t["level"].values:
                 lvl_val: Any = lvl_raw.item() if hasattr(lvl_raw, "item") else lvl_raw
                 da_t_lvl = da_t.sel(level=lvl_val, drop=True)
@@ -734,6 +792,24 @@ def run(
             )
             per_member_dfs = []
             all_member_lead_rows: list[dict[str, Any]] = []
+
+            # When the target has no ensemble dim (the common case: ERA5
+            # truth), its quantiles are identical across members. Compute them
+            # once here instead of recomputing inside every _compute_all_ets
+            # call -- saves N-1 full passes over the target arrays.
+            shared_quantiles: dict[tuple[str, str], xr.DataArray] | None = None
+            if "ensemble" not in ds_target.dims:
+                common_vars = [
+                    str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars
+                ]
+                shared_quantiles = _precompute_ets_quantiles(
+                    ds_target,
+                    thresholds,
+                    do_per_lead=_has_multi_lead,
+                    do_per_level=report_per_level,
+                    variables=common_vars,
+                )
+
             for mi in members_indices:
                 ds_pred_m = ds_prediction.isel(ensemble=mi)
                 if "ensemble" in ds_target.dims:
@@ -750,6 +826,7 @@ def run(
                     thresholds,
                     do_per_lead=_has_multi_lead,
                     do_per_level=report_per_level,
+                    precomputed_quantiles=shared_quantiles,
                 )
                 token_m = ensemble_mode_to_token("members", mi)
                 out_csv_m = section_output / build_output_filename(

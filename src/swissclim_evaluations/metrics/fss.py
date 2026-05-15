@@ -84,18 +84,19 @@ def _compute_fss_for_var(
         return None
 
 
-def _compute_fss_all(
+def _precompute_fss_thresholds(
     ds_target: xr.Dataset,
-    ds_prediction: xr.Dataset,
     quantiles: list[float],
-    window_size: tuple[int, int],
-    do_per_lead: bool = False,
-) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-    variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
-    if not variables:
-        return pd.DataFrame(), []
+    variables: list[str] | None = None,
+) -> dict[tuple[str, float], float]:
+    """Compute (var, quantile) → threshold scalars from the target.
 
-    # Phase 1: compute quantile thresholds
+    Returned dict can be passed to ``_compute_fss_all`` as
+    ``precomputed_thresholds`` to skip Phase 1 (useful for per-member loops
+    where the target is identical across members).
+    """
+    if variables is None:
+        variables = [str(v) for v in ds_target.data_vars]
     lazy_quantiles = []
     quantile_meta: list[tuple[str, float]] = []
     for var in variables:
@@ -103,12 +104,33 @@ def _compute_fss_all(
             q_lazy = compute_global_quantile(ds_target[var], q, skipna=True)
             lazy_quantiles.append(q_lazy)
             quantile_meta.append((var, q))
-
+    if not lazy_quantiles:
+        return {}
     c.print(f"[fss] Computing {len(lazy_quantiles)} quantile thresholds...")
     computed_q = list(dask.compute(*lazy_quantiles))
-    thresholds: dict[tuple[str, float], Any] = {}
+    out: dict[tuple[str, float], float] = {}
     for (var, q), val in zip(quantile_meta, computed_q, strict=False):
-        thresholds[(var, q)] = float(val.item() if hasattr(val, "item") else val)
+        out[(var, q)] = float(val.item() if hasattr(val, "item") else val)
+    return out
+
+
+def _compute_fss_all(
+    ds_target: xr.Dataset,
+    ds_prediction: xr.Dataset,
+    quantiles: list[float],
+    window_size: tuple[int, int],
+    do_per_lead: bool = False,
+    precomputed_thresholds: dict[tuple[str, float], float] | None = None,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    variables = [str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars]
+    if not variables:
+        return pd.DataFrame(), []
+
+    # Phase 1: compute quantile thresholds (skip if caller supplied them).
+    if precomputed_thresholds is not None:
+        thresholds = precomputed_thresholds
+    else:
+        thresholds = _precompute_fss_thresholds(ds_target, quantiles, variables)
 
     # Phase 2: compute FSS scores
     lazy_tasks: list[tuple[Any, Any]] = []
@@ -322,6 +344,19 @@ def run(
         per_member_dfs: list[pd.DataFrame] = []
         all_member_lead_rows: list[dict[str, Any]] = []
 
+        # When the target has no ensemble dim (the common case: ERA5 truth),
+        # its quantile thresholds are identical across members. Compute them
+        # once here instead of inside the per-member loop -- saves N-1 full
+        # passes over the target arrays.
+        shared_thresholds: dict[tuple[str, float], float] | None = None
+        if "ensemble" not in ds_target.dims:
+            common_vars = [
+                str(v) for v in ds_target.data_vars if v in ds_prediction.data_vars
+            ]
+            shared_thresholds = _precompute_fss_thresholds(
+                ds_target, quantiles, common_vars
+            )
+
         for mi in members_indices:
             ds_pred_m = ds_prediction.isel(ensemble=mi)
             if "ensemble" in ds_target.dims:
@@ -335,6 +370,7 @@ def run(
             df_m, per_lead_rows_m = _compute_fss_all(
                 ds_tgt_m, ds_pred_m, quantiles, window_size,
                 do_per_lead=_has_multi_lead,
+                precomputed_thresholds=shared_thresholds,
             )
             token_m = ensemble_mode_to_token("members", mi)
             out_csv_m = section_output / build_output_filename(
