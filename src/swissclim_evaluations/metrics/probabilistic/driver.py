@@ -171,7 +171,17 @@ def plot_probabilistic(
             if pit.size == 0:
                 continue
 
-            edges = np.linspace(0.0, 1.0, 21)
+            # Bin count: with an N-member ensemble, rank-based PIT can only take
+            # N+1 discrete values. Using more bins leaves alternating empty bins,
+            # which makes the non-empty bars look ~2x taller than the ideal-1.0
+            # reference line. Aligning n_bins to (n_members + 1) puts each
+            # discrete PIT value in its own bin so a calibrated ensemble shows
+            # roughly uniform bars at density 1.0.
+            n_members = (
+                int(da_p_lvl.sizes["ensemble"]) if "ensemble" in da_p_lvl.dims else 10
+            )
+            n_bins = max(2, n_members + 1)
+            edges = np.linspace(0.0, 1.0, n_bins + 1)
             width = np.diff(edges)
             ens_token_plot = ensemble_mode_to_token("prob")
             has_multi_lead = "lead_time" in pit.dims and pit.sizes["lead_time"] > 1
