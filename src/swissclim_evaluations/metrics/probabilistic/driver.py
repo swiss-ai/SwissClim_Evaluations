@@ -233,11 +233,12 @@ def plot_probabilistic(
 
                 if save_fig:
                     fig_g, ax_g = plt.subplots(figsize=(7, 3), dpi=dpi * 2)
+                    bin_centers = (edges[:-1] + edges[1:]) / 2.0
                     ax_g.bar(
-                        edges[:-1],
+                        bin_centers,
                         density_global,
                         width=width,
-                        align="edge",
+                        align="center",
                         color=COLOR_DIAGNOSTIC,
                         edgecolor="white",
                     )
@@ -296,16 +297,17 @@ def plot_probabilistic(
                         constrained_layout=True,
                     )
                     axes_flat = axes.flatten()
+                    bin_centers = (edges[:-1] + edges[1:]) / 2.0
                     for i, ((h, _), dens) in enumerate(
                         zip(hour_index_pairs, counts_per_lead, strict=False)
                     ):
                         r, col = divmod(i, ncols)
                         ax = axes_flat[i]
                         ax.bar(
-                            edges[:-1],
+                            bin_centers,
                             dens,
                             width=width,
-                            align="edge",
+                            align="center",
                             color="#4C78A8",
                             edgecolor="white",
                         )

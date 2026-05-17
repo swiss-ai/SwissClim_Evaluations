@@ -1023,15 +1023,19 @@ def intercompare_probabilistic(
                 else:
                     density = counts / (total * width)
 
-                # Plot as filled bars side-by-side
-                # Shift x position based on model index
-                x_pos = bins[:-1] + (i * bar_width)
+                # Plot side-by-side bars centered on the offset slot for this
+                # model. With n_models bars per bin filling the full bin width
+                # (slot i ∈ [0, n_models)), the center of slot i is at
+                # bin_start + (i + 0.5) * bar_width. Using align="center"
+                # avoids the bin-edge / tick visual ambiguity where bars near
+                # major ticks appear to "snap" right- or left-aligned.
+                x_pos = bins[:-1] + (i + 0.5) * bar_width
 
                 ax.bar(
                     x_pos,
                     density,
                     width=bar_width,
-                    align="edge",
+                    align="center",
                     label=lab,
                     color=colors[i],
                     alpha=0.8,
