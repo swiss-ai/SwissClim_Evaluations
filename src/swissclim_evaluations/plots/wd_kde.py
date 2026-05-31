@@ -660,13 +660,34 @@ def run(
                     kde = gaussian_kde(arr)
                     return kde(y_eval_local)
 
-                # Process leads
-                for job in jobs[1:]:
+                # Process leads. Also compute per-lead Wasserstein distance
+                # against the target distribution so downstream intercomp can
+                # consume per-(variable, lead, level) Wasserstein values from
+                # the existing wd_kde_wasserstein_averaged_*.csv path.
+                for job, lead_h in zip(jobs[1:], lead_hours, strict=False):
                     arr_t = np.asarray(job["sub_t"])
                     arr_p = np.asarray(job["sub_p"])
 
                     Z_t.append(_eval_kde_from_array(arr_t, y_eval))
                     Z_p.append(_eval_kde_from_array(arr_p, y_eval))
+
+                    a_t = arr_t.ravel()
+                    a_t = a_t[np.isfinite(a_t)]
+                    a_p = arr_p.ravel()
+                    a_p = a_p[np.isfinite(a_p)]
+                    if a_t.size >= 10 and a_p.size >= 10:
+                        w_per_lead = float(wasserstein_distance(a_t, a_p))
+                        wasserstein_rows.append(
+                            {
+                                "variable": base_var,
+                                "level": float(lvl) if lvl is not None else float("nan"),
+                                "lead_time_hours": int(lead_h),
+                                "hemisphere": "global",
+                                "lat_min": -90.0,
+                                "lat_max": 90.0,
+                                "wasserstein": w_per_lead,
+                            }
+                        )
 
                 X = np.asarray(lead_hours, dtype=float)
                 Y = y_eval
