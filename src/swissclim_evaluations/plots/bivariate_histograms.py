@@ -1073,6 +1073,7 @@ def plot_bivariate_histogram(
     show_legend: bool = True,
     coriolis_parameter: float = 1.0e-4,
     font_scale: float = 1.0,
+    return_contour_sets: bool = False,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1095,9 +1096,14 @@ def plot_bivariate_histogram(
             these limits are applied before physical overlays are drawn.
         ylim: Optional explicit y-axis limits. When provided with ``xlim``,
             these limits are applied before physical overlays are drawn.
+        return_contour_sets: When True, return ``(ax, cs_pred, cs_target)``
+            instead of just the axes. The intercomparison driver uses this to
+            attach truth-density contour-line marks to the shared colorbar via
+            ``cbar.add_lines(cs_target)``.
 
     Returns:
-        The axes with the plot.
+        The axes with the plot, or ``(ax, cs_pred, cs_target)`` if
+        ``return_contour_sets=True``.
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 8))
@@ -1346,4 +1352,6 @@ def plot_bivariate_histogram(
             legend_kwargs["bbox_transform"] = ax.transAxes
         ax.legend(**legend_kwargs)
 
+    if return_contour_sets:
+        return ax, cs2, cs1
     return ax
