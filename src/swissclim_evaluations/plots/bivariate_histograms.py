@@ -615,6 +615,14 @@ def _plot_bivariate_per_lead_grid(
     axs_flat = np.atleast_1d(np.array(axs)).flatten()
 
     last_i = 0
+    # Captured once across panels so the shared colorbar can carry the
+    # greyscale truth-density isoline marks via ``cbar.add_lines`` below.
+    # Mirrors the intercomparison module
+    # (intercomparison/modules/multivariate.py); without this the shared
+    # bottom colorbar is a bare gradient with no level cues, while every
+    # per-panel single-eval colorbar carries them
+    # (see ``cbar.add_lines(cs1)`` at the end of ``plot_bivariate_histogram``).
+    shared_target_cs = None
     for i, job in enumerate(hist_jobs):
         lt = job["lt"]
         # Format lead-time label (timedelta64 → '+Nh', otherwise string)
@@ -643,7 +651,7 @@ def _plot_bivariate_per_lead_grid(
             warnings.filterwarnings(
                 "ignore", message="Log scale: values of z <= 0 have been masked"
             )
-            plot_bivariate_histogram(
+            _result = plot_bivariate_histogram(
                 hist_1=hist_pred,
                 hist_2=hist_target,
                 bins_x=xedges,
@@ -660,7 +668,10 @@ def _plot_bivariate_per_lead_grid(
                 show_legend=(i == 0),
                 coriolis_parameter=coriolis_parameter,
                 font_scale=font_scale,
+                return_contour_sets=True,
             )
+        if shared_target_cs is None and isinstance(_result, tuple):
+            shared_target_cs = _result[2]
         # Show only lead-time label as subplot title (e.g. "+6h").
         ax.set_title(lead_label, fontsize=int(round(10 * font_scale)))
         # Hide y-axis label and tick labels on every column except the leftmost.
@@ -689,6 +700,8 @@ def _plot_bivariate_per_lead_grid(
     cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
     cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
     cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
+    if shared_target_cs is not None:
+        cbar.add_lines(shared_target_cs)
 
     lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
