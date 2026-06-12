@@ -19,7 +19,10 @@ from swissclim_evaluations.intercomparison.core import (
     report_missing,
     scan_model_sets,
 )
-from swissclim_evaluations.plots.bivariate_histograms import plot_bivariate_histogram
+from swissclim_evaluations.plots.bivariate_histograms import (
+    compute_font_scale,
+    plot_bivariate_histogram,
+)
 
 
 def _load_hist_payload(path: Path) -> dict[str, np.ndarray]:
@@ -231,11 +234,12 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         n_cols = min(max_cols, n_models)
         n_rows = int(np.ceil(n_models / n_cols))
         n_panels = n_cols * n_rows
-        font_scale = max(1.0, n_cols**0.4)
+        fig_w, fig_h = 6 * n_cols, 7 * n_rows
+        font_scale = compute_font_scale(fig_w, fig_h)
         fig, axes = plt.subplots(
             n_rows,
             n_cols,
-            figsize=(6 * n_cols, 7 * n_rows),
+            figsize=(fig_w, fig_h),
             dpi=150,
             constrained_layout=True,
             squeeze=False,
@@ -321,7 +325,6 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
         if shared_target_cs is not None:
             cbar.add_lines(shared_target_cs)
-        font_scale = max(1.0, n_panels**0.4)
 
         if var_x and var_y:
             title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"

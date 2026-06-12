@@ -19,6 +19,34 @@ from .. import console as c
 from ..dask_utils import compute_jobs
 from ..helpers import format_variable_name, get_variable_units
 
+# Comfortable single-panel figure dimension (inches). A figure whose dominant
+# dimension is at or below this reference keeps base font sizes; larger grids
+# scale their fonts up proportionally so text stays legible once the whole
+# figure is downscaled to fit a page or slide.
+_FONT_SCALE_REF_IN = 8.0
+_FONT_SCALE_MAX = 4.0
+
+
+def compute_font_scale(
+    fig_w_in: float,
+    fig_h_in: float,
+    ref_in: float = _FONT_SCALE_REF_IN,
+    max_scale: float = _FONT_SCALE_MAX,
+) -> float:
+    """Font multiplier that keeps text legible after a figure is downscaled.
+
+    Multi-panel bivariate grids grow with the model/lead count (``figsize`` is
+    ``panel_w * n_cols`` by ``panel_h * n_rows``). When such a figure is embedded
+    at a fixed page or slide size, every glyph shrinks by the same factor the
+    figure does, so fonts pegged to a single-panel size become unreadable on
+    large grids. We scale fonts by the dominant figure dimension relative to a
+    single-panel reference, so apparent text size stays roughly constant
+    regardless of grid size or orientation. The result is clamped to
+    ``[1.0, max_scale]``.
+    """
+    span = max(float(fig_w_in), float(fig_h_in))
+    return float(min(max_scale, max(1.0, span / ref_in)))
+
 
 def _is_geopotential_height(name: str) -> bool:
     return "geopotential_height" in str(name).lower() and "gradient" not in str(name).lower()
@@ -602,13 +630,13 @@ def _plot_bivariate_per_lead_grid(
     # ── Grid layout ───────────────────────────────────────────────────────────
     cols = min(3, n_leads)
     rows = int(np.ceil(n_leads / cols))
-    n_panels = cols * rows
-    font_scale = max(1.0, n_panels**0.4)
     # Extra height for the shared horizontal colorbar below the grid.
+    fig_w, fig_h = 6 * cols, 6 * rows + 1
+    font_scale = compute_font_scale(fig_w, fig_h)
     fig, axs = plt.subplots(
         rows,
         cols,
-        figsize=(6 * cols, 6 * rows + 1),
+        figsize=(fig_w, fig_h),
         dpi=150,
         constrained_layout=True,
     )
@@ -809,16 +837,12 @@ def calculate_and_plot_bivariate_histograms(
             levels_to_process = [None]
 
         for level_hpa in levels_to_process:
-            pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
-            pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
-
             # Select matching level for target variables when available
             targ_x_sel = targ_x.sel(level=level_hpa) if "level" in targ_x.dims else targ_x
             targ_y_sel = targ_y.sel(level=level_hpa) if "level" in targ_y.dims else targ_y
 
-            # Flatten prediction and target data to 1D Dask arrays
-            da_x_pred = pred_x_sel.data.flatten()
-            da_y_pred = pred_y_sel.data.flatten()
+            # Flatten target data to 1D Dask arrays (bin edges are anchored to
+            # the target range only, so the prediction flattens are not needed here)
             da_x_targ = targ_x_sel.data.flatten()
             da_y_targ = targ_y_sel.data.flatten()
 
