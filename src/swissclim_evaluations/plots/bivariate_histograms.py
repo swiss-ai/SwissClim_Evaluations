@@ -615,6 +615,14 @@ def _plot_bivariate_per_lead_grid(
     axs_flat = np.atleast_1d(np.array(axs)).flatten()
 
     last_i = 0
+    # Captured once across panels so the shared colorbar can carry the
+    # greyscale truth-density isoline marks via ``cbar.add_lines`` below.
+    # Mirrors the intercomparison module
+    # (intercomparison/modules/multivariate.py); without this the shared
+    # bottom colorbar is a bare gradient with no level cues, while every
+    # per-panel single-eval colorbar carries them
+    # (see ``cbar.add_lines(cs1)`` at the end of ``plot_bivariate_histogram``).
+    shared_target_cs = None
     for i, job in enumerate(hist_jobs):
         lt = job["lt"]
         # Format lead-time label (timedelta64 → '+Nh', otherwise string)
@@ -643,7 +651,7 @@ def _plot_bivariate_per_lead_grid(
             warnings.filterwarnings(
                 "ignore", message="Log scale: values of z <= 0 have been masked"
             )
-            plot_bivariate_histogram(
+            _result = plot_bivariate_histogram(
                 hist_1=hist_pred,
                 hist_2=hist_target,
                 bins_x=xedges,
@@ -660,7 +668,10 @@ def _plot_bivariate_per_lead_grid(
                 show_legend=(i == 0),
                 coriolis_parameter=coriolis_parameter,
                 font_scale=font_scale,
+                return_contour_sets=True,
             )
+        if shared_target_cs is None and isinstance(_result, tuple):
+            shared_target_cs = _result[2]
         # Show only lead-time label as subplot title (e.g. "+6h").
         ax.set_title(lead_label, fontsize=int(round(10 * font_scale)))
         # Hide y-axis label and tick labels on every column except the leftmost.
@@ -689,6 +700,8 @@ def _plot_bivariate_per_lead_grid(
     cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
     cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
     cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
+    if shared_target_cs is not None:
+        cbar.add_lines(shared_target_cs)
 
     lev_title = f" @ {level_hpa:g} hPa" if level_hpa is not None else ""
     fig.suptitle(
@@ -809,15 +822,14 @@ def calculate_and_plot_bivariate_histograms(
             da_x_targ = targ_x_sel.data.flatten()
             da_y_targ = targ_y_sel.data.flatten()
 
-            # Combine prediction and target for range computation
-            da_x_combined = da.concatenate([da_x_pred, da_x_targ])
-            da_y_combined = da.concatenate([da_y_pred, da_y_targ])
-
-            # Compute min/max lazily over both prediction and target, handling NaNs
-            min_x_lazy = da.nanmin(da_x_combined)
-            max_x_lazy = da.nanmax(da_x_combined)
-            min_y_lazy = da.nanmin(da_y_combined)
-            max_y_lazy = da.nanmax(da_y_combined)
+            # Bin edges are anchored to the target (truth) range only, so axes
+            # and reference contours stay invariant across model variants
+            # (e.g. different perturbation magnitudes). Prediction values
+            # outside the truth range get binned into the edge bins.
+            min_x_lazy = da.nanmin(da_x_targ)
+            max_x_lazy = da.nanmax(da_x_targ)
+            min_y_lazy = da.nanmin(da_y_targ)
+            max_y_lazy = da.nanmax(da_y_targ)
             range_jobs.append(
                 {
                     "min_x": min_x_lazy,
@@ -1074,6 +1086,7 @@ def plot_bivariate_histogram(
     show_legend: bool = True,
     coriolis_parameter: float = 1.0e-4,
     font_scale: float = 1.0,
+    return_contour_sets: bool = False,
 ) -> plt.Axes:
     """Plot bivariate histograms for two models/datasets.
 
@@ -1096,9 +1109,14 @@ def plot_bivariate_histogram(
             these limits are applied before physical overlays are drawn.
         ylim: Optional explicit y-axis limits. When provided with ``xlim``,
             these limits are applied before physical overlays are drawn.
+        return_contour_sets: When True, return ``(ax, cs_pred, cs_target)``
+            instead of just the axes. The intercomparison driver uses this to
+            attach truth-density contour-line marks to the shared colorbar via
+            ``cbar.add_lines(cs_target)``.
 
     Returns:
-        The axes with the plot.
+        The axes with the plot, or ``(ax, cs_pred, cs_target)`` if
+        ``return_contour_sets=True``.
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 8))
@@ -1159,10 +1177,21 @@ def plot_bivariate_histogram(
     dens_1 = hist_1 / (sum_1 * bin_area) if sum_1 > 0 else hist_1
     dens_2 = hist_2 / (sum_2 * bin_area) if sum_2 > 0 else hist_2
 
-    # Logarithmic scale
-    # Define levels based on the filled distribution (Model 1 / prediction)
+    # Logarithmic scale.
+    # Define contour levels from the *target* density so that the truth
+    # contour lines stay invariant across model variants (the truth histogram
+    # is identical for all model panels in an intercomparison; the prediction
+    # density isn't). Fall back to the prediction density if the target is
+    # all-zero / empty.
+    valid_2 = dens_2[dens_2 > 0]
     valid_1 = dens_1[dens_1 > 0]
-    if len(valid_1) == 0:
+    if len(valid_2) > 0:
+        vmin = float(valid_2.min())
+        vmax = float(valid_2.max())
+    elif len(valid_1) > 0:
+        vmin = float(valid_1.min())
+        vmax = float(valid_1.max())
+    else:
         ax.text(
             0.5,
             0.5,
@@ -1172,9 +1201,6 @@ def plot_bivariate_histogram(
             transform=ax.transAxes,
         )
         return ax
-
-    vmin = valid_1.min()
-    vmax = valid_1.max()
 
     # Ensure vmin is positive for log scale
     if vmin <= 0:
@@ -1339,4 +1365,6 @@ def plot_bivariate_histogram(
             legend_kwargs["bbox_transform"] = ax.transAxes
         ax.legend(**legend_kwargs)
 
+    if return_contour_sets:
+        return ax, cs2, cs1
     return ax

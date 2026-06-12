@@ -244,19 +244,27 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         fig.get_layout_engine().set(rect=(0, 0, 1, 0.97))
         axs_flat = axes.flatten()
 
+        # Use ONE shared truth histogram (from the first model) for every
+        # panel. Otherwise each panel renders the truth contours from its own
+        # ``hist_target``, which can differ in mass and shape if models were
+        # evaluated against slightly different time-matching, masking, or
+        # member subsetting. Using the first model's target guarantees the
+        # truth contour lines are byte-identical across panels.
+        ref_target = np.asarray(model_entries[0]["hist_target"])
+        shared_target_cs = None
+
         for idx, entry in enumerate(model_entries):
             ax = axs_flat[idx]
             hist = np.asarray(entry["hist"])
-            hist_target = np.asarray(entry["hist_target"])
             bins_x = np.asarray(entry["bins_x"])
             bins_y = np.asarray(entry["bins_y"])
             label = str(entry["label"])
             col = idx % n_cols
             last_row_start = (n_rows - 1) * n_cols
             is_bottom = idx >= last_row_start
-            plot_bivariate_histogram(
+            _result = plot_bivariate_histogram(
                 hist_1=hist,
-                hist_2=hist_target,
+                hist_2=ref_target,
                 bins_x=bins_x,
                 bins_y=bins_y,
                 label_1="Prediction",
@@ -267,6 +275,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 ax=ax,
                 xlabel=xlabel if (xlabel and is_bottom) else None,
                 ylabel=ylabel if ylabel else None,
+                return_contour_sets=True,
                 xlim=shared_xlim,
                 ylim=shared_ylim,
                 show_colorbar=False,
@@ -281,6 +290,14 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             if col != 0:
                 ax.set_ylabel("")
                 ax.tick_params(axis="y", labelleft=False)
+            # Capture the truth contour set once, so the shared colorbar can
+            # add greyscale level marks via ``cbar.add_lines`` below. This
+            # restores the contour-line annotations that the per-panel
+            # colorbars carry in single-eval mode (see plots/bivariate
+            # _histograms.py: ``cbar.add_lines(cs1)``). Without it the shared
+            # intercomp colorbar is a bare gradient with no level cues.
+            if shared_target_cs is None and isinstance(_result, tuple):
+                shared_target_cs = _result[2]
 
         # Hide surplus axes in the last row.
         for idx in range(n_models, n_panels):
@@ -302,6 +319,8 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
         cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
         cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
+        if shared_target_cs is not None:
+            cbar.add_lines(shared_target_cs)
         font_scale = max(1.0, n_panels**0.4)
 
         if var_x and var_y:
