@@ -421,15 +421,43 @@ def _open_many_zarr(paths: Sequence[str], variables: list[str] | None = None) ->
     return combined
 
 
-def open_prediction(path: str | Sequence[str], variables: list[str] | None = None) -> xr.Dataset:
+def open_prediction(
+    path: str | Sequence[str],
+    variables: list[str] | None = None,
+    expected_init_time: np.ndarray | None = None,
+) -> xr.Dataset:
     """Open prediction/model dataset(s) from Zarr and optionally subset variables.
 
     Accepts a single path or a list/sequence of paths. When multiple paths are given,
     they are combined lazily by coordinates without materializing data.
+
+    ``expected_init_time`` enables a workaround for the ESFM masked-experiment
+    zarrs (baseline + var-masks) whose ``init_time`` coordinate was left with an
+    inconsistent chunk layout by a partial rechunk: the metadata declares
+    ``chunk_shape [1]`` but chunk 0 still holds 10 values, so xarray raises
+    ``cannot reshape array of size 10 into shape (1,)`` and refuses to open the
+    store. The data variables are intact, so when the caller supplies the
+    canonical init_time grid we drop the broken coordinate and rebuild it.
     """
     if isinstance(path, list | tuple):
         return _open_many_zarr(list(path), variables)
-    ds = xr.open_zarr(path, decode_timedelta=True)
+    try:
+        ds = xr.open_zarr(path, decode_timedelta=True)
+    except ValueError as err:
+        if expected_init_time is None or "init_time" not in str(err):
+            raise
+        ds = xr.open_zarr(path, decode_timedelta=True, drop_variables=["init_time"])
+        n = int(ds.sizes.get("init_time", -1))
+        if n != len(expected_init_time):
+            raise ValueError(
+                f"Cannot repair corrupt init_time for {path}: store has {n} init_time "
+                f"steps but config datetimes imply {len(expected_init_time)}."
+            ) from err
+        ds = ds.assign_coords(init_time=("init_time", np.asarray(expected_init_time)))
+        c.warn(
+            f"[open_prediction] Rebuilt corrupt init_time for {path} from config "
+            f"datetimes ({n} steps)."
+        )
     if variables:
         ds = ds[[v for v in variables if v in ds.data_vars]]
 

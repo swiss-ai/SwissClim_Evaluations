@@ -81,6 +81,33 @@ def _parse_time_ranges(values) -> list[tuple[str | None, str | None]]:
     return ranges
 
 
+def _expected_init_time(datetimes: Any, resolution_hours: int | None) -> np.ndarray | None:
+    """Reconstruct the canonical init_time grid from the config datetime windows.
+
+    Used to repair ESFM masked-experiment prediction zarrs whose stored init_time
+    coordinate is unreadable (see ``data.open_prediction``). Each window is expanded
+    to an inclusive hourly (or ``resolution_hours``) sequence and the windows are
+    concatenated in config order. Returns None if any window is open-ended.
+    """
+    ranges = _parse_time_ranges(datetimes)
+    if not ranges:
+        return None
+    step_h = int(resolution_hours) if resolution_hours else 1
+    parts: list[np.ndarray] = []
+    for s, e in ranges:
+        if not s or not e:
+            return None
+        try:
+            start = np.datetime64(s).astype("datetime64[h]")
+            end = np.datetime64(e).astype("datetime64[h]")
+        except Exception:
+            return None
+        parts.append(np.arange(start, end + np.timedelta64(1, "h"), np.timedelta64(step_h, "h")))
+    if not parts:
+        return None
+    return np.concatenate(parts).astype("datetime64[ns]")
+
+
 def _slice_common(ds: xr.Dataset, cfg: dict[str, Any], extend_end_hours: int = 0) -> xr.Dataset:
     # Ensure selection dict exists in config so we can update it if needed
     sel = cfg.setdefault("selection", {})
@@ -527,7 +554,12 @@ def prepare_datasets(
     prediction_path = paths.get("prediction") or paths.get("ml")
 
     ds_target = data_mod.open_target(target_path, variables=var_list)
-    ds_prediction = data_mod.open_prediction(prediction_path, variables=var_list)
+    expected_init_time = _expected_init_time(
+        sel.get("datetimes"), sel.get("temporal_resolution_hours")
+    )
+    ds_prediction = data_mod.open_prediction(
+        prediction_path, variables=var_list, expected_init_time=expected_init_time
+    )
 
     # Validate requirements
     errors = []
