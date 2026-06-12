@@ -50,6 +50,7 @@ modules:
   deterministic: true
   ets: true
   probabilistic: false
+  multivariate: false
 
 metrics:
   deterministic:
