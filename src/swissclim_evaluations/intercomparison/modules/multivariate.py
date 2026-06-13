@@ -4,10 +4,7 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
-from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LogNorm
 
 from swissclim_evaluations import console as c
 from swissclim_evaluations.helpers import format_variable_name, get_variable_units
@@ -211,24 +208,6 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 f"Affected: {', '.join(off_grid_labels)}"
             )
 
-        # ── Global log-norm across all model histograms for a shared colorbar ──
-        all_vals = []
-        for entry in model_entries:
-            for key in ("hist", "hist_target"):
-                h = np.asarray(entry[key])
-                pos = h[h > 0]
-                if pos.size:
-                    all_vals.append(pos)
-        if all_vals:
-            combined = np.concatenate(all_vals)
-            global_vmin = float(combined.min())
-            global_vmax = float(combined.max())
-        else:
-            global_vmin, global_vmax = 1e-10, 1.0
-        if global_vmin <= 0:
-            global_vmin = 1e-10
-        global_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
-
         n_models = len(model_entries)
         max_cols = 3
         n_cols = min(max_cols, n_models)
@@ -255,6 +234,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         # member subsetting. Using the first model's target guarantees the
         # truth contour lines are byte-identical across panels.
         ref_target = np.asarray(model_entries[0]["hist_target"])
+        shared_fill_cs = None
         shared_target_cs = None
 
         for idx, entry in enumerate(model_entries):
@@ -301,6 +281,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             # _histograms.py: ``cbar.add_lines(cs1)``). Without it the shared
             # intercomp colorbar is a bare gradient with no level cues.
             if shared_target_cs is None and isinstance(_result, tuple):
+                shared_fill_cs = _result[1]
                 shared_target_cs = _result[2]
 
         # Hide surplus axes in the last row.
@@ -308,23 +289,28 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             axs_flat[idx].set_visible(False)
 
         # ── Shared horizontal colorbar at the bottom ──────────────────────────
-        sm = ScalarMappable(cmap="plasma", norm=global_norm)
-        sm.set_array([])
-        cbar = fig.colorbar(
-            sm,
-            ax=axs_flat[:n_models].tolist(),
-            orientation="horizontal",
-            location="bottom",
-            pad=0.04,
-            fraction=0.08,
-            shrink=1.0,
-        )
-        cbar.ax.xaxis.set_major_locator(mticker.LogLocator())
-        cbar.ax.xaxis.set_major_formatter(mticker.LogFormatterMathtext())
-        cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
-        cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
-        if shared_target_cs is not None:
-            cbar.add_lines(shared_target_cs)
+        # Build the colorbar from the panels' filled-contour artist, exactly
+        # like single-eval mode. Every panel shares the same target-derived
+        # density levels/norm, so this artist is a correct shared reference and
+        # its density scale keeps the grey target isolines added via
+        # ``add_lines`` aligned with the colorbar ticks. A hand-rolled
+        # ScalarMappable on raw histogram counts would put the colorbar on a
+        # different (count) scale and shift the markers off the isolines.
+        if shared_fill_cs is not None:
+            cbar = fig.colorbar(
+                shared_fill_cs,
+                ax=axs_flat[:n_models].tolist(),
+                orientation="horizontal",
+                location="bottom",
+                pad=0.04,
+                fraction=0.08,
+                shrink=1.0,
+                format="%.2e",
+            )
+            cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
+            cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
+            if shared_target_cs is not None:
+                cbar.add_lines(shared_target_cs)
 
         if var_x and var_y:
             title = f"{format_variable_name(var_x)} vs {format_variable_name(var_y)}"
