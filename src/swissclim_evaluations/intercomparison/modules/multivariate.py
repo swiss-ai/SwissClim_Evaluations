@@ -271,7 +271,10 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         n_cols = min(max_cols, n_models)
         n_rows = int(np.ceil(n_models / n_cols))
         n_panels = n_cols * n_rows
-        fig_w, fig_h = 6 * n_cols, 7 * n_rows
+        # Slightly wider panels for the 3-col (var-masking) grid so the figure
+        # fills the page width next to the vertical colorbar.
+        width_per_col = 7 if n_cols >= 3 else 6
+        fig_w, fig_h = width_per_col * n_cols, 7 * n_rows
         font_scale = compute_font_scale(fig_w, fig_h)
         fig, axes = plt.subplots(
             n_rows,
@@ -326,9 +329,46 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
                 font_scale=font_scale,
             )
             ax.set_title(label, fontsize=int(round(12 * font_scale)))
+            if idx == 0:
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.set_loc("lower right")
+            # Equal-scale axes (e.g. u vs v wind): deterministic step-10 ticks on
+            # both axes, dropping the frame-edge tick so the outermost label is a
+            # round value (+/-20, not +/-30) while keeping +/-10. Other pairs keep
+            # the autolocator but drop any y tick sitting right at the frame.
+            same_units = bool(
+                var_x
+                and var_y
+                and get_variable_units(None, var_x) == get_variable_units(None, var_y)
+            )
+            if same_units:
+                step = 10.0
+                for setter, (lo_, hi_) in (
+                    (ax.set_xticks, shared_xlim),
+                    (ax.set_yticks, shared_ylim),
+                ):
+                    ticks = np.arange(
+                        np.ceil(lo_ / step) * step,
+                        np.floor(hi_ / step) * step + step,
+                        step,
+                    )
+                    setter(
+                        [t for t in ticks if lo_ + 0.5 * step <= t <= hi_ - 0.5 * step]
+                    )
+            else:
+                yt = ax.get_yticks()
+                if len(yt) >= 2:
+                    step = yt[1] - yt[0]
+                    y_lo, y_hi = ax.get_ylim()
+                    ax.set_yticks(
+                        [t for t in yt if y_lo + 0.5 * step <= t <= y_hi - 0.5 * step]
+                    )
             if not is_bottom:
                 ax.set_xlabel("")
                 ax.tick_params(axis="x", labelbottom=False)
+            else:
+                ax.xaxis.labelpad = int(round(5 * font_scale))
             if col != 0:
                 ax.set_ylabel("")
                 ax.tick_params(axis="y", labelleft=False)
@@ -355,17 +395,25 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         # ScalarMappable on raw histogram counts would put the colorbar on a
         # different (count) scale and shift the markers off the isolines.
         if shared_fill_cs is not None:
+            # For the wide 3-col (var-masking) grid, put the colorbar vertical on
+            # the right so the panels keep their original aspect and the figure
+            # fills the page width. Narrower grids keep the bottom colorbar.
+            cbar_vertical = n_cols >= 3
             cbar = fig.colorbar(
                 shared_fill_cs,
                 ax=axs_flat[:n_models].tolist(),
-                orientation="horizontal",
-                location="bottom",
-                pad=0.04,
-                fraction=0.08,
+                orientation="vertical" if cbar_vertical else "horizontal",
+                location="right" if cbar_vertical else "bottom",
+                pad=0.02 if cbar_vertical else 0.04,
+                fraction=0.05 if cbar_vertical else 0.08,
                 shrink=1.0,
                 format="%.2e",
             )
-            cbar.set_label("Density (log scale)", fontsize=int(round(11 * font_scale)))
+            cbar.set_label(
+                "Density (log scale)",
+                fontsize=int(round(11 * font_scale)),
+                labelpad=int(round(10 * font_scale)) if cbar_vertical else 4,
+            )
             cbar.ax.tick_params(labelsize=int(round(9 * font_scale)))
             if shared_target_cs is not None:
                 cbar.add_lines(shared_target_cs)
