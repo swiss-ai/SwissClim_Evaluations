@@ -265,6 +265,17 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         y_center = (all_y_max + all_y_min) / 2.0
         shared_xlim = (x_center - 0.625 * x_range, x_center + 0.625 * x_range)
         shared_ylim = (y_center - 0.625 * y_range, y_center + 0.625 * y_range)
+        # |GH| gradient and wind speed are non-negative; anchor the geostrophic
+        # panels at the origin in the lower-left corner.
+        is_geos = bool(
+            (var_x and "geopotential_height_gradient" in var_x)
+            or (var_y and "geopotential_height_gradient" in var_y)
+        ) and bool(
+            (var_x and "wind_speed" in var_x) or (var_y and "wind_speed" in var_y)
+        )
+        if is_geos:
+            shared_xlim = (0.0, shared_xlim[1])
+            shared_ylim = (0.0, shared_ylim[1])
 
         n_models = len(model_entries)
         max_cols = 3

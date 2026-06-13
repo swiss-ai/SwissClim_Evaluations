@@ -308,40 +308,6 @@ def _get_physical_constraints(
                 }
             )
 
-        # Wind speed ≥ 0 hard bound
-        if is_ws_y:
-            constraints.append(
-                {
-                    "type": "hline",
-                    "value": 0.0,
-                    "fill": "below",
-                    "color": "#d62728",
-                    "lw": 1.5,
-                    "ls": ":",
-                    "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.10,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "\\\\\\\\",
-                    "fill_label": "Wind speed $< 0$ (unphysical)",
-                }
-            )
-        else:
-            constraints.append(
-                {
-                    "type": "vline",
-                    "value": 0.0,
-                    "fill": "left",
-                    "color": "#d62728",
-                    "lw": 1.5,
-                    "ls": ":",
-                    "label": "Wind speed $= 0$",
-                    "fill_alpha": 0.10,
-                    "fill_color": "#d62728",
-                    "fill_hatch": "\\\\\\\\",
-                    "fill_label": "Wind speed $< 0$ (unphysical)",
-                }
-            )
-
     return constraints
 
 
