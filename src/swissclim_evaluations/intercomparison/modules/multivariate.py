@@ -99,6 +99,56 @@ def _infer_var_pair(fname: str, payload: dict[str, np.ndarray]) -> tuple[str, st
     return "", ""
 
 
+def _align_entries_to_common_grid(model_entries: list[dict]) -> tuple | None:
+    """Zero-pad every model's histogram onto a common bin grid.
+
+    Each model's edges share the same target-derived bin width and lattice but
+    may extend different distances outward to show their own prediction tail
+    (see ``plots.bivariate_histograms._extended_edges``). They are therefore all
+    sub-grids of one lattice, so each ``hist``/``hist_target`` is zero-padded into
+    a common grid spanning the union extent. ``model_entries`` is mutated in place
+    (hist, hist_target, bins_x, bins_y replaced) and the common ``(bins_x,
+    bins_y)`` is returned. Returns ``None`` if the grids are not lattice-compatible
+    (different bin widths or off-lattice offsets), so the caller can fall back.
+    """
+
+    def _axis(axis: str):
+        edges = [np.asarray(e[f"bins_{axis}"], dtype=float) for e in model_entries]
+        if any(ed.size < 2 for ed in edges):
+            return None
+        dx = float(edges[0][1] - edges[0][0])
+        tol = 1e-9 * max(abs(dx), 1.0)
+        if dx <= 0 or any(abs(float(ed[1] - ed[0]) - dx) > tol for ed in edges):
+            return None
+        lo = min(float(ed[0]) for ed in edges)
+        hi = max(float(ed[-1]) for ed in edges)
+        n = int(round((hi - lo) / dx))
+        offsets = []
+        for ed in edges:
+            off = (float(ed[0]) - lo) / dx
+            if abs(off - round(off)) > 1e-6:
+                return None
+            offsets.append(int(round(off)))
+        return lo + dx * np.arange(n + 1), offsets
+
+    ax_x = _axis("x")
+    ax_y = _axis("y")
+    if ax_x is None or ax_y is None:
+        return None
+    common_x, offs_x = ax_x
+    common_y, offs_y = ax_y
+    nx, ny = common_x.size - 1, common_y.size - 1
+    for entry, ox, oy in zip(model_entries, offs_x, offs_y, strict=False):
+        for key in ("hist", "hist_target"):
+            h = np.asarray(entry[key])
+            padded = np.zeros((nx, ny), dtype=h.dtype)
+            padded[ox : ox + h.shape[0], oy : oy + h.shape[1]] = h
+            entry[key] = padded
+        entry["bins_x"] = common_x
+        entry["bins_y"] = common_y
+    return common_x, common_y
+
+
 def intercompare_multivariate(models: list[Path], labels: list[str], out_root: Path) -> None:
     """Compare multivariate bivariate-histogram artifacts across models."""
     pattern = "multivariate/bivariate_*.npz"
@@ -178,35 +228,43 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
             c.warn(f"[multivariate] No valid model histograms for {fname}; skipped")
             continue
 
-        # Use common axis limits across all model panels for this pair.
-        # This guarantees directly comparable visual placement between subplots.
-        all_x_min = min(float(np.asarray(entry["bins_x"]).min()) for entry in model_entries)
-        all_x_max = max(float(np.asarray(entry["bins_x"]).max()) for entry in model_entries)
-        all_y_min = min(float(np.asarray(entry["bins_y"]).min()) for entry in model_entries)
-        all_y_max = max(float(np.asarray(entry["bins_y"]).max()) for entry in model_entries)
+        # Baseline guard: panel 0 and the shared truth contour come from
+        # model_entries[0], which must be the first configured model. If that
+        # model's NPZ was missing it would have been skipped, silently promoting
+        # another model into the baseline slot.
+        if labels and str(model_entries[0]["label"]) != str(labels[0]):
+            c.warn(
+                f"[multivariate] Baseline '{labels[0]}' is missing for {fname}; "
+                f"panel 0 and the shared target now come from "
+                f"'{model_entries[0]['label']}'."
+            )
 
+        # Models extend their grids by different amounts to show their own
+        # prediction tail; pad them all onto a common lattice-aligned grid so
+        # panels align and one shared truth histogram is valid everywhere.
+        common = _align_entries_to_common_grid(model_entries)
+        if common is None:
+            c.warn(
+                f"[multivariate] Histogram grids for {fname} are not lattice-"
+                "compatible (different bin widths); panels may be misaligned. "
+                "Regenerate the affected models."
+            )
+            ref_bins_x = np.asarray(model_entries[0]["bins_x"])
+            ref_bins_y = np.asarray(model_entries[0]["bins_y"])
+        else:
+            ref_bins_x, ref_bins_y = common
+        ref_hist_target = np.asarray(model_entries[0]["hist_target"])
+
+        # Common axis limits from the shared grid (25% zoom-out), so panels are
+        # directly comparable.
+        all_x_min, all_x_max = float(ref_bins_x.min()), float(ref_bins_x.max())
+        all_y_min, all_y_max = float(ref_bins_y.min()), float(ref_bins_y.max())
         x_range = all_x_max - all_x_min
         y_range = all_y_max - all_y_min
         x_center = (all_x_max + all_x_min) / 2.0
         y_center = (all_y_max + all_y_min) / 2.0
         shared_xlim = (x_center - 0.625 * x_range, x_center + 0.625 * x_range)
         shared_ylim = (y_center - 0.625 * y_range, y_center + 0.625 * y_range)
-
-        # Warn when models were produced on different histogram grids.
-        off_grid_labels = [
-            str(entry["label"])
-            for entry in model_entries
-            if not (
-                np.array_equal(np.asarray(entry["bins_x"]), ref_bins_x)
-                and np.array_equal(np.asarray(entry["bins_y"]), ref_bins_y)
-            )
-        ]
-        if off_grid_labels:
-            c.warn(
-                "[multivariate] Inconsistent histogram bin grids detected in "
-                f"{fname}. Using per-model bins/target to avoid contour misalignment. "
-                f"Affected: {', '.join(off_grid_labels)}"
-            )
 
         n_models = len(model_entries)
         max_cols = 3

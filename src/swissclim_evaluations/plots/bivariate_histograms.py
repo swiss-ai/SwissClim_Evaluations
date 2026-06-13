@@ -80,6 +80,38 @@ def _format_level_suffix(level_hpa: float | None) -> str:
     return f"_level{level_hpa:g}"
 
 
+# Cap on how many extra target-width bins may be appended on each side of the
+# target range to cover the prediction. Bounds the histogram grid against
+# pathological outliers; a tail beyond this is clamped into the edge bin.
+_MAX_EXTENSION_FACTOR = 5
+
+
+def _extended_edges(
+    t_min: float, t_max: float, p_min: float, p_max: float, n_bins: int
+) -> np.ndarray:
+    """Bin edges anchored to the target (ERA5) range, extended to cover prediction.
+
+    The inner ``[t_min, t_max]`` edges are exactly ``np.linspace(t_min, t_max,
+    n_bins + 1)``, so the target histogram and its density contours/levels are
+    unchanged. Extra bins of the same width ``dx`` are appended below ``t_min`` /
+    above ``t_max`` until the prediction range ``[p_min, p_max]`` is covered,
+    capped at ``_MAX_EXTENSION_FACTOR * n_bins`` bins per side. Because ``dx`` and
+    the lattice depend only on the (shared) target, every model's grid is a
+    sub-grid of one common lattice, so intercomparison panels can be aligned by
+    exact zero-padding (no rebinning).
+    """
+    core = np.linspace(t_min, t_max, n_bins + 1)
+    if not (t_max > t_min):
+        return core
+    dx = (t_max - t_min) / n_bins
+    cap = _MAX_EXTENSION_FACTOR * n_bins
+    n_low = min(int(np.ceil((t_min - p_min) / dx)), cap) if p_min < t_min else 0
+    n_high = min(int(np.ceil((p_max - t_max) / dx)), cap) if p_max > t_max else 0
+    low = t_min - dx * np.arange(n_low, 0, -1) if n_low > 0 else core[:0]
+    high = t_max + dx * np.arange(1, n_high + 1) if n_high > 0 else core[:0]
+    return np.concatenate([low, core, high])
+
+
 def _get_label(da: xr.DataArray, var_name: str) -> str:
     """Get a formatted label with unit for a variable from DataArray attributes."""
     name = format_variable_name(var_name)
@@ -841,25 +873,25 @@ def calculate_and_plot_bivariate_histograms(
             targ_x_sel = targ_x.sel(level=level_hpa) if "level" in targ_x.dims else targ_x
             targ_y_sel = targ_y.sel(level=level_hpa) if "level" in targ_y.dims else targ_y
 
-            # Flatten target data to 1D Dask arrays (bin edges are anchored to
-            # the target range only, so the prediction flattens are not needed here)
+            # Target range defines the bin width and lattice (so contours/levels
+            # stay invariant across models); the prediction range is collected too
+            # so the grid can be extended outward to show extreme predictions.
             da_x_targ = targ_x_sel.data.flatten()
             da_y_targ = targ_y_sel.data.flatten()
-
-            # Bin edges are anchored to the target (truth) range only, so axes
-            # and reference contours stay invariant across model variants
-            # (e.g. different perturbation magnitudes). Prediction values
-            # outside the truth range get binned into the edge bins.
-            min_x_lazy = da.nanmin(da_x_targ)
-            max_x_lazy = da.nanmax(da_x_targ)
-            min_y_lazy = da.nanmin(da_y_targ)
-            max_y_lazy = da.nanmax(da_y_targ)
+            pred_x_sel = pred_x.sel(level=level_hpa) if x_has_level else pred_x
+            pred_y_sel = pred_y.sel(level=level_hpa) if y_has_level else pred_y
+            da_x_pred = pred_x_sel.data.flatten()
+            da_y_pred = pred_y_sel.data.flatten()
             range_jobs.append(
                 {
-                    "min_x": min_x_lazy,
-                    "max_x": max_x_lazy,
-                    "min_y": min_y_lazy,
-                    "max_y": max_y_lazy,
+                    "min_x": da.nanmin(da_x_targ),
+                    "max_x": da.nanmax(da_x_targ),
+                    "min_y": da.nanmin(da_y_targ),
+                    "max_y": da.nanmax(da_y_targ),
+                    "pmin_x": da.nanmin(da_x_pred),
+                    "pmax_x": da.nanmax(da_x_pred),
+                    "pmin_y": da.nanmin(da_y_pred),
+                    "pmax_y": da.nanmax(da_y_pred),
                     "pair_idx": i,
                     "var_x": var_x,
                     "var_y": var_y,
@@ -883,6 +915,10 @@ def calculate_and_plot_bivariate_histograms(
             "max_x": "max_x_res",
             "min_y": "min_y_res",
             "max_y": "max_y_res",
+            "pmin_x": "pmin_x_res",
+            "pmax_x": "pmax_x_res",
+            "pmin_y": "pmin_y_res",
+            "pmax_y": "pmax_y_res",
         },
         desc="Computing ranges",
     )
@@ -913,10 +949,19 @@ def calculate_and_plot_bivariate_histograms(
         range_x = [min_x, max_x]
         range_y = [min_y, max_y]
 
-        # Replace NaNs with a sentinel that is one full data-range width below the
-        # minimum — always outside the histogram range regardless of the data scale.
-        fill_x = min_x - max(max_x - min_x, 1.0)
-        fill_y = min_y - max(max_y - min_y, 1.0)
+        # Edges anchored to the target range (fixed dx + lattice for invariant
+        # contours) but extended outward to cover the prediction so extreme
+        # predictions are shown rather than dropped.
+        pmin_x, pmax_x = float(job["pmin_x_res"]), float(job["pmax_x_res"])
+        pmin_y, pmax_y = float(job["pmin_y_res"]), float(job["pmax_y_res"])
+        xedges = _extended_edges(min_x, max_x, pmin_x, pmax_x, bins)
+        yedges = _extended_edges(min_y, max_y, pmin_y, pmax_y, bins)
+
+        # NaNs go to a sentinel outside the (extended) range and are dropped; real
+        # values are clipped into the range so any tail beyond the extension cap
+        # accumulates in the edge bin instead of being dropped by histogram2d.
+        fill_x = float(xedges[0]) - max(float(xedges[-1]) - float(xedges[0]), 1.0)
+        fill_y = float(yedges[0]) - max(float(yedges[-1]) - float(yedges[0]), 1.0)
 
         # Re-access data (dask arrays)
         pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]
@@ -924,16 +969,10 @@ def calculate_and_plot_bivariate_histograms(
         da_x = pred_x.data.flatten()
         da_y = pred_y.data.flatten()
 
-        da_x = da.where(da.isnan(da_x), fill_x, da_x)
-        da_y = da.where(da.isnan(da_y), fill_y, da_y)
+        da_x = da.where(da.isnan(da_x), fill_x, da.clip(da_x, xedges[0], xedges[-1]))
+        da_y = da.where(da.isnan(da_y), fill_y, da.clip(da_y, yedges[0], yedges[-1]))
 
-        # Calculate edges manually to avoid dask array edges which cannot be passed to bins=
-        xedges = np.linspace(min_x, max_x, bins + 1)
-        yedges = np.linspace(min_y, max_y, bins + 1)
-
-        h_pred_lazy, _, _ = da.histogram2d(
-            da_x, da_y, bins=[xedges, yedges], range=[range_x, range_y]
-        )
+        h_pred_lazy, _, _ = da.histogram2d(da_x, da_y, bins=[xedges, yedges])
 
         # Target data
         if ds_target is not None:
@@ -950,12 +989,10 @@ def calculate_and_plot_bivariate_histograms(
             da_x_t = targ_x.data.flatten()
             da_y_t = targ_y.data.flatten()
 
-            da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
-            da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
+            da_x_t = da.where(da.isnan(da_x_t), fill_x, da.clip(da_x_t, xedges[0], xedges[-1]))
+            da_y_t = da.where(da.isnan(da_y_t), fill_y, da.clip(da_y_t, yedges[0], yedges[-1]))
 
-            h_target_lazy, _, _ = da.histogram2d(
-                da_x_t, da_y_t, bins=[xedges, yedges], range=[range_x, range_y]
-            )
+            h_target_lazy, _, _ = da.histogram2d(da_x_t, da_y_t, bins=[xedges, yedges])
         else:
             # Should not happen given checks above, but for safety
             h_target_lazy = None
