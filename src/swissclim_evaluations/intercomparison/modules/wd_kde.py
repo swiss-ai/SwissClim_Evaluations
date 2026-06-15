@@ -11,6 +11,7 @@ from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
     extract_date_from_filename,
     format_variable_name,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -146,7 +147,7 @@ def intercompare_wd_kde(
             stem = Path(base).stem  # drop .npz
             out_png_name = stem.split("_ridgeline_data")[0] + "_ridgeline_compare.png"
             out_png = dst / out_png_name
-            fig.savefig(out_png, bbox_inches="tight")
+            savefig_formats(out_png, fig=fig, bbox_inches="tight")
             plt.close(fig)
             c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -177,7 +178,7 @@ def intercompare_wd_kde(
             ax.legend()
 
             out_png = dst / base.replace(".npz", "_compare.png")
-            fig.savefig(out_png, bbox_inches="tight")
+            savefig_formats(out_png, fig=fig, bbox_inches="tight")
             plt.close(fig)
             c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -250,7 +251,7 @@ def intercompare_wd_kde(
                 fontsize=20,
             )
             out_png = dst / base.replace(".npz", "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 

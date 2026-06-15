@@ -14,6 +14,7 @@ from swissclim_evaluations.helpers import (
     format_level_token,
     format_variable_name,
     get_colormap_for_variable,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -277,7 +278,7 @@ def intercompare_maps(
                     cbar.set_label(str(units) if units else "Value")
 
             out_png = dst / (key + "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
@@ -358,7 +359,7 @@ def intercompare_maps(
                         suffix = f"_level{format_level_token(lvl)}"
 
                 out_png = dst / (key + suffix + "_compare.png")
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                savefig_formats(out_png, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close(fig)
 
@@ -476,7 +477,7 @@ def intercompare_maps(
                 fig.suptitle(title, fontsize=11, y=1.02)
 
             out_png = det_dst / (key + "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
@@ -581,7 +582,7 @@ def intercompare_maps(
                             title_pl += f" — {format_variable_name(str(var_name))}"
                         fig_pl.suptitle(title_pl, fontsize=11, y=1.02)
                     out_pl = det_dst / (key + "_per_lead_compare.png")
-                    plt.savefig(out_pl, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_pl, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_pl.relative_to(out_root)}")
                     plt.close(fig_pl)
 

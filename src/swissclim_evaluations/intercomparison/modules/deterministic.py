@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from swissclim_evaluations.helpers import format_variable_name
+from swissclim_evaluations.helpers import format_variable_name, savefig_formats
 from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
@@ -314,7 +314,7 @@ def intercompare_deterministic_metrics(
                         fontsize=11,
                     )
                     plt.tight_layout()
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     plt.close(fig)
                     c.info(f"[intercompare] saved placeholder {out_png}")
                     continue
@@ -326,7 +326,7 @@ def intercompare_deterministic_metrics(
                 ax.set_xlabel("")
                 plt.xticks(rotation=45, ha="right")
                 plt.tight_layout()
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                savefig_formats(out_png, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close()
 
@@ -468,7 +468,7 @@ def intercompare_deterministic_metrics(
                     plt.tight_layout()
 
                     out_png = dst_det / f"temporal_{metric}_{variable}{level_token}_compare.png"
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
 

@@ -1,4 +1,5 @@
 import itertools
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -849,10 +850,37 @@ def subsample_values(
         return arr[np.isfinite(arr)]
 
 
+FIG_FORMATS: tuple[str, ...] = tuple(
+    f.strip().lstrip(".")
+    for f in os.environ.get("SWISSCLIM_FIG_FORMATS", "png").split(",")
+    if f.strip()
+)
+
+
+def savefig_formats(
+    out_path: Path | str,
+    *,
+    fig: plt.Figure | None = None,
+    formats: tuple[str, ...] | None = None,
+    **kwargs: Any,
+) -> None:
+    """Save a figure in every format in SWISSCLIM_FIG_FORMATS (default png).
+
+    Set SWISSCLIM_FIG_FORMATS=png,pdf to also emit vector PDFs directly,
+    replacing the downstream sitecustomize PYTHONPATH shim that used to
+    duplicate each png to pdf. The extension of out_path is swapped per format;
+    pass fig= to target a specific figure instead of the current one.
+    """
+    out_path = Path(out_path)
+    target = fig if fig is not None else plt
+    for ext in (formats if formats is not None else FIG_FORMATS):
+        target.savefig(out_path.with_suffix(f".{ext}"), **kwargs)
+
+
 def save_figure(fig: plt.Figure, path: Path, dpi: int = 200, module: str | None = None) -> None:
     """Save figure to path, creating parent directories if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, bbox_inches="tight", dpi=dpi)
+    savefig_formats(path, fig=fig, bbox_inches="tight", dpi=dpi)
     prefix = f"[{module}] " if module else ""
     c.print(f"{prefix}Saved {path}")
     plt.close(fig)

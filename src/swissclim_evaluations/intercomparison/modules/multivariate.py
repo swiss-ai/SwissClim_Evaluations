@@ -10,7 +10,11 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LogNorm
 
 from swissclim_evaluations import console as c
-from swissclim_evaluations.helpers import format_variable_name, get_variable_units
+from swissclim_evaluations.helpers import (
+    format_variable_name,
+    get_variable_units,
+    savefig_formats,
+)
 from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
@@ -337,8 +341,7 @@ def intercompare_multivariate(models: list[Path], labels: list[str], out_root: P
         stem = fname.replace("bivariate_", "").replace(".npz", "")
         out_png = dst / f"bivariate_{stem}_compare.png"
         out_pdf = dst / f"bivariate_{stem}_compare.pdf"
-        fig.savefig(out_png, dpi=150)
-        fig.savefig(out_pdf)
+        savefig_formats(out_png, fig=fig, dpi=150, formats=("png", "pdf"))
         plt.close(fig)
 
         out_npz = dst / f"bivariate_{stem}_compare.npz"

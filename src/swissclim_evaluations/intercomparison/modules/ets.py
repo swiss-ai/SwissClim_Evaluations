@@ -6,7 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from swissclim_evaluations.helpers import format_variable_name
+from swissclim_evaluations.helpers import format_variable_name, savefig_formats
 from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
@@ -109,7 +109,7 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                         ax.grid(True, axis="y", linestyle="--", alpha=0.7)
                         plt.tight_layout()
                         out_png = dst_ets / f"ets_barplot_{var}_compare.png"
-                        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                        savefig_formats(out_png, bbox_inches="tight", dpi=200)
                         c.success(f"Saved {out_png.relative_to(out_root)}")
                         plt.close(fig)
 
@@ -170,7 +170,7 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
                     ax.grid(True, axis="y", linestyle="--", alpha=0.7)
                     plt.tight_layout()
                     out_png = dst_ets / f"ets_barplot_{var}_wide_compare.png"
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
 
@@ -229,7 +229,7 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
 
                 safe_col = col.replace(" ", "_").replace("%", "pct")
                 out_png = dst_ets / f"ets_{safe_col}_compare.png"
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                savefig_formats(out_png, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close(fig)
 
@@ -294,6 +294,6 @@ def intercompare_ets_metrics(models: list[Path], labels: list[str], out_root: Pa
 
                     safe_name = f"ets_{var}_{thresh_label.replace('%', 'pct')}_spread.png"
                     out_png = dst_ets / safe_name
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)

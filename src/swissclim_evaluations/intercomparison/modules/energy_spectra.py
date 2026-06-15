@@ -12,6 +12,7 @@ from swissclim_evaluations.helpers import (
     COLOR_GROUND_TRUTH,
     format_level_label,
     format_variable_name,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -111,7 +112,7 @@ def _plot_banded_lsd_bar(
     fig.suptitle("LSD per Spectral Band — Model Comparison", fontsize=11, y=1.01)
     out_png = dst / "lsd_banded_bar_compare.png"
     plt.tight_layout()
-    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+    savefig_formats(out_png, bbox_inches="tight", dpi=200)
     plt.close(fig)
     c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -188,7 +189,7 @@ def _plot_banded_lsd_by_lead(
         safe_var = str(var).replace("/", "_").replace(" ", "_")
         out_png = dst / f"lsd_banded_lead_time_{safe_var}_compare.png"
         plt.tight_layout()
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        savefig_formats(out_png, bbox_inches="tight", dpi=200)
         plt.close(fig)
         c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -597,7 +598,7 @@ def intercompare_energy_spectra(
             ax.legend(frameon=False)
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             plt.close(fig)
             c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -689,7 +690,7 @@ def intercompare_energy_spectra(
                 if ax_r.get_lines():
                     out_png_ratio = dst / base.replace(".npz", "_compare_ratio.png")
                     plt.tight_layout()
-                    plt.savefig(out_png_ratio, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png_ratio, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png_ratio.relative_to(out_root)}")
                 else:
                     c.warn("No lines were added to the plot; no output saved.")
@@ -775,7 +776,7 @@ def intercompare_energy_spectra(
                     # Save plot
                     out_png = dst / f"energy_spectrum_{variable}_lead{int(h):03d}h_compare.png"
                     plt.tight_layout()
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     plt.close(fig)
 
             # Compact delta spectrogram — always generated for multi-lead bundles.
@@ -894,7 +895,7 @@ def intercompare_energy_spectra(
                                 out_spec = dst / base.replace(
                                     ".npz", "_spectrogram_delta_compare.png"
                                 )
-                                plt.savefig(out_spec, bbox_inches="tight", dpi=200)
+                                savefig_formats(out_spec, bbox_inches="tight", dpi=200)
                                 c.success(f"Saved {out_spec.relative_to(out_root)}")
                             plt.close(fig)
 

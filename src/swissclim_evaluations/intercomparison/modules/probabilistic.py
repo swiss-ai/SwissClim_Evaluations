@@ -12,6 +12,7 @@ from scipy.stats import gaussian_kde
 from swissclim_evaluations.helpers import (
     extract_date_from_filename,
     format_variable_name,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -303,7 +304,7 @@ def _intercompare_spaghetti(
 
         out_png = dst_prob / f"{stem}_compare.png"
         try:
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
         except Exception as exc:
             c.warn(f"Spaghetti: failed to save {out_png}: {exc}")
@@ -348,7 +349,7 @@ def _intercompare_spaghetti(
 
             out_spread = dst_prob / f"{stem}_spread_compare.png"
             try:
-                plt.savefig(out_spread, bbox_inches="tight", dpi=200)
+                savefig_formats(out_spread, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_spread.relative_to(out_root)}")
             except Exception as exc:
                 c.warn(f"Spaghetti: failed to save {out_spread}: {exc}")
@@ -612,7 +613,7 @@ def intercompare_probabilistic(
                     plt.tight_layout()
 
                     out_png = dst_prob / f"temporal_{metric}_{variable}{level_token}_compare.png"
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
 
@@ -735,7 +736,7 @@ def intercompare_probabilistic(
                 date_suffix = extract_date_from_filename(key)
                 fig_m.suptitle(f"{title_base}{date_suffix}", y=1.02)
                 out_mean = dst_prob / (key + "_mean_compare.png")
-                plt.savefig(out_mean, bbox_inches="tight", dpi=200)
+                savefig_formats(out_mean, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_mean.relative_to(out_root)}")
                 plt.close(fig_m)
 
@@ -803,7 +804,7 @@ def intercompare_probabilistic(
                 date_suffix = extract_date_from_filename(key)
                 fig.suptitle(f"{title_base}{date_suffix}", y=1.02)
                 out_lead = dst_prob / (key + "_per_lead_compare.png")
-                plt.savefig(out_lead, bbox_inches="tight", dpi=200)
+                savefig_formats(out_lead, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_lead.relative_to(out_root)}")
                 plt.close(fig)
             else:
@@ -872,7 +873,7 @@ def intercompare_probabilistic(
                 fig.suptitle(f"{title_base}{date_suffix}", y=1.02)
 
                 out_png = dst_prob / (key + "_compare.png")
-                plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                savefig_formats(out_png, bbox_inches="tight", dpi=200)
                 c.success(f"Saved {out_png.relative_to(out_root)}")
                 plt.close(fig)
 
@@ -1053,7 +1054,7 @@ def intercompare_probabilistic(
             ax.grid(True, linestyle="--", alpha=0.4)
 
             out_png = dst_prob / base.replace(".npz", "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 

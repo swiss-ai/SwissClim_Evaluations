@@ -10,6 +10,7 @@ from swissclim_evaluations.helpers import (
     extract_date_from_filename,
     format_variable_name,
     get_variable_units,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -171,7 +172,7 @@ def intercompare_histograms(
 
             out_png = dst / base.replace(".npz", "_compare.png")
             plt.tight_layout()
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             plt.close(fig)
             c.success(f"Saved {out_png.relative_to(out_root)}")
 
@@ -279,6 +280,6 @@ def intercompare_histograms(
                 f"Distributions by Latitude Bands — {var}{date_suffix}", y=1.02, fontsize=20
             )
             out_png = dst / base.replace(".npz", "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)

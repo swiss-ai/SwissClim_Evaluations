@@ -10,6 +10,7 @@ import pandas as pd
 from swissclim_evaluations.helpers import (
     extract_date_from_filename,
     format_variable_name,
+    savefig_formats,
 )
 from swissclim_evaluations.intercomparison.core import (
     c,
@@ -239,7 +240,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
         plt.tight_layout(rect=(0, 0.04, 1, 1))
         out_png = dst / base.replace(".npz", "_compare.png")
         # Save only if at least two models contributed lines
-        plt.savefig(out_png, bbox_inches="tight", dpi=200)
+        savefig_formats(out_png, bbox_inches="tight", dpi=200)
         c.success(f"Saved {out_png.relative_to(out_root)}")
         plt.close(fig)
         rows = []
@@ -395,7 +396,7 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             )
 
             out_png = dst / base.replace(".npz", "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)
 
@@ -506,6 +507,6 @@ def intercompare_vertical_profiles(models: list[Path], labels: list[str], out_ro
             )
 
             out_png = dst / base.replace(".npz", "_compare.png")
-            plt.savefig(out_png, bbox_inches="tight", dpi=200)
+            savefig_formats(out_png, bbox_inches="tight", dpi=200)
             c.success(f"Saved {out_png.relative_to(out_root)}")
             plt.close(fig)

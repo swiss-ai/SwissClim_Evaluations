@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from swissclim_evaluations.helpers import format_variable_name
+from swissclim_evaluations.helpers import format_variable_name, savefig_formats
 from swissclim_evaluations.intercomparison.core import (
     c,
     common_files,
@@ -116,7 +116,7 @@ def intercompare_fss_metrics(models: list[Path], labels: list[str], out_root: Pa
 
                     safe_name = f"fss_{var}_{thresh_label.replace('%', 'pct')}_compare.png"
                     out_png = dst_fss / safe_name
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)
 
@@ -163,6 +163,6 @@ def intercompare_fss_metrics(models: list[Path], labels: list[str], out_root: Pa
 
                     safe_name = f"fss_{var}_{thresh_label.replace('%', 'pct')}_spread.png"
                     out_png = dst_fss / safe_name
-                    plt.savefig(out_png, bbox_inches="tight", dpi=200)
+                    savefig_formats(out_png, bbox_inches="tight", dpi=200)
                     c.success(f"Saved {out_png.relative_to(out_root)}")
                     plt.close(fig)

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from swissclim_evaluations import console as c
-from swissclim_evaluations.helpers import format_variable_name
+from swissclim_evaluations.helpers import format_variable_name, savefig_formats
 from swissclim_evaluations.intercomparison.core import (
     common_files,
     ensure_dir,
@@ -94,7 +94,7 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
                 ax.set_ylim(0, 1)
                 ax.grid(True, axis="y", linestyle="--", alpha=0.6)
                 plt.tight_layout()
-                fig.savefig(dst_ssim / "ssim_average_compare.png", dpi=150)
+                savefig_formats(dst_ssim / "ssim_average_compare.png", fig=fig, dpi=150)
                 plt.close(fig)
                 c.success("[SSIM] saved ssim_average_compare.png")
 
@@ -114,7 +114,7 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
                     plt.xticks(rotation=30, ha="right")
                     ax.grid(True, axis="y", linestyle="--", alpha=0.6)
                     plt.tight_layout()
-                    fig.savefig(dst_ssim / "ssim_per_variable_compare.png", dpi=150)
+                    savefig_formats(dst_ssim / "ssim_per_variable_compare.png", fig=fig, dpi=150)
                     plt.close(fig)
                     c.success("[SSIM] saved ssim_per_variable_compare.png")
                 except Exception:
@@ -152,7 +152,7 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
                 ax.grid(True, linestyle="--", alpha=0.6)
                 plt.tight_layout()
                 safe_var = str(var).replace(" ", "_")
-                fig.savefig(dst_ssim / f"ssim_per_level_{safe_var}_compare.png", dpi=150)
+                savefig_formats(dst_ssim / f"ssim_per_level_{safe_var}_compare.png", fig=fig, dpi=150)
                 plt.close(fig)
                 c.success(f"[SSIM] saved ssim_per_level_{safe_var}_compare.png")
 
@@ -189,7 +189,7 @@ def intercompare_ssim(models: list[Path], labels: list[str], out_root: Path) -> 
                 ax.grid(True, linestyle="--", alpha=0.6)
                 plt.tight_layout()
                 safe_var = str(var).replace(" ", "_")
-                fig.savefig(dst_ssim / f"ssim_by_lead_{safe_var}_compare.png", dpi=150)
+                savefig_formats(dst_ssim / f"ssim_by_lead_{safe_var}_compare.png", fig=fig, dpi=150)
                 plt.close(fig)
                 c.success(f"[SSIM] saved ssim_by_lead_{safe_var}_compare.png")
 
