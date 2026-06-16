@@ -9,7 +9,6 @@ import xarray as xr
 from weatherbenchX.metrics import base
 from weatherbenchX.metrics.probabilistic import (
     EnsembleVariance,
-    SpreadSkillRatio,
     UnbiasedEnsembleMeanSquaredError,
     UnbiasedSpreadSkillRatio,
 )
@@ -82,7 +81,42 @@ class FortinInflatedEnsembleVariance(EnsembleVariance):
         return var * (m + 1) / m
 
 
-class FortinSpreadSkillRatio(SpreadSkillRatio):
+class PlainEnsembleMeanSquaredError(UnbiasedEnsembleMeanSquaredError):
+    """Plain (biased) squared error of the ensemble mean, $(\\bar X - y)^2$,
+    with NO finite-ensemble debiasing - the Fortin SSR denominator. Squeezes a
+    size-1 ensemble dim off the targets (like RobustUnbiasedEnsembleMeanSquaredError)
+    to avoid the ddof=1 variance-of-one-sample NaN that the unbiased form hits."""
+
+    @property
+    def unique_name(self) -> str:
+        return (
+            f"PlainEnsembleMeanSquaredError_{self._ensemble_dim}"
+            f"_skipna_ensemble_{self._skipna_ensemble}"
+        )
+
+    def _compute_per_variable(
+        self,
+        predictions: xr.DataArray,
+        targets: xr.DataArray,
+    ) -> xr.DataArray:
+        if (
+            self._ensemble_dim in targets.dims
+            and targets.sizes[self._ensemble_dim] == 1
+        ):
+            targets = targets.squeeze(self._ensemble_dim, drop=True)
+        predictions_mean = predictions.mean(
+            dim=self._ensemble_dim, skipna=self._skipna_ensemble
+        )
+        if self._ensemble_dim in targets.dims:
+            targets_mean = targets.mean(
+                dim=self._ensemble_dim, skipna=self._skipna_ensemble
+            )
+        else:
+            targets_mean = targets
+        return (predictions_mean - targets_mean) ** 2
+
+
+class FortinSpreadSkillRatio(UnbiasedSpreadSkillRatio):
     """Spread-skill ratio with the Fortin et al. (2014) finite-ensemble-size
     correction applied to the spread (inflate variance by (M+1)/M). Unlike
     UnbiasedSpreadSkillRatio it debiases the spread, not the mean-squared error,
@@ -91,12 +125,25 @@ class FortinSpreadSkillRatio(SpreadSkillRatio):
 
     @property
     def statistics(self) -> Mapping[str, base.Statistic]:
-        stats = dict(super().statistics)
-        stats["EnsembleVariance"] = FortinInflatedEnsembleVariance(
-            ensemble_dim=self._ensemble_dim,
-            skipna_ensemble=self._skipna_ensemble,
+        return {
+            "EnsembleVariance": FortinInflatedEnsembleVariance(
+                ensemble_dim=self._ensemble_dim,
+                skipna_ensemble=self._skipna_ensemble,
+            ),
+            "PlainEnsembleMeanSquaredError": PlainEnsembleMeanSquaredError(
+                ensemble_dim=self._ensemble_dim,
+                skipna_ensemble=self._skipna_ensemble,
+            ),
+        }
+
+    def _values_from_mean_statistics_per_variable(
+        self,
+        statistic_values: Mapping[str, xr.DataArray],
+    ) -> xr.DataArray:
+        return np.sqrt(
+            statistic_values["EnsembleVariance"]
+            / statistic_values["PlainEnsembleMeanSquaredError"]
         )
-        return stats
 
 
 def _pit(da_target, da_prediction):
