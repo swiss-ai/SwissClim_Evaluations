@@ -9,6 +9,7 @@ import xarray as xr
 from weatherbenchX.metrics import base
 from weatherbenchX.metrics.probabilistic import (
     EnsembleVariance,
+    SpreadSkillRatio,
     UnbiasedEnsembleMeanSquaredError,
     UnbiasedSpreadSkillRatio,
 )
@@ -55,6 +56,47 @@ class RobustUnbiasedSpreadSkillRatio(UnbiasedSpreadSkillRatio):
         mse = statistic_values["UnbiasedEnsembleMeanSquaredError"]
         ratio = variance / mse
         return np.sqrt(ratio)
+
+
+class FortinInflatedEnsembleVariance(EnsembleVariance):
+    """ddof=1 ensemble variance inflated by the Fortin et al. (2014) finite-M
+    factor (M+1)/M, so a perfectly reliable M-member ensemble yields SSR=1."""
+
+    @property
+    def unique_name(self) -> str:
+        return (
+            f"FortinInflatedEnsembleVariance_{self._ensemble_dim}"
+            f"_skipna_ensemble_{self._skipna_ensemble}"
+        )
+
+    def _compute_per_variable(
+        self,
+        predictions: xr.DataArray,
+        targets: xr.DataArray,
+    ) -> xr.DataArray:
+        var = super()._compute_per_variable(predictions, targets)
+        if self._skipna_ensemble:
+            m = predictions.count(dim=self._ensemble_dim)
+        else:
+            m = predictions.sizes[self._ensemble_dim]
+        return var * (m + 1) / m
+
+
+class FortinSpreadSkillRatio(SpreadSkillRatio):
+    """Spread-skill ratio with the Fortin et al. (2014) finite-ensemble-size
+    correction applied to the spread (inflate variance by (M+1)/M). Unlike
+    UnbiasedSpreadSkillRatio it debiases the spread, not the mean-squared error,
+    so the denominator is the plain ensemble-mean MSE and can never go negative
+    for over-dispersed ensembles (no NaN/robustness filter needed)."""
+
+    @property
+    def statistics(self) -> Mapping[str, base.Statistic]:
+        stats = dict(super().statistics)
+        stats["EnsembleVariance"] = FortinInflatedEnsembleVariance(
+            ensemble_dim=self._ensemble_dim,
+            skipna_ensemble=self._skipna_ensemble,
+        )
+        return stats
 
 
 def _pit(da_target, da_prediction):

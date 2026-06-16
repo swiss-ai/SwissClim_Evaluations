@@ -100,7 +100,7 @@ def run_probabilistic_wbx(
     )
 
     metrics: dict[str, Any] = {
-        "SSR": calc.RobustUnbiasedSpreadSkillRatio(ensemble_dim="ensemble"),
+        "SSR": calc.FortinSpreadSkillRatio(ensemble_dim="ensemble"),
         "CRPS": CRPSEnsemble(ensemble_dim="ensemble"),
     }
 
