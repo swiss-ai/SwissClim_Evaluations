@@ -1229,7 +1229,7 @@ def plot_bivariate_histogram(
     # Plot Model 2 (Lines, Greyscale) - Reference / Ground Truth
     # Use a truncated Greys colormap so low density is light grey (not white) and high is black
     cmap_base = plt.get_cmap("Greys")
-    colors_sampled = cmap_base(np.linspace(0.3, 1.0, 256))
+    colors_sampled = cmap_base(np.linspace(0.45, 1.0, 256))
     cmap_greys = mcolors.LinearSegmentedColormap.from_list("truncated_greys", colors_sampled)
 
     cs1 = ax.contour(
@@ -1239,7 +1239,8 @@ def plot_bivariate_histogram(
         levels=levels,
         norm=LogNorm(vmin=vmin, vmax=vmax),
         cmap=cmap_greys,
-        linewidths=1.5,
+        linewidths=1.8,
+        zorder=5,
     )
 
     fs_label = int(round(12 * font_scale))
@@ -1325,8 +1326,20 @@ def plot_bivariate_histogram(
     ]
     labels = [label_1, label_2]
 
-    # Append physical-constraint artists
+    # Append physical-constraint artists, but drop the zero/negative-bound and
+    # geostrophic-reference entries from the legend (the lines/shading stay
+    # drawn on the axes). Keeps the legend to the qsat/Supersaturated marks for
+    # T-q and to Prediction/Target for the geostrophic pair.
+    _legend_drop = {
+        "$q = 0$",
+        "$q < 0$ (unphysical)",
+        r"Geostrophic: $U_g = (g/f)\,|\nabla \mathrm{GH}|$",
+        "Wind speed $= 0$",
+        "Wind speed $< 0$ (unphysical)",
+    }
     for artist, lbl in constraint_entries:
+        if lbl in _legend_drop:
+            continue
         handles.append(artist)
         labels.append(lbl)
 
