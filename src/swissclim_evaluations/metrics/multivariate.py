@@ -69,6 +69,22 @@ def run(
     bins = int(cfg.get("bins", 100))
     coriolis_parameter = float(cfg.get("coriolis_parameter", 1.0e-4))
 
+    # Subsample cap for pooled flattening. "auto" -> 1e6 (a 2D joint density is
+    # smooth well below this); null/<=0 -> full field (memory intensive, and a
+    # full pooled flatten can trip the distributed P2P shuffle). Mirrors the
+    # kde_max_samples convention used by wd_kde. Only bites when the array
+    # exceeds the cap, so the ensemble-mean path is unaffected.
+    raw_bm = cfg.get("bivariate_max_samples", "auto")
+    if isinstance(raw_bm, str) and raw_bm.strip().lower() == "auto":
+        bivariate_max_samples: int | None = 1_000_000
+    elif raw_bm is None:
+        bivariate_max_samples = None
+    else:
+        bivariate_max_samples = int(raw_bm)
+        if bivariate_max_samples <= 0:
+            bivariate_max_samples = None
+    biv_seed = int(cfg.get("random_seed", 42))
+
     # If mode is members, produce per-member plots
     if mode == "members" and "ensemble" in ds_prediction.dims:
         n_members = ds_prediction.sizes["ensemble"]
@@ -88,6 +104,8 @@ def run(
                 bins=bins,
                 ensemble_token=ens_token,
                 coriolis_parameter=coriolis_parameter,
+                max_samples=bivariate_max_samples,
+                seed=biv_seed,
             )
     else:
         ens_token = ensemble_mode_to_token(mode)
@@ -99,4 +117,6 @@ def run(
             bins=bins,
             ensemble_token=ens_token,
             coriolis_parameter=coriolis_parameter,
+            max_samples=bivariate_max_samples,
+            seed=biv_seed,
         )

@@ -17,7 +17,7 @@ from matplotlib.lines import Line2D
 
 from .. import console as c
 from ..dask_utils import compute_jobs
-from ..helpers import format_variable_name, get_variable_units
+from ..helpers import format_variable_name, get_variable_units, subsample_values
 
 
 def _is_geopotential_height(name: str) -> bool:
@@ -729,6 +729,8 @@ def calculate_and_plot_bivariate_histograms(
     bins: int = 100,
     ensemble_token: str | None = None,
     coriolis_parameter: float = 1.0e-4,
+    max_samples: int | None = None,
+    seed: int = 42,
 ) -> None:
     """Calculate and save bivariate histograms for specified pairs.
 
@@ -746,7 +748,17 @@ def calculate_and_plot_bivariate_histograms(
         coriolis_parameter: Coriolis parameter f [s⁻¹] used for the
             geostrophic reference line overlay. Default 1e-4 s⁻¹ (generic
             mid-latitude); set to e.g. 1.13e-4 for central Europe (~50 °N).
+        max_samples: If set, subsample each (paired) field to this many points
+            before flattening (dimension-aware, shared seed so var_x/var_y stay
+            paired), avoiding the distributed shuffle a full pooled flatten
+            triggers. None keeps the full field.
+        seed: Random seed for the paired subsample.
     """
+    def _flat(arr):
+        if max_samples is None:
+            return arr.data.flatten()
+        return subsample_values(arr, max_samples, seed, lazy=True)
+
     plotted_pairs = []
     skipped_pairs = []
 
@@ -817,10 +829,11 @@ def calculate_and_plot_bivariate_histograms(
             targ_y_sel = targ_y.sel(level=level_hpa) if "level" in targ_y.dims else targ_y
 
             # Flatten prediction and target data to 1D Dask arrays
-            da_x_pred = pred_x_sel.data.flatten()
-            da_y_pred = pred_y_sel.data.flatten()
-            da_x_targ = targ_x_sel.data.flatten()
-            da_y_targ = targ_y_sel.data.flatten()
+            # (subsampled when max_samples is set; shared seed keeps x/y paired).
+            da_x_pred = _flat(pred_x_sel)
+            da_y_pred = _flat(pred_y_sel)
+            da_x_targ = _flat(targ_x_sel)
+            da_y_targ = _flat(targ_y_sel)
 
             # Bin edges are anchored to the target (truth) range only, so axes
             # and reference contours stay invariant across model variants
@@ -897,8 +910,8 @@ def calculate_and_plot_bivariate_histograms(
         # Re-access data (dask arrays)
         pred_x = ds_prediction[var_x].sel(level=level_hpa) if x_has_level else ds_prediction[var_x]
         pred_y = ds_prediction[var_y].sel(level=level_hpa) if y_has_level else ds_prediction[var_y]
-        da_x = pred_x.data.flatten()
-        da_y = pred_y.data.flatten()
+        da_x = _flat(pred_x)
+        da_y = _flat(pred_y)
 
         da_x = da.where(da.isnan(da_x), fill_x, da_x)
         da_y = da.where(da.isnan(da_y), fill_y, da_y)
@@ -923,8 +936,8 @@ def calculate_and_plot_bivariate_histograms(
                 if "level" in ds_target[var_y].dims and level_hpa is not None
                 else ds_target[var_y]
             )
-            da_x_t = targ_x.data.flatten()
-            da_y_t = targ_y.data.flatten()
+            da_x_t = _flat(targ_x)
+            da_y_t = _flat(targ_y)
 
             da_x_t = da.where(da.isnan(da_x_t), fill_x, da_x_t)
             da_y_t = da.where(da.isnan(da_y_t), fill_y, da_y_t)
