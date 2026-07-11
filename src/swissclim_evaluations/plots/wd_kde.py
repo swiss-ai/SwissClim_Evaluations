@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -155,7 +156,7 @@ def run(
         jobs = []
 
         # 1. Global KDE job
-        seed_g = base_seed + (hash(var_name + level_token) % 1000) * 1000
+        seed_g = base_seed + (zlib.crc32((var_name + level_token).encode()) % 1000) * 1000
         global_job = {
             "type": "global",
             "sub_t_lazy": subsample_values(da_t_std, max_samples, seed_g, lazy=True),
@@ -172,7 +173,7 @@ def run(
                 da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
                 da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
 
-                seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 1
+                seed = base_seed + (zlib.crc32((var_name + level_token).encode()) % 1000) * 1000 + (j + 1) * 10 + 1
 
                 job = {
                     "type": "lat_neg",
@@ -194,7 +195,7 @@ def run(
                 da_target_slice = da_t_std.sel(latitude=slice(lat_min, lat_max))
                 da_prediction_slice = da_p_std.sel(latitude=slice(lat_min, lat_max))
 
-                seed = base_seed + (hash(var_name + level_token) % 1000) * 1000 + (j + 1) * 10 + 2
+                seed = base_seed + (zlib.crc32((var_name + level_token).encode()) % 1000) * 1000 + (j + 1) * 10 + 2
 
                 job = {
                     "type": "lat_pos",
@@ -549,7 +550,7 @@ def run(
 
                 # Collapse spatial + time to estimate global min/max quickly
                 # Use subsampling for quantile estimation to avoid OOM
-                seed_q = base_seed + (hash(base_var + str(lvl)) % 1000) * 1000 + 999
+                seed_q = base_seed + (zlib.crc32((base_var + str(lvl)).encode()) % 1000) * 1000 + 999
                 sub_t_q_lazy = subsample_values(da_t_all, max_samples, seed_q, lazy=True)
                 sub_p_q_lazy = subsample_values(da_p_all, max_samples, seed_q, lazy=True)
 
@@ -590,7 +591,7 @@ def run(
                         da_p = da_p.isel(lead_time=i, drop=True)
 
                     # Use subsampling instead of full mean
-                    seed = base_seed + (hash(base_var + str(lvl)) % 1000) * 1000 + i * 10
+                    seed = base_seed + (zlib.crc32((base_var + str(lvl)).encode()) % 1000) * 1000 + i * 10
 
                     jobs.append(
                         {
